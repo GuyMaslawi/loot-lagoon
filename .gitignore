@@ -1,0 +1,13 @@
+# Godot
+.godot/
+*.import
+export_presets.cfg
+
+# macOS
+.DS_Store
+
+# secrets — never commit OAuth credentials
+google_oauth.json
+
+# build output — 1GB of Xcode/export artifacts, never commit
+build/
