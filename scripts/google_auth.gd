@@ -4,12 +4,18 @@ extends Node
 signal login_finished(profile: Dictionary)
 signal login_failed(reason: String)
 
+# This is a public OAuth client: it ships inside the app, so anyone can read
+# whatever is in it. That is fine for the client id and fatal for a secret, so
+# the flow is PKCE-only -- the code_verifier below is generated per login and
+# never leaves the device, which is what replaces the secret. Use an "iOS" (or
+# "Desktop app") client type in Google Cloud; a "Web application" client
+# demands a secret and must not be used here.
+
 const REDIRECT_PORT := 42815
 
 var _server: TCPServer
 var _verifier := ""
 var _client_id := ""
-var _client_secret := ""
 var _poll_timer: Timer
 
 static func load_config() -> Dictionary:
@@ -24,7 +30,6 @@ static func load_config() -> Dictionary:
 func start() -> bool:
 	var cfg := load_config()
 	_client_id = str(cfg.get("client_id", ""))
-	_client_secret = str(cfg.get("client_secret", ""))
 	if _client_id == "":
 		return false
 	var crypto := Crypto.new()
@@ -84,8 +89,6 @@ func _exchange(code: String) -> void:
 	var fields := "code=%s&client_id=%s&redirect_uri=%s&grant_type=authorization_code&code_verifier=%s" % [
 		code.uri_encode(), _client_id.uri_encode(),
 		("http://127.0.0.1:%d" % REDIRECT_PORT).uri_encode(), _verifier.uri_encode()]
-	if _client_secret != "":
-		fields += "&client_secret=" + _client_secret.uri_encode()
 	http.request_completed.connect(func(_r: int, response_code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
 		http.queue_free()
 		var d = JSON.parse_string(body.get_string_from_utf8())
