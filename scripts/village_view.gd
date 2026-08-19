@@ -72,47 +72,42 @@ func _ready() -> void:
 		progress.show_percentage = false
 		progress.visible = false
 		var pb_bg := StyleBoxFlat.new()
-		pb_bg.bg_color = Color(0.15, 0.1, 0.08, 0.7)
+		pb_bg.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.55)
 		pb_bg.set_corner_radius_all(6)
 		var pb_fg := StyleBoxFlat.new()
-		pb_fg.bg_color = Color(1.0, 0.75, 0.2)
+		pb_fg.bg_color = Lagoon.BRASS_HI
 		pb_fg.set_corner_radius_all(6)
 		progress.add_theme_stylebox_override("background", pb_bg)
 		progress.add_theme_stylebox_override("fill", pb_fg)
 		root.add_child(progress)
 		progress.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-		progress.offset_top = -110.0
-		progress.offset_bottom = -94.0
+		progress.offset_top = -152.0
+		progress.offset_bottom = -132.0
 
 		var stars := Label.new()
 		stars.add_theme_font_override("font", CV.emoji_font())
-		stars.add_theme_font_size_override("font_size", 16)
+		stars.add_theme_font_size_override("font_size", UI.F_CAPTION)
 		stars.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		stars.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		root.add_child(stars)
 		stars.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-		stars.offset_top = -84.0
-		stars.offset_bottom = -56.0
+		stars.offset_top = -128.0
+		stars.offset_bottom = -92.0
 
-		var bname := Label.new()
-		bname.text = b["name"]
-		bname.add_theme_font_size_override("font_size", 14)
-		bname.add_theme_color_override("font_color", Color.WHITE)
-		bname.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.75))
-		bname.add_theme_constant_override("outline_size", 5)
-		bname.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		bname.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		# Building names sit on painted island art, which is the busiest surface
+		# in the game -- a thin outline is not enough to separate them from it.
+		var bname := Lagoon.title(b["name"], UI.F_CAPTION, Lagoon.SAND, Lagoon.ABYSS)
 		root.add_child(bname)
 		bname.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-		bname.offset_top = -2.0
-		bname.offset_bottom = 20.0
+		bname.offset_top = -4.0
+		bname.offset_bottom = 34.0
 
 		var btn := Button.new()
-		btn.custom_minimum_size = Vector2(0, 48)
+		btn.custom_minimum_size = Vector2(0, UI.TAP)
 		btn.pressed.connect(func() -> void: upgrade_requested.emit(i))
 		root.add_child(btn)
 		btn.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-		btn.offset_top = -50.0
+		btn.offset_top = -float(UI.TAP)
 
 		_slots.append({
 			"root": root, "tex": tr, "fallback": fallback,

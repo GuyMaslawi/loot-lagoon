@@ -13,6 +13,9 @@ var island_level := 1
 var buildings := [0, 0, 0, 0, 0]
 var revenge_pending := false
 var npcs: Array = []
+# Picked before the spin, not after it, so the pot on the machine's card is a
+# promise rather than a decoration -- the coins you see are the coins at stake.
+var next_target: Dictionary = {}
 
 var slot_page: Control
 var village_page: Control
@@ -90,6 +93,16 @@ var profile := {}
 var _login_layer: Control
 var _village_bg: TextureRect
 var _island_title: Label
+# SPIN page pieces that get repainted per island by _apply_island_theme().
+var _slot_bg: TextureRect
+var _slot_bg_mat: ShaderMaterial
+var _slot_rays_mat: ShaderMaterial
+var _slot_floor_mat: ShaderMaterial
+var _slot_glow_mat: ShaderMaterial
+var _slot_logo: Label
+var _slot_decor: Array = []
+# Menu-page water, repainted with the island's palette by _apply_island_theme().
+var _page_backdrops: Array = []
 
 var pages := {}
 var _page_bodies := {}
@@ -103,6 +116,10 @@ var col_owned := {}
 var col_claimed := {}
 var col_mega_claimed := false
 var col_deadline := 0.0
+# The Cards tab is two screens behind one nav button: a shelf of six sets, and
+# the set you tapped. Empty means the shelf.
+var col_open := ""
+var _col_back: Button
 
 const NOTIF_LOG_MAX := 30
 var notif_enabled := true
@@ -110,33 +127,47 @@ var notif_types := {"attack": true, "steal": true, "spins": true}
 var notif_log := []
 var _toast: Control
 var _offline_spins_gained := 0
+# DEMO_ISLAND=17 previews that island's theme without grinding to it. Saving is
+# disabled while it's set so a preview can never overwrite real progress.
+var _preview_island := false
 
 func _ready() -> void:
 	randomize()
 	_setup_global_font_fallbacks()
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_load_game()
+	if OS.has_environment("DEMO_ISLAND"):
+		var preview := int(OS.get_environment("DEMO_ISLAND"))
+		if preview >= 1:
+			island_level = preview
+			_preview_island = true
 	_ensure_missions()
 	_update_badges()
+	# The pages are built inside _setup_global_font_fallbacks(), which runs
+	# above _load_game(), so they come up holding default state -- island 1's
+	# art and starting counters. Re-apply now that the save is actually in.
+	_apply_island_theme()
+	_refresh()
 
-# On iOS the default theme font can't reach system emoji/symbol fonts,
-# so glyphs like ★ and inline emoji render blank. Chain bundled fonts
-# (DejaVu for symbols, Noto for color emoji) behind the default font.
+# Establishes the game's two typefaces (see Lagoon) as the global baseline, so
+# every control that doesn't ask for something specific already speaks in the
+# right voice. Both are chained ahead of DejaVu (for ★ and other symbols) and
+# Noto Color Emoji, because on iOS the default font can't reach the system
+# emoji font and those glyphs otherwise render blank.
 func _setup_global_font_fallbacks() -> void:
-	var extra: Array[Font] = []
-	var deja := CV.tex_font("res://assets/fonts/DejaVuSans.ttf")
-	if deja != null:
-		extra.append(deja)
-	var noto := CV.tex_font("res://assets/fonts/NotoColorEmoji.ttf")
-	if noto != null:
-		extra.append(noto)
-	if extra.is_empty():
-		return
-	var base := ThemeDB.fallback_font
-	var v := FontVariation.new()
-	v.base_font = base
-	v.fallbacks = extra
-	ThemeDB.fallback_font = v
+	var body := Lagoon.ui_font()
+	ThemeDB.fallback_font = body
+
+	# Godot's built-in theme defaults to 16px, which is ~8pt once the 720x1280
+	# canvas is scaled down to a phone -- well under the 11pt floor. A theme on
+	# the root sets the baseline for every control that doesn't override it.
+	var t := Theme.new()
+	t.default_font = body
+	t.default_font_size = UI.F_LABEL
+	# Text sits on sea glass almost everywhere, so ink-on-light is the default
+	# and the few places that invert say so explicitly.
+	t.set_color("font_color", "Label", Lagoon.INK)
+	theme = t
 	if npcs.is_empty():
 		for def in CV.NPC_DEFS:
 			npcs.append(CV.new_npc(def))
@@ -191,22 +222,9 @@ func _show_login() -> void:
 	add_child(_login_layer)
 	_login_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
-	var bg := ColorRect.new()
-	var shader := Shader.new()
-	shader.code = """
-shader_type canvas_item;
-void fragment() {
-	vec3 top = vec3(0.12, 0.07, 0.22);
-	vec3 bottom = vec3(0.04, 0.02, 0.1);
-	COLOR = vec4(mix(top, bottom, UV.y), 1.0);
-}
-"""
-	var mat := ShaderMaterial.new()
-	mat.shader = shader
-	bg.material = mat
-	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_login_layer.add_child(bg)
-	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	# First screen of the game, so it shows the lagoon rather than a dark
+	# splash: whatever the player sees here is the promise the rest has to keep.
+	Lagoon.tint_backdrop(Lagoon.backdrop(_login_layer), CV.island_palette(island_level))
 
 	var coin_t := CV.symbol_tex("coin")
 	if coin_t != null:
@@ -217,47 +235,46 @@ void fragment() {
 			tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 			var s := randf_range(50, 110)
 			tr.size = Vector2(s, s)
-			tr.position = Vector2(randf_range(20, 630), randf_range(80, 1150))
-			tr.modulate = Color(1, 1, 1, randf_range(0.15, 0.35))
+			# clear of the wordmark and the sign-in column
+			tr.position = Vector2(randf_range(20, 630),
+				randf_range(80, 470) if i % 2 == 0 else randf_range(860, 1150))
+			tr.modulate = Color(1, 1, 1, randf_range(0.35, 0.6))
 			tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			_login_layer.add_child(tr)
 			FX.float_bob(tr, randf_range(12, 28), randf_range(2.0, 3.6))
 
-	var logo := Label.new()
-	logo.text = "LOOT  LAGOON"
-	logo.add_theme_font_size_override("font_size", 58)
-	logo.add_theme_color_override("font_color", Color(1.0, 0.84, 0.25))
-	logo.add_theme_color_override("font_outline_color", Color(0.3, 0.1, 0.05))
-	logo.add_theme_constant_override("outline_size", 16)
-	logo.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var logo := Lagoon.wordmark("LOOT  LAGOON", 68)
 	_login_layer.add_child(logo)
 	logo.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
 	logo.offset_top = 240.0
 	logo.offset_bottom = 330.0
-	FX.pulse_forever(logo, 1.05, 2.0)
+	FX.pulse_forever(logo, 1.04, 2.2)
+
+	var tagline := Lagoon.title("Spin · Raid · Build your island", UI.F_BODY, Color.WHITE, Lagoon.ABYSS)
+	_login_layer.add_child(tagline)
+	tagline.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	tagline.offset_top = 336.0
+	tagline.offset_bottom = 386.0
 
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 18)
 	_login_layer.add_child(box)
-	box.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	box.position = Vector2(130, 560)
-	box.size = Vector2(460, 400)
+	box.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	box.offset_left = 130.0
+	box.offset_right = -130.0
+	box.offset_top = 640.0
 
 	var g_btn := Button.new()
 	g_btn.text = "Sign in with Google"
-	g_btn.custom_minimum_size = Vector2(460, 66)
+	g_btn.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
 	_candy_button(g_btn, Color(0.92, 0.92, 0.92))
-	g_btn.add_theme_color_override("font_color", Color(0.2, 0.2, 0.25))
-	g_btn.add_theme_color_override("font_hover_color", Color(0.2, 0.2, 0.25))
-	g_btn.add_theme_color_override("font_pressed_color", Color(0.2, 0.2, 0.25))
-	g_btn.add_theme_constant_override("outline_size", 0)
 	FX.press_feedback(g_btn)
 	g_btn.pressed.connect(_login_google)
 	box.add_child(g_btn)
 
 	var f_btn := Button.new()
 	f_btn.text = "Continue with Facebook"
-	f_btn.custom_minimum_size = Vector2(460, 66)
+	f_btn.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
 	_candy_button(f_btn, Color(0.23, 0.35, 0.6))
 	FX.press_feedback(f_btn)
 	f_btn.pressed.connect(func() -> void:
@@ -267,8 +284,12 @@ void fragment() {
 
 	var guest := Button.new()
 	guest.text = "Play as Guest"
-	guest.custom_minimum_size = Vector2(460, 58)
-	_candy_button(guest, Color(0.45, 0.4, 0.55))
+	guest.custom_minimum_size = Vector2(0, UI.TAP)
+	guest.add_theme_font_size_override("font_size", UI.F_CAPTION)
+	_candy_button(guest, Color(0.6, 0.6, 0.62))
+	# Skipping sign-in is a legitimate choice but not the recommended one, so it
+	# recedes rather than competing with the two account options above it.
+	guest.modulate = Color(1, 1, 1, 0.72)
 	FX.press_feedback(guest)
 	guest.pressed.connect(func() -> void:
 		profile = {"name": "Guest", "email": "", "provider": "guest"}
@@ -311,6 +332,7 @@ func _close_login() -> void:
 	_banner("Welcome, %s!" % profile.get("name", "Player"), Color(1.0, 0.85, 0.3))
 
 func _process(delta: float) -> void:
+
 	_regen_accum += delta
 	if _regen_accum >= SPIN_REGEN_SECS:
 		_regen_accum = 0.0
@@ -325,6 +347,8 @@ func _process(delta: float) -> void:
 	_ui_tick += delta
 	if _ui_tick >= 1.0:
 		_ui_tick = 0.0
+		if slot != null:
+			slot.set_meter(spins, SPIN_CAP, SPIN_REGEN_SECS - _regen_accum, SPIN_REGEN_AMOUNT)
 		if _shop_free_ready():
 			# free gift may have just come off cooldown while playing
 			if _badges.has("shop_free") and not _badges["shop_free"].visible:
@@ -361,6 +385,8 @@ func _page_rank(p: Control) -> int:
 func _goto(target: Control) -> void:
 	if _transitioning or target == _current_page or _visit != null or _journey_layer != null:
 		return
+	if target != pages.get("collections"):
+		col_open = ""
 	for key in pages:
 		if pages[key] == target:
 			_fill_page(key)
@@ -405,20 +431,24 @@ func _build_nav() -> void:
 	nav_root.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
 	nav_root.offset_top = -NAV_ROOT_H
 
+	# A slab of sea glass resting on the water with a brass lip along its top
+	# edge -- the same two materials as every card above it, so the bar reads as
+	# part of the game rather than an operating-system chrome strip.
 	var bar := Panel.new()
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.07, 0.08, 0.155, 0.985)
-	sb.corner_radius_top_left = 26
-	sb.corner_radius_top_right = 26
-	sb.border_width_top = 1
-	sb.border_color = Color(1, 1, 1, 0.09)
-	sb.shadow_size = 16
-	sb.shadow_color = Color(0, 0, 0, 0.35)
-	sb.shadow_offset = Vector2(0, -4)
+	sb.bg_color = Color(1, 1, 1, 0.90)
+	sb.corner_radius_top_left = 34
+	sb.corner_radius_top_right = 34
+	sb.border_width_top = 4
+	sb.border_color = Lagoon.BRASS
+	sb.shadow_size = 18
+	sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.30)
+	sb.shadow_offset = Vector2(0, -5)
 	bar.add_theme_stylebox_override("panel", sb)
 	nav_root.add_child(bar)
 	bar.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	bar.offset_top = NAV_ROOT_H - NAV_BAR_H
+	Lagoon.add_gloss(bar, 34)
 
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", 0)
@@ -427,11 +457,11 @@ func _build_nav() -> void:
 	hb.offset_top = NAV_ROOT_H - NAV_BAR_H
 
 	var tabs := [
-		["🏝️", "Island", "island", 1.0],
-		["🛒", "Shop", "shop", 1.0],
+		["island", "Island", "island"],
+		["shop", "Shop", "shop"],
 		null,  # gap under the raised center Spin button
-		["🃏", "Cards", "collections", 1.0],
-		["📜", "Quests", "quests", 1.0],
+		["cards", "Cards", "collections"],
+		["quests", "Quests", "quests"],
 	]
 	for t in tabs:
 		if t == null:
@@ -443,49 +473,44 @@ func _build_nav() -> void:
 		var key: String = t[2]
 		var btn := Button.new()
 		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		btn.size_flags_stretch_ratio = t[3]
 		btn.focus_mode = Control.FOCUS_NONE
 		for state in ["normal", "hover", "pressed"]:
 			btn.add_theme_stylebox_override(state, StyleBoxEmpty.new())
 		hb.add_child(btn)
 		FX.press_feedback(btn)
 
+		# Coral bar over the active tab. Coral means "this is the live one"
+		# here for the same reason it means "tap this" on a button.
 		var pill := Panel.new()
 		var psb := StyleBoxFlat.new()
-		psb.bg_color = Color(1.0, 0.8, 0.3)
-		psb.set_corner_radius_all(3)
+		psb.bg_color = Lagoon.CORAL
+		psb.set_corner_radius_all(4)
 		pill.add_theme_stylebox_override("panel", psb)
 		pill.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		pill.visible = false
 		btn.add_child(pill)
 		pill.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
-		pill.offset_left = -22.0
-		pill.offset_right = 22.0
-		pill.offset_top = 6.0
-		pill.offset_bottom = 12.0
+		pill.offset_left = -26.0
+		pill.offset_right = 26.0
+		pill.offset_top = 5.0
+		pill.offset_bottom = 13.0
 
-		var icon := Label.new()
-		icon.text = t[0]
-		icon.add_theme_font_override("font", CV.emoji_font())
-		icon.add_theme_font_size_override("font_size", 50)
-		icon.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		var icon := Glyph.new()
+		icon.kind = t[0]
 		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		icon.resized.connect(func() -> void: icon.pivot_offset = icon.size * 0.5)
 		btn.add_child(icon)
 		icon.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-		icon.offset_top = 14.0
-		icon.offset_bottom = 78.0
+		icon.offset_top = 16.0
+		icon.offset_bottom = 84.0
 
-		var cap := Label.new()
-		cap.text = t[1]
-		cap.add_theme_font_size_override("font_size", 17)
-		cap.add_theme_color_override("font_color", Color(0.6, 0.64, 0.78))
+		var cap := Lagoon.label(t[1], UI.F_CAPTION, Lagoon.INK_SOFT, true)
 		cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		cap.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		btn.add_child(cap)
 		cap.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-		cap.offset_top = -36.0
-		cap.offset_bottom = -10.0
+		cap.offset_top = -58.0
+		cap.offset_bottom = -24.0
 
 		if key == "island":
 			btn.pressed.connect(func() -> void: _goto(village_page))
@@ -502,7 +527,7 @@ shader_type canvas_item;
 void fragment() {
 	float d = length(UV - 0.5) * 2.0;
 	float a = (1.0 - smoothstep(0.3, 1.0, d)) * 0.55;
-	COLOR = vec4(1.0, 0.75, 0.3, a);
+	COLOR = vec4(1.0, 0.55, 0.40, a);
 }
 """
 	var glow_mat := ShaderMaterial.new()
@@ -513,6 +538,8 @@ void fragment() {
 	_spin_glow.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	nav_root.add_child(_spin_glow)
 
+	# The one coral disc on the bar, ringed in brass and lifted above the glass.
+	# Nothing else in the nav is coral, so the eye lands here first every time.
 	_spin_nav = Button.new()
 	_spin_nav.size = Vector2(132, 132)
 	_spin_nav.position = Vector2(360 - 66, 0)
@@ -521,41 +548,37 @@ void fragment() {
 		var csb := StyleBoxFlat.new()
 		match state:
 			"hover":
-				csb.bg_color = Color(1.0, 0.78, 0.28)
+				csb.bg_color = Lagoon.CORAL_HI
 			"pressed":
-				csb.bg_color = Color(0.92, 0.62, 0.12)
+				csb.bg_color = Lagoon.CORAL.darkened(0.12)
 			_:
-				csb.bg_color = Color(1.0, 0.72, 0.18)
+				csb.bg_color = Lagoon.CORAL
 		csb.set_corner_radius_all(66)
-		csb.set_border_width_all(4)
-		csb.border_color = Color(1.0, 0.92, 0.6)
-		csb.shadow_size = 12
-		csb.shadow_color = Color(1.0, 0.6, 0.1, 0.4)
+		csb.set_border_width_all(6)
+		csb.border_color = Lagoon.BRASS
+		csb.shadow_size = 14
+		csb.shadow_color = Color(Lagoon.CORAL_LO.r, Lagoon.CORAL_LO.g, Lagoon.CORAL_LO.b, 0.45)
+		csb.shadow_offset = Vector2(0, 5)
 		_spin_nav.add_theme_stylebox_override(state, csb)
 	_spin_nav.pressed.connect(func() -> void: _goto(slot_page))
 	nav_root.add_child(_spin_nav)
+	Lagoon.button_gloss(_spin_nav, 66)
 
-	var spin_icon := Label.new()
-	spin_icon.text = "🎰"
-	spin_icon.add_theme_font_override("font", CV.emoji_font())
-	spin_icon.add_theme_font_size_override("font_size", 56)
-	spin_icon.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	spin_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var spin_icon := Glyph.new()
+	spin_icon.kind = "wheel"
+	spin_icon.tint = Lagoon.SAND
 	_spin_nav.add_child(spin_icon)
 	spin_icon.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	spin_icon.offset_left = 30.0
+	spin_icon.offset_right = -30.0
 	spin_icon.offset_top = 16.0
 	spin_icon.offset_bottom = 88.0
 
-	var spin_cap := Label.new()
-	spin_cap.text = "SPIN"
-	spin_cap.add_theme_font_size_override("font_size", 18)
-	spin_cap.add_theme_color_override("font_color", Color(0.35, 0.18, 0.02))
-	spin_cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	spin_cap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var spin_cap := Lagoon.title("SPIN", UI.F_LABEL, Lagoon.SAND, Lagoon.CORAL_LO)
 	_spin_nav.add_child(spin_cap)
 	spin_cap.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-	spin_cap.offset_top = -44.0
-	spin_cap.offset_bottom = -16.0
+	spin_cap.offset_top = -52.0
+	spin_cap.offset_bottom = -10.0
 
 	_build_float_options()
 
@@ -575,33 +598,42 @@ func _build_float_options() -> void:
 	add_child(layer)
 	layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
+	# Small, quiet and out of the wordmark's way: settings is the one control on
+	# the page nobody is meant to be drawn to.
 	_float_options = Button.new()
-	_float_options.size = Vector2(76, 76)
-	_float_options.position = Vector2(720 - 16 - 76, 76)
+	_float_options.size = Vector2(66, 66)
+	_float_options.position = Vector2(720 - 14 - 66, 96)
 	_float_options.focus_mode = Control.FOCUS_NONE
 	for state in ["normal", "hover", "pressed"]:
 		var sb := StyleBoxFlat.new()
-		sb.bg_color = Color(0.12, 0.08, 0.15, 0.88) if state != "hover" else Color(0.2, 0.14, 0.24, 0.92)
-		sb.set_corner_radius_all(38)
+		sb.bg_color = Color(1, 1, 1, 0.80) if state != "hover" else Color(1, 1, 1, 0.95)
+		sb.set_corner_radius_all(33)
 		sb.set_border_width_all(3)
-		sb.border_color = Color(0.95, 0.75, 0.25)
-		sb.shadow_size = 8
-		sb.shadow_color = Color(0, 0, 0, 0.35)
+		sb.border_color = Lagoon.BRASS
+		sb.shadow_size = 6
+		sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.25)
+		sb.shadow_offset = Vector2(0, 3)
 		_float_options.add_theme_stylebox_override(state, sb)
-	_float_options.text = "⚙️"
-	_float_options.add_theme_font_override("font", CV.emoji_font())
-	_float_options.add_theme_font_size_override("font_size", 38)
 	_float_options.pressed.connect(func() -> void: _goto(pages["options"]))
 	FX.press_feedback(_float_options)
 	layer.add_child(_float_options)
+	var gear := Glyph.new()
+	gear.kind = "gear"
+	gear.tint = Lagoon.INK_SOFT
+	_float_options.add_child(gear)
+	gear.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for m in [["offset_left", 13.0], ["offset_right", -13.0], ["offset_top", 13.0], ["offset_bottom", -13.0]]:
+		gear.set(m[0], m[1])
 
 func _nav_badge(parent: Control, text := "!") -> Panel:
 	var badge := Panel.new()
 	var bsb := StyleBoxFlat.new()
-	bsb.bg_color = Color(0.92, 0.2, 0.25)
+	bsb.bg_color = Lagoon.REEF
 	bsb.set_corner_radius_all(15)
-	bsb.set_border_width_all(2)
+	bsb.set_border_width_all(3)
 	bsb.border_color = Color.WHITE
+	bsb.shadow_size = 5
+	bsb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.3)
 	badge.add_theme_stylebox_override("panel", bsb)
 	badge.visible = false
 	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -611,10 +643,7 @@ func _nav_badge(parent: Control, text := "!") -> Panel:
 	badge.offset_right = 44.0
 	badge.offset_top = 2.0
 	badge.offset_bottom = 32.0
-	var bang := Label.new()
-	bang.text = text
-	bang.add_theme_font_size_override("font_size", 18)
-	bang.add_theme_color_override("font_color", Color.WHITE)
+	var bang := Lagoon.label(text, UI.F_CAPTION, Color.WHITE, true)
 	bang.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	bang.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	badge.add_child(bang)
@@ -633,12 +662,14 @@ func _update_nav() -> void:
 	for key in _nav_tabs:
 		var tab: Dictionary = _nav_tabs[key]
 		var is_active: bool = key == active
-		var icon: Label = tab["icon"]
+		var icon: Control = tab["icon"]
 		icon.pivot_offset = icon.size * 0.5
-		var target := Vector2(1.28, 1.28) if is_active else Vector2.ONE
+		var target := Vector2(1.22, 1.22) if is_active else Vector2.ONE
 		icon.create_tween().tween_property(icon, "scale", target, 0.22).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-		icon.modulate = Color.WHITE if is_active else Color(0.72, 0.75, 0.88)
-		(tab["cap"] as Label).add_theme_color_override("font_color", Color(1.0, 0.82, 0.32) if is_active else Color(0.6, 0.64, 0.78))
+		# Inactive tabs wash out toward the glass rather than dimming to grey --
+		# on a light bar, "further away" reads better than "switched off".
+		icon.modulate = Color.WHITE if is_active else Color(1, 1, 1, 0.45)
+		(tab["cap"] as Label).add_theme_color_override("font_color", Lagoon.INK if is_active else Lagoon.INK_SOFT)
 		tab["pill"].visible = is_active
 	if _float_options != null:
 		_float_options.visible = active != "options"
@@ -657,10 +688,13 @@ func _build_slot_page() -> void:
 	add_child(slot_page)
 	slot_page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
-	_add_background(slot_page, "slot_room", Color(0.45, 0.12, 0.2), Color(0.25, 0.05, 0.12))
+	_add_slot_stage(slot_page)
 
 	# floating decorative symbols
-	var decor_ids := ["coin", "gem", "bag", "coin", "bolt", "gem", "coin"]
+	# Three, in the corners of the band beside the quick-action row. This used to
+	# be seven scattered anywhere, which put a stray gem on top of the legend and
+	# a coin behind the nav bar on a page that already has plenty to look at.
+	var decor_ids := ["coin", "gem", "coin"]
 	for i in decor_ids.size():
 		var t := CV.symbol_tex(decor_ids[i])
 		if t == null:
@@ -672,52 +706,55 @@ func _build_slot_page() -> void:
 		var s := randf_range(46, 86)
 		tr.size = Vector2(s, s)
 		tr.rotation = randf_range(-0.3, 0.3)
-		var y := randf_range(150, 330) if i % 2 == 0 else randf_range(830, 1090)
-		tr.position = Vector2(randf_range(20, 640), y)
-		tr.modulate = Color(1, 1, 1, randf_range(0.35, 0.6))
+		# The page is busy enough: decor lives only in the two thin bands the
+		# wordmark and the machine leave free, and stays faint.
+		tr.position = Vector2(
+			randf_range(6, 62) if i % 2 == 0 else randf_range(600, 664),
+			randf_range(196, 292))
+		tr.modulate = Color(1, 1, 1, randf_range(0.26, 0.40))
 		tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		slot_page.add_child(tr)
 		FX.float_bob(tr, randf_range(10, 24), randf_range(1.8, 3.4))
+		_slot_decor.append({"node": tr, "alpha": tr.modulate.a})
 
 	# glow behind slot machine
 	var glow := ColorRect.new()
 	var glow_shader := Shader.new()
 	glow_shader.code = """
 shader_type canvas_item;
+uniform vec3 glow_col = vec3(1.0, 0.85, 0.4);
 void fragment() {
 	float d = length(UV - 0.5);
 	float a = smoothstep(0.5, 0.05, d) * 0.35;
-	COLOR = vec4(1.0, 0.85, 0.4, a);
+	COLOR = vec4(glow_col, a);
 }
 """
 	var glow_mat := ShaderMaterial.new()
 	glow_mat.shader = glow_shader
 	glow.material = glow_mat
-	glow.size = Vector2(720, 700)
-	glow.position = Vector2(0, 240)
+	_slot_glow_mat = glow_mat
+	glow.size = Vector2(800, 700)
+	glow.position = Vector2(-40, 372)
 	glow.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	slot_page.add_child(glow)
 	FX.pulse_forever(glow, 1.05, 1.6)
 
-	# logo
-	var logo := Label.new()
-	logo.text = "LOOT  LAGOON"
-	logo.add_theme_font_size_override("font_size", 52)
-	logo.add_theme_color_override("font_color", Color(1.0, 0.84, 0.25))
-	logo.add_theme_color_override("font_outline_color", Color(0.35, 0.12, 0.05))
-	logo.add_theme_constant_override("outline_size", 14)
-	logo.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	logo.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# The wordmark: sand-coloured display type cut with a deep brass outline, so
+	# it reads as a carved sign rather than coloured text. Unlike the rest of
+	# the SPIN page it does *not* change per island -- the one thing that must
+	# look identical on all thirty is the game's own name.
+	var logo := Lagoon.wordmark("LOOT  LAGOON", 62)
 	slot_page.add_child(logo)
 	logo.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	logo.offset_top = 88.0
-	logo.offset_bottom = 160.0
-	FX.pulse_forever(logo, 1.04, 2.2)
+	logo.offset_top = 92.0
+	logo.offset_bottom = 172.0
+	FX.pulse_forever(logo, 1.03, 2.4)
+	_slot_logo = logo
 
 	slot = SlotView.new()
 	slot_page.add_child(slot)
-	slot.position = Vector2(30, 320)
-	slot.size = Vector2(660, 505)
+	slot.position = Vector2(0, 316)
+	slot.size = Vector2(720, 812)
 	slot.spin_requested.connect(_on_spin_requested)
 	slot.spin_finished.connect(_on_spin_finished)
 	slot.auto_toggled.connect(func(on: bool) -> void:
@@ -726,110 +763,176 @@ void fragment() {
 			_schedule_auto_spin(0.25)
 	)
 
-	# symbol legend
-	var legend := HBoxContainer.new()
-	legend.alignment = BoxContainer.ALIGNMENT_CENTER
-	legend.add_theme_constant_override("separation", 18)
-	slot_page.add_child(legend)
-	legend.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	legend.offset_top = 850.0
-	legend.offset_bottom = 950.0
-	for pair in [["steal", "Steal"], ["hammer", "Attack"], ["shield", "Shield"], ["bolt", "Spins"]]:
-		var box := VBoxContainer.new()
-		box.alignment = BoxContainer.ALIGNMENT_CENTER
-		legend.add_child(box)
-		var t := CV.symbol_tex(pair[0])
-		if t != null:
-			var tr := TextureRect.new()
-			tr.texture = t
-			tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-			tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-			tr.custom_minimum_size = Vector2(56, 56)
-			box.add_child(tr)
-		else:
-			var e := _emoji_label(CV.SYMBOL_EMOJI[pair[0]], 34)
-			e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-			box.add_child(e)
-		var cap := Label.new()
-		cap.text = "x3 = " + pair[1]
-		cap.add_theme_font_size_override("font_size", 14)
-		cap.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
-		cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		box.add_child(cap)
+	_pick_next_target()
 
 	_add_topbar(slot_page)
 	_add_side_buttons(slot_page)
 
+# The SPIN page backdrop. Instead of one fixed slot-room painting, it layers
+# the island's own artwork -- blurred, dimmed and tinted so it reads as a lit
+# room rather than a competing illustration -- under colored light rays and a
+# floor gradient. Every island therefore has its own spin room.
+func _add_slot_stage(page: Control) -> void:
+	var bg := TextureRect.new()
+	bg.texture = CV.island_bg_tex(island_level)
+	bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	bg.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var bg_sh := Shader.new()
+	bg_sh.code = """
+shader_type canvas_item;
+
+uniform vec3 haze = vec3(0.72, 0.92, 0.96);
+uniform float haze_amt = 0.52;
+uniform float lift = 1.10;
+uniform float blur_px = 3.2;
+
+void fragment() {
+	// cheap 9-tap gaussian: enough to push the island art out of focus so the
+	// cabinet in front of it stays the sharpest thing on screen
+	vec2 s = TEXTURE_PIXEL_SIZE * blur_px;
+	vec4 c = texture(TEXTURE, UV) * 0.196;
+	c += (texture(TEXTURE, UV + vec2(s.x, 0.0)) + texture(TEXTURE, UV - vec2(s.x, 0.0))
+	   +  texture(TEXTURE, UV + vec2(0.0, s.y)) + texture(TEXTURE, UV - vec2(0.0, s.y))) * 0.118;
+	c += (texture(TEXTURE, UV + s) + texture(TEXTURE, UV - s)
+	   +  texture(TEXTURE, UV + vec2(s.x, -s.y)) + texture(TEXTURE, UV + vec2(-s.x, s.y))) * 0.083;
+	// Aerial perspective, not a dimmer: the island art is washed toward the
+	// island's own sky colour and lifted, so the machine has something bright
+	// to sit against. The page reads as noon on the water rather than a
+	// darkened arcade -- and the blur still keeps the cabinet the sharpest
+	// thing on screen.
+	vec3 rgb = mix(c.rgb * lift, haze, haze_amt);
+	// distance haze: clearest around the cabinet, mistiest at the edges
+	vec2 v = (UV - vec2(0.5, 0.42)) * vec2(1.15, 1.0);
+	rgb = mix(rgb, haze, smoothstep(0.22, 0.98, length(v)) * 0.45);
+	COLOR = vec4(rgb, 1.0);
+}
+"""
+	_slot_bg_mat = ShaderMaterial.new()
+	_slot_bg_mat.shader = bg_sh
+	bg.material = _slot_bg_mat
+	page.add_child(bg)
+	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_slot_bg = bg
+
+	var rays := ColorRect.new()
+	var rays_sh := Shader.new()
+	rays_sh.code = """
+shader_type canvas_item;
+
+uniform vec3 ray_col = vec3(1.0, 0.82, 0.40);
+
+void fragment() {
+	// fan of soft beams from a point just above the top edge, drifting slowly
+	vec2 p = UV - vec2(0.5, -0.15);
+	float ang = atan(p.x, p.y);
+	float rays = pow(0.5 + 0.5 * sin(ang * 24.0 + TIME * 0.22), 3.5);
+	float fall = smoothstep(1.15, 0.08, length(p));
+	COLOR = vec4(ray_col, rays * fall * smoothstep(1.0, 0.12, UV.y) * 0.24);
+}
+"""
+	_slot_rays_mat = ShaderMaterial.new()
+	_slot_rays_mat.shader = rays_sh
+	rays.material = _slot_rays_mat
+	rays.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	page.add_child(rays)
+	rays.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	var floor_rect := ColorRect.new()
+	var floor_sh := Shader.new()
+	floor_sh.code = """
+shader_type canvas_item;
+
+uniform vec3 floor_col = vec3(0.55, 0.87, 0.90);
+
+void fragment() {
+	// Shallow water washing up to the nav bar. It grounds the bottom of the
+	// page the way the old dark floor did, but by getting brighter toward the
+	// edge instead of darker -- foam, not shadow.
+	float t = smoothstep(0.50, 1.0, UV.y);
+	COLOR = vec4(floor_col, t * 0.80);
+}
+"""
+	_slot_floor_mat = ShaderMaterial.new()
+	_slot_floor_mat.shader = floor_sh
+	floor_rect.material = _slot_floor_mat
+	floor_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	page.add_child(floor_rect)
+	floor_rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
 # --- side menu buttons ---
 
+# Daily / Alerts / Ranks as a row of brass-ringed glass discs in the band
+# between the wordmark and the machine.
+#
+# These used to be two vertical columns pinned to the page edges, which only
+# works if the machine is narrower than the screen -- ours is 660 of 720 wide,
+# so the Alerts button sat on top of the cabinet's marquee. A centred row owns
+# a horizontal band nothing else is using and can never collide with the stage.
 func _add_side_buttons(page: Control) -> void:
-	var left := VBoxContainer.new()
-	left.add_theme_constant_override("separation", 14)
-	page.add_child(left)
-	left.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
-	left.position = Vector2(14, 170)
-	_side_button(left, "🎁", "Daily", "daily", _open_daily)
-	_side_button(left, "🔔", "Alerts", "alerts", _open_alerts)
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 30)
+	page.add_child(row)
+	row.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	row.offset_top = 184.0
+	row.offset_bottom = 306.0
+	_side_button(row, "gift", "Daily", "daily", _open_daily)
+	_side_button(row, "bell", "Alerts", "alerts", _open_alerts)
+	_side_button(row, "trophy", "Ranks", "ranks", _open_ranks)
 
-	var right := VBoxContainer.new()
-	right.add_theme_constant_override("separation", 14)
-	page.add_child(right)
-	right.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
-	right.position = Vector2(720 - 14 - 84, 170)
-	_side_button(right, "🏆", "Ranks", "ranks", _open_ranks)
-
-func _side_button(container: VBoxContainer, emoji: String, caption: String, badge_key: String, action: Callable) -> void:
+func _side_button(container: BoxContainer, icon_kind: String, caption: String, badge_key: String, action: Callable) -> void:
 	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 2)
+	box.add_theme_constant_override("separation", 1)
+	box.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	container.add_child(box)
 
 	var btn := Button.new()
-	btn.custom_minimum_size = Vector2(84, 84)
+	btn.custom_minimum_size = Vector2(UI.TAP_COMFY, UI.TAP_COMFY)
+	btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	btn.focus_mode = Control.FOCUS_NONE
 	for state in ["normal", "hover", "pressed"]:
 		var sb := StyleBoxFlat.new()
-		sb.bg_color = Color(0.12, 0.08, 0.15, 0.88) if state != "hover" else Color(0.2, 0.14, 0.24, 0.92)
-		sb.set_corner_radius_all(42)
-		sb.set_border_width_all(3)
-		sb.border_color = Color(0.95, 0.75, 0.25)
-		sb.shadow_size = 5
-		sb.shadow_color = Color(0, 0, 0, 0.3)
+		sb.bg_color = Color(1, 1, 1, 0.92) if state != "hover" else Color(1, 1, 1, 1.0)
+		sb.set_corner_radius_all(UI.TAP_COMFY / 2)
+		sb.set_border_width_all(4)
+		sb.border_color = Lagoon.BRASS
+		sb.shadow_size = 8
+		sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.30)
+		sb.shadow_offset = Vector2(0, 4)
 		btn.add_theme_stylebox_override(state, sb)
-	btn.text = emoji
-	btn.add_theme_font_override("font", CV.emoji_font())
-	btn.add_theme_font_size_override("font_size", 38)
 	btn.pressed.connect(action)
 	FX.press_feedback(btn)
 	box.add_child(btn)
+	Lagoon.add_gloss(btn, UI.TAP_COMFY / 2)
+
+	var icon := Glyph.new()
+	icon.kind = icon_kind
+	btn.add_child(icon)
+	icon.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for m in [["offset_left", 16.0], ["offset_right", -16.0], ["offset_top", 16.0], ["offset_bottom", -16.0]]:
+		icon.set(m[0], m[1])
 
 	var badge := Panel.new()
 	var bsb := StyleBoxFlat.new()
-	bsb.bg_color = Color(0.92, 0.2, 0.25)
-	bsb.set_corner_radius_all(13)
-	bsb.set_border_width_all(2)
+	bsb.bg_color = Lagoon.REEF
+	bsb.set_corner_radius_all(17)
+	bsb.set_border_width_all(3)
 	bsb.border_color = Color.WHITE
 	badge.add_theme_stylebox_override("panel", bsb)
-	badge.size = Vector2(26, 26)
-	badge.position = Vector2(62, -4)
+	badge.size = Vector2(34, 34)
+	badge.position = Vector2(UI.TAP_COMFY - 28, -6)
 	badge.visible = false
 	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	btn.add_child(badge)
-	var bang := Label.new()
-	bang.text = "!"
-	bang.add_theme_font_size_override("font_size", 16)
-	bang.add_theme_color_override("font_color", Color.WHITE)
+	var bang := Lagoon.label("!", UI.F_CAPTION, Color.WHITE, true)
 	bang.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	bang.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	badge.add_child(bang)
 	bang.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_badges[badge_key] = badge
 
-	var cap := Label.new()
-	cap.text = caption
-	cap.add_theme_font_size_override("font_size", 13)
-	cap.add_theme_color_override("font_color", Color(1, 1, 1, 0.9))
-	cap.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.7))
-	cap.add_theme_constant_override("outline_size", 5)
-	cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var cap := Lagoon.title(caption, UI.F_CAPTION, Color.WHITE, Lagoon.ABYSS)
 	box.add_child(cap)
 
 func _update_badges() -> void:
@@ -963,8 +1066,11 @@ func _open_popup(title: String) -> VBoxContainer:
 	add_child(_popup)
 	_popup.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
+	# Deep water rather than black: the page behind stays readable as a place
+	# you're still standing in, which is the difference between a dialog and a
+	# modal that swallows the game.
 	var dim := ColorRect.new()
-	dim.color = Color(0, 0, 0, 0.6)
+	dim.color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.55)
 	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_popup.add_child(dim)
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -973,42 +1079,61 @@ func _open_popup(title: String) -> VBoxContainer:
 	_popup.add_child(center)
 	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
+	# Negative separation hangs the brass nameplate over the lip of the glass,
+	# so a modal reads as a labelled object instead of a box with a heading.
+	var holder := VBoxContainer.new()
+	holder.add_theme_constant_override("separation", -26)
+	center.add_child(holder)
+
+	var plate_row := CenterContainer.new()
+	holder.add_child(plate_row)
+	var plate := Lagoon.plaque(title, 0.0, 76.0, UI.F_SUBHEAD)
+	plate.z_index = 1
+	plate_row.add_child(plate)
+
 	var panel := PanelContainer.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.14, 0.09, 0.18, 0.98)
-	sb.set_corner_radius_all(24)
-	sb.set_border_width_all(4)
-	sb.border_color = Color(0.95, 0.75, 0.25)
-	sb.shadow_size = 14
-	sb.shadow_color = Color(0, 0, 0, 0.4)
-	panel.add_theme_stylebox_override("panel", sb)
+	panel.add_theme_stylebox_override("panel", Lagoon.glass(Lagoon.R_PANEL, 0.96))
 	panel.custom_minimum_size = Vector2(580, 0)
-	center.add_child(panel)
-	FX.pop_in(panel, 0.32)
+	holder.add_child(panel)
+	FX.pop_in(holder, 0.32)
 
 	var margin := MarginContainer.new()
-	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
-		margin.add_theme_constant_override(m, 22)
+	margin.add_theme_constant_override("margin_left", 24)
+	margin.add_theme_constant_override("margin_right", 24)
+	margin.add_theme_constant_override("margin_top", 44)  # clears the nameplate
+	margin.add_theme_constant_override("margin_bottom", 24)
 	panel.add_child(margin)
 
 	var vbox := VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 14)
 	margin.add_child(vbox)
+	Lagoon.add_gloss(panel, Lagoon.R_PANEL)
 
-	var header := HBoxContainer.new()
-	vbox.add_child(header)
-	var tl := Label.new()
-	tl.text = title
-	tl.add_theme_font_size_override("font_size", 28)
-	tl.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
-	tl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	header.add_child(tl)
+	# Close sits on the corner of the glass, not in the content flow, so it
+	# never competes for space with what the modal is actually about.
+	#
+	# It is parented to the popup layer rather than to the panel: PanelContainer
+	# stretches every child to fill its rect, so a button added there ignores
+	# its anchors and swallows the whole modal. Instead it tracks the panel's
+	# corner whenever the panel is laid out.
 	var x := Button.new()
-	x.text = "✕"
-	x.custom_minimum_size = Vector2(46, 46)
-	_candy_button(x, Color(0.75, 0.3, 0.3))
+	x.size = Vector2(72, 72)
+	Lagoon.button(x, "danger", 36)
 	x.pressed.connect(func() -> void: _close_popup())
-	header.add_child(x)
+	_popup.add_child(x)
+	x.z_index = 2
+	var place_close := func() -> void:
+		x.position = panel.global_position + Vector2(panel.size.x - 40.0, -32.0)
+	panel.resized.connect(place_close)
+	panel.item_rect_changed.connect(place_close)
+	place_close.call_deferred()
+
+	var xg := Glyph.new()
+	xg.kind = "close"
+	x.add_child(xg)
+	xg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for m in [["offset_left", 20.0], ["offset_right", -20.0], ["offset_top", 20.0], ["offset_bottom", -24.0]]:
+		xg.set(m[0], m[1])
 
 	Sfx.play("pop", -8.0)
 	return vbox
@@ -1025,11 +1150,14 @@ func _close_popup(instant := false) -> void:
 	tw.tween_property(p, "modulate:a", 0.0, 0.16)
 	tw.tween_callback(p.queue_free)
 
-func _popup_row_label(text: String, size := 19) -> Label:
-	var l := Label.new()
-	l.text = text
-	l.add_theme_font_size_override("font_size", size)
-	l.add_theme_color_override("font_color", Color.WHITE)
+func _popup_row_label(text: String, size := UI.F_LABEL) -> Label:
+	return Lagoon.label(text, size, Lagoon.INK)
+
+# For copy that sits on the page itself rather than inside a card. Ink reads on
+# glass and vanishes on water, so anything floating gets outlined white.
+func _page_note(text: String, size := UI.F_CAPTION) -> Label:
+	var l := Lagoon.title(text, size, Color.WHITE, Lagoon.ABYSS)
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	return l
 
 func _open_daily() -> void:
@@ -1044,7 +1172,7 @@ func _open_daily() -> void:
 		vbox.add_child(info)
 		var claim := Button.new()
 		claim.text = "CLAIM  +800 coins, +5 spins"
-		claim.custom_minimum_size = Vector2(0, 58)
+		claim.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
 		_candy_button(claim, Color(0.45, 0.75, 0.35))
 		FX.press_feedback(claim)
 		claim.pressed.connect(func() -> void:
@@ -1125,7 +1253,7 @@ func _show_toast(text: String, emoji := "🔔") -> void:
 		_toast.queue_free()
 	var panel := PanelContainer.new()
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.1, 0.08, 0.16, 0.96)
+	sb.bg_color = Color(Lagoon.SHELL.r, Lagoon.SHELL.g, Lagoon.SHELL.b, 0.96)
 	sb.set_corner_radius_all(18)
 	sb.set_border_width_all(2)
 	sb.border_color = Color(0.95, 0.75, 0.25)
@@ -1136,7 +1264,7 @@ func _show_toast(text: String, emoji := "🔔") -> void:
 	sb.content_margin_top = 12.0
 	sb.content_margin_bottom = 12.0
 	panel.add_theme_stylebox_override("panel", sb)
-	panel.custom_minimum_size = Vector2(672, 62)
+	panel.custom_minimum_size = Vector2(672, 92)
 	panel.position = Vector2(24, -90)
 	panel.z_index = 130
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1146,15 +1274,15 @@ func _show_toast(text: String, emoji := "🔔") -> void:
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", 12)
 	panel.add_child(hb)
-	hb.add_child(_emoji_label(emoji, 26))
+	hb.add_child(_emoji_label(emoji, UI.F_SUBHEAD))
 	var lbl := Label.new()
 	lbl.text = text
-	lbl.add_theme_font_size_override("font_size", 19)
-	lbl.add_theme_color_override("font_color", Color.WHITE)
+	lbl.add_theme_font_size_override("font_size", UI.F_LABEL)
+	lbl.add_theme_color_override("font_color", Lagoon.INK)
 	lbl.clip_text = true
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hb.add_child(lbl)
-	hb.add_child(_emoji_label("🔔", 20))
+	hb.add_child(_emoji_label("🔔", UI.F_LABEL))
 
 	Sfx.play("pop", -12.0)
 	var tw := create_tween()
@@ -1176,9 +1304,9 @@ func _time_ago(ts: float) -> String:
 func _open_alerts() -> void:
 	var vbox := _open_popup("Notifications")
 	if notif_log.is_empty():
-		var empty := _popup_row_label("No notifications yet — you're all caught up!", 17)
+		var empty := _popup_row_label("No notifications yet — you're all caught up!", UI.F_CAPTION)
 		empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		empty.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
+		empty.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 		vbox.add_child(empty)
 	else:
 		var sc := ScrollContainer.new()
@@ -1193,10 +1321,10 @@ func _open_alerts() -> void:
 			var unread: bool = not bool(entry.get("read", true))
 			var card := PanelContainer.new()
 			var sb := StyleBoxFlat.new()
-			sb.bg_color = Color(0.2, 0.15, 0.1, 0.95) if unread else Color(0.08, 0.06, 0.13, 0.9)
+			sb.bg_color = Color(1, 1, 1, 0.95) if unread else Color(1, 1, 1, 0.62)
 			sb.set_corner_radius_all(14)
 			sb.set_border_width_all(2)
-			sb.border_color = Color(1.0, 0.8, 0.3) if unread else Color(1, 1, 1, 0.07)
+			sb.border_color = Lagoon.BRASS if unread else Color(Lagoon.INK_FAINT.r, Lagoon.INK_FAINT.g, Lagoon.INK_FAINT.b, 0.3)
 			sb.content_margin_left = 12.0
 			sb.content_margin_right = 12.0
 			sb.content_margin_top = 8.0
@@ -1213,14 +1341,14 @@ func _open_alerts() -> void:
 			row.add_child(col)
 			var txt := Label.new()
 			txt.text = str(entry.get("text", ""))
-			txt.add_theme_font_size_override("font_size", 16)
-			txt.add_theme_color_override("font_color", Color.WHITE if unread else Color(1, 1, 1, 0.75))
+			txt.add_theme_font_size_override("font_size", UI.F_CAPTION)
+			txt.add_theme_color_override("font_color", Lagoon.INK if unread else Lagoon.INK_SOFT)
 			txt.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			col.add_child(txt)
 			var when := Label.new()
 			when.text = _time_ago(float(entry.get("ts", 0.0)))
-			when.add_theme_font_size_override("font_size", 13)
-			when.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
+			when.add_theme_font_size_override("font_size", UI.F_TINY)
+			when.add_theme_color_override("font_color", Lagoon.INK_FAINT)
 			col.add_child(when)
 		for entry in notif_log:
 			entry["read"] = true
@@ -1233,7 +1361,7 @@ func _open_alerts() -> void:
 	if not notif_log.is_empty():
 		var clear := Button.new()
 		clear.text = "Clear all"
-		clear.custom_minimum_size = Vector2(0, 50)
+		clear.custom_minimum_size = Vector2(0, UI.TAP)
 		clear.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		_candy_button(clear, Color(0.75, 0.3, 0.3))
 		FX.press_feedback(clear)
@@ -1246,7 +1374,7 @@ func _open_alerts() -> void:
 		btn_row.add_child(clear)
 	var settings := Button.new()
 	settings.text = "Settings"
-	settings.custom_minimum_size = Vector2(0, 50)
+	settings.custom_minimum_size = Vector2(0, UI.TAP)
 	settings.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_candy_button(settings, Color(0.55, 0.45, 0.65))
 	FX.press_feedback(settings)
@@ -1259,31 +1387,46 @@ func _open_alerts() -> void:
 # --- full menu pages (shop / collections / quests / options) ---
 
 func _build_menu_pages() -> void:
-	_make_page("shop", "Shop", Color(0.2, 0.1, 0.24), Color(0.1, 0.05, 0.14))
-	_make_page("collections", "Collections", Color(0.09, 0.13, 0.26), Color(0.05, 0.06, 0.15))
-	_make_page("quests", "Quests", Color(0.08, 0.18, 0.16), Color(0.04, 0.09, 0.1))
-	_make_page("options", "Options", Color(0.16, 0.14, 0.2), Color(0.08, 0.07, 0.12))
+	for spec in [["shop", "Shop"], ["collections", "Cards"], ["quests", "Quests"], ["options", "Options"]]:
+		_make_page(spec[0], spec[1])
+	# Parented to the page rather than the scrolling body, so it stays put when
+	# a long set is scrolled -- a back button you have to scroll up to find is
+	# a back button the player uses the system gesture instead of.
+	_col_back = Button.new()
+	_col_back.custom_minimum_size = Vector2(158, 64)
+	_col_back.size = Vector2(158, 64)
+	_col_back.focus_mode = Control.FOCUS_NONE
+	_col_back.text = "\u25C0   BACK"
+	_col_back.add_theme_font_size_override("font_size", UI.F_LABEL)
+	Lagoon.button(_col_back, "brass", 32)
+	FX.press_feedback(_col_back)
+	_col_back.visible = false
+	_col_back.pressed.connect(func() -> void:
+		col_open = ""
+		_fill_page("collections")
+	)
+	pages["collections"].add_child(_col_back)
+	_col_back.position = Vector2(16, 115)
 
-func _make_page(key: String, title: String, top_col: Color, bottom_col: Color) -> void:
+func _make_page(key: String, title: String) -> void:
 	var page := Control.new()
 	add_child(page)
 	page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	page.visible = false
 
-	_add_background(page, "", top_col, bottom_col)
+	# Every page stands on the same water. The menu screens used to each have
+	# their own dark gradient, which made them feel like four different apps.
+	var mat := Lagoon.backdrop(page)
+	Lagoon.tint_backdrop(mat, CV.island_palette(island_level))
+	_page_backdrops.append(mat)
 
-	var tl := Label.new()
-	tl.text = title
-	tl.add_theme_font_size_override("font_size", 40)
-	tl.add_theme_color_override("font_color", Color(1.0, 0.84, 0.25))
-	tl.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.6))
-	tl.add_theme_constant_override("outline_size", 10)
-	tl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	tl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	page.add_child(tl)
-	tl.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	tl.offset_top = 84.0
-	tl.offset_bottom = 140.0
+	var plate := Lagoon.plaque(title.to_upper(), 0.0, 86.0, UI.F_TITLE)
+	page.add_child(plate)
+	plate.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	plate.offset_left = -plate.custom_minimum_size.x * 0.5
+	plate.offset_right = plate.custom_minimum_size.x * 0.5
+	plate.offset_top = 104.0
+	plate.offset_bottom = 104.0 + 86.0
 
 	var sc := ScrollContainer.new()
 	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -1291,7 +1434,7 @@ func _make_page(key: String, title: String, top_col: Color, bottom_col: Color) -
 	sc.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	sc.offset_left = 16.0
 	sc.offset_right = -16.0
-	sc.offset_top = 152.0
+	sc.offset_top = 208.0
 	sc.offset_bottom = -(NAV_ROOT_H + 6.0)
 
 	var vb := VBoxContainer.new()
@@ -1314,22 +1457,23 @@ func _fill_page(key: String) -> void:
 		"options": _fill_options(vb)
 
 func _page_card(vb: VBoxContainer) -> VBoxContainer:
+	return Lagoon.card(vb, Lagoon.R_CARD, 16)
+
+# Sea glass with a coloured rim. Rarity, tier and set difficulty are all "this
+# card is worth more" signals, and they now all say it the same way: the glass
+# stays glass and only the metal around it changes, instead of each card type
+# inventing its own dark fill.
+func _tinted_card(parent: Node, tint: Color, strong := false, radius := Lagoon.R_CARD) -> PanelContainer:
 	var panel := PanelContainer.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.1, 0.08, 0.16, 0.92)
-	sb.set_corner_radius_all(20)
-	sb.set_border_width_all(2)
-	sb.border_color = Color(1, 1, 1, 0.08)
+	var sb := Lagoon.glass(radius, 0.93)
+	sb.bg_color = Color(1, 1, 1, 0.93).lerp(Color(tint.r, tint.g, tint.b, 0.93), 0.10)
+	sb.set_border_width_all(4 if strong else 3)
+	sb.border_color = tint
+	sb.shadow_color = Color(tint.r, tint.g, tint.b, 0.30 if strong else 0.20)
 	panel.add_theme_stylebox_override("panel", sb)
-	vb.add_child(panel)
-	var margin := MarginContainer.new()
-	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
-		margin.add_theme_constant_override(m, 16)
-	panel.add_child(margin)
-	var inner := VBoxContainer.new()
-	inner.add_theme_constant_override("separation", 10)
-	margin.add_child(inner)
-	return inner
+	parent.add_child(panel)
+	Lagoon.add_gloss(panel, radius)
+	return panel
 
 func _fill_shop(vb: VBoxContainer) -> void:
 	_shop_gift_timer_label = null
@@ -1344,11 +1488,7 @@ func _fill_shop(vb: VBoxContainer) -> void:
 	vb.add_child(chest_row)
 	for pack in CV.CHEST_PACKS:
 		_chest_card(chest_row, pack)
-	var hint := _popup_row_label("Pricier chests hold more cards and better odds for ★★★★★ legendaries", 13)
-	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.add_theme_color_override("font_color", Color(0.78, 0.62, 1.0, 0.85))
-	vb.add_child(hint)
+	vb.add_child(_page_note("Pricier chests hold more cards and better odds for ★★★★★ legendaries", UI.F_TINY))
 
 	_shop_section(vb, "🎰", "SPIN  PACKS")
 	var sgrid := GridContainer.new()
@@ -1371,58 +1511,32 @@ func _fill_shop(vb: VBoxContainer) -> void:
 	_shop_section(vb, "🎁", "FREE  GIFT")
 	_free_gift_card(vb)
 
-	var note := _popup_row_label("Prototype store — purchases are simulated, no real charges.", 12)
-	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	note.add_theme_color_override("font_color", Color(1, 1, 1, 0.35))
-	vb.add_child(note)
+	vb.add_child(_page_note("Prototype store — purchases are simulated, no real charges.", UI.F_TINY))
 
-# decorated section header:  ───  🗝️ TITLE  ───
-func _shop_section(vb: VBoxContainer, emoji: String, title: String) -> void:
+# Section head:  ───  [ TITLE on brass ]  ───
+#
+# The same nameplate the page title and the machine's marquee use, one size
+# down. Gold text floating on the page needed a heavy outline to survive the
+# backdrop; on brass it needs none, and the reader gets a shape they have
+# already learned to read as "heading".
+func _shop_section(vb: VBoxContainer, _emoji: String, title: String) -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 12)
 	vb.add_child(row)
 	row.add_child(_section_line())
-	row.add_child(_emoji_label(emoji, 22))
-	var t := Label.new()
-	t.text = title
-	t.add_theme_font_size_override("font_size", 21)
-	t.add_theme_color_override("font_color", Color(1.0, 0.84, 0.35))
-	t.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.6))
-	t.add_theme_constant_override("outline_size", 6)
-	row.add_child(t)
+	var plate := Lagoon.plaque(title, 0.0, 54.0, UI.F_LABEL, false)
+	plate.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(plate)
 	row.add_child(_section_line())
 
 func _section_line() -> Panel:
-	var p := Panel.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(1.0, 0.84, 0.35, 0.25)
-	sb.set_corner_radius_all(2)
-	p.add_theme_stylebox_override("panel", sb)
-	p.custom_minimum_size = Vector2(10, 3)
-	p.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	p.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	return p
+	return Lagoon.divider()
 
-func _tag_chip(text: String, color: Color, font_size := 12) -> PanelContainer:
-	var chip := PanelContainer.new()
-	var csb := StyleBoxFlat.new()
-	csb.bg_color = color
-	csb.set_corner_radius_all(11)
-	csb.content_margin_left = 10.0
-	csb.content_margin_right = 10.0
-	csb.content_margin_top = 2.0
-	csb.content_margin_bottom = 2.0
-	chip.add_theme_stylebox_override("panel", csb)
-	chip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	var cl := Label.new()
-	cl.text = text
-	cl.add_theme_font_size_override("font_size", font_size)
-	cl.add_theme_color_override("font_color", Color.WHITE)
-	chip.add_child(cl)
-	return chip
+func _tag_chip(text: String, color: Color, font_size := UI.F_TINY) -> PanelContainer:
+	return Lagoon.chip(text, color, font_size)
 
 # row of 5 stars, `lit` of them colored by rarity, the rest dim
-func _star_row(lit: int, size := 14) -> HBoxContainer:
+func _star_row(lit: int, size := UI.F_CAPTION) -> HBoxContainer:
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 1)
@@ -1431,7 +1545,7 @@ func _star_row(lit: int, size := 14) -> HBoxContainer:
 		var s := Label.new()
 		s.text = "★"
 		s.add_theme_font_size_override("font_size", size)
-		s.add_theme_color_override("font_color", col if i < lit else Color(1, 1, 1, 0.16))
+		s.add_theme_color_override("font_color", col if i < lit else Color(Lagoon.INK_FAINT.r, Lagoon.INK_FAINT.g, Lagoon.INK_FAINT.b, 0.35))
 		row.add_child(s)
 	return row
 
@@ -1482,17 +1596,8 @@ void fragment() {
 
 func _shop_hero_offer(vb: VBoxContainer) -> void:
 	var pack: Dictionary = CV.STARTER_PACK
-	var panel := PanelContainer.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.22, 0.11, 0.05, 0.97)
-	sb.set_corner_radius_all(22)
-	sb.set_border_width_all(3)
-	sb.border_color = Color(1.0, 0.8, 0.3)
-	sb.shadow_size = 10
-	sb.shadow_color = Color(1.0, 0.7, 0.2, 0.25)
-	panel.add_theme_stylebox_override("panel", sb)
-	vb.add_child(panel)
-	panel.add_child(_shine_overlay(Color(1.0, 0.9, 0.6)))
+	var panel := _tinted_card(vb, Lagoon.BRASS, true)
+	panel.add_child(_shine_overlay(Lagoon.BRASS_HI))
 
 	var margin := MarginContainer.new()
 	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
@@ -1522,23 +1627,21 @@ func _shop_hero_offer(vb: VBoxContainer) -> void:
 	var name_row := HBoxContainer.new()
 	name_row.add_theme_constant_override("separation", 10)
 	col.add_child(name_row)
-	var nm := _popup_row_label(pack["name"], 23)
-	nm.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	var nm := Lagoon.label(pack["name"], UI.F_BODY, Lagoon.INK, true)
 	name_row.add_child(nm)
-	name_row.add_child(_tag_chip(pack["tag"], Color(0.88, 0.28, 0.38)))
-	var sub := _popup_row_label(pack["sub"], 14)
-	sub.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
+	name_row.add_child(_tag_chip(pack["tag"], Lagoon.REEF))
+	var sub := _popup_row_label(pack["sub"], UI.F_CAPTION)
+	sub.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(sub)
-	var once := _popup_row_label("One time only!", 12)
-	once.add_theme_color_override("font_color", Color(1.0, 0.8, 0.3, 0.8))
+	var once := Lagoon.label("One time only!", UI.F_TINY, Lagoon.CORAL_LO, true)
 	col.add_child(once)
 
 	var buy := Button.new()
 	buy.text = pack["price"]
-	buy.custom_minimum_size = Vector2(126, 56)
+	buy.custom_minimum_size = Vector2(140, UI.TAP)
 	buy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	buy.add_theme_font_size_override("font_size", 21)
+	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
 	_candy_button(buy, Color(0.28, 0.68, 0.34))
 	FX.press_feedback(buy)
 	buy.pressed.connect(_confirm_purchase.bind(pack))
@@ -1563,19 +1666,10 @@ func _chest_art(pack: Dictionary, emoji_size := 54) -> Control:
 func _chest_card(row: HBoxContainer, pack: Dictionary) -> void:
 	var cc: Color = pack["color"]
 	var guaranteed: bool = pack.get("guarantee5", false)
-	var panel := PanelContainer.new()
+	var panel := _tinted_card(row, cc, guaranteed)
 	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.09, 0.07, 0.14, 0.96).lerp(Color(cc.r, cc.g, cc.b, 0.96), 0.13)
-	sb.set_corner_radius_all(20)
-	sb.set_border_width_all(3 if guaranteed else 2)
-	sb.border_color = Color(cc.r, cc.g, cc.b, 0.85)
-	sb.shadow_size = 8
-	sb.shadow_color = Color(cc.r, cc.g, cc.b, 0.22)
-	panel.add_theme_stylebox_override("panel", sb)
-	row.add_child(panel)
 	if guaranteed:
-		panel.add_child(_shine_overlay(Color(0.9, 0.75, 1.0)))
+		panel.add_child(_shine_overlay(Lagoon.URCHIN.lightened(0.5)))
 
 	var margin := MarginContainer.new()
 	margin.add_theme_constant_override("margin_left", 8)
@@ -1590,7 +1684,7 @@ func _chest_card(row: HBoxContainer, pack: Dictionary) -> void:
 	margin.add_child(col)
 
 	var tag_wrap := CenterContainer.new()
-	tag_wrap.custom_minimum_size = Vector2(0, 26)
+	tag_wrap.custom_minimum_size = Vector2(0, 36)
 	col.add_child(tag_wrap)
 	tag_wrap.add_child(_tag_chip(pack["tag"], pack["tag_color"], 11))
 
@@ -1604,7 +1698,7 @@ func _chest_card(row: HBoxContainer, pack: Dictionary) -> void:
 	e.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	FX.pulse_forever(e, 1.04, 1.8 if guaranteed else 2.6)
 	if guaranteed:
-		var spark := _emoji_label("✨", 20)
+		var spark := _emoji_label("✨", UI.F_LABEL)
 		art.add_child(spark)
 		spark.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 		spark.offset_left = 22.0
@@ -1613,12 +1707,7 @@ func _chest_card(row: HBoxContainer, pack: Dictionary) -> void:
 		spark.offset_bottom = -16.0
 		FX.pulse_forever(spark, 1.25, 1.1)
 
-	var nm := Label.new()
-	nm.text = pack["name"]
-	nm.add_theme_font_size_override("font_size", 17)
-	nm.add_theme_color_override("font_color", Color.WHITE)
-	nm.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.6))
-	nm.add_theme_constant_override("outline_size", 5)
+	var nm := Lagoon.label(pack["name"], UI.F_CAPTION, Lagoon.INK, true)
 	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(nm)
 
@@ -1626,19 +1715,15 @@ func _chest_card(row: HBoxContainer, pack: Dictionary) -> void:
 	cards_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	cards_row.add_theme_constant_override("separation", 5)
 	col.add_child(cards_row)
-	cards_row.add_child(_emoji_label("🃏", 16))
-	var cn := Label.new()
-	cn.text = "x%d CARDS" % int(pack["cards"])
-	cn.add_theme_font_size_override("font_size", 13)
-	cn.add_theme_color_override("font_color", Color(1, 1, 1, 0.75))
-	cards_row.add_child(cn)
+	cards_row.add_child(_emoji_label("🃏", UI.F_CAPTION))
+	cards_row.add_child(Lagoon.label("x%d CARDS" % int(pack["cards"]), UI.F_TINY, Lagoon.INK_SOFT))
 
-	col.add_child(_star_row(int(pack["star_cap"]), 15))
+	col.add_child(_star_row(int(pack["star_cap"]), UI.F_CAPTION))
 
 	var odds := Label.new()
 	odds.text = "5★ GUARANTEED" if guaranteed else ("boosted odds" if int(pack["tier"]) == 1 else "common loot")
-	odds.add_theme_font_size_override("font_size", 11)
-	odds.add_theme_color_override("font_color", Color(1.0, 0.8, 0.25) if guaranteed else Color(1, 1, 1, 0.5))
+	odds.add_theme_font_size_override("font_size", UI.F_TINY)
+	odds.add_theme_color_override("font_color", Lagoon.BRASS_LO if guaranteed else Lagoon.INK_FAINT)
 	odds.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(odds)
 	if guaranteed:
@@ -1646,8 +1731,8 @@ func _chest_card(row: HBoxContainer, pack: Dictionary) -> void:
 
 	var buy := Button.new()
 	buy.text = pack["price"]
-	buy.custom_minimum_size = Vector2(0, 50)
-	buy.add_theme_font_size_override("font_size", 19)
+	buy.custom_minimum_size = Vector2(0, UI.TAP)
+	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
 	_candy_button(buy, Color(0.28, 0.68, 0.34))
 	FX.press_feedback(buy)
 	buy.pressed.connect(_confirm_purchase.bind(pack))
@@ -1655,15 +1740,8 @@ func _chest_card(row: HBoxContainer, pack: Dictionary) -> void:
 
 # square tile used for spin & coin packs (2-column grid)
 func _shop_tile(grid: GridContainer, pack: Dictionary, accent: Color, amount_text: String) -> void:
-	var panel := PanelContainer.new()
+	var panel := _tinted_card(grid, accent)
 	panel.custom_minimum_size = Vector2(338, 0)
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.09, 0.07, 0.14, 0.95).lerp(Color(accent.r, accent.g, accent.b, 0.95), 0.1)
-	sb.set_corner_radius_all(18)
-	sb.set_border_width_all(2)
-	sb.border_color = Color(accent.r, accent.g, accent.b, 0.55)
-	panel.add_theme_stylebox_override("panel", sb)
-	grid.add_child(panel)
 
 	var margin := MarginContainer.new()
 	margin.add_theme_constant_override("margin_left", 10)
@@ -1680,7 +1758,7 @@ func _shop_tile(grid: GridContainer, pack: Dictionary, accent: Color, amount_tex
 	# fixed-height tag slot (empty when the pack has no tag) so every tile
 	# in the grid keeps the exact same content height as its siblings
 	var tag_wrap := CenterContainer.new()
-	tag_wrap.custom_minimum_size = Vector2(0, 26)
+	tag_wrap.custom_minimum_size = Vector2(0, 36)
 	col.add_child(tag_wrap)
 	if pack.has("tag"):
 		tag_wrap.add_child(_tag_chip(pack["tag"], pack.get("tag_color", Color(0.88, 0.28, 0.38)), 11))
@@ -1690,26 +1768,18 @@ func _shop_tile(grid: GridContainer, pack: Dictionary, accent: Color, amount_tex
 	col.add_child(e)
 	FX.pulse_forever(e, 1.06, 2.4)
 
-	var amount := Label.new()
-	amount.text = amount_text
-	amount.add_theme_font_size_override("font_size", 21)
-	amount.add_theme_color_override("font_color", Color.WHITE)
-	amount.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.6))
-	amount.add_theme_constant_override("outline_size", 5)
+	var amount := Lagoon.label(amount_text, UI.F_LABEL, Lagoon.INK, true)
 	amount.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(amount)
 
-	var nm := Label.new()
-	nm.text = pack["name"]
-	nm.add_theme_font_size_override("font_size", 13)
-	nm.add_theme_color_override("font_color", Color(1, 1, 1, 0.55))
+	var nm := Lagoon.label(pack["name"], UI.F_TINY, Lagoon.INK_FAINT)
 	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(nm)
 
 	var buy := Button.new()
 	buy.text = pack["price"]
-	buy.custom_minimum_size = Vector2(0, 48)
-	buy.add_theme_font_size_override("font_size", 18)
+	buy.custom_minimum_size = Vector2(0, UI.TAP)
+	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
 	_candy_button(buy, Color(0.28, 0.68, 0.34))
 	FX.press_feedback(buy)
 	buy.pressed.connect(_confirm_purchase.bind(pack))
@@ -1717,20 +1787,10 @@ func _shop_tile(grid: GridContainer, pack: Dictionary, accent: Color, amount_tex
 
 func _free_gift_card(vb: VBoxContainer) -> void:
 	var ready := _shop_free_ready()
-	var cc := Color(0.3, 0.85, 0.6)
-	var panel := PanelContainer.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.05, 0.14, 0.11, 0.97)
-	sb.set_corner_radius_all(22)
-	sb.set_border_width_all(3)
-	sb.border_color = cc if ready else Color(cc.r, cc.g, cc.b, 0.35)
+	var cc := Lagoon.KELP
+	var panel := _tinted_card(vb, cc if ready else Color(cc.r, cc.g, cc.b, 0.35), ready)
 	if ready:
-		sb.shadow_size = 10
-		sb.shadow_color = Color(cc.r, cc.g, cc.b, 0.3)
-	panel.add_theme_stylebox_override("panel", sb)
-	vb.add_child(panel)
-	if ready:
-		panel.add_child(_shine_overlay(Color(0.7, 1.0, 0.85)))
+		panel.add_child(_shine_overlay(Lagoon.KELP.lightened(0.55)))
 
 	var margin := MarginContainer.new()
 	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
@@ -1760,25 +1820,24 @@ func _free_gift_card(vb: VBoxContainer) -> void:
 	col.alignment = BoxContainer.ALIGNMENT_CENTER
 	col.add_theme_constant_override("separation", 4)
 	row.add_child(col)
-	var title := _popup_row_label("FREE  GIFT", 24)
-	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4) if ready else Color(1, 1, 1, 0.7))
+	var title := Lagoon.label("FREE  GIFT", UI.F_BODY, Lagoon.INK if ready else Lagoon.INK_SOFT, true)
 	col.add_child(title)
-	var sub := _popup_row_label("Every 24h:  +%s coins,  +%d spins  &  a card" % [_fmt(CV.SHOP_FREE_COINS), CV.SHOP_FREE_SPINS], 14)
-	sub.add_theme_color_override("font_color", Color(1, 1, 1, 0.65))
+	var sub := _popup_row_label("Every 24h:  +%s coins,  +%d spins  &  a card" % [_fmt(CV.SHOP_FREE_COINS), CV.SHOP_FREE_SPINS], UI.F_CAPTION)
+	sub.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(sub)
 	if not ready:
-		var timer := _popup_row_label("⏳  Next gift in  %s" % _shop_free_countdown_text(), 17)
-		timer.add_theme_color_override("font_color", Color(0.55, 0.95, 0.75))
+		var timer := _popup_row_label("⏳  Next gift in  %s" % _shop_free_countdown_text(), UI.F_CAPTION)
+		timer.add_theme_color_override("font_color", Lagoon.KELP_LO)
 		col.add_child(timer)
 		_shop_gift_timer_label = timer
 
 	if ready:
 		var claim := Button.new()
 		claim.text = "CLAIM"
-		claim.custom_minimum_size = Vector2(126, 56)
+		claim.custom_minimum_size = Vector2(140, UI.TAP)
 		claim.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		claim.add_theme_font_size_override("font_size", 20)
+		claim.add_theme_font_size_override("font_size", UI.F_LABEL)
 		_candy_button(claim, Color(0.28, 0.68, 0.34))
 		FX.press_feedback(claim)
 		FX.pulse_forever(claim, 1.05, 1.1)
@@ -1826,20 +1885,20 @@ func _confirm_purchase(pack: Dictionary) -> void:
 		var e := _emoji_label(pack["emoji"], 64)
 		e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		vbox.add_child(e)
-	var nm := _popup_row_label(pack["name"], 24)
+	var nm := _popup_row_label(pack["name"], UI.F_BODY)
 	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(nm)
-	var sub := _popup_row_label(pack["sub"], 17)
+	var sub := _popup_row_label(pack["sub"], UI.F_CAPTION)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
 	vbox.add_child(sub)
-	var note := _popup_row_label("Prototype — simulated purchase, no real charge.", 13)
+	var note := _popup_row_label("Prototype — simulated purchase, no real charge.", UI.F_TINY)
 	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	note.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
+	note.add_theme_color_override("font_color", Lagoon.INK_FAINT)
 	vbox.add_child(note)
 	var pay := Button.new()
 	pay.text = "PAY  %s" % pack["price"]
-	pay.custom_minimum_size = Vector2(0, 58)
+	pay.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
 	_candy_button(pay, Color(0.28, 0.68, 0.34))
 	FX.press_feedback(pay)
 	pay.pressed.connect(func() -> void:
@@ -1923,9 +1982,9 @@ func _grant_chest_card(tier: int, forced_star := 0) -> Dictionary:
 func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := "", completed_sets: Array = []) -> void:
 	var vbox := _open_popup(title)
 	if bonus_text != "":
-		var b := _popup_row_label(bonus_text, 19)
+		var b := _popup_row_label(bonus_text, UI.F_LABEL)
 		b.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		b.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+		b.add_theme_color_override("font_color", Lagoon.BRASS_LO)
 		vbox.add_child(b)
 	var sorted := cards.duplicate()
 	sorted.sort_custom(func(a, b): return int(a["stars"]) > int(b["stars"]))
@@ -1940,42 +1999,32 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 		var card: Dictionary = sorted[ci]
 		var stars := int(card.get("stars", 1))
 		var sc: Color = CV.STAR_COLORS[stars - 1]
-		var tile := PanelContainer.new()
-		var sb := StyleBoxFlat.new()
-		sb.bg_color = Color(0.08, 0.06, 0.13, 0.95).lerp(Color(sc.r, sc.g, sc.b, 0.95), 0.14)
-		sb.set_corner_radius_all(16)
-		sb.set_border_width_all(2)
-		sb.border_color = sc
-		sb.content_margin_left = 8.0
-		sb.content_margin_right = 8.0
-		sb.content_margin_top = 8.0
-		sb.content_margin_bottom = 8.0
-		tile.add_theme_stylebox_override("panel", sb)
+		var tile := _tinted_card(grid, sc, stars >= 4, Lagoon.R_CHIP + 4)
 		tile.custom_minimum_size = Vector2(166, 0)
-		grid.add_child(tile)
+		var tile_pad := MarginContainer.new()
+		for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+			tile_pad.add_theme_constant_override(m, 8)
+		tile.add_child(tile_pad)
 		var colv := VBoxContainer.new()
 		colv.alignment = BoxContainer.ALIGNMENT_CENTER
 		colv.add_theme_constant_override("separation", 2)
-		tile.add_child(colv)
+		tile_pad.add_child(colv)
 		var e := _emoji_label(card["emoji"], 40)
 		e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		colv.add_child(e)
-		var nm := Label.new()
-		nm.text = card["name"]
-		nm.add_theme_font_size_override("font_size", 13)
-		nm.add_theme_color_override("font_color", Color.WHITE)
+		var nm := Lagoon.label(card["name"], UI.F_TINY, Lagoon.INK, true)
 		nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		nm.clip_text = true
 		colv.add_child(nm)
-		colv.add_child(_star_row(stars, 13))
+		colv.add_child(_star_row(stars, UI.F_TINY))
 		var status := Label.new()
 		if card["dup"]:
 			status.text = "dup  +%d" % int(card.get("refund", 0))
-			status.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
+			status.add_theme_color_override("font_color", Lagoon.INK_FAINT)
 		else:
 			status.text = "NEW!"
-			status.add_theme_color_override("font_color", Color(0.5, 0.9, 0.5))
-		status.add_theme_font_size_override("font_size", 12)
+			status.add_theme_color_override("font_color", Lagoon.KELP_LO)
+		status.add_theme_font_size_override("font_size", UI.F_TINY)
 		status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		colv.add_child(status)
 		# staggered reveal, rarest first
@@ -1988,14 +2037,14 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 		done_row.alignment = BoxContainer.ALIGNMENT_CENTER
 		done_row.add_theme_constant_override("separation", 8)
 		vbox.add_child(done_row)
-		done_row.add_child(_emoji_label("🎉", 18))
-		var done := _popup_row_label("%s complete — claim it in Collections!" % set_name, 16)
-		done.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+		done_row.add_child(_emoji_label("🎉", UI.F_LABEL))
+		var done := _popup_row_label("%s complete — claim it in Collections!" % set_name, UI.F_CAPTION)
+		done.add_theme_color_override("font_color", Lagoon.KELP_LO)
 		done_row.add_child(done)
 		FX.pulse_forever(done_row, 1.04, 1.2)
 	var ok := Button.new()
 	ok.text = "COLLECT!"
-	ok.custom_minimum_size = Vector2(0, 54)
+	ok.custom_minimum_size = Vector2(0, UI.TAP)
 	_candy_button(ok, Color(0.45, 0.75, 0.35))
 	FX.press_feedback(ok)
 	ok.pressed.connect(func() -> void: _close_popup())
@@ -2027,25 +2076,19 @@ func _fill_quests(vb: VBoxContainer) -> void:
 	hcol.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hcol.add_theme_constant_override("separation", 3)
 	hrow.add_child(hcol)
-	var ht := Label.new()
-	ht.text = "%s  MISSIONS" % info["title"]
-	ht.add_theme_font_size_override("font_size", 25)
-	ht.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
-	ht.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.6))
-	ht.add_theme_constant_override("outline_size", 6)
+	var ht := Lagoon.label("%s  MISSIONS" % info["title"], UI.F_BODY, Lagoon.INK, true)
 	hcol.add_child(ht)
-	_quests_timer_label = _popup_row_label("", 14)
-	_quests_timer_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
+	_quests_timer_label = _popup_row_label("", UI.F_CAPTION)
+	_quests_timer_label.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 	hcol.add_child(_quests_timer_label)
 	_update_quests_timer()
 	var done := 0
 	for m in defs:
 		if bool(st["claimed"].get(m["id"], false)):
 			done += 1
-	var hdone := Label.new()
-	hdone.text = "%d/%d" % [done, defs.size()]
-	hdone.add_theme_font_size_override("font_size", 26)
-	hdone.add_theme_color_override("font_color", Color(0.6, 0.95, 0.6) if done == defs.size() else Color.WHITE)
+	var hdone := Lagoon.label("%d/%d" % [done, defs.size()], UI.F_SUBHEAD,
+		Lagoon.KELP_LO if done == defs.size() else Lagoon.INK, true)
+	hdone.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	hrow.add_child(hdone)
 	var hpb := _styled_progress(Color(info["color"]).lightened(0.15))
 	hpb.max_value = defs.size()
@@ -2072,11 +2115,14 @@ func _quests_tab_button(period: String) -> Button:
 	var info: Dictionary = MISSION_TAB_INFO[period]
 	var b := Button.new()
 	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	b.custom_minimum_size = Vector2(0, 54)
+	b.custom_minimum_size = Vector2(0, UI.TAP)
+	# Selected tab is solid; the others are glass, so "where am I" is a
+	# difference in material rather than three saturated colours competing.
 	if period == quests_tab:
 		_candy_button(b, Color(info["color"]))
 	else:
-		_candy_button(b, Color(0.2, 0.18, 0.28))
+		Lagoon.button(b, "glass")
+		Lagoon.button_gloss(b, 22)
 	# emoji won't render inside Button text on iOS — compose the face manually
 	var face := CenterContainer.new()
 	face.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -2085,13 +2131,9 @@ func _quests_tab_button(period: String) -> Button:
 	var frow := HBoxContainer.new()
 	frow.add_theme_constant_override("separation", 8)
 	face.add_child(frow)
-	frow.add_child(_emoji_label(str(info["emoji"]), 18))
-	var ft := Label.new()
-	ft.text = str(info["title"])
-	ft.add_theme_font_size_override("font_size", 17)
-	ft.add_theme_color_override("font_color", Color.WHITE if period == quests_tab else Color(1, 1, 1, 0.55))
-	ft.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.3))
-	ft.add_theme_constant_override("outline_size", 4)
+	frow.add_child(_emoji_label(str(info["emoji"]), UI.F_LABEL))
+	var ft := Lagoon.label(str(info["title"]), UI.F_CAPTION,
+		Color.WHITE if period == quests_tab else Lagoon.INK_SOFT, true)
 	frow.add_child(ft)
 	FX.press_feedback(b)
 	b.pressed.connect(func() -> void:
@@ -2104,7 +2146,7 @@ func _quests_tab_button(period: String) -> Button:
 	if period != quests_tab and _period_claimable(period):
 		var dot := Panel.new()
 		var dsb := StyleBoxFlat.new()
-		dsb.bg_color = Color(0.92, 0.2, 0.25)
+		dsb.bg_color = Lagoon.REEF
 		dsb.set_corner_radius_all(9)
 		dsb.set_border_width_all(2)
 		dsb.border_color = Color.WHITE
@@ -2123,12 +2165,8 @@ func _reward_chip(emoji: String, text: String, col: Color) -> HBoxContainer:
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", 4)
 	hb.alignment = BoxContainer.ALIGNMENT_CENTER
-	hb.add_child(_emoji_label(emoji, 15))
-	var l := Label.new()
-	l.text = text
-	l.add_theme_font_size_override("font_size", 16)
-	l.add_theme_color_override("font_color", col)
-	hb.add_child(l)
+	hb.add_child(_emoji_label(emoji, UI.F_CAPTION))
+	hb.add_child(Lagoon.label(text, UI.F_CAPTION, col, true))
 	return hb
 
 func _update_quests_timer() -> void:
@@ -2142,19 +2180,9 @@ func _quests_bonus_card(vb: VBoxContainer) -> void:
 	var claimed_bonus := bool(st.get("bonus", false))
 	var ready := _bonus_ready(quests_tab)
 
-	var panel := PanelContainer.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.16, 0.11, 0.05, 0.95) if ready else Color(0.12, 0.1, 0.18, 0.92)
-	sb.set_corner_radius_all(20)
-	sb.set_border_width_all(3)
-	sb.border_color = Color(1.0, 0.84, 0.3) if ready else Color(1.0, 0.84, 0.3, 0.25)
-	if ready:
-		sb.shadow_size = 10
-		sb.shadow_color = Color(1.0, 0.8, 0.2, 0.3)
-	panel.add_theme_stylebox_override("panel", sb)
+	var panel := _tinted_card(vb, Lagoon.BRASS if ready else Color(Lagoon.BRASS.r, Lagoon.BRASS.g, Lagoon.BRASS.b, 0.30), ready)
 	if claimed_bonus:
 		panel.modulate.a = 0.55
-	vb.add_child(panel)
 	FX.pop_in(panel, 0.3)
 	var margin := MarginContainer.new()
 	for mg in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
@@ -2171,27 +2199,22 @@ func _quests_bonus_card(vb: VBoxContainer) -> void:
 	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	col.add_theme_constant_override("separation", 3)
 	row.add_child(col)
-	var t := Label.new()
-	t.text = "ALL-CLEAR  BONUS"
-	t.add_theme_font_size_override("font_size", 20)
-	t.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
-	t.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.6))
-	t.add_theme_constant_override("outline_size", 5)
+	var t := Lagoon.label("ALL-CLEAR  BONUS", UI.F_LABEL, Lagoon.INK, true)
 	col.add_child(t)
-	var sub := _popup_row_label("Claim every mission to unlock", 14)
-	sub.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
+	var sub := _popup_row_label("Claim every mission to unlock", UI.F_CAPTION)
+	sub.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 	col.add_child(sub)
 	var rrow := HBoxContainer.new()
 	rrow.add_theme_constant_override("separation", 12)
 	col.add_child(rrow)
-	rrow.add_child(_reward_chip("💰", "+%s" % _fmt(_bonus_coins(quests_tab)), Color(1.0, 0.85, 0.4)))
-	rrow.add_child(_reward_chip("🌀", "+%d" % int(b["spins"]), Color(0.6, 0.9, 1.0)))
+	rrow.add_child(_reward_chip("💰", "+%s" % _fmt(_bonus_coins(quests_tab)), Lagoon.BRASS_LO))
+	rrow.add_child(_reward_chip("🌀", "+%d" % int(b["spins"]), Lagoon.LAGOON_DEEP))
 	if claimed_bonus:
 		row.add_child(_emoji_label("✅", 34))
 	else:
 		var btn := Button.new()
 		btn.text = "CLAIM"
-		btn.custom_minimum_size = Vector2(110, 50)
+		btn.custom_minimum_size = Vector2(132, UI.TAP)
 		btn.disabled = not ready
 		_candy_button(btn, Color(0.95, 0.65, 0.15))
 		FX.press_feedback(btn)
@@ -2208,17 +2231,10 @@ func _quest_card(vb: VBoxContainer, m: Dictionary, index: int) -> void:
 	var prog := mini(int(st["progress"].get(id, 0)), int(m["target"]))
 	var icol: Color = MISSION_ICON_COLORS.get(id, Color(0.4, 0.4, 0.6))
 
-	var panel := PanelContainer.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.13, 0.1, 0.07, 0.95) if ready else Color(0.1, 0.08, 0.16, 0.92)
-	sb.set_corner_radius_all(20)
-	sb.set_border_width_all(3 if ready else 2)
-	sb.border_color = Color(1.0, 0.84, 0.3, 0.9) if ready else Color(1, 1, 1, 0.08)
-	if ready:
-		sb.shadow_size = 8
-		sb.shadow_color = Color(1.0, 0.8, 0.2, 0.25)
-	panel.add_theme_stylebox_override("panel", sb)
-	vb.add_child(panel)
+	# A claimable mission is rimmed in brass; everything else is plain glass.
+	# One difference, applied consistently, so a full page of missions still
+	# points straight at the ones worth tapping.
+	var panel := _tinted_card(vb, Lagoon.BRASS if ready else Color(Lagoon.LAGOON.r, Lagoon.LAGOON.g, Lagoon.LAGOON.b, 0.35), ready)
 	# staggered entrance
 	var target_a := 0.5 if claimed else 1.0
 	panel.modulate.a = 0.0
@@ -2234,19 +2250,9 @@ func _quest_card(vb: VBoxContainer, m: Dictionary, index: int) -> void:
 	row.add_theme_constant_override("separation", 12)
 	margin.add_child(row)
 
-	var tile := PanelContainer.new()
-	var tsb := StyleBoxFlat.new()
-	tsb.bg_color = icol.darkened(0.35)
-	tsb.set_corner_radius_all(16)
-	tsb.set_border_width_all(2)
-	tsb.border_color = icol.lightened(0.2)
-	tile.add_theme_stylebox_override("panel", tsb)
-	tile.custom_minimum_size = Vector2(64, 64)
+	var tile := Lagoon.token(str(m["emoji"]), 68.0, icol)
+	tile.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(tile)
-	var icon := _emoji_label(str(m["emoji"]), 32)
-	icon.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	icon.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	tile.add_child(icon)
 	if ready:
 		FX.pulse_forever(tile, 1.08, 0.8)
 
@@ -2255,26 +2261,19 @@ func _quest_card(vb: VBoxContainer, m: Dictionary, index: int) -> void:
 	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	col.add_theme_constant_override("separation", 6)
 	row.add_child(col)
-	var d := Label.new()
-	d.text = str(m["desc"])
-	d.add_theme_font_size_override("font_size", 19)
-	d.add_theme_color_override("font_color", Color.WHITE)
+	var d := Lagoon.label(str(m["desc"]), UI.F_LABEL, Lagoon.INK)
 	d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(d)
 	var prow := HBoxContainer.new()
 	prow.add_theme_constant_override("separation", 10)
 	col.add_child(prow)
-	var pb := _styled_progress(Color(1.0, 0.84, 0.3) if ready or claimed else icol.lightened(0.1))
+	var pb := _styled_progress(Lagoon.BRASS if ready or claimed else icol)
 	pb.max_value = int(m["target"])
 	pb.value = prog
 	pb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	pb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	prow.add_child(pb)
-	var ptxt := Label.new()
-	ptxt.text = "%s/%s" % [_fmt(prog), _fmt(int(m["target"]))]
-	ptxt.add_theme_font_size_override("font_size", 13)
-	ptxt.add_theme_color_override("font_color", Color(1, 1, 1, 0.65))
-	prow.add_child(ptxt)
+	prow.add_child(Lagoon.label("%s/%s" % [_fmt(prog), _fmt(int(m["target"]))], UI.F_TINY, Lagoon.INK_SOFT))
 
 	var right := VBoxContainer.new()
 	right.add_theme_constant_override("separation", 6)
@@ -2282,9 +2281,9 @@ func _quest_card(vb: VBoxContainer, m: Dictionary, index: int) -> void:
 	row.add_child(right)
 	var spin_r := int(m.get("spins", 0))
 	if spin_r > 0:
-		right.add_child(_reward_chip("🌀", "+%d" % spin_r, Color(0.6, 0.9, 1.0)))
+		right.add_child(_reward_chip("🌀", "+%d" % spin_r, Lagoon.LAGOON_DEEP))
 	else:
-		right.add_child(_reward_chip("🪙", "+%s" % _fmt(_mission_coins(m)), Color(1.0, 0.85, 0.4)))
+		right.add_child(_reward_chip("🪙", "+%s" % _fmt(_mission_coins(m)), Lagoon.BRASS_LO))
 	if claimed:
 		var donel := _emoji_label("✅", 30)
 		donel.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -2292,7 +2291,7 @@ func _quest_card(vb: VBoxContainer, m: Dictionary, index: int) -> void:
 	else:
 		var claim := Button.new()
 		claim.text = "CLAIM"
-		claim.custom_minimum_size = Vector2(112, 46)
+		claim.custom_minimum_size = Vector2(132, UI.TAP)
 		claim.disabled = not ready
 		_candy_button(claim, Color(0.45, 0.75, 0.35))
 		FX.press_feedback(claim)
@@ -2303,12 +2302,9 @@ func _quest_card(vb: VBoxContainer, m: Dictionary, index: int) -> void:
 
 func _fill_options(vb: VBoxContainer) -> void:
 	var inner := _page_card(vb)
-	var mute := CheckButton.new()
-	mute.text = "Mute sounds"
-	mute.button_pressed = muted
-	mute.add_theme_font_size_override("font_size", 20)
-	mute.add_theme_color_override("font_color", Color.WHITE)
-	mute.toggled.connect(func(on: bool) -> void:
+	var mute := Toggle.new("Mute sounds", "Silence every sound in the game")
+	mute.set_on(muted)
+	mute.switched.connect(func(on: bool) -> void:
 		muted = on
 		AudioServer.set_bus_mute(0, on)
 		_save_game()
@@ -2319,47 +2315,48 @@ func _fill_options(vb: VBoxContainer) -> void:
 	var nhead := HBoxContainer.new()
 	nhead.add_theme_constant_override("separation", 8)
 	ncard.add_child(nhead)
-	nhead.add_child(_emoji_label("🔔", 24))
-	var ntitle := _popup_row_label("Notifications", 22)
-	ntitle.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	nhead.add_child(_emoji_label("🔔", UI.F_BODY))
+	var ntitle := _popup_row_label("Notifications", UI.F_BODY)
+	ntitle.add_theme_color_override("font_color", Lagoon.INK)
 	nhead.add_child(ntitle)
 
-	var master := CheckButton.new()
-	master.text = "Enable notifications"
-	master.button_pressed = notif_enabled
-	master.add_theme_font_size_override("font_size", 20)
-	master.add_theme_color_override("font_color", Color.WHITE)
-	master.toggled.connect(func(on: bool) -> void:
-		notif_enabled = on
-		_save_game()
-		_fill_page("options")
-	)
+	var master := Toggle.new("Enable notifications", "Master switch for everything below")
+	master.set_on(notif_enabled)
 	ncard.add_child(master)
 
 	var type_defs := [
-		["attack", "Attack alerts — a rival raids your island"],
-		["steal", "Steal alerts — a rival steals your coins"],
-		["spins", "Spins refilled — +%d spins every %d min" % [SPIN_REGEN_AMOUNT, int(SPIN_REGEN_SECS / 60.0)]],
+		["attack", "Attack alerts", "A rival smashes a building on your island"],
+		["steal", "Steal alerts", "A rival takes coins out of your vault"],
+		["spins", "Spins refilled", "+%d spins every %d min" % [SPIN_REGEN_AMOUNT, int(SPIN_REGEN_SECS / 60.0)]],
 	]
+	var per_type: Array[Toggle] = []
 	for def in type_defs:
 		var key: String = def[0]
-		var cb := CheckButton.new()
-		cb.text = def[1]
-		cb.button_pressed = bool(notif_types.get(key, true))
-		cb.disabled = not notif_enabled
-		cb.add_theme_font_size_override("font_size", 17)
-		cb.add_theme_color_override("font_color", Color.WHITE if notif_enabled else Color(1, 1, 1, 0.45))
-		cb.toggled.connect(func(on: bool) -> void:
+		ncard.add_child(Lagoon.divider())
+		var row := Toggle.new(def[1], def[2])
+		row.set_on(bool(notif_types.get(key, true)))
+		row.set_dimmed(not notif_enabled)
+		row.switched.connect(func(on: bool) -> void:
 			notif_types[key] = on
 			_save_game()
 		)
-		ncard.add_child(cb)
+		ncard.add_child(row)
+		per_type.append(row)
+
+	# Dimming the three in place beats rebuilding the page: the master switch
+	# gets to finish its own animation instead of being replaced mid-slide.
+	master.switched.connect(func(on: bool) -> void:
+		notif_enabled = on
+		for row in per_type:
+			row.set_dimmed(not on)
+		_save_game()
+	)
 
 	var acc := _page_card(vb)
-	acc.add_child(_popup_row_label("Signed in as:  %s  (%s)" % [profile.get("name", "Guest"), profile.get("provider", "guest")], 18))
+	acc.add_child(_popup_row_label("Signed in as:  %s  (%s)" % [profile.get("name", "Guest"), profile.get("provider", "guest")], UI.F_LABEL))
 	var signout := Button.new()
 	signout.text = "Sign out"
-	signout.custom_minimum_size = Vector2(0, 52)
+	signout.custom_minimum_size = Vector2(0, UI.TAP)
 	_candy_button(signout, Color(0.55, 0.45, 0.65))
 	FX.press_feedback(signout)
 	signout.pressed.connect(func() -> void:
@@ -2370,24 +2367,10 @@ func _fill_options(vb: VBoxContainer) -> void:
 	)
 	acc.add_child(signout)
 
-	var credit := _popup_row_label("Loot Lagoon  •  prototype", 14)
-	credit.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	credit.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
-	vb.add_child(credit)
+	vb.add_child(_page_note("Loot Lagoon  •  prototype", UI.F_CAPTION))
 
 func _styled_progress(fg_color: Color) -> ProgressBar:
-	var pb := ProgressBar.new()
-	pb.show_percentage = false
-	pb.custom_minimum_size = Vector2(0, 14)
-	var pb_bg := StyleBoxFlat.new()
-	pb_bg.bg_color = Color(1, 1, 1, 0.12)
-	pb_bg.set_corner_radius_all(7)
-	var pb_fg := StyleBoxFlat.new()
-	pb_fg.bg_color = fg_color
-	pb_fg.set_corner_radius_all(7)
-	pb.add_theme_stylebox_override("background", pb_bg)
-	pb.add_theme_stylebox_override("fill", pb_fg)
-	return pb
+	return Lagoon.progress(fg_color)
 
 # --- collections ---
 
@@ -2459,181 +2442,310 @@ func _maybe_drop_card() -> void:
 	_update_badges()
 
 func _diff_chip(diff: String) -> Control:
-	var colors := {"Easy": Color(0.3, 0.68, 0.35), "Medium": Color(0.92, 0.6, 0.18), "Hard": Color(0.88, 0.28, 0.38)}
-	var p := PanelContainer.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = colors.get(diff, Color(0.5, 0.5, 0.5))
-	sb.set_corner_radius_all(12)
-	sb.content_margin_left = 12.0
-	sb.content_margin_right = 12.0
-	sb.content_margin_top = 4.0
-	sb.content_margin_bottom = 4.0
-	p.add_theme_stylebox_override("panel", sb)
-	var l := Label.new()
-	l.text = diff
-	l.add_theme_font_size_override("font_size", 14)
-	l.add_theme_color_override("font_color", Color.WHITE)
-	p.add_child(l)
-	return p
+	var colors := {"Easy": Lagoon.KELP, "Medium": Lagoon.BRASS, "Hard": Lagoon.REEF}
+	return Lagoon.chip(diff, colors.get(diff, Lagoon.INK_SOFT), UI.F_CAPTION)
 
-func _collection_item_card(emoji: String, iname: String, owned: bool, stars := 0) -> Control:
+# `big` is the set's own page, where a card gets a third of the width instead
+# of a fifth and can afford to be looked at rather than counted.
+func _collection_item_card(emoji: String, iname: String, owned: bool, stars := 0, big := false) -> Control:
+	# Owned cards are brass-rimmed glass; unowned ones are the same glass with
+	# the metal drained out of them, so a set reads as "partly collected" at a
+	# glance rather than as two unrelated card designs.
 	var p := PanelContainer.new()
-	var sb := StyleBoxFlat.new()
-	if owned:
-		sb.bg_color = Color(0.3, 0.22, 0.08, 0.95)
-		sb.border_color = Color(1.0, 0.8, 0.3)
-	else:
-		sb.bg_color = Color(0.07, 0.06, 0.12, 0.9)
-		sb.border_color = Color(1, 1, 1, 0.07)
-	sb.set_border_width_all(2)
-	sb.set_corner_radius_all(14)
+	var sb := Lagoon.glass(Lagoon.R_CHIP + 2, 0.92 if owned else 0.55)
+	sb.set_border_width_all(3 if owned else 2)
+	sb.border_color = Lagoon.BRASS if owned else Color(Lagoon.INK_FAINT.r, Lagoon.INK_FAINT.g, Lagoon.INK_FAINT.b, 0.35)
+	sb.shadow_size = 8 if owned else 3
 	p.add_theme_stylebox_override("panel", sb)
-	p.custom_minimum_size = Vector2(110, 116)
+	p.custom_minimum_size = Vector2(0, 196) if big else Vector2(120, 150)
+	if big:
+		p.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var col := VBoxContainer.new()
 	col.alignment = BoxContainer.ALIGNMENT_CENTER
 	col.add_theme_constant_override("separation", 0)
 	p.add_child(col)
-	var e := _emoji_label(emoji, 40)
+	var e := _emoji_label(emoji, 58 if big else 40)
 	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	e.modulate = Color(1, 1, 1, 1.0) if owned else Color(1, 1, 1, 0.2)
+	e.modulate = Color(1, 1, 1, 1.0) if owned else Color(0.55, 0.65, 0.68, 0.45)
 	col.add_child(e)
-	var n := Label.new()
-	n.text = iname if owned else "???"
-	n.add_theme_font_size_override("font_size", 12)
-	n.add_theme_color_override("font_color", Color(1, 1, 1, 0.85) if owned else Color(1, 1, 1, 0.35))
+	var n := Lagoon.label(iname if owned else "???", UI.F_CAPTION if big else UI.F_TINY,
+		Lagoon.INK if owned else Lagoon.INK_FAINT, owned)
 	n.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	n.clip_text = true
 	col.add_child(n)
 	if stars > 0:
-		var sr := _star_row(stars, 10)
-		sr.modulate = Color(1, 1, 1, 1.0) if owned else Color(1, 1, 1, 0.45)
+		var sr := _star_row(stars, UI.F_CAPTION if big else UI.F_TINY)
+		sr.modulate = Color(1, 1, 1, 1.0) if owned else Color(1, 1, 1, 0.4)
 		col.add_child(sr)
 	return p
 
+func _collection_by_id(id: String) -> Dictionary:
+	for c in CV.COLLECTIONS:
+		if c["id"] == id:
+			return c
+	return {}
+
+func _collection_owned_count(c: Dictionary) -> int:
+	var n := 0
+	for v in col_owned.get(c["id"], []):
+		if v:
+			n += 1
+	return n
+
+# Two screens, one nav tab. col_open decides which.
 func _fill_collections(vb: VBoxContainer) -> void:
-	# grand prize header
+	var open_set := _collection_by_id(col_open)
+	if open_set.is_empty():
+		col_open = ""
+	if _col_back != null:
+		_col_back.visible = not col_open.is_empty()
+	if col_open.is_empty():
+		_fill_collection_shelf(vb)
+	else:
+		_fill_collection_detail(vb, open_set)
+
+# =============================================================================
+#  The shelf
+# =============================================================================
+#
+# Six sets, three across. Every set used to unroll its whole card grid on one
+# page, which meant a screen and a half of scrolling before you could see
+# whether the set below was worth chasing. A tile only has to answer three
+# questions -- what is it, how far in am I, is there a reward waiting -- and
+# all six fit above the fold.
+
+func _fill_collection_shelf(vb: VBoxContainer) -> void:
 	var head := _page_card(vb)
 	var trow := HBoxContainer.new()
 	trow.alignment = BoxContainer.ALIGNMENT_CENTER
 	trow.add_theme_constant_override("separation", 12)
 	head.add_child(trow)
 	trow.add_child(_emoji_label("🏆", 36))
-	var gp := _popup_row_label("GRAND  PRIZE", 28)
-	gp.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
-	trow.add_child(gp)
+	trow.add_child(Lagoon.label("GRAND  PRIZE", UI.F_SUBHEAD, Lagoon.INK, true))
 	var claimed_n := 0
 	for c in CV.COLLECTIONS:
 		if col_claimed.get(c["id"], false):
 			claimed_n += 1
-	var gsub := _popup_row_label("Complete all %d collections:  +%d coins  +%d spins" % [CV.COLLECTIONS.size(), CV.COLLECTION_MEGA_COINS, CV.COLLECTION_MEGA_SPINS], 16)
+	var gsub := _popup_row_label("Complete all %d collections:  +%s spins" % [CV.COLLECTIONS.size(), _fmt(CV.COLLECTION_MEGA_SPINS)], UI.F_CAPTION)
 	gsub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	head.add_child(gsub)
-	var gpb := _styled_progress(Color(1.0, 0.78, 0.25))
+	var gpb := _styled_progress(Lagoon.BRASS)
 	gpb.max_value = CV.COLLECTIONS.size()
 	gpb.value = claimed_n
 	head.add_child(gpb)
 	var days_left := maxf(0.0, col_deadline - Time.get_unix_time_from_system())
-	var season := _popup_row_label("Season ends in %dd %dh — collections reset!" % [int(days_left / 86400.0), int(fmod(days_left, 86400.0) / 3600.0)], 14)
+	var season := _popup_row_label("Season ends in %dd %dh \u2014 collections reset!" % [int(days_left / 86400.0), int(fmod(days_left, 86400.0) / 3600.0)], UI.F_TINY)
 	season.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	season.add_theme_color_override("font_color", Color(1, 1, 1, 0.55))
+	season.add_theme_color_override("font_color", Lagoon.INK_FAINT)
 	head.add_child(season)
 	if col_mega_claimed:
-		var done := _popup_row_label("CLAIMED  ✓", 20)
+		var done := _popup_row_label("CLAIMED  \u2713", UI.F_LABEL)
 		done.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		done.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+		done.add_theme_color_override("font_color", Lagoon.KELP_LO)
 		head.add_child(done)
 	elif claimed_n == CV.COLLECTIONS.size():
 		var mega := Button.new()
 		mega.text = "CLAIM  GRAND  PRIZE!"
-		mega.custom_minimum_size = Vector2(0, 60)
+		mega.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
 		_candy_button(mega, Color(0.45, 0.75, 0.35))
 		FX.press_feedback(mega)
 		FX.pulse_forever(mega, 1.04, 1.0)
 		mega.pressed.connect(_claim_mega)
 		head.add_child(mega)
 
-	# hint how cards are earned
-	var hint := _popup_row_label("Spin the wheel — every spin has a chance to drop a card!", 15)
-	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hint.add_theme_color_override("font_color", Color(0.78, 0.62, 1.0))
-	vb.add_child(hint)
+	vb.add_child(_page_note("Every spin has a chance to drop a card!", UI.F_CAPTION))
 
+	var grid := GridContainer.new()
+	grid.columns = 3
+	grid.add_theme_constant_override("h_separation", 12)
+	grid.add_theme_constant_override("v_separation", 12)
+	vb.add_child(grid)
 	for c in CV.COLLECTIONS:
-		var id: String = c["id"]
-		var items: Array = c["items"]
-		var owned: Array = col_owned.get(id, [])
-		var owned_n := 0
-		for v in owned:
-			if v:
-				owned_n += 1
-		var inner := _page_card(vb)
+		grid.add_child(_collection_tile(c))
 
-		var hrow := HBoxContainer.new()
-		hrow.add_theme_constant_override("separation", 10)
-		inner.add_child(hrow)
-		hrow.add_child(_emoji_label(c["icon"], 34))
-		var nm := _popup_row_label(c["name"], 24)
-		nm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		hrow.add_child(nm)
-		hrow.add_child(_diff_chip(c["diff"]))
+func _collection_tile(c: Dictionary) -> Control:
+	var id: String = c["id"]
+	var items: Array = c["items"]
+	var owned_n := _collection_owned_count(c)
+	var claimed: bool = col_claimed.get(id, false)
+	var ready: bool = owned_n == items.size() and not claimed
 
-		var rw_text := "Reward:  %d coins" % c["reward_coins"]
-		if int(c["reward_spins"]) > 0:
-			rw_text += "  +  %d spins" % c["reward_spins"]
-		var rw := _popup_row_label(rw_text, 15)
-		rw.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4, 0.9))
-		inner.add_child(rw)
+	var tile := Button.new()
+	tile.focus_mode = Control.FOCUS_NONE
+	tile.custom_minimum_size = Vector2(0, 250)
+	tile.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# A tile is a card, not a candy button: same sea glass as everything else,
+	# with the brass rim reserved for a set that has something to give you.
+	var sb := Lagoon.glass(24, 0.94)
+	sb.set_border_width_all(4)
+	sb.border_color = Lagoon.CORAL if ready else (Lagoon.KELP if claimed else Lagoon.BRASS_MID)
+	sb.shadow_size = 12
+	sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.30)
+	sb.shadow_offset = Vector2(0, 5)
+	for state in ["normal", "hover", "focus"]:
+		tile.add_theme_stylebox_override(state, sb)
+	var down := sb.duplicate()
+	down.bg_color = down.bg_color.darkened(0.06)
+	tile.add_theme_stylebox_override("pressed", down)
+	FX.press_feedback(tile)
+	tile.pressed.connect(func() -> void:
+		col_open = id
+		_fill_page("collections")
+	)
 
-		var center := CenterContainer.new()
-		inner.add_child(center)
-		var grid := GridContainer.new()
-		grid.columns = ceili(items.size() / 2.0)
-		grid.add_theme_constant_override("h_separation", 10)
-		grid.add_theme_constant_override("v_separation", 10)
-		center.add_child(grid)
-		for i in items.size():
-			var it: Array = items[i]
-			grid.add_child(_collection_item_card(it[0], it[1], i < owned.size() and owned[i], int(it[2])))
+	var pad := MarginContainer.new()
+	pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		pad.add_theme_constant_override(m, 10)
+	tile.add_child(pad)
+	pad.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 6)
+	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pad.add_child(col)
 
-		var prow := HBoxContainer.new()
-		prow.add_theme_constant_override("separation", 12)
-		inner.add_child(prow)
-		var pb := _styled_progress(Color(0.55, 0.75, 1.0))
-		pb.max_value = items.size()
-		pb.value = owned_n
-		pb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		pb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		prow.add_child(pb)
-		prow.add_child(_popup_row_label("%d/%d" % [owned_n, items.size()], 17))
-		if col_claimed.get(id, false):
-			var tag := _popup_row_label("CLAIMED  ✓", 17)
-			tag.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
-			prow.add_child(tag)
-		elif owned_n == items.size():
-			var claim := Button.new()
-			claim.text = "CLAIM"
-			claim.custom_minimum_size = Vector2(130, 50)
-			_candy_button(claim, Color(0.45, 0.75, 0.35))
-			FX.press_feedback(claim)
-			FX.pulse_forever(claim, 1.05, 0.9)
-			claim.pressed.connect(_claim_collection.bind(c))
-			prow.add_child(claim)
+	# the set's emblem, sunk into a pool of its own water
+	var well := PanelContainer.new()
+	var wsb := Lagoon.glass_well(18)
+	wsb.bg_color = Color(Lagoon.LAGOON_DEEP.r, Lagoon.LAGOON_DEEP.g, Lagoon.LAGOON_DEEP.b, 0.16)
+	well.add_theme_stylebox_override("panel", wsb)
+	well.custom_minimum_size = Vector2(0, 98)
+	well.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(well)
+	var em := _emoji_label(c["icon"], 56)
+	em.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	em.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	well.add_child(em)
+
+	var nm := Lagoon.label(c["name"], UI.F_CAPTION, Lagoon.INK, true)
+	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	nm.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	nm.custom_minimum_size = Vector2(0, 62)
+	col.add_child(nm)
+
+	var pb := _styled_progress(Lagoon.KELP if owned_n == items.size() else Lagoon.LAGOON)
+	pb.custom_minimum_size = Vector2(0, 18)
+	pb.max_value = items.size()
+	pb.value = owned_n
+	col.add_child(pb)
+
+	var foot := HBoxContainer.new()
+	foot.add_theme_constant_override("separation", 6)
+	foot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(foot)
+	var cnt := Lagoon.label("%d/%d" % [owned_n, items.size()], UI.F_TINY, Lagoon.INK_SOFT, true)
+	cnt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cnt.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	foot.add_child(cnt)
+	foot.add_child(_diff_chip(c["diff"]))
+
+	# One badge in the corner, and only when the tile has news: a reward waiting
+	# to be taken, or a set already banked.
+	if ready or claimed:
+		var flag := Lagoon.chip("CLAIM!" if ready else "\u2713", Lagoon.CORAL if ready else Lagoon.KELP, UI.F_TINY)
+		flag.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		tile.add_child(flag)
+		flag.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+		flag.offset_left = -78.0 if ready else -46.0
+		flag.offset_right = -6.0
+		flag.offset_top = -10.0
+		flag.offset_bottom = 26.0
+	if ready:
+		FX.pulse_forever(tile, 1.03, 1.0)
+	return tile
+
+# =============================================================================
+#  One set
+# =============================================================================
+
+func _fill_collection_detail(vb: VBoxContainer, c: Dictionary) -> void:
+	var id: String = c["id"]
+	var items: Array = c["items"]
+	var owned: Array = col_owned.get(id, [])
+	var owned_n := _collection_owned_count(c)
+	var claimed: bool = col_claimed.get(id, false)
+
+	var head := _page_card(vb)
+	var hrow := HBoxContainer.new()
+	hrow.add_theme_constant_override("separation", 14)
+	head.add_child(hrow)
+	var badge := PanelContainer.new()
+	var bsb := Lagoon.glass_well(20)
+	bsb.bg_color = Color(Lagoon.LAGOON_DEEP.r, Lagoon.LAGOON_DEEP.g, Lagoon.LAGOON_DEEP.b, 0.16)
+	badge.add_theme_stylebox_override("panel", bsb)
+	badge.custom_minimum_size = Vector2(104, 104)
+	hrow.add_child(badge)
+	var bem := _emoji_label(c["icon"], 62)
+	bem.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	bem.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	badge.add_child(bem)
+
+	var info := VBoxContainer.new()
+	info.add_theme_constant_override("separation", 6)
+	info.alignment = BoxContainer.ALIGNMENT_CENTER
+	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hrow.add_child(info)
+	info.add_child(_popup_row_label(c["name"], UI.F_SUBHEAD))
+	var meta := HBoxContainer.new()
+	meta.add_theme_constant_override("separation", 10)
+	info.add_child(meta)
+	meta.add_child(_diff_chip(c["diff"]))
+	meta.add_child(_reward_chip("🌀", "+%s  spins" % _fmt(int(c["reward_spins"])), Lagoon.LAGOON_DEEP))
+
+	var prow := HBoxContainer.new()
+	prow.add_theme_constant_override("separation", 12)
+	head.add_child(prow)
+	var pb := _styled_progress(Lagoon.KELP if owned_n == items.size() else Lagoon.LAGOON)
+	pb.max_value = items.size()
+	pb.value = owned_n
+	pb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	prow.add_child(pb)
+	prow.add_child(_popup_row_label("%d/%d  cards" % [owned_n, items.size()], UI.F_CAPTION))
+
+	if claimed:
+		var tag := _popup_row_label("REWARD  CLAIMED  \u2713", UI.F_LABEL)
+		tag.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		tag.add_theme_color_override("font_color", Lagoon.KELP_LO)
+		head.add_child(tag)
+	elif owned_n == items.size():
+		var claim := Button.new()
+		claim.text = "CLAIM  +%s  SPINS" % _fmt(int(c["reward_spins"]))
+		claim.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+		_candy_button(claim, Color(0.45, 0.75, 0.35))
+		FX.press_feedback(claim)
+		FX.pulse_forever(claim, 1.04, 0.9)
+		claim.pressed.connect(_claim_collection.bind(c))
+		head.add_child(claim)
+	else:
+		var left := _popup_row_label("%d more to go" % (items.size() - owned_n), UI.F_CAPTION)
+		left.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		left.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		head.add_child(left)
+
+	var card := _page_card(vb)
+	var grid := GridContainer.new()
+	grid.columns = 3
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 10)
+	card.add_child(grid)
+	for i in items.size():
+		var it: Array = items[i]
+		grid.add_child(_collection_item_card(it[0], it[1], i < owned.size() and owned[i], int(it[2]), true))
 
 func _claim_collection(c: Dictionary) -> void:
 	var id: String = c["id"]
 	if col_claimed.get(id, false) or not _collection_complete(c):
 		return
 	col_claimed[id] = true
-	coins += int(c["reward_coins"])
-	spins += int(c["reward_spins"])
+	var won := int(c["reward_spins"])
+	spins += won
 	Sfx.play("jackpot", -2.0)
 	FX.confetti(self, 40)
 	FX.flash(self)
-	FX.fly_coins(self, Vector2(360, 640), _hud_labels[0]["coins"].global_position, 8)
-	var btxt := "%s reward:  +%s coins" % [c["name"], _fmt(int(c["reward_coins"]))]
-	if int(c["reward_spins"]) > 0:
-		btxt += "  +%d spins" % int(c["reward_spins"])
-	_banner(btxt, Color(1.0, 0.85, 0.3), c["icon"])
+	FX.fly_coins(self, Vector2(360, 640), _hud_labels[0]["spins"].global_position,
+		clampi(won / 120, 6, 12), "bolt", "🌀")
+	_banner("%s reward:  +%s spins" % [c["name"], _fmt(won)], Color(0.6, 0.9, 1.0), c["icon"])
 	_update_badges()
 	_refresh()
 	_save_game()
@@ -2646,13 +2758,13 @@ func _claim_mega() -> void:
 		if not col_claimed.get(c["id"], false):
 			return
 	col_mega_claimed = true
-	coins += CV.COLLECTION_MEGA_COINS
 	spins += CV.COLLECTION_MEGA_SPINS
 	Sfx.play("levelup", -2.0)
 	FX.confetti(self, 80)
 	FX.flash(self)
-	FX.fly_coins(self, Vector2(360, 620), _hud_labels[0]["coins"].global_position, 14)
-	_banner("GRAND PRIZE!  +%s coins  +%d spins!" % [_fmt(CV.COLLECTION_MEGA_COINS), CV.COLLECTION_MEGA_SPINS], Color(1.0, 0.85, 0.3), "🏆")
+	FX.fly_coins(self, Vector2(360, 620), _hud_labels[0]["spins"].global_position,
+		18, "bolt", "🌀")
+	_banner("GRAND PRIZE!  +%s spins!" % _fmt(CV.COLLECTION_MEGA_SPINS), Color(0.6, 0.9, 1.0), "🏆")
 	_update_badges()
 	_refresh()
 	_save_game()
@@ -2670,10 +2782,10 @@ func _open_ranks() -> void:
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 12)
 		vbox.add_child(row)
-		var rank := _popup_row_label("#%d" % (i + 1), 21)
+		var rank := _popup_row_label("#%d" % (i + 1), UI.F_LABEL)
 		rank.custom_minimum_size = Vector2(50, 0)
 		row.add_child(rank)
-		row.add_child(_emoji_label(r["emoji"], 26))
+		row.add_child(_emoji_label(r["emoji"], UI.F_SUBHEAD))
 		var name_l := _popup_row_label(r["name"])
 		name_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		if r["me"]:
@@ -2691,24 +2803,27 @@ func _build_village_page() -> void:
 
 	_village_bg = _add_background(village_page, "village", Color(0.55, 0.8, 0.95), Color(0.45, 0.75, 0.5))
 
-	_island_title = Label.new()
-	_island_title.add_theme_font_size_override("font_size", 22)
-	_island_title.add_theme_color_override("font_color", Color.WHITE)
-	_island_title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	_island_title.add_theme_constant_override("outline_size", 7)
-	_island_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_island_title.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	village_page.add_child(_island_title)
-	_island_title.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	_island_title.offset_top = 74.0
-	_island_title.offset_bottom = 110.0
+	# The island's name on a brass nameplate, the same object the menu pages and
+	# the machine's marquee use -- so "where am I" is answered by one shape
+	# everywhere it is asked.
+	var name_plate := Lagoon.plaque("Island", 420.0, 76.0, UI.F_SUBHEAD)
+	village_page.add_child(name_plate)
+	name_plate.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	name_plate.offset_left = -210.0
+	name_plate.offset_right = 210.0
+	name_plate.offset_top = 100.0
+	name_plate.offset_bottom = 176.0
+	_island_title = name_plate.get_meta("label")
 
 	village = VillageView.new()
 	village_page.add_child(village)
 	village.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	village.upgrade_requested.connect(_on_upgrade_requested)
 	for slot_dict in village.get("_slots"):
-		_candy_button(slot_dict["button"], Color(0.35, 0.62, 0.9))
+		# Building is the whole point of this page, so its buttons are kelp
+		# ("spend, and something good happens") rather than neutral glass --
+		# and they grey out on their own when the island's coins run short.
+		_candy_button(slot_dict["button"], Lagoon.KELP)
 
 	_add_topbar(village_page)
 
@@ -2744,40 +2859,35 @@ void fragment() {
 		bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		return null
 
+# The HUD is four brass-rimmed glass capsules rather than one dark strip. Each
+# resource is its own object you can point at, coins and spins carry a coral
+# "+" straight to the shop, and the island capsule makes progress a thing you
+# hold alongside the currencies instead of a caption in the corner.
 func _add_topbar(page: Control) -> void:
-	var bar := PanelContainer.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.12, 0.08, 0.15, 0.85)
-	sb.set_corner_radius_all(16)
-	sb.shadow_size = 6
-	sb.shadow_color = Color(0, 0, 0, 0.25)
-	bar.add_theme_stylebox_override("panel", sb)
+	var bar := HBoxContainer.new()
+	bar.add_theme_constant_override("separation", 8)
 	page.add_child(bar)
 	bar.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	bar.offset_left = 12.0
-	bar.offset_right = -12.0
-	bar.offset_top = 10.0
-	bar.offset_bottom = 64.0
+	bar.offset_left = 14.0
+	bar.offset_right = -14.0
+	bar.offset_top = 16.0
+	bar.offset_bottom = 16.0 + 70.0
 
-	var hb := HBoxContainer.new()
-	hb.add_theme_constant_override("separation", 8)
-	bar.add_child(hb)
-
+	var to_shop := func() -> void: _goto(pages["shop"])
 	var labels := {}
-	for pair in [["🪙", "coins"], ["🌀", "spins"], ["🛡️", "shields"]]:
-		hb.add_child(_emoji_label(pair[0], 19))
-		var val := _hud_value_label("0")
-		hb.add_child(val)
-		labels[pair[1]] = val
-		var gap := Control.new()
-		gap.custom_minimum_size = Vector2(8, 0)
-		hb.add_child(gap)
-	var sp := Control.new()
-	sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	hb.add_child(sp)
-	var vil := _hud_value_label("Island 1")
-	hb.add_child(vil)
-	labels["island"] = vil
+	for spec in [["coin", "coins", true], ["wheel", "spins", true], ["shield", "shields", false]]:
+		var cap := Lagoon.capsule(spec[0], "0", to_shop if spec[2] else Callable())
+		bar.add_child(cap["root"])
+		labels[spec[1]] = cap["value"]
+
+	var gap := Control.new()
+	gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bar.add_child(gap)
+
+	var isl := Lagoon.capsule("island", "1")
+	bar.add_child(isl["root"])
+	labels["island"] = isl["value"]
+
 	_hud_labels.append(labels)
 
 # --- slot logic ---
@@ -2821,7 +2931,7 @@ func _on_spin_requested() -> void:
 func _show_win(text: String, color := Color(1.0, 0.85, 0.3)) -> void:
 	var l := Label.new()
 	l.text = text
-	l.add_theme_font_size_override("font_size", 54)
+	l.add_theme_font_size_override("font_size", 50)
 	l.add_theme_color_override("font_color", color)
 	l.add_theme_color_override("font_outline_color", Color(0.25, 0.08, 0.02))
 	l.add_theme_constant_override("outline_size", 14)
@@ -2829,14 +2939,14 @@ func _show_win(text: String, color := Color(1.0, 0.85, 0.3)) -> void:
 	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	l.z_index = 100
 	l.size = Vector2(720, 70)
-	l.position = Vector2(0, 244)
+	l.position = Vector2(0, 812)
 	l.pivot_offset = Vector2(360, 35)
 	l.scale = Vector2(0.3, 0.3)
 	slot_page.add_child(l)
 	var tw := create_tween()
 	tw.tween_property(l, "scale", Vector2.ONE, 0.3).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tw.tween_interval(0.75)
-	tw.tween_property(l, "position:y", 190.0, 0.5).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(l, "position:y", 758.0, 0.5).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	tw.parallel().tween_property(l, "modulate:a", 0.0, 0.5)
 	tw.tween_callback(l.queue_free)
 
@@ -2870,6 +2980,7 @@ func _on_spin_finished(result: Array) -> void:
 			"bag":
 				gain = 3000 * bet
 				Sfx.play("jackpot", -2.0)
+				slot.announce("JACKPOT!", Lagoon.BRASS_HI)
 				_banner("JACKPOT!", Color(1.0, 0.85, 0.3))
 				FX.confetti(self, 44)
 				FX.flash(self)
@@ -2883,11 +2994,13 @@ func _on_spin_finished(result: Array) -> void:
 			"steal":
 				_start_visit("steal")
 			"shield":
+				slot.announce("SHIELD  UP!", Color(0.72, 0.88, 1.0))
 				shields = mini(3, shields + bet)
 				Sfx.play("shield", -6.0)
 				_banner("Shield up!  (%d/3)" % shields, Color(0.5, 0.75, 1.0))
 				_show_win("+SHIELD", Color(0.5, 0.75, 1.0))
 			"bolt":
+				slot.announce("+SPINS!", Color(0.72, 0.94, 1.0))
 				var bonus := 12 * bet
 				spins += bonus
 				Sfx.play("jackpot", -4.0)
@@ -2904,7 +3017,7 @@ func _on_spin_finished(result: Array) -> void:
 		coins += gain
 		_mission_add("coins_won", gain)
 		_show_win("+%s" % _fmt(gain))
-		FX.fly_coins(self, Vector2(330, 540), _hud_labels[0]["coins"].global_position, clampi(gain / 250, 3, 9))
+		FX.fly_coins(self, Vector2(360, 716), _hud_labels[0]["coins"].global_position, clampi(gain / 250, 3, 9))
 	if _visit == null:
 		_maybe_drop_card()
 		_maybe_revenge()
@@ -2940,8 +3053,15 @@ func _maybe_revenge() -> void:
 
 # --- island visits (steal / attack) ---
 
+func _pick_next_target() -> void:
+	if npcs.is_empty():
+		return
+	next_target = npcs.pick_random()
+	if slot != null:
+		slot.set_target(next_target)
+
 func _start_visit(mode: String) -> void:
-	var npc: Dictionary = npcs.pick_random()
+	var npc: Dictionary = next_target if not next_target.is_empty() else npcs.pick_random()
 	if mode == "attack":
 		npc["shield"] = randf() < 0.3
 	_visit = IslandVisit.new()
@@ -2953,6 +3073,7 @@ func _start_visit(mode: String) -> void:
 	_visit.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_visit.position = Vector2(720, 0)
 	Sfx.play("jackpot", -6.0)
+	slot.announce("STEAL!" if mode == "steal" else "ATTACK!", Lagoon.CORAL_HI)
 	_banner("Triple %s!" % ("raccoons — STEAL time!" if mode == "steal" else "hammers — ATTACK!"), Color(1.0, 0.85, 0.3))
 	var tw := create_tween()
 	tw.tween_interval(0.5)
@@ -2967,6 +3088,7 @@ func _on_visit_finished(result: Dictionary) -> void:
 	tw.tween_callback(v.queue_free)
 	var npc: Dictionary = result["npc"]
 	_mission_add("steals" if result["mode"] == "steal" else "attacks")
+	_pick_next_target()
 	if result["mode"] == "steal":
 		var stolen: int = result.get("stolen", 0)
 		coins += stolen
@@ -3003,7 +3125,43 @@ func _apply_island_theme() -> void:
 	if _village_bg != null and bg_t != null:
 		_village_bg.texture = bg_t
 	if _island_title != null:
-		_island_title.text = "Island %d  —  %s" % [island_level, CV.island_theme(island_level)["name"]]
+		_island_title.text = CV.island_theme(island_level)["name"]
+	for mat in _page_backdrops:
+		Lagoon.tint_backdrop(mat, CV.island_palette(island_level))
+	_apply_slot_theme()
+
+# Repaints the SPIN page in the current island's palette: its artwork behind
+# the glass, its light color in the rays and the halo, its trim on the logo,
+# and the cabinet + hero button via SlotView.
+func _apply_slot_theme() -> void:
+	var p := CV.island_palette(island_level)
+	var mid: Color = p["mid"]
+	var glow: Color = p["glow"]
+
+	if _slot_bg != null:
+		var bg_t := CV.island_bg_tex(island_level)
+		if bg_t != null:
+			_slot_bg.texture = bg_t
+	if _slot_bg_mat != null:
+		# The island tints its own daylight. Blending toward the sky rather
+		# than toward the island's "deep" tone is what keeps Volcano Isle and
+		# Neon City bright instead of turning the page into a dark room again.
+		_slot_bg_mat.set_shader_parameter("haze", _v3(Lagoon.SKY_HI.lerp(glow, 0.30).lerp(mid, 0.14)))
+	if _slot_rays_mat != null:
+		_slot_rays_mat.set_shader_parameter("ray_col", _v3(Color(1, 1, 1).lerp(glow, 0.55)))
+	if _slot_floor_mat != null:
+		_slot_floor_mat.set_shader_parameter("floor_col", _v3(Lagoon.LAGOON.lerp(mid, 0.28).lightened(0.42)))
+	if _slot_glow_mat != null:
+		_slot_glow_mat.set_shader_parameter("glow_col", _v3(glow))
+	for d in _slot_decor:
+		var node: CanvasItem = d["node"]
+		if is_instance_valid(node):
+			node.modulate = Color(Color(1, 1, 1).lerp(mid.lightened(0.45), 0.55), d["alpha"])
+	if slot != null:
+		slot.set_island(island_level)
+
+static func _v3(c: Color) -> Vector3:
+	return Vector3(c.r, c.g, c.b)
 
 func _star_costs() -> Array:
 	var mult := pow(1.6, island_level - 1)
@@ -3058,7 +3216,7 @@ func _show_island_complete_popup() -> void:
 	_popup.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 	var dim := ColorRect.new()
-	dim.color = Color(0, 0, 0, 0.65)
+	dim.color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.6)
 	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_popup.add_child(dim)
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -3068,16 +3226,13 @@ func _show_island_complete_popup() -> void:
 	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 	var panel := PanelContainer.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.14, 0.09, 0.18, 0.98)
-	sb.set_corner_radius_all(24)
-	sb.set_border_width_all(4)
-	sb.border_color = Color(0.95, 0.75, 0.25)
-	sb.shadow_size = 14
-	sb.shadow_color = Color(0, 0, 0, 0.4)
+	var sb := Lagoon.glass(Lagoon.R_PANEL, 0.96)
+	sb.set_border_width_all(5)
+	sb.border_color = Lagoon.BRASS
 	panel.add_theme_stylebox_override("panel", sb)
 	panel.custom_minimum_size = Vector2(580, 0)
 	center.add_child(panel)
+	Lagoon.add_gloss(panel, Lagoon.R_PANEL)
 	FX.pop_in(panel, 0.34)
 
 	var margin := MarginContainer.new()
@@ -3094,29 +3249,23 @@ func _show_island_complete_popup() -> void:
 	vbox.add_child(trophy)
 	FX.pulse_forever(trophy, 1.12, 0.9)
 
-	var title := Label.new()
-	title.text = "ISLAND  COMPLETE!"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 34)
-	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
-	title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.7))
-	title.add_theme_constant_override("outline_size", 6)
+	var title := Lagoon.title("ISLAND  COMPLETE!", UI.F_TITLE, Lagoon.SAND, Lagoon.BRASS_LO)
 	vbox.add_child(title)
 
-	var sub := _popup_row_label("%s is fully built — amazing job!" % CV.island_theme(island_level)["name"], 18)
+	var sub := _popup_row_label("%s is fully built — amazing job!" % CV.island_theme(island_level)["name"], UI.F_LABEL)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(sub)
 
-	var reward := _popup_row_label("Journey rewards:  💰 +%s   🌀 +%d" % [_fmt(ISLAND_REWARD_COINS), ISLAND_REWARD_SPINS], 17)
+	var reward := _popup_row_label("Journey rewards:  💰 +%s   🌀 +%d" % [_fmt(ISLAND_REWARD_COINS), ISLAND_REWARD_SPINS], UI.F_CAPTION)
 	reward.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	reward.add_theme_color_override("font_color", Color(0.6, 0.95, 0.6))
+	reward.add_theme_color_override("font_color", Lagoon.KELP_LO)
 	vbox.add_child(reward)
 
 	var next_name: String = CV.island_theme(island_level + 1)["name"]
 	var sail := Button.new()
 	sail.text = "⛵  SET SAIL TO %s" % next_name.to_upper()
-	sail.custom_minimum_size = Vector2(0, 62)
-	sail.add_theme_font_size_override("font_size", 22)
+	sail.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	sail.add_theme_font_size_override("font_size", UI.F_BODY)
 	_candy_button(sail, Color(0.25, 0.6, 0.9))
 	FX.press_feedback(sail)
 	sail.pressed.connect(func() -> void:
@@ -3149,13 +3298,9 @@ func _journey_island_card(world: Control, level: int, pos: Vector2, side: float)
 	world.add_child(root)
 
 	var frame := PanelContainer.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.1, 0.14, 0.22, 0.95)
-	sb.set_corner_radius_all(26)
-	sb.set_border_width_all(5)
-	sb.border_color = Color(0.95, 0.75, 0.25)
-	sb.shadow_size = 12
-	sb.shadow_color = Color(0, 0, 0, 0.35)
+	var sb := Lagoon.glass(26, 0.95)
+	sb.set_border_width_all(6)
+	sb.border_color = Lagoon.BRASS
 	sb.set_content_margin_all(10)
 	frame.add_theme_stylebox_override("panel", sb)
 	frame.custom_minimum_size = Vector2(side, side)
@@ -3171,13 +3316,7 @@ func _journey_island_card(world: Control, level: int, pos: Vector2, side: float)
 	clip.add_child(tr)
 	tr.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
-	var nm := Label.new()
-	nm.text = CV.island_theme(level)["name"]
-	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	nm.add_theme_font_size_override("font_size", 22)
-	nm.add_theme_color_override("font_color", Color.WHITE)
-	nm.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
-	nm.add_theme_constant_override("outline_size", 7)
+	var nm := Lagoon.title(CV.island_theme(level)["name"], UI.F_BODY, Color.WHITE, Lagoon.ABYSS)
 	nm.custom_minimum_size = Vector2(side, 0)
 	nm.position = Vector2(0, side + 8)
 	root.add_child(nm)
@@ -3309,14 +3448,8 @@ func _start_island_journey(from_level: int) -> void:
 		bt.tween_callback(bubble.queue_free)
 	)
 
-	var welcome := Label.new()
-	welcome.text = "Welcome to %s!" % CV.island_theme(to_level)["name"]
+	var welcome := Lagoon.wordmark("Welcome to %s!" % CV.island_theme(to_level)["name"], 46)
 	welcome.visible = false
-	welcome.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	welcome.add_theme_font_size_override("font_size", 42)
-	welcome.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
-	welcome.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
-	welcome.add_theme_constant_override("outline_size", 9)
 	layer.add_child(welcome)
 	welcome.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
 	welcome.offset_top = 190.0
@@ -3365,11 +3498,14 @@ func _start_island_journey(from_level: int) -> void:
 
 func _refresh() -> void:
 	for labels in _hud_labels:
-		labels["coins"].text = str(coins)
+		labels["coins"].text = _fmt_compact(coins)
 		labels["spins"].text = ("%d/%d" % [spins, SPIN_CAP]) if spins <= SPIN_CAP else str(spins)
 		labels["shields"].text = str(shields)
-		labels["island"].text = "Island %d" % island_level
+		labels["island"].text = str(island_level)
 	village.refresh(buildings, coins, _star_costs())
+	if slot != null:
+		slot.set_meter(spins, SPIN_CAP, SPIN_REGEN_SECS - _regen_accum, SPIN_REGEN_AMOUNT)
+		slot.set_target(next_target)
 
 func _banner(text: String, color: Color, emoji := "") -> void:
 	var box := HBoxContainer.new()
@@ -3382,14 +3518,9 @@ func _banner(text: String, color: Color, emoji := "") -> void:
 	box.offset_top = 150.0
 	box.offset_bottom = 210.0
 	if emoji != "":
-		var e := _emoji_label(emoji, 28)
+		var e := _emoji_label(emoji, UI.F_SUBHEAD)
 		box.add_child(e)
-	var lbl := Label.new()
-	lbl.text = text
-	lbl.add_theme_font_size_override("font_size", 26)
-	lbl.add_theme_color_override("font_color", color)
-	lbl.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.85))
-	lbl.add_theme_constant_override("outline_size", 8)
+	var lbl := Lagoon.title(text, UI.F_SUBHEAD, color, Lagoon.ABYSS)
 	box.add_child(lbl)
 	var tw := create_tween()
 	tw.tween_interval(1.6)
@@ -3407,6 +3538,18 @@ func _fmt(n: int) -> String:
 			out = "," + out
 	return out
 
+# Coins run to eight digits late in the game, which would blow the HUD capsule
+# out past the island marker. Full precision stays everywhere it's being spent
+# or awarded; only the always-on counter abbreviates.
+func _fmt_compact(n: int) -> String:
+	if n >= 100_000_000:
+		return "%.0fM" % (n / 1_000_000.0)
+	if n >= 10_000_000:
+		return "%.1fM" % (n / 1_000_000.0)
+	if n >= 1_000_000:
+		return "%.2fM" % (n / 1_000_000.0)
+	return _fmt(n)
+
 func _emoji_label(text: String, size: int) -> Label:
 	var l := Label.new()
 	l.text = text
@@ -3417,40 +3560,23 @@ func _emoji_label(text: String, size: int) -> Label:
 func _hud_value_label(text: String) -> Label:
 	var l := Label.new()
 	l.text = text
-	l.add_theme_font_size_override("font_size", 20)
+	l.add_theme_font_size_override("font_size", UI.F_LABEL)
 	l.add_theme_color_override("font_color", Color(1, 1, 1))
 	return l
 
+# Every button in the game funnels through here. Call sites still name a colour
+# ("this one is green"), which Lagoon.kind_for maps onto the five materials --
+# so intent survives, but a button can no longer be an arbitrary shade. The
+# gloss pass is what makes the face read as moulded rather than printed.
 func _candy_button(btn: Button, color: Color) -> void:
-	for state in ["normal", "hover", "pressed", "disabled"]:
-		var sb := StyleBoxFlat.new()
-		sb.set_corner_radius_all(14)
-		sb.content_margin_top = 8.0
-		sb.content_margin_bottom = 8.0
-		sb.content_margin_left = 18.0
-		sb.content_margin_right = 18.0
-		match state:
-			"hover":
-				sb.bg_color = color.lightened(0.12)
-			"pressed":
-				sb.bg_color = color.darkened(0.1)
-			"disabled":
-				sb.bg_color = Color(0.55, 0.52, 0.5)
-			_:
-				sb.bg_color = color
-		sb.border_width_bottom = 6
-		sb.border_color = sb.bg_color.darkened(0.32)
-		btn.add_theme_stylebox_override(state, sb)
-	btn.add_theme_color_override("font_color", Color.WHITE)
-	btn.add_theme_color_override("font_hover_color", Color.WHITE)
-	btn.add_theme_color_override("font_pressed_color", Color.WHITE)
-	btn.add_theme_color_override("font_disabled_color", Color(1, 1, 1, 0.6))
-	btn.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.3))
-	btn.add_theme_constant_override("outline_size", 4)
+	Lagoon.button(btn, Lagoon.kind_for(color))
+	Lagoon.button_gloss(btn, 22)
 
 # --- save / load ---
 
 func _save_game() -> void:
+	if _preview_island:
+		return
 	var data := {
 		"coins": coins,
 		"spins": spins,

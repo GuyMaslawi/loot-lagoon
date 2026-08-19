@@ -93,23 +93,24 @@ func _ready() -> void:
 		var stars := Label.new()
 		stars.text = "⭐".repeat(level)
 		stars.add_theme_font_override("font", CV.emoji_font())
-		stars.add_theme_font_size_override("font_size", 14)
+		stars.add_theme_font_size_override("font_size", UI.F_CAPTION)
 		stars.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		stars.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		holder.add_child(stars)
 		stars.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-		stars.offset_top = -50.0
-		stars.offset_bottom = -24.0
+		stars.offset_top = -62.0
+		stars.offset_bottom = -22.0
 
 		_building_visuals.append({"tex": tr, "fallback": fb, "stars": stars, "rect": rect})
 
 	# banner
+	# Raiding happens on somebody else's island art, so the brief sits on the
+	# same brass-rimmed sea glass the rest of the game uses -- you are a visitor
+	# here, and the chrome is the one thing you brought with you.
 	var banner := PanelContainer.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.12, 0.08, 0.15, 0.88)
-	sb.set_corner_radius_all(16)
-	sb.set_border_width_all(3)
-	sb.border_color = Color(0.95, 0.75, 0.25)
+	var sb := Lagoon.glass(Lagoon.R_CARD, 0.92)
+	sb.set_border_width_all(4)
+	sb.border_color = Lagoon.BRASS
 	banner.add_theme_stylebox_override("panel", sb)
 	add_child(banner)
 	banner.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
@@ -128,17 +129,12 @@ func _ready() -> void:
 	var face := Label.new()
 	face.text = npc["emoji"]
 	face.add_theme_font_override("font", CV.emoji_font())
-	face.add_theme_font_size_override("font_size", 28)
+	face.add_theme_font_size_override("font_size", UI.F_SUBHEAD)
 	title_row.add_child(face)
-	var title := Label.new()
-	title.text = "%s's Island" % npc["name"]
-	title.add_theme_font_size_override("font_size", 28)
-	title.add_theme_color_override("font_color", Color.WHITE)
-	title_row.add_child(title)
-	var sub := Label.new()
-	sub.text = "Open 3 chests and take the gold!" if mode == "steal" else "Pick a target and SMASH!"
-	sub.add_theme_font_size_override("font_size", 17)
-	sub.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	title_row.add_child(Lagoon.label("%s's Island" % npc["name"], UI.F_SUBHEAD, Lagoon.INK, true))
+	var sub := Lagoon.label(
+		"Open 3 chests and take the gold!" if mode == "steal" else "Pick a target and SMASH!",
+		UI.F_CAPTION, Lagoon.INK_SOFT)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(sub)
 
@@ -159,13 +155,7 @@ func _setup_chests() -> void:
 	var amounts := [q, q, total - 2 * q, 0]
 	amounts.shuffle()
 
-	_attempts_label = Label.new()
-	_attempts_label.text = "Attempts left: 3"
-	_attempts_label.add_theme_font_size_override("font_size", 22)
-	_attempts_label.add_theme_color_override("font_color", Color.WHITE)
-	_attempts_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-	_attempts_label.add_theme_constant_override("outline_size", 6)
-	_attempts_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_attempts_label = Lagoon.title("Attempts left: 3", UI.F_BODY, Color.WHITE, Lagoon.ABYSS)
 	add_child(_attempts_label)
 	_attempts_label.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
 	_attempts_label.offset_top = 120.0
@@ -206,7 +196,7 @@ func _on_chest(btn: Button, amount: int) -> void:
 	if amount > 0:
 		_stolen += amount
 		Sfx.play("coins", -4.0)
-		FX.rise_label(self, pos, "+%d" % amount, Color(1.0, 0.85, 0.3), 32)
+		FX.rise_label(self, pos, "+%d" % amount, Lagoon.BRASS_HI, 32)
 		FX.fly_coins(self, btn.position + btn.size * 0.5, Vector2(90, 40), 5)
 		FX.burst(self, btn.position + btn.size * 0.5, Color(1.0, 0.8, 0.3), 10)
 	else:
@@ -263,7 +253,7 @@ func _on_target(i: int) -> void:
 			create_tween().tween_property(sh, "modulate:a", 0.0, 0.6).set_delay(1.0)
 		Sfx.play("shield", -2.0)
 		FX.shake(self, 8.0, 5)
-		FX.rise_label(self, center + Vector2(-60, -60), "BLOCKED!", Color(0.5, 0.8, 1.0), 36)
+		FX.rise_label(self, center + Vector2(-60, -60), "BLOCKED!", Lagoon.LAGOON, 36)
 		_finish({"mode": "attack", "npc": npc, "blocked": true})
 	else:
 		npc["buildings"][i] = maxi(0, int(npc["buildings"][i]) - 1)
@@ -276,7 +266,7 @@ func _on_target(i: int) -> void:
 		var mod := Color(1, 1, 1) if new_level > 0 else Color(0.5, 0.5, 0.5, 0.4)
 		vis["tex"].modulate = mod
 		vis["fallback"].modulate = mod
-		FX.rise_label(self, center + Vector2(-40, -50), "-1 LEVEL", Color(1.0, 0.4, 0.3), 34)
+		FX.rise_label(self, center + Vector2(-40, -50), "-1 LEVEL", Lagoon.CORAL, 34)
 		_finish({"mode": "attack", "npc": npc, "blocked": false, "target": i})
 
 func _finish(result: Dictionary) -> void:

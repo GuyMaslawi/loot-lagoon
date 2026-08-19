@@ -1,8 +1,11 @@
 class_name FX
 extends RefCounted
 
-static func fly_coins(parent: Control, from: Vector2, to: Vector2, count: int) -> void:
-	var t := CV.symbol_tex("coin")
+# Flies a handful of one symbol from a point on screen to the counter it pays
+# into. `symbol` picks which: coins to the purse, bolts to the spin meter.
+static func fly_coins(parent: Control, from: Vector2, to: Vector2, count: int,
+		symbol := "coin", emoji := "🪙") -> void:
+	var t := CV.symbol_tex(symbol)
 	for i in count:
 		var node: Control
 		if t != null:
@@ -14,7 +17,7 @@ static func fly_coins(parent: Control, from: Vector2, to: Vector2, count: int) -
 			node = tr
 		else:
 			var l := Label.new()
-			l.text = "🪙"
+			l.text = emoji
 			l.add_theme_font_override("font", CV.emoji_font())
 			l.add_theme_font_size_override("font_size", 30)
 			node = l

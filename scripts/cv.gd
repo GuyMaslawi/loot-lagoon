@@ -59,6 +59,107 @@ const ISLANDS := [
 	{"name": "Golden Capital", "buildings": ["Palace", "Mint", "Fountain", "Market Hall", "Arch"]},
 ]
 
+# Per-island color identity for the SPIN page, one entry per ISLANDS entry.
+#   deep   darkest ambient — page vignette, cabinet body
+#   mid    room/stage light — page gradient top
+#   accent trim metal — marquee, frame border, reel edges
+#   spin   the hero SPIN button's base hue
+#   glow   bloom color for spotlights and the button halo
+# Everything else (reel face, marquee ink, bevels) is derived from these
+# so a new island only needs five colors to feel like its own place.
+const ISLAND_PALETTES := [
+	# Green Meadows
+	{"deep": Color(0.082, 0.196, 0.122), "mid": Color(0.184, 0.42, 0.235),
+	 "accent": Color(0.949, 0.773, 0.239), "spin": Color(0.957, 0.333, 0.18), "glow": Color(1, 0.82, 0.4)},
+	# Pirate Cove
+	{"deep": Color(0.063, 0.133, 0.18), "mid": Color(0.137, 0.286, 0.361),
+	 "accent": Color(0.878, 0.702, 0.337), "spin": Color(0.851, 0.231, 0.231), "glow": Color(1, 0.769, 0.42)},
+	# Desert Oasis
+	{"deep": Color(0.227, 0.141, 0.075), "mid": Color(0.541, 0.353, 0.169),
+	 "accent": Color(1, 0.824, 0.478), "spin": Color(0.91, 0.384, 0.165), "glow": Color(1, 0.851, 0.627)},
+	# Snowy Peaks
+	{"deep": Color(0.071, 0.141, 0.227), "mid": Color(0.184, 0.361, 0.525),
+	 "accent": Color(0.812, 0.91, 1), "spin": Color(0.914, 0.294, 0.416), "glow": Color(0.659, 0.863, 1)},
+	# Jungle Ruins
+	{"deep": Color(0.071, 0.161, 0.102), "mid": Color(0.176, 0.373, 0.216),
+	 "accent": Color(0.847, 0.706, 0.353), "spin": Color(0.886, 0.337, 0.169), "glow": Color(0.714, 0.878, 0.478)},
+	# Candy Land
+	{"deep": Color(0.231, 0.063, 0.188), "mid": Color(0.49, 0.137, 0.349),
+	 "accent": Color(1, 0.82, 0.91), "spin": Color(1, 0.302, 0.553), "glow": Color(1, 0.702, 0.871)},
+	# Space Colony
+	{"deep": Color(0.043, 0.059, 0.169), "mid": Color(0.137, 0.188, 0.42),
+	 "accent": Color(0.498, 0.89, 1), "spin": Color(1, 0.302, 0.427), "glow": Color(0.498, 0.847, 1)},
+	# Coral Reef
+	{"deep": Color(0.02, 0.157, 0.227), "mid": Color(0.063, 0.38, 0.478),
+	 "accent": Color(1, 0.824, 0.541), "spin": Color(1, 0.42, 0.29), "glow": Color(0.498, 0.941, 0.878)},
+	# Volcano Isle
+	{"deep": Color(0.149, 0.039, 0.039), "mid": Color(0.42, 0.122, 0.078),
+	 "accent": Color(1, 0.69, 0.227), "spin": Color(1, 0.325, 0.125), "glow": Color(1, 0.541, 0.235)},
+	# Fairy Forest
+	{"deep": Color(0.102, 0.071, 0.212), "mid": Color(0.263, 0.153, 0.431),
+	 "accent": Color(0.902, 0.863, 1), "spin": Color(0.91, 0.294, 0.749), "glow": Color(0.725, 0.549, 1)},
+	# Wild West
+	{"deep": Color(0.18, 0.102, 0.063), "mid": Color(0.478, 0.29, 0.141),
+	 "accent": Color(0.941, 0.765, 0.306), "spin": Color(0.824, 0.251, 0.184), "glow": Color(1, 0.812, 0.478)},
+	# Ancient Egypt
+	{"deep": Color(0.169, 0.125, 0.031), "mid": Color(0.478, 0.373, 0.094),
+	 "accent": Color(1, 0.847, 0.302), "spin": Color(0.09, 0.647, 0.769), "glow": Color(1, 0.878, 0.478)},
+	# Samurai Village
+	{"deep": Color(0.137, 0.063, 0.102), "mid": Color(0.361, 0.122, 0.165),
+	 "accent": Color(0.91, 0.812, 0.604), "spin": Color(0.847, 0.208, 0.184), "glow": Color(1, 0.69, 0.627)},
+	# Viking Fjord
+	{"deep": Color(0.055, 0.11, 0.149), "mid": Color(0.169, 0.29, 0.361),
+	 "accent": Color(0.725, 0.776, 0.831), "spin": Color(0.816, 0.353, 0.165), "glow": Color(0.624, 0.843, 0.91)},
+	# Sky Kingdom
+	{"deep": Color(0.086, 0.133, 0.31), "mid": Color(0.247, 0.42, 0.71),
+	 "accent": Color(1, 0.914, 0.659), "spin": Color(1, 0.478, 0.302), "glow": Color(0.812, 0.894, 1)},
+	# Spooky Hollow
+	{"deep": Color(0.082, 0.047, 0.133), "mid": Color(0.227, 0.122, 0.302),
+	 "accent": Color(1, 0.624, 0.235), "spin": Color(0.482, 0.184, 0.949), "glow": Color(0.525, 0.878, 0.18)},
+	# Greek Isle
+	{"deep": Color(0.047, 0.137, 0.251), "mid": Color(0.122, 0.373, 0.62),
+	 "accent": Color(0.949, 0.941, 0.902), "spin": Color(0.949, 0.42, 0.227), "glow": Color(0.659, 0.847, 1)},
+	# Neon City
+	{"deep": Color(0.031, 0.024, 0.102), "mid": Color(0.106, 0.063, 0.314),
+	 "accent": Color(0.204, 0.961, 0.878), "spin": Color(1, 0.176, 0.584), "glow": Color(0.478, 0.176, 1)},
+	# Safari Savanna
+	{"deep": Color(0.18, 0.141, 0.063), "mid": Color(0.49, 0.396, 0.133),
+	 "accent": Color(0.961, 0.812, 0.416), "spin": Color(0.878, 0.392, 0.165), "glow": Color(1, 0.863, 0.541)},
+	# Arctic Base
+	{"deep": Color(0.027, 0.102, 0.165), "mid": Color(0.078, 0.259, 0.369),
+	 "accent": Color(0.718, 0.941, 1), "spin": Color(0.184, 0.827, 0.604), "glow": Color(0.475, 1, 0.839)},
+	# Mushroom Vale
+	{"deep": Color(0.114, 0.078, 0.141), "mid": Color(0.29, 0.169, 0.243),
+	 "accent": Color(0.941, 0.788, 0.529), "spin": Color(0.878, 0.333, 0.247), "glow": Color(1, 0.698, 0.478)},
+	# Steampunk Port
+	{"deep": Color(0.141, 0.086, 0.031), "mid": Color(0.42, 0.263, 0.094),
+	 "accent": Color(0.851, 0.631, 0.353), "spin": Color(0.09, 0.635, 0.722), "glow": Color(1, 0.769, 0.439)},
+	# Blossom Vale
+	{"deep": Color(0.169, 0.071, 0.149), "mid": Color(0.431, 0.165, 0.306),
+	 "accent": Color(1, 0.851, 0.91), "spin": Color(1, 0.373, 0.494), "glow": Color(1, 0.722, 0.816)},
+	# Lost Atlantis
+	{"deep": Color(0.016, 0.122, 0.2), "mid": Color(0.059, 0.333, 0.439),
+	 "accent": Color(0.561, 0.941, 0.902), "spin": Color(1, 0.69, 0.227), "glow": Color(0.373, 0.878, 1)},
+	# Chocolate Alps
+	{"deep": Color(0.141, 0.071, 0.031), "mid": Color(0.361, 0.184, 0.078),
+	 "accent": Color(1, 0.851, 0.659), "spin": Color(0.878, 0.478, 0.165), "glow": Color(1, 0.78, 0.541)},
+	# Robot Works
+	{"deep": Color(0.078, 0.09, 0.11), "mid": Color(0.2, 0.235, 0.278),
+	 "accent": Color(0.784, 0.824, 0.863), "spin": Color(1, 0.541, 0.122), "glow": Color(0.431, 0.878, 1)},
+	# Dino Valley
+	{"deep": Color(0.11, 0.141, 0.063), "mid": Color(0.29, 0.361, 0.133),
+	 "accent": Color(0.847, 0.769, 0.478), "spin": Color(0.91, 0.392, 0.165), "glow": Color(0.784, 0.878, 0.478)},
+	# Moon Base
+	{"deep": Color(0.039, 0.047, 0.078), "mid": Color(0.149, 0.169, 0.22),
+	 "accent": Color(0.847, 0.878, 0.933), "spin": Color(1, 0.353, 0.235), "glow": Color(0.624, 0.706, 0.847)},
+	# Magic Library
+	{"deep": Color(0.102, 0.063, 0.031), "mid": Color(0.29, 0.184, 0.086),
+	 "accent": Color(0.91, 0.788, 0.541), "spin": Color(0.478, 0.302, 1), "glow": Color(0.784, 0.627, 1)},
+	# Golden Capital
+	{"deep": Color(0.169, 0.122, 0.024), "mid": Color(0.42, 0.322, 0.063),
+	 "accent": Color(1, 0.878, 0.478), "spin": Color(1, 0.239, 0.353), "glow": Color(1, 0.824, 0.302)},
+]
+
 const NPC_DEFS := [
 	{"name": "Olga", "emoji": "👵"},
 	{"name": "Boris", "emoji": "🧔"},
@@ -121,8 +222,11 @@ const STAR_COLORS := [
 ]
 
 const COLLECTION_SEASON_DAYS := 30
-const COLLECTION_MEGA_COINS := 100000
-const COLLECTION_MEGA_SPINS := 50
+# Collections pay in spins and nothing else. Coins are what a spin produces,
+# so paying coins for a month of collecting handed the player the output and
+# skipped the machine; spins hand back the thing that makes everything else
+# happen -- raids, cards, buildings -- and send them straight to the reels.
+const COLLECTION_MEGA_SPINS := 3000
 const CARD_DROP_CHANCE := 0.25
 
 # Relative chance a spin-dropped card has a given star rating (index star-1).
@@ -135,22 +239,22 @@ const DROP_STAR_WEIGHTS := [50, 28, 13, 6, 3]
 # 5-star cards only exist in Hard sets, so chest star odds drive set odds.
 const COLLECTIONS := [
 	{"id": "beach", "name": "Beach Day", "icon": "🏖️", "diff": "Easy", "weight": 30,
-	 "reward_coins": 3000, "reward_spins": 0,
+	 "reward_spins": 60,
 	 "items": [["🐚", "Seashell", 1], ["🦀", "Crab", 1], ["⛱️", "Umbrella", 1], ["🍦", "Ice Cream", 2], ["🕶️", "Shades", 2], ["🏄", "Surfboard", 3]]},
 	{"id": "fruits", "name": "Fruit Basket", "icon": "🧺", "diff": "Easy", "weight": 26,
-	 "reward_coins": 4000, "reward_spins": 5,
+	 "reward_spins": 100,
 	 "items": [["🍎", "Apple", 1], ["🍌", "Banana", 1], ["🍇", "Grapes", 2], ["🍉", "Watermelon", 2], ["🍍", "Pineapple", 3], ["🥝", "Kiwi", 3]]},
 	{"id": "pirate", "name": "Pirate Treasure", "icon": "🏴‍☠️", "diff": "Medium", "weight": 17,
-	 "reward_coins": 8000, "reward_spins": 10,
+	 "reward_spins": 250,
 	 "items": [["🗺️", "Old Map", 2], ["🧭", "Compass", 2], ["⚓", "Anchor", 2], ["🦜", "Parrot", 3], ["💰", "Gold Bag", 3], ["🗡️", "Cutlass", 3], ["🛢️", "Rum Barrel", 4], ["☠️", "Jolly Roger", 4]]},
 	{"id": "ocean", "name": "Ocean Life", "icon": "🌊", "diff": "Medium", "weight": 13,
-	 "reward_coins": 10000, "reward_spins": 10,
+	 "reward_spins": 400,
 	 "items": [["🐠", "Reef Fish", 2], ["🪸", "Coral", 2], ["🐙", "Octopus", 3], ["🐬", "Dolphin", 3], ["🐢", "Turtle", 3], ["🦈", "Shark", 4], ["🐳", "Whale", 4], ["🦞", "Lobster", 4]]},
 	{"id": "relics", "name": "Mystic Relics", "icon": "🔮", "diff": "Hard", "weight": 9,
-	 "reward_coins": 20000, "reward_spins": 20,
+	 "reward_spins": 1000,
 	 "items": [["📿", "Prayer Beads", 3], ["🏺", "Amphora", 3], ["🕯️", "Ritual Candle", 3], ["🗿", "Stone Idol", 4], ["⚱️", "Ancient Urn", 4], ["🪬", "Amulet", 4], ["📜", "Lost Scroll", 4], ["🔮", "Crystal Orb", 5], ["🪄", "Wand", 5], ["🧿", "Evil Eye", 5]]},
 	{"id": "royal", "name": "Royal Jewels", "icon": "👑", "diff": "Hard", "weight": 5,
-	 "reward_coins": 30000, "reward_spins": 30,
+	 "reward_spins": 2000,
 	 "items": [["⚜️", "Fleur-de-Lis", 3], ["🥇", "Medal", 3], ["🛡️", "Crest", 3], ["💍", "Royal Ring", 4], ["🏆", "Gold Cup", 4], ["⚔️", "Twin Swords", 4], ["👑", "Crown", 5], ["💎", "Diamond", 5], ["🔱", "Trident", 5], ["🎖️", "Royal Order", 5]]},
 ]
 
@@ -288,6 +392,19 @@ static func prop_tex(id: String) -> Texture2D:
 
 static func island_theme(level: int) -> Dictionary:
 	return ISLANDS[(level - 1) % ISLANDS.size()]
+
+static func island_palette(level: int) -> Dictionary:
+	return ISLAND_PALETTES[(level - 1) % ISLAND_PALETTES.size()]
+
+# Reel faces stay bright enough for the symbol art to read, but pick up a
+# hint of the island's trim so they don't look pasted in from another game.
+static func palette_reel(p: Dictionary) -> Color:
+	return Color(1, 0.98, 0.94).lerp(p["accent"], 0.18)
+
+# Ink for text sitting on an accent-colored fill.
+static func palette_ink(p: Dictionary) -> Color:
+	var a: Color = p["accent"]
+	return a.darkened(0.72) if a.get_luminance() > 0.42 else Color(1, 0.97, 0.9)
 
 static func island_building_name(level: int, i: int) -> String:
 	return island_theme(level)["buildings"][i]
