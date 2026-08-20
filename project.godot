@@ -7,6 +7,15 @@ config/name="Loot Lagoon"
 run/main_scene="res://main.tscn"
 config/icon="res://icon.png"
 config/features=PackedStringArray("4.7", "Forward Plus")
+; Godot's own logo used to be the first thing the game showed, on charcoal.
+; A coin on the lagoon's sky replaces it, and iOS builds the launch screen out
+; of these same two settings -- so launching goes coin-on-sky (iOS launch
+; screen) -> coin-on-sky (engine splash) -> the title screen, with nothing
+; foreign flashing in between. bg_color is also the clear colour below.
+boot_splash/bg_color=Color(0.573, 0.867, 0.937, 1)
+boot_splash/image="res://assets/art/symbols/coin.png"
+boot_splash/fullsize=false
+boot_splash/use_filter=true
 
 [autoload]
 
@@ -20,11 +29,11 @@ window/size/window_width_override=540
 window/size/window_height_override=960
 window/handheld/orientation=1
 window/stretch/mode="canvas_items"
-window/stretch/aspect="keep"
+window/stretch/aspect="expand"
 
 [rendering]
 
 renderer/rendering_method="forward_plus"
 textures/vram_compression/import_etc2_astc=true
 rendering_device/driver.macos="vulkan"
-environment/defaults/default_clear_color=Color(0.5, 0.75, 0.95, 1)
+environment/defaults/default_clear_color=Color(0.573, 0.867, 0.937, 1)

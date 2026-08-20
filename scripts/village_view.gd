@@ -154,7 +154,7 @@ func refresh(buildings: Array, coins: int, costs: Array) -> void:
 			btn.disabled = true
 		else:
 			var cost: int = costs[level]
-			btn.text = ("Build  %d" if level == 0 else "Upgrade  %d") % cost
+			btn.text = ("Build  %s" if level == 0 else "Upgrade  %s") % UI.fmt_compact(cost)
 			btn.disabled = coins < cost
 
 func start_construction(index: int, on_done: Callable, duration := 2.2) -> void:

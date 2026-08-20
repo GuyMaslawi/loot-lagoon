@@ -66,6 +66,7 @@ const REEF_LO     := Color(0.667, 0.145, 0.220)
 # --- ink ---------------------------------------------------------------------
 const INK         := Color(0.043, 0.227, 0.286)  # primary text on glass
 const INK_SOFT    := Color(0.290, 0.475, 0.529)  # secondary text on glass
+const INK_MUTE    := Color(0.167, 0.351, 0.408)  # secondary text at caption size
 const INK_FAINT   := Color(0.451, 0.612, 0.655)  # tertiary / disabled
 
 # Corner radii. Sea glass is tumbled smooth, so nothing in this game has a

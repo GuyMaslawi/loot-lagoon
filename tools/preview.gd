@@ -23,17 +23,50 @@ func _ready() -> void:
 				_open_page.call_deferred(game, OS.get_environment("PAGE"))
 			if OS.has_environment("SPIN"):
 				_spin.call_deferred(game)
+			# RAID=steal|attack drops straight into the raid flow -- the search
+			# screen and the island behind it -- without waiting on a triple.
+			if OS.has_environment("RAID"):
+				_raid.call_deferred(game, OS.get_environment("RAID"))
+		"match":
+			# The search screen on its own, no boot and no reels: MATCH=found
+			# jumps past the sweep so the rival card can be judged at rest.
+			var m := Matchmaking.new()
+			m.npc = CV.new_npc(CV.BOT_DEFS[3], 6)
+			m.mode = OS.get_environment("MODE") if OS.has_environment("MODE") else "steal"
+			m.npc["shield"] = true
+			m.stake = 242_000
+			m.stars = 11
+			add_child(m)
+			if OS.get_environment("MATCH") == "found":
+				_land.call_deferred(m)
+		"mascot":
+			_mascot_reel.call_deferred()
+			return
 		_:
 			_glyph_sheet()
 	if OS.has_environment("SHOT"):
 		_shoot.call_deferred()
+
+func _land(m: Control) -> void:
+	await get_tree().create_timer(0.45).timeout
+	m.call("_lock_in")
+
+func _raid(game: Control, mode: String) -> void:
+	while game.get("_boot") != null:
+		await get_tree().process_frame
+	await get_tree().create_timer(0.4).timeout
+	game.call("_start_visit", "attack" if mode == "attack" else "steal")
 
 func _spin(game: Control) -> void:
 	await get_tree().create_timer(0.3).timeout
 	game.call("_on_spin_requested")
 
 func _open_page(game: Control, key: String) -> void:
-	await get_tree().create_timer(0.4).timeout
+	# Wait out the load sequence rather than a fixed delay -- the pages this
+	# jumps to do not exist until _run_boot() has built them.
+	while game.get("_boot") != null:
+		await get_tree().process_frame
+	await get_tree().process_frame
 	if key.begins_with("popup:"):
 		game.call("_open_" + key.substr(6))
 		return
@@ -91,10 +124,72 @@ func _glyph_sheet() -> void:
 		row.add_child(b)
 		Lagoon.button_gloss(b, 22)
 
+# PREVIEW=mascot writes a strip of frames of the title screen's raccoon, so a
+# change to his rig can be judged as motion rather than as one lucky pose.
+#
+#   PREVIEW=mascot ACT=dance ENERGY=0.6 DIR=/tmp/m godot --path . tools/preview.tscn
+#
+# ACT is one of the act names below, or "auto" to let him choose as he would.
+func _mascot_reel() -> void:
+	var boot: Control = load("res://scripts/boot.gd").new()
+	add_child(boot)
+
+	var dir := OS.get_environment("DIR") if OS.has_environment("DIR") else "/tmp/mascot"
+	var frames := int(OS.get_environment("FRAMES")) if OS.has_environment("FRAMES") else 40
+	var step := float(OS.get_environment("STEP")) if OS.has_environment("STEP") else 0.075
+	var energy := float(OS.get_environment("ENERGY")) if OS.has_environment("ENERGY") else 0.55
+	var want := OS.get_environment("ACT") if OS.has_environment("ACT") else "auto"
+	var acts := {"dance": 1, "hop": 2, "peek": 3, "coin": 4, "spin": 5, "look": 6,
+		"party": 7, "exit": 8}
+	DirAccess.make_dir_recursive_absolute(dir)
+
+	boot.call("_set_ratio", minf(energy, 0.99))
+	# Let his entrance land before anything is asked of him -- but never wait on
+	# it forever, because a rig that failed to build never gets there.
+	var patience := 0.0
+	while not boot.get("_live") and patience < 6.0:
+		patience += get_process_delta_time()
+		await get_tree().process_frame
+	if not boot.get("_live"):
+		push_error("mascot never came alive -- his art probably did not load")
+		get_tree().quit(1)
+		return
+
+	# FADE=0.5 holds him half-faded-in: his pieces overlap, so that is the frame
+	# that shows whether they are being blended one at a time or as one figure.
+	if OS.has_environment("FADE"):
+		var art: Control = boot.get("_mascot_art")
+		var f := float(OS.get_environment("FADE"))
+		if art is MascotRig:
+			(art as MascotRig).fade = f
+		else:
+			art.modulate.a = f
+
+	for i in frames:
+		if want != "auto" and acts.has(want) and int(boot.get("_act")) == 0:
+			boot.call("_begin_act", acts[want])
+			boot.set("_rest", 0.0)
+		await get_tree().create_timer(step).timeout
+		await RenderingServer.frame_post_draw
+		var img := get_viewport().get_texture().get_image()
+		# The window is whatever macOS would give us, so normalise back to the
+		# design canvas before cropping -- otherwise every crop is a guess.
+		img.resize(720, 1280, Image.INTERPOLATE_LANCZOS)
+		img = img.get_region(Rect2i(20, 330, 680, 760))
+		img.save_png("%s/%03d.png" % [dir, i])
+	get_tree().quit()
+
 func _shoot() -> void:
 	await get_tree().process_frame
 	await get_tree().process_frame
 	await get_tree().create_timer(float(OS.get_environment("SHOT_DELAY")) if OS.has_environment("SHOT_DELAY") else 0.6).timeout
-	var img := get_viewport().get_texture().get_image()
-	img.save_png(OS.get_environment("SHOT"))
+	var shots := int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 1
+	var gap := float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.4
+	var path := OS.get_environment("SHOT")
+	for i in shots:
+		if i > 0:
+			await get_tree().create_timer(gap).timeout
+		await RenderingServer.frame_post_draw
+		var img := get_viewport().get_texture().get_image()
+		img.save_png(path if shots == 1 else path.replace(".png", "_%02d.png" % i))
 	get_tree().quit()

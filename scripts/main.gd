@@ -13,8 +13,9 @@ var island_level := 1
 var buildings := [0, 0, 0, 0, 0]
 var revenge_pending := false
 var npcs: Array = []
-# Picked before the spin, not after it, so the pot on the machine's card is a
-# promise rather than a decoration -- the coins you see are the coins at stake.
+# The raccoons' mark. Picked before the spin, not after it, so the pot on the
+# machine's card is a promise rather than a decoration -- the coins you see are
+# the coins at stake, and the name you see is whose vault gets opened.
 var next_target: Dictionary = {}
 
 var slot_page: Control
@@ -23,12 +24,22 @@ var slot: SlotView
 var village: VillageView
 var _current_page: Control
 var _visit: IslandVisit
+var _match: Matchmaking
+# The rival the current raid is against, held from the moment the reels land
+# until the raid is paid out. next_target is free to move on afterwards; this
+# is the one the search screen shows and the one the island belongs to, and
+# nothing in between the two is allowed to swap it.
+var _raid_target: Dictionary = {}
+# Who you hit last. They are the ones with a reason to come back at you.
+var _last_raided: Dictionary = {}
 
 var _hud_labels: Array = []
 var _regen_accum := 0.0
 var _transitioning := false
 
-const DAILY_COOLDOWN := 300.0
+const DAILY_COOLDOWN := 86400.0
+const DAILY_BONUS_COINS := 1200
+const DAILY_BONUS_SPINS := 8
 var daily_last := 0.0
 var muted := false
 # Missions run in three reset cycles. "coins" is the base reward at island 1;
@@ -36,40 +47,40 @@ var muted := false
 # mission is always worth the same fraction of a building at any island.
 const MISSION_DEFS := {
 	"daily": [
-		{"id": "spins", "emoji": "🌀", "desc": "Spin the wheel", "target": 15, "coins": 500},
-		{"id": "coins_won", "emoji": "💰", "desc": "Win coins on spins", "target": 8000, "coins": 600},
-		{"id": "attacks", "emoji": "🔨", "desc": "Attack rival islands", "target": 3, "coins": 800},
-		{"id": "steals", "emoji": "🦝", "desc": "Steal from rivals", "target": 2, "coins": 700},
-		{"id": "builds", "emoji": "🏗️", "desc": "Build star upgrades", "target": 2, "coins": 900},
+		{"id": "spins", "emoji": "🌀", "desc": "Spin the wheel", "target": 15, "coins": 800},
+		{"id": "coins_won", "emoji": "💰", "desc": "Win coins on spins", "target": 8000, "coins": 900},
+		{"id": "attacks", "emoji": "🔨", "desc": "Attack rival islands", "target": 3, "coins": 1200},
+		{"id": "steals", "emoji": "🦝", "desc": "Steal from rivals", "target": 2, "coins": 1100},
+		{"id": "builds", "emoji": "🏗️", "desc": "Build star upgrades", "target": 2, "coins": 1400},
 		{"id": "daily_gift", "emoji": "🎁", "desc": "Claim the daily bonus", "target": 1, "spins": 5},
-		{"id": "big_bet", "emoji": "🎯", "desc": "Spin at bet x2 or more", "target": 5, "coins": 550},
-		{"id": "cards", "emoji": "🃏", "desc": "Find collection cards", "target": 2, "coins": 650},
+		{"id": "big_bet", "emoji": "🎯", "desc": "Spin at bet x2 or more", "target": 5, "coins": 850},
+		{"id": "cards", "emoji": "🃏", "desc": "Find collection cards", "target": 2, "coins": 1000},
 	],
 	"weekly": [
-		{"id": "spins", "emoji": "🌀", "desc": "Spin the wheel", "target": 100, "coins": 2500},
-		{"id": "coins_won", "emoji": "💰", "desc": "Win coins on spins", "target": 60000, "coins": 3000},
-		{"id": "attacks", "emoji": "🔨", "desc": "Attack rival islands", "target": 15, "coins": 2800},
-		{"id": "steals", "emoji": "🦝", "desc": "Steal from rivals", "target": 12, "coins": 2600},
-		{"id": "builds", "emoji": "🏗️", "desc": "Build star upgrades", "target": 10, "coins": 3500},
-		{"id": "daily_gift", "emoji": "🎁", "desc": "Claim 5 daily bonuses", "target": 5, "coins": 2200},
-		{"id": "big_bet", "emoji": "🎯", "desc": "Spin at bet x2 or more", "target": 30, "coins": 2400},
-		{"id": "cards", "emoji": "🃏", "desc": "Find collection cards", "target": 10, "coins": 2600},
+		{"id": "spins", "emoji": "🌀", "desc": "Spin the wheel", "target": 100, "coins": 3600},
+		{"id": "coins_won", "emoji": "💰", "desc": "Win coins on spins", "target": 60000, "coins": 4300},
+		{"id": "attacks", "emoji": "🔨", "desc": "Attack rival islands", "target": 15, "coins": 4000},
+		{"id": "steals", "emoji": "🦝", "desc": "Steal from rivals", "target": 12, "coins": 3700},
+		{"id": "builds", "emoji": "🏗️", "desc": "Build star upgrades", "target": 10, "coins": 5000},
+		{"id": "daily_gift", "emoji": "🎁", "desc": "Claim 5 daily bonuses", "target": 5, "coins": 3200},
+		{"id": "big_bet", "emoji": "🎯", "desc": "Spin at bet x2 or more", "target": 30, "coins": 3400},
+		{"id": "cards", "emoji": "🃏", "desc": "Find collection cards", "target": 10, "coins": 3700},
 	],
 	"monthly": [
-		{"id": "spins", "emoji": "🌀", "desc": "Spin the wheel", "target": 400, "coins": 8000},
-		{"id": "coins_won", "emoji": "💰", "desc": "Win coins on spins", "target": 250000, "coins": 9000},
-		{"id": "attacks", "emoji": "🔨", "desc": "Attack rival islands", "target": 50, "coins": 8500},
-		{"id": "steals", "emoji": "🦝", "desc": "Steal from rivals", "target": 40, "coins": 8000},
-		{"id": "builds", "emoji": "🏗️", "desc": "Build star upgrades", "target": 35, "coins": 10000},
-		{"id": "islands", "emoji": "⛵", "desc": "Complete an island", "target": 1, "coins": 12000},
-		{"id": "daily_gift", "emoji": "🎁", "desc": "Claim 20 daily bonuses", "target": 20, "coins": 7500},
+		{"id": "spins", "emoji": "🌀", "desc": "Spin the wheel", "target": 400, "coins": 11000},
+		{"id": "coins_won", "emoji": "💰", "desc": "Win coins on spins", "target": 250000, "coins": 12500},
+		{"id": "attacks", "emoji": "🔨", "desc": "Attack rival islands", "target": 50, "coins": 11800},
+		{"id": "steals", "emoji": "🦝", "desc": "Steal from rivals", "target": 40, "coins": 11000},
+		{"id": "builds", "emoji": "🏗️", "desc": "Build star upgrades", "target": 35, "coins": 14000},
+		{"id": "islands", "emoji": "⛵", "desc": "Complete an island", "target": 1, "coins": 17000},
+		{"id": "daily_gift", "emoji": "🎁", "desc": "Claim 20 daily bonuses", "target": 20, "coins": 10500},
 	],
 }
 # Extra chest for claiming every mission in a cycle (coins scale like above).
 const MISSION_BONUS := {
-	"daily": {"emoji": "🎁", "coins": 1500, "spins": 10},
-	"weekly": {"emoji": "🧰", "coins": 6000, "spins": 30},
-	"monthly": {"emoji": "🏆", "coins": 15000, "spins": 60},
+	"daily": {"emoji": "🎁", "coins": 2600, "spins": 15},
+	"weekly": {"emoji": "🧰", "coins": 10000, "spins": 45},
+	"monthly": {"emoji": "🏆", "coins": 26000, "spins": 90},
 }
 const MISSION_TAB_INFO := {
 	"daily": {"emoji": "☀️", "title": "DAILY", "color": Color(0.3, 0.62, 0.38)},
@@ -92,6 +103,8 @@ var _badges := {}
 var profile := {}
 var _login_layer: Control
 var _village_bg: TextureRect
+var _village_stage: Control
+var _village_sky: ColorRect
 var _island_title: Label
 # SPIN page pieces that get repainted per island by _apply_island_theme().
 var _slot_bg: TextureRect
@@ -127,27 +140,125 @@ var notif_types := {"attack": true, "steal": true, "spins": true}
 var notif_log := []
 var _toast: Control
 var _offline_spins_gained := 0
+var _offline_elapsed := 0.0
 # DEMO_ISLAND=17 previews that island's theme without grinding to it. Saving is
 # disabled while it's set so a preview can never overwrite real progress.
 var _preview_island := false
 
+# The title screen holds for at least this long. The work behind it finishes in
+# well under a second on a modern phone, and a splash that flashes past is
+# worse than no splash -- the wordmark has to have time to be read.
+const BOOT_MIN_SECS := 2.0
+
+var _boot: Boot
+var _preloaded: Array = []
+
 func _ready() -> void:
 	randomize()
-	_setup_global_font_fallbacks()
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	# Fonts and the root theme first: the title screen is built out of the same
+	# type as everything else, so it can't come up before they exist.
+	_setup_global_font_fallbacks()
+	_boot = Boot.new()
+	add_child(_boot)
+	_run_boot()
+
+# The load sequence, spread across frames so the bar can be drawn between the
+# pieces. Every step does real work and the bar only moves once that work has
+# returned, so the percentage measures something instead of animating.
+#
+# The order matters in one place: the save is read first. That is what lets
+# every page be built already holding the player's island and counters, rather
+# than being built on defaults and repainted afterwards, which is what used to
+# happen.
+func _run_boot() -> void:
+	var started := Time.get_ticks_msec()
+	await _boot_step(0.14, "Reading your logbook", _boot_load)
+	_boot.set_island(CV.island_palette(island_level), CV.island_bg_tex(island_level))
+	await _boot_step(0.34, "Charting %s" % CV.island_theme(island_level)["name"], _boot_warm_art)
+	await _boot_step(0.58, "Polishing the reels", _build_slot_page)
+	await _boot_step(0.74, "Raising the village", _build_village_page)
+	await _boot_step(0.90, "Stocking shop, cards and quests", _build_menu_pages)
+	await _boot_step(1.00, "Casting off", _boot_finish_build)
+
+	var elapsed := float(Time.get_ticks_msec() - started) / 1000.0
+	if elapsed < BOOT_MIN_SECS:
+		await get_tree().create_timer(BOOT_MIN_SECS - elapsed).timeout
+
+	# Cleared before the fade rather than after it: the game underneath is
+	# fully built by now, so it may as well start ticking while the title
+	# screen dissolves off it.
+	var splash := _boot
+	_boot = null
+	await splash.dismiss()
+	_after_boot()
+
+# One step: name it, give the screen a frame to actually paint that name, do
+# the work, then let the bar catch up to where the work got us.
+func _boot_step(ratio: float, label: String, work: Callable) -> void:
+	_boot.set_status(label)
+	await get_tree().process_frame
+	work.call()
+	await _boot.advance(ratio)
+
+func _boot_load() -> void:
 	_load_game()
 	if OS.has_environment("DEMO_ISLAND"):
 		var preview := int(OS.get_environment("DEMO_ISLAND"))
 		if preview >= 1:
 			island_level = preview
 			_preview_island = true
+	_stock_rivals()
 	_ensure_missions()
-	_update_badges()
-	# The pages are built inside _setup_global_font_fallbacks(), which runs
-	# above _load_game(), so they come up holding default state -- island 1's
-	# art and starting counters. Re-apply now that the save is actually in.
+	_ensure_collections()
+	if muted:
+		AudioServer.set_bus_mute(0, true)
+	_load_profile()
+
+# Pulls the textures the first screens will ask for through the loader now,
+# while there is a progress bar accounting for the time, and keeps a reference
+# to each so the resource cache can't drop them again before the pages that
+# use them are built.
+func _boot_warm_art() -> void:
+	_preloaded.clear()
+	_preloaded.append(CV.island_bg_tex(island_level))
+	for i in CV.BUILDINGS.size():
+		_preloaded.append(CV.island_building_tex(island_level, i))
+	for id in CV.SYMBOLS:
+		_preloaded.append(CV.symbol_tex(id))
+	_preloaded.append(CV.bg_tex("slot_room"))
+	_preloaded.append(CV.bg_tex("village"))
+	_preloaded.append(CV.emoji_font())
+	_preloaded.append(Lagoon.display_font())
+	_preloaded.append(Lagoon.ui_bold_font())
+
+func _boot_finish_build() -> void:
+	village_page.visible = false
+	_current_page = slot_page
+	if OS.get_environment("DEMO_PAGE") == "island":
+		slot_page.visible = false
+		village_page.visible = true
+		_current_page = village_page
+	_build_nav()
 	_apply_island_theme()
+	_update_badges()
 	_refresh()
+
+# Everything that addresses the player waits until the title screen is gone --
+# a toast or a sign-in sheet fading up behind a splash is one nobody reads.
+func _after_boot() -> void:
+	call_deferred("_check_island_complete")
+	if _offline_spins_gained > 0:
+		_notify("spins", "While you were away, spins refilled  +%d  (%d/%d)" % [_offline_spins_gained, spins, SPIN_CAP], "🌀")
+		_offline_spins_gained = 0
+	_offline_raids()
+	if profile.is_empty():
+		_show_login()
+	if OS.has_environment("DEMO_QUESTS"):
+		var demo_tab := OS.get_environment("DEMO_QUESTS")
+		if MISSION_DEFS.has(demo_tab):
+			quests_tab = demo_tab
+		call_deferred("_goto", pages["quests"])
 
 # Establishes the game's two typefaces (see Lagoon) as the global baseline, so
 # every control that doesn't ask for something specific already speaks in the
@@ -168,33 +279,6 @@ func _setup_global_font_fallbacks() -> void:
 	# and the few places that invert say so explicitly.
 	t.set_color("font_color", "Label", Lagoon.INK)
 	theme = t
-	if npcs.is_empty():
-		for def in CV.NPC_DEFS:
-			npcs.append(CV.new_npc(def))
-	_ensure_collections()
-	_build_slot_page()
-	_build_village_page()
-	_build_menu_pages()
-	village_page.visible = false
-	_current_page = slot_page
-	_build_nav()
-	if muted:
-		AudioServer.set_bus_mute(0, true)
-	_apply_island_theme()
-	_refresh()
-	_update_badges()
-	call_deferred("_check_island_complete")
-	if _offline_spins_gained > 0:
-		_notify("spins", "While you were away, spins refilled  +%d  (%d/%d)" % [_offline_spins_gained, spins, SPIN_CAP], "🌀")
-		_offline_spins_gained = 0
-	_load_profile()
-	if profile.is_empty():
-		_show_login()
-	if OS.has_environment("DEMO_QUESTS"):
-		var demo_tab := OS.get_environment("DEMO_QUESTS")
-		if MISSION_DEFS.has(demo_tab):
-			quests_tab = demo_tab
-		call_deferred("_goto", pages["quests"])
 
 # --- login ---
 
@@ -246,15 +330,15 @@ func _show_login() -> void:
 	var logo := Lagoon.wordmark("LOOT  LAGOON", 68)
 	_login_layer.add_child(logo)
 	logo.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	logo.offset_top = 240.0
-	logo.offset_bottom = 330.0
+	logo.offset_top = 240.0 + safe_top()
+	logo.offset_bottom = 330.0 + safe_top()
 	FX.pulse_forever(logo, 1.04, 2.2)
 
 	var tagline := Lagoon.title("Spin · Raid · Build your island", UI.F_BODY, Color.WHITE, Lagoon.ABYSS)
 	_login_layer.add_child(tagline)
 	tagline.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	tagline.offset_top = 336.0
-	tagline.offset_bottom = 386.0
+	tagline.offset_top = 336.0 + safe_top()
+	tagline.offset_bottom = 386.0 + safe_top()
 
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 18)
@@ -262,7 +346,7 @@ func _show_login() -> void:
 	box.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
 	box.offset_left = 130.0
 	box.offset_right = -130.0
-	box.offset_top = 640.0
+	box.offset_top = 640.0 + safe_top()
 
 	var g_btn := Button.new()
 	g_btn.text = "Sign in with Google"
@@ -332,6 +416,10 @@ func _close_login() -> void:
 	_banner("Welcome, %s!" % profile.get("name", "Player"), Color(1.0, 0.85, 0.3))
 
 func _process(delta: float) -> void:
+	# The pages are built a step at a time behind the title screen, so until it
+	# is gone half of what this function reaches for does not exist yet.
+	if _boot != null:
+		return
 
 	_regen_accum += delta
 	if _regen_accum >= SPIN_REGEN_SECS:
@@ -366,7 +454,9 @@ func _process(delta: float) -> void:
 				_update_quests_timer()
 
 func _notification(what: int) -> void:
-	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+	# Quitting mid-load would otherwise write the starting 1500/30 over a real
+	# save, since the file has not necessarily been read yet.
+	if what == NOTIFICATION_WM_CLOSE_REQUEST and _boot == null:
 		_save_game()
 
 # --- page transitions ---
@@ -383,7 +473,7 @@ func _page_rank(p: Control) -> int:
 	return 0
 
 func _goto(target: Control) -> void:
-	if _transitioning or target == _current_page or _visit != null or _journey_layer != null:
+	if _transitioning or target == _current_page or _raiding() or _journey_layer != null:
 		return
 	if target != pages.get("collections"):
 		col_open = ""
@@ -396,10 +486,12 @@ func _goto(target: Control) -> void:
 	_current_page = target
 	target.visible = true
 	var dir := 1.0 if _page_rank(target) > _page_rank(from) else -1.0
-	target.position = Vector2(720.0 * dir, 0)
+	# A page slides in from exactly one screen away, whatever a screen is here.
+	var span := view_size().x
+	target.position = Vector2(span * dir, 0)
 	var tw := create_tween()
 	tw.set_parallel(true)
-	tw.tween_property(from, "position", Vector2(-720.0 * dir, 0), 0.38).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+	tw.tween_property(from, "position", Vector2(-span * dir, 0), 0.38).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
 	tw.tween_property(target, "position", Vector2.ZERO, 0.38).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
 	tw.chain().tween_callback(func() -> void:
 		from.visible = false
@@ -423,13 +515,51 @@ var _float_options: Button
 const NAV_BAR_H := 118.0
 const NAV_ROOT_H := 152.0
 
+# How the 118 units of a tab are spent, top to bottom: the glyph in its plate,
+# then a gap, then the word, then the clearance the home indicator needs. The
+# bands are written out here, in one place and all measured from the top, so
+# they can be seen not to overlap. Scattered as anchor offsets through
+# _build_nav they were not: the caption's were measured from the *other* end of
+# the button, and ran 24 units back up into the glyph without anyone noticing.
+const NAV_PLATE_TOP := 8.0
+const NAV_PLATE_H   := 62.0
+const NAV_ICON_TOP  := 16.0
+const NAV_ICON_H    := 48.0
+const NAV_CAP_TOP   := 68.0
+const NAV_CAP_H     := 34.0
+
+# The screen the game actually got, and the parts of it that are ours to draw
+# on. The arithmetic lives in UI, which the title screen and the raid overlay
+# reach for too; these are just the shorthands this file reads better with.
+
+func view_size() -> Vector2:
+	return get_viewport_rect().size
+
+func safe_top() -> float:
+	return UI.safe_top(view_size())
+
+func safe_bottom() -> float:
+	return UI.safe_bottom(view_size())
+
+# Where the nav bar cuts the page off. Everything above it is the page's.
+func content_bottom() -> float:
+	return view_size().y - NAV_ROOT_H - safe_bottom()
+
+# The top edge of the nav bar's glass slab, a little below where the bar's own
+# rect starts -- the raised SPIN button hangs in the gap between them. Art that
+# reaches this line leaves nothing bare behind the bar.
+func nav_slab_top() -> float:
+	return content_bottom() + (NAV_ROOT_H - NAV_BAR_H)
+
 func _build_nav() -> void:
 	var nav_root := Control.new()
 	nav_root.z_index = 50
 	nav_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(nav_root)
 	nav_root.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-	nav_root.offset_top = -NAV_ROOT_H
+	# Grown downward past the home indicator: the slab fills that strip so no
+	# background shows under it, while the tabs inside stop above it.
+	nav_root.offset_top = -(NAV_ROOT_H + safe_bottom())
 
 	# A slab of sea glass resting on the water with a brass lip along its top
 	# edge -- the same two materials as every card above it, so the bar reads as
@@ -455,6 +585,7 @@ func _build_nav() -> void:
 	nav_root.add_child(hb)
 	hb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	hb.offset_top = NAV_ROOT_H - NAV_BAR_H
+	hb.offset_bottom = -safe_bottom()
 
 	var tabs := [
 		["island", "Island", "island"],
@@ -479,21 +610,30 @@ func _build_nav() -> void:
 		hb.add_child(btn)
 		FX.press_feedback(btn)
 
-		# Coral bar over the active tab. Coral means "this is the live one"
-		# here for the same reason it means "tap this" on a button.
-		var pill := Panel.new()
+		# The live tab's glyph sits in a plate of its own. Coral means "this is
+		# the live one" here for the same reason it means "tap this" on a
+		# button, but as a wash rather than a fill -- one solid coral shape
+		# belongs on this bar and it is the SPIN disc.
+		#
+		# This used to be a coral tick pinned to the top edge of the button,
+		# which is a strip the glyph wants when it grows for the active state
+		# and the alert badge wants all the time. Behind the glyph it collides
+		# with neither, and it says which tab you are on from further away.
+		var plate := Panel.new()
 		var psb := StyleBoxFlat.new()
-		psb.bg_color = Lagoon.CORAL
-		psb.set_corner_radius_all(4)
-		pill.add_theme_stylebox_override("panel", psb)
-		pill.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		pill.visible = false
-		btn.add_child(pill)
-		pill.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
-		pill.offset_left = -26.0
-		pill.offset_right = 26.0
-		pill.offset_top = 5.0
-		pill.offset_bottom = 13.0
+		psb.bg_color = Color(Lagoon.CORAL.r, Lagoon.CORAL.g, Lagoon.CORAL.b, 0.18)
+		psb.set_corner_radius_all(22)
+		psb.set_border_width_all(3)
+		psb.border_color = Color(Lagoon.CORAL.r, Lagoon.CORAL.g, Lagoon.CORAL.b, 0.55)
+		plate.add_theme_stylebox_override("panel", psb)
+		plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		plate.visible = false
+		btn.add_child(plate)
+		plate.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+		plate.offset_left = -42.0
+		plate.offset_right = 42.0
+		plate.offset_top = NAV_PLATE_TOP
+		plate.offset_bottom = NAV_PLATE_TOP + NAV_PLATE_H
 
 		var icon := Glyph.new()
 		icon.kind = t[0]
@@ -501,23 +641,28 @@ func _build_nav() -> void:
 		icon.resized.connect(func() -> void: icon.pivot_offset = icon.size * 0.5)
 		btn.add_child(icon)
 		icon.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-		icon.offset_top = 16.0
-		icon.offset_bottom = 84.0
+		icon.offset_top = NAV_ICON_TOP
+		icon.offset_bottom = NAV_ICON_TOP + NAV_ICON_H
 
-		var cap := Lagoon.label(t[1], UI.F_CAPTION, Lagoon.INK_SOFT, true)
+		# The word gets a band of its own below the icon. It used to be anchored
+		# so that its box climbed 24 units back up into the glyph, and a caption
+		# printed over a drawn palm tree is not a caption -- it is texture. The
+		# two never overlap now, at any tab scale.
+		var cap := Lagoon.label(t[1], UI.F_CAPTION, Lagoon.INK_MUTE, true)
 		cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		cap.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		cap.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		btn.add_child(cap)
 		cap.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-		cap.offset_top = -58.0
-		cap.offset_bottom = -24.0
+		cap.offset_top = -(NAV_BAR_H - NAV_CAP_TOP)
+		cap.offset_bottom = -(NAV_BAR_H - NAV_CAP_TOP - NAV_CAP_H)
 
 		if key == "island":
 			btn.pressed.connect(func() -> void: _goto(village_page))
 		else:
 			btn.pressed.connect(func() -> void: _goto(pages[key]))
 
-		_nav_tabs[key] = {"button": btn, "icon": icon, "cap": cap, "pill": pill}
+		_nav_tabs[key] = {"button": btn, "icon": icon, "cap": cap, "plate": plate}
 
 	# raised circular Spin button in the middle of the bar
 	_spin_glow = ColorRect.new()
@@ -569,12 +714,15 @@ void fragment() {
 	spin_icon.tint = Lagoon.SAND
 	_spin_nav.add_child(spin_icon)
 	spin_icon.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	spin_icon.offset_left = 30.0
-	spin_icon.offset_right = -30.0
-	spin_icon.offset_top = 16.0
-	spin_icon.offset_bottom = 88.0
+	spin_icon.offset_left = 36.0
+	spin_icon.offset_right = -36.0
+	spin_icon.offset_top = 18.0
+	spin_icon.offset_bottom = 78.0
 
+	# Lifted clear of the wheel above it, for the same reason as the tab
+	# captions -- the rim of the wheel was landing on the S and the P.
 	var spin_cap := Lagoon.title("SPIN", UI.F_LABEL, Lagoon.SAND, Lagoon.CORAL_LO)
+	spin_cap.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_spin_nav.add_child(spin_cap)
 	spin_cap.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
 	spin_cap.offset_top = -52.0
@@ -602,7 +750,7 @@ func _build_float_options() -> void:
 	# the page nobody is meant to be drawn to.
 	_float_options = Button.new()
 	_float_options.size = Vector2(66, 66)
-	_float_options.position = Vector2(720 - 14 - 66, 96)
+	_float_options.position = Vector2(view_size().x - 14.0 - 66.0, 96.0 + safe_top())
 	_float_options.focus_mode = Control.FOCUS_NONE
 	for state in ["normal", "hover", "pressed"]:
 		var sb := StyleBoxFlat.new()
@@ -639,8 +787,8 @@ func _nav_badge(parent: Control, text := "!") -> Panel:
 	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	parent.add_child(badge)
 	badge.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
-	badge.offset_left = 14.0
-	badge.offset_right = 44.0
+	badge.offset_left = 18.0
+	badge.offset_right = 48.0
 	badge.offset_top = 2.0
 	badge.offset_bottom = 32.0
 	var bang := Lagoon.label(text, UI.F_CAPTION, Color.WHITE, true)
@@ -664,13 +812,16 @@ func _update_nav() -> void:
 		var is_active: bool = key == active
 		var icon: Control = tab["icon"]
 		icon.pivot_offset = icon.size * 0.5
-		var target := Vector2(1.22, 1.22) if is_active else Vector2.ONE
+		var target := Vector2(1.14, 1.14) if is_active else Vector2.ONE
 		icon.create_tween().tween_property(icon, "scale", target, 0.22).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 		# Inactive tabs wash out toward the glass rather than dimming to grey --
 		# on a light bar, "further away" reads better than "switched off".
-		icon.modulate = Color.WHITE if is_active else Color(1, 1, 1, 0.45)
-		(tab["cap"] as Label).add_theme_color_override("font_color", Lagoon.INK if is_active else Lagoon.INK_SOFT)
-		tab["pill"].visible = is_active
+		# Only the drawing washes out, though. A tab you cannot read is not a
+		# quieter tab, it is a missing one, so the word underneath holds a
+		# contrast the eye can still land on and the icon carries the state.
+		icon.modulate = Color.WHITE if is_active else Color(1, 1, 1, 0.72)
+		(tab["cap"] as Label).add_theme_color_override("font_color", Lagoon.INK if is_active else Lagoon.INK_MUTE)
+		tab["plate"].visible = is_active
 	if _float_options != null:
 		_float_options.visible = active != "options"
 	var spin_active := active == "spin"
@@ -689,6 +840,14 @@ func _build_slot_page() -> void:
 	slot_page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 	_add_slot_stage(slot_page)
+
+	# The page's own vertical budget. Everything above the machine hangs off the
+	# top of the safe area; the machine gets whatever is left between that and
+	# the nav bar, which is what keeps a tall phone from opening a lake of dead
+	# background under the cabinet.
+	var top := safe_top()
+	var band := Rect2(Vector2(0.0, 316.0 + top),
+		Vector2(view_size().x, content_bottom() - (316.0 + top)))
 
 	# floating decorative symbols
 	# Three, in the corners of the band beside the quick-action row. This used to
@@ -709,8 +868,8 @@ func _build_slot_page() -> void:
 		# The page is busy enough: decor lives only in the two thin bands the
 		# wordmark and the machine leave free, and stays faint.
 		tr.position = Vector2(
-			randf_range(6, 62) if i % 2 == 0 else randf_range(600, 664),
-			randf_range(196, 292))
+			randf_range(6, 62) if i % 2 == 0 else view_size().x - randf_range(56, 120),
+			randf_range(196, 292) + top)
 		tr.modulate = Color(1, 1, 1, randf_range(0.26, 0.40))
 		tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		slot_page.add_child(tr)
@@ -733,8 +892,8 @@ void fragment() {
 	glow_mat.shader = glow_shader
 	glow.material = glow_mat
 	_slot_glow_mat = glow_mat
-	glow.size = Vector2(800, 700)
-	glow.position = Vector2(-40, 372)
+	glow.size = Vector2(band.size.x + 80.0, band.size.y * 0.86)
+	glow.position = Vector2(-40.0, band.position.y + 56.0)
 	glow.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	slot_page.add_child(glow)
 	FX.pulse_forever(glow, 1.05, 1.6)
@@ -746,15 +905,15 @@ void fragment() {
 	var logo := Lagoon.wordmark("LOOT  LAGOON", 62)
 	slot_page.add_child(logo)
 	logo.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	logo.offset_top = 92.0
-	logo.offset_bottom = 172.0
+	logo.offset_top = 92.0 + top
+	logo.offset_bottom = 172.0 + top
 	FX.pulse_forever(logo, 1.03, 2.4)
 	_slot_logo = logo
 
 	slot = SlotView.new()
 	slot_page.add_child(slot)
-	slot.position = Vector2(0, 316)
-	slot.size = Vector2(720, 812)
+	slot.position = band.position
+	slot.size = band.size
 	slot.spin_requested.connect(_on_spin_requested)
 	slot.spin_finished.connect(_on_spin_finished)
 	slot.auto_toggled.connect(func(on: bool) -> void:
@@ -875,8 +1034,8 @@ func _add_side_buttons(page: Control) -> void:
 	row.add_theme_constant_override("separation", 30)
 	page.add_child(row)
 	row.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	row.offset_top = 184.0
-	row.offset_bottom = 306.0
+	row.offset_top = 184.0 + safe_top()
+	row.offset_bottom = 306.0 + safe_top()
 	_side_button(row, "gift", "Daily", "daily", _open_daily)
 	_side_button(row, "bell", "Alerts", "alerts", _open_alerts)
 	_side_button(row, "trophy", "Ranks", "ranks", _open_ranks)
@@ -974,18 +1133,45 @@ func _mission_add(id: String, amount := 1) -> void:
 				break
 	_update_badges()
 
-# Payouts track the star-cost curve so missions stay worth doing at any island.
-func _mission_mult() -> float:
+# ONE curve for the whole economy. A star costs 1.6x more per island, so every
+# coin the game mints -- reel wins, raids, gifts, missions, shop packs -- is
+# written in the source at its island-1 price and run through here on the way
+# out. Anything that skips this decays to nothing: a flat 100-coin reel win is
+# 0.0001% of a build at island 30, which would leave missions as the only
+# income worth collecting and turn the slot machine into decoration.
+func _economy_mult() -> float:
 	return pow(1.6, island_level - 1)
 
+# Scaled coins, snapped to three significant digits. Payouts should read as
+# "+660" and "+1.25M", never as "+655" and "+1,246,151".
+func _scaled(base: int, level := 0) -> int:
+	return CV.scaled(base, island_level if level <= 0 else level)
+
+# Targets counted in coins ride the same curve as the payouts they measure --
+# otherwise a single reel win clears the 250,000-coin monthly at high islands.
+const MISSION_COIN_TARGETS := ["coins_won"]
+
+# Sailing to the next island multiplies the coins_won target by 1.6, so the
+# progress banked against it has to move with it. Without this a player who
+# finishes an island at 90% of the weekly drops back to 56% for no reason they
+# can see.
+func _rescale_coin_progress() -> void:
+	for period in MISSION_DEFS:
+		var prog: Dictionary = mission_state.get(period, {}).get("progress", {})
+		for id in MISSION_COIN_TARGETS:
+			if prog.has(id):
+				prog[id] = int(round(int(prog[id]) * 1.6))
+
+func _mission_target(m: Dictionary) -> int:
+	if m["id"] in MISSION_COIN_TARGETS:
+		return _scaled(int(m["target"]))
+	return int(m["target"])
+
 func _mission_coins(m: Dictionary) -> int:
-	var base := int(m.get("coins", 0))
-	if base <= 0:
-		return 0
-	return int(round(base * _mission_mult() / 10.0)) * 10
+	return _scaled(int(m.get("coins", 0)))
 
 func _bonus_coins(period: String) -> int:
-	return int(round(int(MISSION_BONUS[period]["coins"]) * _mission_mult() / 10.0)) * 10
+	return _scaled(int(MISSION_BONUS[period]["coins"]))
 
 func _period_key(period: String) -> int:
 	var now := int(Time.get_unix_time_from_system())
@@ -1035,7 +1221,7 @@ func _mission_ready(period: String, m: Dictionary) -> bool:
 	var st: Dictionary = mission_state[period]
 	if bool(st["claimed"].get(m["id"], false)):
 		return false
-	return int(st["progress"].get(m["id"], 0)) >= int(m["target"])
+	return int(st["progress"].get(m["id"], 0)) >= _mission_target(m)
 
 func _bonus_ready(period: String) -> bool:
 	var st: Dictionary = mission_state[period]
@@ -1171,15 +1357,16 @@ func _open_daily() -> void:
 		info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		vbox.add_child(info)
 		var claim := Button.new()
-		claim.text = "CLAIM  +800 coins, +5 spins"
+		var daily_coins := _scaled(DAILY_BONUS_COINS)
+		claim.text = "CLAIM  +%s coins, +%d spins" % [_fmt_compact(daily_coins), DAILY_BONUS_SPINS]
 		claim.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
 		_candy_button(claim, Color(0.45, 0.75, 0.35))
 		FX.press_feedback(claim)
 		claim.pressed.connect(func() -> void:
 			daily_last = Time.get_unix_time_from_system()
-			coins += 800
+			coins += daily_coins
 			# rewards always add — the cap only limits time-based regen
-			spins += 5
+			spins += DAILY_BONUS_SPINS
 			_mission_add("daily_gift")
 			Sfx.play("jackpot", -3.0)
 			FX.confetti(self, 36)
@@ -1192,8 +1379,8 @@ func _open_daily() -> void:
 		)
 		vbox.add_child(claim)
 	else:
-		var left := int(DAILY_COOLDOWN - (Time.get_unix_time_from_system() - daily_last))
-		var info := _popup_row_label("Next bonus in %02d:%02d" % [left / 60, left % 60])
+		var left := maxi(0, int(DAILY_COOLDOWN - (Time.get_unix_time_from_system() - daily_last)))
+		var info := _popup_row_label("Next bonus in  %s" % _countdown_text(left))
 		info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		vbox.add_child(info)
 
@@ -1217,7 +1404,7 @@ func _grant_mission_reward(coin_amt: int, spin_amt: int) -> void:
 	if coin_amt > 0:
 		coins += coin_amt
 		FX.fly_coins(self, Vector2(360, 640), _hud_labels[0]["coins"].global_position, clampi(coin_amt / 400, 4, 10))
-		FX.rise_label(self, Vector2(270, 560), "+%s" % _fmt(coin_amt), Color(1.0, 0.85, 0.3), 36)
+		FX.rise_label(self, Vector2(270, 560), "+%s" % _fmt_compact(coin_amt), Color(1.0, 0.85, 0.3), 36)
 	if spin_amt > 0:
 		spins += spin_amt
 		FX.rise_label(self, Vector2(300, 630), "+%d  🌀" % spin_amt, Color(0.6, 0.9, 1.0), 30)
@@ -1286,7 +1473,7 @@ func _show_toast(text: String, emoji := "🔔") -> void:
 
 	Sfx.play("pop", -12.0)
 	var tw := create_tween()
-	tw.tween_property(panel, "position:y", 78.0, 0.35).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(panel, "position:y", 78.0 + safe_top(), 0.35).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tw.tween_interval(2.6)
 	tw.tween_property(panel, "modulate:a", 0.0, 0.4)
 	tw.tween_callback(panel.queue_free)
@@ -1406,7 +1593,7 @@ func _build_menu_pages() -> void:
 		_fill_page("collections")
 	)
 	pages["collections"].add_child(_col_back)
-	_col_back.position = Vector2(16, 115)
+	_col_back.position = Vector2(16.0, 115.0 + safe_top())
 
 func _make_page(key: String, title: String) -> void:
 	var page := Control.new()
@@ -1425,8 +1612,8 @@ func _make_page(key: String, title: String) -> void:
 	plate.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
 	plate.offset_left = -plate.custom_minimum_size.x * 0.5
 	plate.offset_right = plate.custom_minimum_size.x * 0.5
-	plate.offset_top = 104.0
-	plate.offset_bottom = 104.0 + 86.0
+	plate.offset_top = 104.0 + safe_top()
+	plate.offset_bottom = 104.0 + 86.0 + safe_top()
 
 	var sc := ScrollContainer.new()
 	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -1434,8 +1621,8 @@ func _make_page(key: String, title: String) -> void:
 	sc.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	sc.offset_left = 16.0
 	sc.offset_right = -16.0
-	sc.offset_top = 208.0
-	sc.offset_bottom = -(NAV_ROOT_H + 6.0)
+	sc.offset_top = 208.0 + safe_top()
+	sc.offset_bottom = -(NAV_ROOT_H + 6.0 + safe_bottom())
 
 	var vb := VBoxContainer.new()
 	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1506,7 +1693,7 @@ func _fill_shop(vb: VBoxContainer) -> void:
 	cgrid.add_theme_constant_override("v_separation", 10)
 	vb.add_child(cgrid)
 	for pack in CV.COIN_PACKS:
-		_shop_tile(cgrid, pack, Color(1.0, 0.78, 0.25), "%s  COINS" % _fmt(int(pack["coins"])))
+		_shop_tile(cgrid, pack, Color(1.0, 0.78, 0.25), "%s  COINS" % _fmt_compact(_scaled(int(pack["coins"]))))
 
 	_shop_section(vb, "🎁", "FREE  GIFT")
 	_free_gift_card(vb)
@@ -1630,7 +1817,7 @@ func _shop_hero_offer(vb: VBoxContainer) -> void:
 	var nm := Lagoon.label(pack["name"], UI.F_BODY, Lagoon.INK, true)
 	name_row.add_child(nm)
 	name_row.add_child(_tag_chip(pack["tag"], Lagoon.REEF))
-	var sub := _popup_row_label(pack["sub"], UI.F_CAPTION)
+	var sub := _popup_row_label(_pack_sub(pack), UI.F_CAPTION)
 	sub.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(sub)
@@ -1822,7 +2009,7 @@ func _free_gift_card(vb: VBoxContainer) -> void:
 	row.add_child(col)
 	var title := Lagoon.label("FREE  GIFT", UI.F_BODY, Lagoon.INK if ready else Lagoon.INK_SOFT, true)
 	col.add_child(title)
-	var sub := _popup_row_label("Every 24h:  +%s coins,  +%d spins  &  a card" % [_fmt(CV.SHOP_FREE_COINS), CV.SHOP_FREE_SPINS], UI.F_CAPTION)
+	var sub := _popup_row_label("Every 24h:  +%s coins,  +%d spins  &  a card" % [_fmt_compact(_scaled(CV.SHOP_FREE_COINS)), CV.SHOP_FREE_SPINS], UI.F_CAPTION)
 	sub.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(sub)
@@ -1855,7 +2042,7 @@ func _claim_shop_gift() -> void:
 	if not _shop_free_ready():
 		return
 	shop_free_last = Time.get_unix_time_from_system()
-	coins += CV.SHOP_FREE_COINS
+	coins += _scaled(CV.SHOP_FREE_COINS)
 	spins += CV.SHOP_FREE_SPINS
 	var pre_complete := {}
 	for c in CV.COLLECTIONS:
@@ -1868,7 +2055,7 @@ func _claim_shop_gift() -> void:
 	Sfx.play("jackpot", -3.0)
 	FX.confetti(self, 44)
 	FX.flash(self)
-	_show_chest_result([card], "Free Gift!", "+%s coins    +%d spins" % [_fmt(CV.SHOP_FREE_COINS), CV.SHOP_FREE_SPINS], completed)
+	_show_chest_result([card], "Free Gift!", "+%s coins    +%d spins" % [_fmt_compact(_scaled(CV.SHOP_FREE_COINS)), CV.SHOP_FREE_SPINS], completed)
 	_update_badges()
 	_refresh()
 	_save_game()
@@ -1888,7 +2075,7 @@ func _confirm_purchase(pack: Dictionary) -> void:
 	var nm := _popup_row_label(pack["name"], UI.F_BODY)
 	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(nm)
-	var sub := _popup_row_label(pack["sub"], UI.F_CAPTION)
+	var sub := _popup_row_label(_pack_sub(pack), UI.F_CAPTION)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
 	vbox.add_child(sub)
@@ -1907,11 +2094,19 @@ func _confirm_purchase(pack: Dictionary) -> void:
 	)
 	vbox.add_child(pay)
 
+# Pack blurbs quote their coin figure with a %s, since what "25,000 Coins" is
+# worth depends entirely on which island you buy it from.
+func _pack_sub(pack: Dictionary) -> String:
+	var sub := String(pack.get("sub", ""))
+	if sub.contains("%s"):
+		return sub % _fmt_compact(_scaled(int(pack.get("coins", 0))))
+	return sub
+
 func _grant_pack(pack: Dictionary) -> void:
 	if pack.get("once", false):
 		purchased_ids.append(pack["id"])
 	spins += int(pack.get("spins", 0))
-	coins += int(pack.get("coins", 0))
+	coins += _scaled(int(pack.get("coins", 0)))
 	shields = mini(3, shields + int(pack.get("shields", 0)))
 	var pre_complete := {}
 	for c in CV.COLLECTIONS:
@@ -1973,7 +2168,7 @@ func _grant_chest_card(tier: int, forced_star := 0) -> Dictionary:
 	var it: Array = chosen["items"][idx]
 	var owned: Array = col_owned[chosen["id"]]
 	if owned[idx]:
-		var refund := 60 * star
+		var refund := _scaled(60 * star)
 		coins += refund
 		return {"emoji": it[0], "name": it[1], "set": chosen["name"], "stars": star, "dup": true, "refund": refund}
 	owned[idx] = true
@@ -2019,7 +2214,7 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 		colv.add_child(_star_row(stars, UI.F_TINY))
 		var status := Label.new()
 		if card["dup"]:
-			status.text = "dup  +%d" % int(card.get("refund", 0))
+			status.text = "dup  +%s" % _fmt_compact(int(card.get("refund", 0)))
 			status.add_theme_color_override("font_color", Lagoon.INK_FAINT)
 		else:
 			status.text = "NEW!"
@@ -2207,7 +2402,7 @@ func _quests_bonus_card(vb: VBoxContainer) -> void:
 	var rrow := HBoxContainer.new()
 	rrow.add_theme_constant_override("separation", 12)
 	col.add_child(rrow)
-	rrow.add_child(_reward_chip("💰", "+%s" % _fmt(_bonus_coins(quests_tab)), Lagoon.BRASS_LO))
+	rrow.add_child(_reward_chip("💰", "+%s" % _fmt_compact(_bonus_coins(quests_tab)), Lagoon.BRASS_LO))
 	rrow.add_child(_reward_chip("🌀", "+%d" % int(b["spins"]), Lagoon.LAGOON_DEEP))
 	if claimed_bonus:
 		row.add_child(_emoji_label("✅", 34))
@@ -2228,7 +2423,7 @@ func _quest_card(vb: VBoxContainer, m: Dictionary, index: int) -> void:
 	var id: String = m["id"]
 	var claimed := bool(st["claimed"].get(id, false))
 	var ready := _mission_ready(quests_tab, m)
-	var prog := mini(int(st["progress"].get(id, 0)), int(m["target"]))
+	var prog := mini(int(st["progress"].get(id, 0)), _mission_target(m))
 	var icol: Color = MISSION_ICON_COLORS.get(id, Color(0.4, 0.4, 0.6))
 
 	# A claimable mission is rimmed in brass; everything else is plain glass.
@@ -2268,12 +2463,12 @@ func _quest_card(vb: VBoxContainer, m: Dictionary, index: int) -> void:
 	prow.add_theme_constant_override("separation", 10)
 	col.add_child(prow)
 	var pb := _styled_progress(Lagoon.BRASS if ready or claimed else icol)
-	pb.max_value = int(m["target"])
+	pb.max_value = _mission_target(m)
 	pb.value = prog
 	pb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	pb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	prow.add_child(pb)
-	prow.add_child(Lagoon.label("%s/%s" % [_fmt(prog), _fmt(int(m["target"]))], UI.F_TINY, Lagoon.INK_SOFT))
+	prow.add_child(Lagoon.label("%s/%s" % [_fmt_compact(prog), _fmt_compact(_mission_target(m))], UI.F_TINY, Lagoon.INK_SOFT))
 
 	var right := VBoxContainer.new()
 	right.add_theme_constant_override("separation", 6)
@@ -2283,7 +2478,7 @@ func _quest_card(vb: VBoxContainer, m: Dictionary, index: int) -> void:
 	if spin_r > 0:
 		right.add_child(_reward_chip("🌀", "+%d" % spin_r, Lagoon.LAGOON_DEEP))
 	else:
-		right.add_child(_reward_chip("🪙", "+%s" % _fmt(_mission_coins(m)), Lagoon.BRASS_LO))
+		right.add_child(_reward_chip("🪙", "+%s" % _fmt_compact(_mission_coins(m)), Lagoon.BRASS_LO))
 	if claimed:
 		var donel := _emoji_label("✅", 30)
 		donel.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -2429,8 +2624,9 @@ func _maybe_drop_card() -> void:
 	var it: Array = items[idx]
 	var owned: Array = col_owned[chosen["id"]]
 	if owned[idx]:
-		coins += 100
-		_banner("Duplicate card — +100 coins", Color(0.75, 0.78, 0.9), it[0])
+		var dup_refund := _scaled(150)
+		coins += dup_refund
+		_banner("Duplicate card — +%s coins" % _fmt_compact(dup_refund), Color(0.75, 0.78, 0.9), it[0])
 	else:
 		owned[idx] = true
 		Sfx.play("levelup", -8.0)
@@ -2775,7 +2971,7 @@ func _open_ranks() -> void:
 	var rows := []
 	rows.append({"name": profile.get("name", "You"), "emoji": "😎", "coins": coins, "me": true})
 	for n in npcs:
-		rows.append({"name": n["name"], "emoji": n["emoji"], "coins": int(n["coins"]), "me": false})
+		rows.append({"name": n["name"], "emoji": n["emoji"], "coins": _scaled(int(n["coins"])), "me": false})
 	rows.sort_custom(func(a, b) -> bool: return a["coins"] > b["coins"])
 	for i in rows.size():
 		var r: Dictionary = rows[i]
@@ -2791,7 +2987,7 @@ func _open_ranks() -> void:
 		if r["me"]:
 			name_l.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 		row.add_child(name_l)
-		var c := _popup_row_label(str(r["coins"]))
+		var c := _popup_row_label(_fmt_compact(int(r["coins"])))
 		if r["me"]:
 			c.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 		row.add_child(c)
@@ -2801,7 +2997,21 @@ func _build_village_page() -> void:
 	add_child(village_page)
 	village_page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
-	_village_bg = _add_background(village_page, "village", Color(0.55, 0.8, 0.95), Color(0.45, 0.75, 0.5))
+	# Sky, then the island, then the chrome. The island keeps the size it was
+	# painted at and starts below the notch rather than stretching up into it,
+	# so the strip left over at the top is filled with the art's own top edge
+	# colour and reads as more of the same sky.
+	_village_sky = ColorRect.new()
+	_village_sky.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	village_page.add_child(_village_sky)
+	_village_sky.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	_village_stage = Control.new()
+	_village_stage.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	village_page.add_child(_village_stage)
+	UI.make_design_stage(_village_stage, view_size(), safe_top(), nav_slab_top())
+
+	_village_bg = _add_background(_village_stage, "village", Color(0.55, 0.8, 0.95), Color(0.45, 0.75, 0.5))
 
 	# The island's name on a brass nameplate, the same object the menu pages and
 	# the machine's marquee use -- so "where am I" is answered by one shape
@@ -2811,12 +3021,15 @@ func _build_village_page() -> void:
 	name_plate.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
 	name_plate.offset_left = -210.0
 	name_plate.offset_right = 210.0
-	name_plate.offset_top = 100.0
-	name_plate.offset_bottom = 176.0
+	name_plate.offset_top = 100.0 + safe_top()
+	name_plate.offset_bottom = 176.0 + safe_top()
 	_island_title = name_plate.get_meta("label")
 
 	village = VillageView.new()
-	village_page.add_child(village)
+	# The huts are painted onto the island art, so they live on the same stage
+	# as it -- one transform for both, and no hut can drift off its patch of
+	# grass no matter what shape the phone is.
+	_village_stage.add_child(village)
 	village.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	village.upgrade_requested.connect(_on_upgrade_requested)
 	for slot_dict in village.get("_slots"):
@@ -2870,8 +3083,8 @@ func _add_topbar(page: Control) -> void:
 	bar.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
 	bar.offset_left = 14.0
 	bar.offset_right = -14.0
-	bar.offset_top = 16.0
-	bar.offset_bottom = 16.0 + 70.0
+	bar.offset_top = 16.0 + safe_top()
+	bar.offset_bottom = 16.0 + 70.0 + safe_top()
 
 	var to_shop := func() -> void: _goto(pages["shop"])
 	var labels := {}
@@ -2898,7 +3111,7 @@ func _schedule_auto_spin(delay := 0.8) -> void:
 	var tw := create_tween()
 	tw.tween_interval(delay)
 	tw.tween_callback(func() -> void:
-		if not auto_spin or _current_page != slot_page or _visit != null or _popup != null or slot.is_spinning():
+		if not auto_spin or _current_page != slot_page or _raiding() or _popup != null or slot.is_spinning():
 			return
 		if spins < slot.bet:
 			auto_spin = false
@@ -2909,7 +3122,7 @@ func _schedule_auto_spin(delay := 0.8) -> void:
 	)
 
 func _on_spin_requested() -> void:
-	if slot.is_spinning() or _visit != null:
+	if slot.is_spinning() or _raiding():
 		return
 	if spins < slot.bet:
 		Sfx.play("error", -6.0)
@@ -3013,15 +3226,70 @@ func _on_spin_finished(result: Array) -> void:
 				"gem": gain += 250 * bet
 		if gain > 0:
 			Sfx.play("coins", -6.0)
+	# Reel prizes are written above at their island-1 price; the wallet gets the
+	# island-scaled figure, and so does the coins_won mission (its target scales
+	# with it, so the two stay in the same units).
+	gain = _scaled(gain)
 	if gain > 0:
 		coins += gain
 		_mission_add("coins_won", gain)
-		_show_win("+%s" % _fmt(gain))
+		_show_win("+%s" % _fmt_compact(gain))
 		FX.fly_coins(self, Vector2(360, 716), _hud_labels[0]["coins"].global_position, clampi(gain / 250, 3, 9))
-	if _visit == null:
+	if not _raiding():
 		_maybe_drop_card()
 		_maybe_revenge()
 		_schedule_auto_spin()
+	_refresh()
+	_save_game()
+
+# Raids that happened while the app was closed.
+#
+# The pool is not a set of dummies waiting to be robbed -- rivals come at you
+# too, and the fact that they do while you are away is what makes a shield
+# worth banking instead of spending. Kept deliberately light: one hit per
+# ninety minutes offline, two at most, and an attack only ever knocks a star
+# off a building that has one to spare. You never come back to rubble.
+func _offline_raids() -> void:
+	if _offline_elapsed < 1800.0 or npcs.is_empty():
+		return
+	var count := mini(2, int(_offline_elapsed / 5400.0))
+	_offline_elapsed = 0.0
+	if count <= 0:
+		return
+	var events := []
+	for i in count:
+		var npc: Dictionary = npcs.pick_random()
+		var mode := "attack" if randf() < 0.45 else "steal"
+		if shields > 0:
+			shields -= 1
+			events.append({"type": mode, "npc": npc,
+				"text": "%s came for your island — your shield held" % npc["name"]})
+			continue
+		if mode == "attack":
+			var standing := []
+			for b in buildings.size():
+				if int(buildings[b]) >= 2:
+					standing.append(b)
+			if not standing.is_empty():
+				var hit: int = standing.pick_random()
+				buildings[hit] = int(buildings[hit]) - 1
+				var bname: String = CV.island_theme(island_level)["buildings"][hit]
+				events.append({"type": "attack", "npc": npc,
+					"text": "%s smashed your %s — down to %d\u2b50" % [npc["name"], bname, buildings[hit]]})
+				continue
+			mode = "steal"
+		var stolen: int = mini(_scaled(500), int(coins * 0.08))
+		coins -= stolen
+		npc["coins"] = int(npc["coins"]) + int(round(stolen / maxf(_economy_mult(), 1.0)))
+		events.append({"type": "steal", "npc": npc,
+			"text": "%s raided your vault — %s coins" % [npc["name"], _fmt_compact(stolen)]})
+	for e in events:
+		_notify(e["type"], e["text"], e["npc"]["emoji"], false)
+	var first: Dictionary = events[0]
+	if events.size() == 1:
+		_show_toast(first["text"], first["npc"]["emoji"])
+	else:
+		_show_toast("%d rivals hit your island while you were away" % events.size(), "🚨")
 	_refresh()
 	_save_game()
 
@@ -3029,7 +3297,10 @@ func _maybe_revenge() -> void:
 	if not revenge_pending:
 		return
 	revenge_pending = false
-	var npc: Dictionary = npcs.pick_random()
+	if _last_raided.is_empty() and npcs.is_empty():
+		return
+	# Bots hit back, and the one with a reason to is the one you just robbed.
+	var npc: Dictionary = _last_raided if not _last_raided.is_empty() else npcs.pick_random()
 	var mode := "attack" if randf() < 0.5 else "steal"
 	if shields > 0:
 		shields -= 1
@@ -3039,45 +3310,175 @@ func _maybe_revenge() -> void:
 		if not _notify(mode, blocked_txt, npc["emoji"]):
 			_banner(blocked_txt, Color(0.5, 0.75, 1.0), npc["emoji"])
 	else:
-		var stolen: int = mini(500, int(coins * 0.1))
+		var stolen: int = mini(_scaled(500), int(coins * 0.1))
 		coins -= stolen
 		Sfx.play("attack", -4.0)
 		FX.shake(slot_page, 10.0, 6)
 		var hit_txt: String
 		if mode == "attack":
-			hit_txt = "%s raided your island!  -%d coins" % [npc["name"], stolen]
+			hit_txt = "%s raided your island!  -%s coins" % [npc["name"], _fmt_compact(stolen)]
 		else:
-			hit_txt = "%s stole %d coins from you!" % [npc["name"], stolen]
+			hit_txt = "%s stole %s coins from you!" % [npc["name"], _fmt_compact(stolen)]
 		if not _notify(mode, hit_txt, npc["emoji"]):
 			_banner(hit_txt, Color(0.95, 0.4, 0.4), npc["emoji"])
 
+# --- rivals ---
+#
+# Until there are enough live players for a search to reliably find one, every
+# rival is a bot: a pool of them is kept stocked, they hold islands near yours,
+# and they hit back. The alternative -- matching a thin launch population
+# against itself -- means the same handful of real players getting raided by
+# each other all day, which is a worse first week for them than a world that
+# looks busy from the start.
+
+# Tops the pool back up to strength with rivals you have not met yet, and
+# retires anyone there is nothing left to take: a flattened island with an
+# empty vault is not an opponent, it is a chore.
+func _stock_rivals() -> void:
+	var keep := []
+	for n in npcs:
+		var stars := 0
+		for lv in n.get("buildings", []):
+			stars += int(lv)
+		if stars <= 0 and int(n.get("coins", 0)) < 400:
+			continue
+		keep.append(n)
+	npcs = keep
+	var taken := []
+	for n in npcs:
+		taken.append(n["name"])
+	# Whoever is still on the wheel's card has to survive the sweep, or the
+	# promise on the card outlives the rival it named.
+	if not next_target.is_empty() and not taken.has(next_target.get("name", "")):
+		npcs.append(next_target)
+		taken.append(next_target["name"])
+	for fresh in CV.draw_rivals(CV.RIVAL_POOL - npcs.size(), island_level, taken):
+		npcs.append(fresh)
+
 # --- island visits (steal / attack) ---
 
+# True from the moment a raid is announced until its payout lands -- the search
+# screen counts, so nothing auto-spins or changes page underneath it.
+func _raiding() -> bool:
+	return _visit != null or _match != null
+
+# The card above the wheel is a promise: these are the coins at stake and this
+# is whose they are. It is drawn before the spin and it does not move during
+# one, so the raid can only ever land on the rival it named.
 func _pick_next_target() -> void:
 	if npcs.is_empty():
+		_stock_rivals()
+	if npcs.is_empty():
 		return
-	next_target = npcs.pick_random()
+	var last: String = next_target.get("name", "")
+	for attempt in 6:
+		next_target = npcs.pick_random()
+		if next_target.get("name", "") != last:
+			break
 	if slot != null:
-		slot.set_target(next_target)
+		slot.set_target(next_target, _economy_mult())
 
+# The stake exactly as the chests will hold it, so the card, the search screen
+# and the loot are three views of one number.
+func _raid_stake(npc: Dictionary) -> int:
+	return int(round(int(npc.get("coins", 0)) * _economy_mult())) * _last_bet
+
+# Two raids, two ways in.
+#
+# A steal has a name on it before the reels even move -- it is on the card, in
+# brass, with the vault underneath it, and the player has been staring at it
+# all spin. Putting a search in front of that would be a machine pretending to
+# look for something it is holding. So the raccoons go straight there.
+#
+# An attack has no name on it. Nothing on the SPIN page has promised you a
+# victim, so the game genuinely has to go and find one, and the search is what
+# that looks like.
 func _start_visit(mode: String) -> void:
-	var npc: Dictionary = next_target if not next_target.is_empty() else npcs.pick_random()
-	if mode == "attack":
-		npc["shield"] = randf() < 0.3
-	_visit = IslandVisit.new()
-	_visit.npc = npc
-	_visit.mode = mode
-	_visit.mult = _last_bet
-	_visit.finished.connect(_on_visit_finished)
-	add_child(_visit)
-	_visit.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_visit.position = Vector2(720, 0)
+	if mode == "steal":
+		if next_target.is_empty():
+			_pick_next_target()
+		if next_target.is_empty():
+			return
+		_raid_target = next_target
+		_announce_raid(mode)
+		var go := create_tween()
+		go.tween_interval(0.5)
+		go.tween_callback(_on_match_found.bind(next_target, mode))
+		return
+
+	var npc := _pick_attack_target()
+	if npc.is_empty():
+		return
+	npc["shield"] = randf() < 0.3
+	_raid_target = npc
+	_announce_raid(mode)
+	_match = Matchmaking.new()
+	_match.npc = npc
+	_match.mode = mode
+	_match.stake = _raid_stake(npc)
+	_match.stars = _rival_stars(npc)
+	_match.z_index = 118
+	_match.modulate.a = 0.0
+	_match.finished.connect(_on_match_found.bind(mode))
+	add_child(_match)
+	_match.create_tween().tween_property(_match, "modulate:a", 1.0, 0.18).set_delay(0.35)
+
+func _announce_raid(mode: String) -> void:
 	Sfx.play("jackpot", -6.0)
 	slot.announce("STEAL!" if mode == "steal" else "ATTACK!", Lagoon.CORAL_HI)
 	_banner("Triple %s!" % ("raccoons — STEAL time!" if mode == "steal" else "hammers — ATTACK!"), Color(1.0, 0.85, 0.3))
-	var tw := create_tween()
-	tw.tween_interval(0.5)
-	tw.tween_property(_visit, "position", Vector2.ZERO, 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+# Whoever the hammers land on, it is not the rival the raccoons already have
+# their mark on -- the two raids are meant to send you to two different
+# islands, and the search has to have something to find.
+func _pick_attack_target() -> Dictionary:
+	if npcs.is_empty():
+		_stock_rivals()
+	var spared: String = next_target.get("name", "")
+	var pool := []
+	for n in npcs:
+		if n.get("name", "") != spared:
+			pool.append(n)
+	if pool.is_empty():
+		pool = npcs
+	if pool.is_empty():
+		return {}
+	return pool.pick_random()
+
+func _rival_stars(npc: Dictionary) -> int:
+	var total := 0
+	for lv in npc.get("buildings", []):
+		total += int(lv)
+	return total
+
+# The search hands back the rival it was given, and that is the island we sail
+# to -- _raid_target, not next_target, which by now is free to move on.
+func _on_match_found(matched: Dictionary, mode: String) -> void:
+	var m := _match
+	_match = null
+	_visit = IslandVisit.new()
+	_visit.npc = matched
+	_visit.mode = mode
+	_visit.mult = _last_bet
+	_visit.coin_mult = _economy_mult()
+	_visit.finished.connect(_on_visit_finished)
+	# The nav bar outranks the overlay on z, so the rival's island only has to
+	# reach the same line ours does -- the slab hides everything under it.
+	_visit.reach = nav_slab_top()
+	add_child(_visit)
+	_visit.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_visit.position = Vector2(view_size().x, 0)
+	# A hand-off, not a cross-fade: the search screen leaves to the left as the
+	# island it found arrives from the right, the same way pages move. Fading
+	# one out over the other shows the island through the search card and the
+	# two read as a glitch rather than a transition.
+	_visit.create_tween().tween_property(_visit, "position", Vector2.ZERO, 0.42) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	if m != null:
+		var mt := m.create_tween()
+		mt.tween_property(m, "position", Vector2(-view_size().x, 0), 0.42) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+		mt.tween_callback(m.queue_free)
 
 func _on_visit_finished(result: Dictionary) -> void:
 	var v := _visit
@@ -3088,14 +3489,15 @@ func _on_visit_finished(result: Dictionary) -> void:
 	tw.tween_callback(v.queue_free)
 	var npc: Dictionary = result["npc"]
 	_mission_add("steals" if result["mode"] == "steal" else "attacks")
-	_pick_next_target()
+	_raid_target = {}
+	_last_raided = npc
 	if result["mode"] == "steal":
 		var stolen: int = result.get("stolen", 0)
 		coins += stolen
 		npc["coins"] = maxi(200, int(npc["coins"]) - stolen)
 		if stolen > 0:
-			_banner("You stole %s coins from %s!" % [_fmt(stolen), npc["name"]], Color(1.0, 0.85, 0.3), npc["emoji"])
-			_show_win("+%s" % _fmt(stolen))
+			_banner("You stole %s coins from %s!" % [_fmt_compact(stolen), npc["name"]], Color(1.0, 0.85, 0.3), npc["emoji"])
+			_show_win("+%s" % _fmt_compact(stolen))
 			if stolen > 2000:
 				FX.confetti(self, 36)
 		else:
@@ -3106,13 +3508,26 @@ func _on_visit_finished(result: Dictionary) -> void:
 		if result.get("blocked", false):
 			_banner("%s's shield blocked your attack!" % npc["name"], Color(0.5, 0.75, 1.0), npc["emoji"])
 		else:
-			var reward := (400 + island_level * 150 + randi_range(0, 200)) * vmult
+			var reward := _scaled(600 + randi_range(0, 300)) * vmult
 			coins += reward
 			FX.fly_coins(self, Vector2(360, 500), _hud_labels[0]["coins"].global_position, 6)
-			_banner("SMASH!  +%s coins" % _fmt(reward), Color(1.0, 0.85, 0.3), npc["emoji"])
-			_show_win("+%s" % _fmt(reward))
+			_banner("SMASH!  +%s coins" % _fmt_compact(reward), Color(1.0, 0.85, 0.3), npc["emoji"])
+			_show_win("+%s" % _fmt_compact(reward))
 		if randf() < 0.35:
 			revenge_pending = true
+	# The card only names the next rival once this one's result has been read.
+	# Flipping it the instant the island slides away puts a new name under a
+	# banner still crediting the old one, which is the exact confusion the
+	# locked target exists to prevent.
+	var pick := create_tween()
+	pick.tween_interval(1.3)
+	pick.tween_callback(func() -> void:
+		if _raiding():
+			return
+		_stock_rivals()
+		_pick_next_target()
+		_save_game()
+	)
 	_refresh()
 	_save_game()
 	_schedule_auto_spin(1.4)
@@ -3124,6 +3539,8 @@ func _apply_island_theme() -> void:
 	var bg_t := CV.island_bg_tex(island_level)
 	if _village_bg != null and bg_t != null:
 		_village_bg.texture = bg_t
+	if _village_sky != null:
+		_village_sky.color = CV.bg_top_color(CV.bg_image(bg_t), Color(0.55, 0.8, 0.95))
 	if _island_title != null:
 		_island_title.text = CV.island_theme(island_level)["name"]
 	for mat in _page_backdrops:
@@ -3256,7 +3673,7 @@ func _show_island_complete_popup() -> void:
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(sub)
 
-	var reward := _popup_row_label("Journey rewards:  💰 +%s   🌀 +%d" % [_fmt(ISLAND_REWARD_COINS), ISLAND_REWARD_SPINS], UI.F_CAPTION)
+	var reward := _popup_row_label("Journey rewards:  💰 +%s   🌀 +%d" % [_fmt_compact(_scaled(ISLAND_REWARD_COINS, island_level + 1)), ISLAND_REWARD_SPINS], UI.F_CAPTION)
 	reward.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	reward.add_theme_color_override("font_color", Lagoon.KELP_LO)
 	vbox.add_child(reward)
@@ -3272,9 +3689,11 @@ func _show_island_complete_popup() -> void:
 		var from_level := island_level
 		_close_popup(true)
 		island_level += 1
+		_rescale_coin_progress()
+		_pick_next_target()
 		_mission_add("islands")
 		buildings = [0, 0, 0, 0, 0]
-		coins += ISLAND_REWARD_COINS
+		coins += _scaled(ISLAND_REWARD_COINS)
 		spins += ISLAND_REWARD_SPINS
 		_save_game()
 		_start_island_journey(from_level)
@@ -3452,8 +3871,8 @@ func _start_island_journey(from_level: int) -> void:
 	welcome.visible = false
 	layer.add_child(welcome)
 	welcome.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	welcome.offset_top = 190.0
-	welcome.offset_bottom = 250.0
+	welcome.offset_top = 190.0 + safe_top()
+	welcome.offset_bottom = 250.0 + safe_top()
 
 	var tw := layer.create_tween()
 	tw.tween_property(layer, "modulate:a", 1.0, 0.35)
@@ -3491,7 +3910,7 @@ func _start_island_journey(from_level: int) -> void:
 	tw.tween_callback(func() -> void:
 		layer.queue_free()
 		_journey_layer = null
-		_banner("Welcome to %s!  +%s coins, +%d spins" % [CV.island_theme(to_level)["name"], _fmt(ISLAND_REWARD_COINS), ISLAND_REWARD_SPINS], Color(1.0, 0.85, 0.3))
+		_banner("Welcome to %s!  +%s coins, +%d spins" % [CV.island_theme(to_level)["name"], _fmt_compact(_scaled(ISLAND_REWARD_COINS, to_level)), ISLAND_REWARD_SPINS], Color(1.0, 0.85, 0.3))
 	)
 
 # --- shared UI ---
@@ -3505,7 +3924,7 @@ func _refresh() -> void:
 	village.refresh(buildings, coins, _star_costs())
 	if slot != null:
 		slot.set_meter(spins, SPIN_CAP, SPIN_REGEN_SECS - _regen_accum, SPIN_REGEN_AMOUNT)
-		slot.set_target(next_target)
+		slot.set_target(next_target, _economy_mult())
 
 func _banner(text: String, color: Color, emoji := "") -> void:
 	var box := HBoxContainer.new()
@@ -3515,8 +3934,8 @@ func _banner(text: String, color: Color, emoji := "") -> void:
 	box.z_index = 110
 	add_child(box)
 	box.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	box.offset_top = 150.0
-	box.offset_bottom = 210.0
+	box.offset_top = 150.0 + safe_top()
+	box.offset_bottom = 210.0 + safe_top()
 	if emoji != "":
 		var e := _emoji_label(emoji, UI.F_SUBHEAD)
 		box.add_child(e)
@@ -3528,27 +3947,10 @@ func _banner(text: String, color: Color, emoji := "") -> void:
 	tw.tween_callback(box.queue_free)
 
 func _fmt(n: int) -> String:
-	var s := str(n)
-	var out := ""
-	var count := 0
-	for i in range(s.length() - 1, -1, -1):
-		out = s[i] + out
-		count += 1
-		if count % 3 == 0 and i > 0:
-			out = "," + out
-	return out
+	return UI.fmt(n)
 
-# Coins run to eight digits late in the game, which would blow the HUD capsule
-# out past the island marker. Full precision stays everywhere it's being spent
-# or awarded; only the always-on counter abbreviates.
 func _fmt_compact(n: int) -> String:
-	if n >= 100_000_000:
-		return "%.0fM" % (n / 1_000_000.0)
-	if n >= 10_000_000:
-		return "%.1fM" % (n / 1_000_000.0)
-	if n >= 1_000_000:
-		return "%.2fM" % (n / 1_000_000.0)
-	return _fmt(n)
+	return UI.fmt_compact(n)
 
 func _emoji_label(text: String, size: int) -> Label:
 	var l := Label.new()
@@ -3587,7 +3989,7 @@ func _save_game() -> void:
 		"npcs": npcs,
 		"daily_last": daily_last,
 		"muted": muted,
-		"missions2": mission_state,
+		"missions3": mission_state,
 		"col_owned": col_owned,
 		"col_claimed": col_claimed,
 		"col_mega": col_mega_claimed,
@@ -3642,7 +4044,14 @@ func _load_game() -> void:
 		for entry in nl:
 			if typeof(entry) == TYPE_DICTIONARY:
 				notif_log.append(entry)
-	var lm = data.get("missions2", {})
+	# missions2 banked coins_won in island-1 units, from before coin targets rode
+	# the island curve. Its progress is quoted against a target 1.6^(level-1)
+	# times larger now, so lift it onto the same scale on the way in.
+	var lm = data.get("missions3", {})
+	var legacy_coin_progress := false
+	if typeof(lm) != TYPE_DICTIONARY or lm.is_empty():
+		lm = data.get("missions2", {})
+		legacy_coin_progress = true
 	if typeof(lm) == TYPE_DICTIONARY:
 		for period in MISSION_DEFS:
 			var pst = lm.get(period, null)
@@ -3653,6 +4062,8 @@ func _load_game() -> void:
 			if typeof(pd) == TYPE_DICTIONARY:
 				for k in pd:
 					prog[k] = int(pd[k])
+					if legacy_coin_progress and k in MISSION_COIN_TARGETS:
+						prog[k] = _scaled(int(pd[k]))
 			var cl := {}
 			var cd = pst.get("claimed", {})
 			if typeof(cd) == TYPE_DICTIONARY:
@@ -3682,8 +4093,10 @@ func _load_game() -> void:
 		npcs.append({
 			"name": n.get("name", "Rival"),
 			"emoji": n.get("emoji", "🧔"),
+			"flag": n.get("flag", "??"),
 			"coins": int(n.get("coins", 2000)) + mini(8000, int(maxf(elapsed, 0.0) / 60.0) * 15),
 			"buildings": nb,
 			"shield": bool(n.get("shield", false)),
 			"island": int(n.get("island", randi_range(1, CV.ISLANDS.size()))),
 		})
+	_offline_elapsed = maxf(elapsed, 0.0)

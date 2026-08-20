@@ -160,18 +160,81 @@ const ISLAND_PALETTES := [
 	 "accent": Color(1, 0.878, 0.478), "spin": Color(1, 0.239, 0.353), "glow": Color(1, 0.824, 0.302)},
 ]
 
-const NPC_DEFS := [
-	{"name": "Olga", "emoji": "👵"},
-	{"name": "Boris", "emoji": "🧔"},
-	{"name": "Mimi", "emoji": "👩‍🦰"},
-	{"name": "Rex", "emoji": "👨‍🎨"},
-	{"name": "Luna", "emoji": "👧"},
+# The rival population.
+#
+# Raiding needs somebody on the other end of it, and for a long while after
+# launch there will not be enough live players to find one -- a matchmaking
+# search across a hundred accounts would hand you the same three islands every
+# spin, and the ones it did find would be strangers getting hammered all day.
+# So the raid net is stocked with bots, and it is stocked deep: forty-odd
+# rivals with their own faces, homes and vaults, drawn from every corner of the
+# map, so the search always has a crowd to sift through and the crowd always
+# looks like a player base rather than a cast of five.
+#
+# The region code is not decoration. It is the one field that makes a rival
+# read as somebody who logged in from somewhere, which is exactly the
+# impression the matchmaking screen is built to sell. It is a code rather than
+# a flag emoji because the bundled emoji font has no country flags in it and
+# substitutes the same black pennant for all of them.
+const BOT_DEFS := [
+	{"name": "Olga", "emoji": "👵", "flag": "RU"},
+	{"name": "Boris", "emoji": "🧔", "flag": "RU"},
+	{"name": "Mimi", "emoji": "👩‍🦰", "flag": "FR"},
+	{"name": "Rex", "emoji": "👨‍🎨", "flag": "US"},
+	{"name": "Luna", "emoji": "👧", "flag": "ES"},
+	{"name": "Kai", "emoji": "🏄", "flag": "AU"},
+	{"name": "Nina", "emoji": "👩‍🦱", "flag": "BR"},
+	{"name": "Diego", "emoji": "🧑‍🌾", "flag": "MX"},
+	{"name": "Yuki", "emoji": "👘", "flag": "JP"},
+	{"name": "Amir", "emoji": "🧑‍🦲", "flag": "AE"},
+	{"name": "Freya", "emoji": "👱‍♀️", "flag": "SE"},
+	{"name": "Tomas", "emoji": "👨‍🔧", "flag": "CZ"},
+	{"name": "Priya", "emoji": "👩‍🏫", "flag": "IN"},
+	{"name": "Marco", "emoji": "🧑‍🍳", "flag": "IT"},
+	{"name": "Zoe", "emoji": "👩‍🎤", "flag": "GR"},
+	{"name": "Hugo", "emoji": "🧑‍✈️", "flag": "PT"},
+	{"name": "Lena", "emoji": "👩‍💻", "flag": "DE"},
+	{"name": "Sami", "emoji": "🧑‍🚀", "flag": "FI"},
+	{"name": "Noor", "emoji": "🧕", "flag": "MA"},
+	{"name": "Jonas", "emoji": "👨‍🌾", "flag": "NO"},
+	{"name": "Carla", "emoji": "💃", "flag": "AR"},
+	{"name": "Ravi", "emoji": "🧑‍🎓", "flag": "IN"},
+	{"name": "Elif", "emoji": "👩", "flag": "TR"},
+	{"name": "Milo", "emoji": "👦", "flag": "BE"},
+	{"name": "Ines", "emoji": "👩‍⚕️", "flag": "PT"},
+	{"name": "Otto", "emoji": "👨‍🚒", "flag": "AT"},
+	{"name": "Sora", "emoji": "🧑‍🎤", "flag": "KR"},
+	{"name": "Bella", "emoji": "👩‍🦳", "flag": "GB"},
+	{"name": "Pavel", "emoji": "🕵️", "flag": "PL"},
+	{"name": "Anika", "emoji": "👩‍🔬", "flag": "NL"},
+	{"name": "Theo", "emoji": "👨‍🏫", "flag": "IE"},
+	{"name": "Tara", "emoji": "👩‍🚀", "flag": "CA"},
+	{"name": "Enzo", "emoji": "🧑‍🏭", "flag": "IT"},
+	{"name": "Maya", "emoji": "👩‍🎨", "flag": "IL"},
+	{"name": "Idan", "emoji": "🧑‍💻", "flag": "IL"},
+	{"name": "Rosa", "emoji": "👩‍🌾", "flag": "CO"},
+	{"name": "Nils", "emoji": "🧑‍🔬", "flag": "DK"},
+	{"name": "Ayla", "emoji": "👸", "flag": "TR"},
+	{"name": "Bruno", "emoji": "🤠", "flag": "BR"},
+	{"name": "Kofi", "emoji": "🧑‍🎨", "flag": "GH"},
+	{"name": "Sasha", "emoji": "🧑‍🦰", "flag": "UA"},
+	{"name": "Mei", "emoji": "👩‍🍳", "flag": "CN"},
+	{"name": "Dara", "emoji": "🧑‍🌾", "flag": "ID"},
+	{"name": "Iva", "emoji": "👩‍✈️", "flag": "HR"},
+	{"name": "Jax", "emoji": "🧑‍🚒", "flag": "ZA"},
+	{"name": "Vera", "emoji": "👩‍🚒", "flag": "RS"},
 ]
+
+# How many rivals the raid net keeps warm at a time. The pool is what the
+# search screen flicks through and what the leaderboard ranks you against, so
+# it wants to be big enough to feel like a room and small enough that you meet
+# the same faces often enough to hold a grudge.
+const RIVAL_POOL := 9
 
 # Real-money store packs (prototype — purchases are simulated).
 # Modeled on Coin Master-style stores: a one-time starter offer,
 # three card chests of rising rarity, spin packs and coin packs.
-const STARTER_PACK := {"id": "starter", "name": "First Timer Pack", "sub": "60 Spins + 50,000 Coins + Golden Chest", "emoji": "🎁", "price": "$1.99", "tag": "250% VALUE", "once": true, "spins": 60, "coins": 50000, "cards": 4, "tier": 1}
+const STARTER_PACK := {"id": "starter", "name": "First Timer Pack", "sub": "60 Spins + %s Coins + Golden Chest", "emoji": "🎁", "price": "$1.99", "tag": "250% VALUE", "once": true, "spins": 60, "coins": 50000, "cards": 4, "tier": 1}
 
 # Chest tiers: pricier chests hold more cards and shift the star odds
 # upward. The Magical Chest always contains at least one 5-star card.
@@ -203,8 +266,8 @@ const SPIN_PACKS := [
 ]
 
 const COIN_PACKS := [
-	{"id": "coins_s", "name": "Sack of Coins", "sub": "25,000 Coins", "emoji": "💰", "price": "$0.99", "coins": 25000},
-	{"id": "coins_m", "name": "Wagon of Coins", "sub": "90,000 Coins", "emoji": "🪙", "price": "$2.99", "coins": 90000, "tag": "x3.6 VALUE", "tag_color": Color(0.3, 0.68, 0.35)},
+	{"id": "coins_s", "name": "Sack of Coins", "sub": "%s Coins", "emoji": "💰", "price": "$0.99", "coins": 25000},
+	{"id": "coins_m", "name": "Wagon of Coins", "sub": "%s Coins", "emoji": "🪙", "price": "$2.99", "coins": 90000, "tag": "x3.6 VALUE", "tag_color": Color(0.3, 0.68, 0.35)},
 ]
 
 # Free gift claimable in the shop once every 24 hours.
@@ -352,6 +415,28 @@ static func bg_image(t: Texture2D) -> Image:
 		img.decompress()
 	return img
 
+# The average colour along the very top of a background image. An island page
+# hangs its art off the safe area rather than stretching it into the notch, so
+# the strip above needs a colour that reads as more of the same sky.
+static func bg_top_color(img: Image, fallback: Color) -> Color:
+	if img == null:
+		return fallback
+	var w := img.get_width()
+	var h := img.get_height()
+	if w <= 0 or h <= 0:
+		return fallback
+	var sum := Vector3.ZERO
+	var n := 0
+	for y in mini(4, h):
+		for x in range(0, w, maxi(1, w / 24)):
+			var c := img.get_pixel(x, y)
+			sum += Vector3(c.r, c.g, c.b)
+			n += 1
+	if n == 0:
+		return fallback
+	sum /= float(n)
+	return Color(sum.x, sum.y, sum.z)
+
 # Bundled color emoji font — system emoji fonts aren't reachable on iOS,
 # so the app ships Noto Color Emoji and falls back to system fonts.
 static func emoji_font() -> Font:
@@ -423,15 +508,58 @@ static func island_bg_tex(level: int) -> Texture2D:
 		t = bg_tex("village")
 	return t
 
-static func new_npc(def: Dictionary) -> Dictionary:
+# Coins on the 1.6x-per-island curve, snapped to three significant digits so a
+# payout reads as "+660" and "+1.25M" rather than "+655" and "+1,246,151".
+static func scaled(base: int, level: int) -> int:
+	if base <= 0:
+		return 0
+	var v: float = base * pow(1.6, level - 1)
+	var step := 10.0
+	while v / step >= 1000.0:
+		step *= 10.0
+	return int(round(v / step)) * int(step)
+
+# A fresh rival. Vaults are written in island-1 units like every other coin
+# figure in the game and scaled where they are shown or paid out, so a bot is
+# worth the same fraction of a building whichever island you meet it on.
+#
+# `near` is your own island. Rivals cluster within a couple of hops of it: far
+# enough apart that the raid screen keeps showing you new scenery, close enough
+# that you never sail into somebody whose huts make yours look like a hamlet.
+# One rival in six is loaded, which is what makes the search worth watching.
+static func new_npc(def: Dictionary, near := 0) -> Dictionary:
 	var b := []
 	for i in BUILDINGS.size():
 		b.append(randi_range(1, 4))
+	var home := randi_range(1, ISLANDS.size())
+	if near > 0:
+		home = clampi(near + randi_range(-2, 2), 1, ISLANDS.size())
+	var purse := randi_range(1500, 6000)
+	if randf() < 0.17:
+		purse = randi_range(9000, 16000)
 	return {
 		"name": def["name"],
 		"emoji": def["emoji"],
-		"coins": randi_range(1500, 6000),
+		"flag": def.get("flag", "??"),
+		"coins": purse,
 		"buildings": b,
 		"shield": randf() < 0.35,
-		"island": randi_range(1, ISLANDS.size()),
+		"island": home,
 	}
+
+# Draws `count` rivals whose names are not already taken. Used to stock the
+# pool at boot and to replace anyone you have finished picking clean.
+static func draw_rivals(count: int, near: int, taken: Array) -> Array:
+	var free := []
+	for def in BOT_DEFS:
+		if not taken.has(def["name"]):
+			free.append(def)
+	free.shuffle()
+	var out := []
+	for i in mini(count, free.size()):
+		out.append(new_npc(free[i], near))
+	return out
+
+# The face a rival wears in the search, for the flicker before the match lands.
+static func bot_face(i: int) -> Dictionary:
+	return BOT_DEFS[i % BOT_DEFS.size()]

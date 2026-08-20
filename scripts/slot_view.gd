@@ -47,6 +47,8 @@ var _timer_label: Label
 var _hint: Label
 var _result: Array = []
 var _target_name := ""   # avatars are rebuilt only when the rival changes
+var _target_coins := 0   # their vault in island-1 units, as main stores it
+var _target_mult := 1.0  # the island curve, so the pot can be quoted for real
 
 # =============================================================================
 #  The sign
@@ -267,7 +269,7 @@ func _build_card() -> void:
 	text.alignment = BoxContainer.ALIGNMENT_CENTER
 	text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(text)
-	var cap := Lagoon.label("NEXT  TARGET", UI.F_TINY, Lagoon.INK_FAINT, true)
+	var cap := Lagoon.label("STEAL  TARGET", UI.F_TINY, Lagoon.INK_FAINT, true)
 	text.add_child(cap)
 	_card_name = Lagoon.label("—", UI.F_LABEL, Lagoon.INK, true)
 	text.add_child(_card_name)
@@ -400,6 +402,12 @@ const BET_KINDS := ["brass", "kelp", "urchin", "primary"]
 func _style_bet() -> void:
 	bet_button.text = "BET  x%d" % bet
 	Lagoon.button(bet_button, BET_KINDS[mini(BETS.find(bet), BET_KINDS.size() - 1)], 26)
+	_style_pot()
+
+func _style_pot() -> void:
+	if _card_coins == null:
+		return
+	_card_coins.text = _fmt(int(round(_target_coins * _target_mult)) * bet)
 
 # =============================================================================
 #  State from main.gd
@@ -414,10 +422,17 @@ func set_island(level: int) -> void:
 	_set_sign(_ribbon_home, Lagoon.SAND)
 
 # Who the raccoons would send you to, and what is in their vault.
-func set_target(npc: Dictionary) -> void:
+#
+# The pot is quoted the way the raid will actually pay it -- their vault times
+# the island curve times the stake you are playing -- so raising the bet visibly
+# raises what is on the table, and the number you read here is the number that
+# comes out of the chests.
+func set_target(npc: Dictionary, coin_mult := 1.0) -> void:
 	if npc.is_empty():
 		return
-	_card_coins.text = _fmt(int(npc.get("coins", 0)))
+	_target_coins = int(npc.get("coins", 0))
+	_target_mult = coin_mult
+	_style_pot()
 	var who: String = npc.get("name", "—")
 	if who == _target_name:
 		return

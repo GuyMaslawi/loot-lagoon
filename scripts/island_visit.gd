@@ -6,6 +6,12 @@ signal finished(result: Dictionary)
 var npc: Dictionary
 var mode := "steal"
 var mult := 1
+# The rival's purse is written at its island-1 value, like every other coin
+# source; main passes the island multiplier in so the chests show what pays out.
+var coin_mult := 1.0
+# How far down the screen the island has to come. Set by whoever opens the
+# raid, because only they know where the nav bar's slab starts.
+var reach := 0.0
 
 var _picks_left := 3
 var _stolen := 0
@@ -13,9 +19,31 @@ var _acted := false
 var _attempts_label: Label
 var _target_buttons: Array = []
 var _building_visuals: Array = []
+# Everything that belongs to the rival's island -- the art, their huts, the
+# chests you open on top of them -- lives in here, in the 720x1280 coordinates
+# it was all drawn in, hung on the screen as one piece. The banner and the
+# attempt counter stay outside it: those are ours, not theirs, and they are the
+# only two things on this screen that have to dodge the notch.
+var _stage: Control
+var _sky: ColorRect
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
+
+	var view := get_viewport_rect().size
+	var top := UI.safe_top(view)
+
+	# Sky first, so the strip the island does not reach -- the one the notch
+	# sits in -- is the same colour the art starts with rather than a hole.
+	_sky = ColorRect.new()
+	_sky.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_sky)
+	_sky.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	_stage = Control.new()
+	_stage.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_stage)
+	UI.make_design_stage(_stage, view, top, reach if reach > 0.0 else view.y)
 
 	var npc_island: int = int(npc.get("island", 1))
 	var bg_t := CV.island_bg_tex(npc_island)
@@ -25,23 +53,24 @@ func _ready() -> void:
 		bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		bg.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 		bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		add_child(bg)
+		_stage.add_child(bg)
 		bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	else:
 		var bg := ColorRect.new()
 		bg.color = Color(0.5, 0.75, 0.55)
 		bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		add_child(bg)
+		_stage.add_child(bg)
 		bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 	if mode == "attack":
 		var tint := ColorRect.new()
 		tint.color = Color(0.55, 0.05, 0.05, 0.16)
 		tint.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		add_child(tint)
+		_stage.add_child(tint)
 		tint.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 	var bg_img := CV.bg_image(bg_t)
+	_sky.color = CV.bg_top_color(bg_img, Color(0.5, 0.75, 0.55))
 	for i in CV.BUILDINGS.size():
 		var b: Dictionary = CV.BUILDINGS[i]
 		var rect: Rect2 = CV.SLOT_RECTS[i]
@@ -50,7 +79,7 @@ func _ready() -> void:
 		holder.position = rect.position
 		holder.size = rect.size
 		holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		add_child(holder)
+		_stage.add_child(holder)
 
 		var shadow := ColorRect.new()
 		shadow.material = CV.contact_shadow_material()
@@ -116,8 +145,8 @@ func _ready() -> void:
 	banner.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
 	banner.offset_left = 14.0
 	banner.offset_right = -14.0
-	banner.offset_top = 12.0
-	banner.offset_bottom = 110.0
+	banner.offset_top = 12.0 + top
+	banner.offset_bottom = 110.0 + top
 
 	var vb := VBoxContainer.new()
 	vb.add_theme_constant_override("separation", 2)
@@ -150,7 +179,7 @@ func _flat_button(btn: Button) -> void:
 # --- steal ---
 
 func _setup_chests() -> void:
-	var total: int = int(npc["coins"]) * mult
+	var total: int = int(round(int(npc["coins"]) * coin_mult)) * mult
 	var q := int(total * 0.25)
 	var amounts := [q, q, total - 2 * q, 0]
 	amounts.shuffle()
@@ -158,8 +187,8 @@ func _setup_chests() -> void:
 	_attempts_label = Lagoon.title("Attempts left: 3", UI.F_BODY, Color.WHITE, Lagoon.ABYSS)
 	add_child(_attempts_label)
 	_attempts_label.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	_attempts_label.offset_top = 120.0
-	_attempts_label.offset_bottom = 154.0
+	_attempts_label.offset_top = 120.0 + UI.safe_top(get_viewport_rect().size)
+	_attempts_label.offset_bottom = 154.0 + UI.safe_top(get_viewport_rect().size)
 
 	var idxs := [0, 1, 2, 3, 4]
 	idxs.shuffle()
@@ -178,7 +207,7 @@ func _setup_chests() -> void:
 			btn.add_theme_font_override("font", CV.emoji_font())
 			btn.add_theme_font_size_override("font_size", 70)
 		btn.pressed.connect(_on_chest.bind(btn, amounts[k]))
-		add_child(btn)
+		_stage.add_child(btn)
 		FX.pop_in(btn, 0.35)
 		FX.float_bob(btn, 6.0, randf_range(1.4, 2.0))
 
@@ -196,11 +225,11 @@ func _on_chest(btn: Button, amount: int) -> void:
 	if amount > 0:
 		_stolen += amount
 		Sfx.play("coins", -4.0)
-		FX.rise_label(self, pos, "+%d" % amount, Lagoon.BRASS_HI, 32)
-		FX.fly_coins(self, btn.position + btn.size * 0.5, Vector2(90, 40), 5)
-		FX.burst(self, btn.position + btn.size * 0.5, Color(1.0, 0.8, 0.3), 10)
+		FX.rise_label(_stage, pos, "+%s" % UI.fmt_compact(amount), Lagoon.BRASS_HI, 32)
+		FX.fly_coins(_stage, btn.position + btn.size * 0.5, Vector2(90, 40), 5)
+		FX.burst(_stage, btn.position + btn.size * 0.5, Color(1.0, 0.8, 0.3), 10)
 	else:
-		FX.rise_label(self, pos, "Empty!", Color(0.85, 0.85, 0.85), 26)
+		FX.rise_label(_stage, pos, "Empty!", Color(0.85, 0.85, 0.85), 26)
 	if _picks_left == 0:
 		var tw := create_tween()
 		tw.tween_interval(1.3)
@@ -223,7 +252,7 @@ func _setup_targets() -> void:
 		btn.add_theme_font_override("font", CV.emoji_font())
 		btn.add_theme_font_size_override("font_size", 62)
 		btn.pressed.connect(_on_target.bind(i))
-		add_child(btn)
+		_stage.add_child(btn)
 		FX.pop_in(btn, 0.35)
 		FX.pulse_forever(btn, 1.12, 0.7)
 		_target_buttons.append(btn)
@@ -248,17 +277,17 @@ func _on_target(i: int) -> void:
 			sh.size = Vector2(170, 170)
 			sh.position = center - Vector2(85, 85)
 			sh.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			add_child(sh)
+			_stage.add_child(sh)
 			FX.pop_in(sh, 0.3)
 			create_tween().tween_property(sh, "modulate:a", 0.0, 0.6).set_delay(1.0)
 		Sfx.play("shield", -2.0)
 		FX.shake(self, 8.0, 5)
-		FX.rise_label(self, center + Vector2(-60, -60), "BLOCKED!", Lagoon.LAGOON, 36)
+		FX.rise_label(_stage, center + Vector2(-60, -60), "BLOCKED!", Lagoon.LAGOON, 36)
 		_finish({"mode": "attack", "npc": npc, "blocked": true})
 	else:
 		npc["buildings"][i] = maxi(0, int(npc["buildings"][i]) - 1)
 		Sfx.play("attack", -2.0)
-		FX.burst(self, center, Color(1.0, 0.55, 0.2), 22)
+		FX.burst(_stage, center, Color(1.0, 0.55, 0.2), 22)
 		FX.shake(self, 18.0, 8)
 		var vis: Dictionary = _building_visuals[i]
 		var new_level: int = int(npc["buildings"][i])
@@ -266,7 +295,7 @@ func _on_target(i: int) -> void:
 		var mod := Color(1, 1, 1) if new_level > 0 else Color(0.5, 0.5, 0.5, 0.4)
 		vis["tex"].modulate = mod
 		vis["fallback"].modulate = mod
-		FX.rise_label(self, center + Vector2(-40, -50), "-1 LEVEL", Lagoon.CORAL, 34)
+		FX.rise_label(_stage, center + Vector2(-40, -50), "-1 LEVEL", Lagoon.CORAL, 34)
 		_finish({"mode": "attack", "npc": npc, "blocked": false, "target": i})
 
 func _finish(result: Dictionary) -> void:
