@@ -86,6 +86,20 @@ func _ready() -> void:
 	_front.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_add_wordmark()
 	_add_loader()
+	_add_build_stamp()
+
+# Small, dim and bottom-right: legible when you go looking for it, invisible
+# when you are not. It is the first thing to check when a change seems to have
+# gone missing on the device.
+func _add_build_stamp() -> void:
+	var tag := Label.new()
+	tag.text = BuildID.label()
+	tag.add_theme_font_size_override("font_size", 18)
+	tag.add_theme_color_override("font_color", Color(1, 1, 1, 0.38))
+	tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_front.add_child(tag)
+	tag.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE)
+	tag.position -= Vector2(16, 12 + _safe.y)
 
 func _add_art() -> void:
 	_art = TextureRect.new()

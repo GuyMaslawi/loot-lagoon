@@ -14,3 +14,6 @@ build/
 
 # python bytecode from tools/
 __pycache__/
+
+# written by ship.sh so the running build can name itself; never committed
+build_info.json

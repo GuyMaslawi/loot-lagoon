@@ -2,7 +2,20 @@
 # Build a signed Loot Lagoon build for TestFlight / the App Store.
 #
 #   ./ship.sh              export, archive and write build/ios-release/LootLagoon.ipa
-#   ./ship.sh --build 7    ...using 7 as the build number
+#   ./ship.sh --build 7    ...overriding the build number
+#
+# THE TWO NUMBERS. CFBundleShortVersionString ("1.0") is the marketing version:
+# it is what buyers see on the store page, it changes when you decide a release
+# deserves it, and it is edited by hand in export_presets.cfg. CFBundleVersion
+# is the build number: Apple only requires that it rise, nobody outside
+# TestFlight ever reads it, and typing it by hand is how you end up uploading a
+# 105MB package numbered "N".
+#
+# So it is derived: the number of commits on HEAD. That is monotonic without
+# anyone maintaining it, and it makes every build in TestFlight name the exact
+# commit it was cut from -- which is the question you actually have when a
+# tester reports something. Its one cost is that two builds of the same commit
+# collide, and Apple rejects the second; commit first, or pass --build.
 #
 # It deliberately stops at the .ipa. Uploading is a separate, outward-facing
 # step -- see the note at the bottom.
@@ -37,12 +50,22 @@ while [ $# -gt 0 ]; do
 				echo "build number must be one to three period-separated integers, got: $2" >&2
 				exit 2
 			}
-			sed -i '' "s|^application/version=.*|application/version=\"$2\"|" export_presets.cfg; shift 2 ;;
+			BUILD_NO="$2"; shift 2 ;;
 		*) echo "unknown option: $1" >&2; exit 2 ;;
 	esac
 done
-BUILD_NO=$(sed -n 's/^application\/version="\(.*\)"/\1/p' export_presets.cfg)
-echo "==> $BUNDLE  build $BUILD_NO  team $TEAM"
+BUILD_NO=${BUILD_NO:-$(git rev-list --count HEAD)}
+sed -i '' "s|^application/version=.*|application/version=\"$BUILD_NO\"|" export_presets.cfg
+SHORT=$(sed -n 's/^application\/short_version="\(.*\)"/\1/p' export_presets.cfg)
+COMMIT=$(git rev-parse --short HEAD)
+echo "==> $BUNDLE  v$SHORT build $BUILD_NO  commit $COMMIT  team $TEAM"
+
+# Read back by BuildID and printed on the title screen, so a device can say
+# which build it is running. Generated, git-ignored, and packed automatically --
+# Godot exports loose json from the project root without any filter help.
+cat > build_info.json <<JSON
+{"version": "$SHORT", "build": "$BUILD_NO", "commit": "$COMMIT"}
+JSON
 
 # The flag that links the StoreKit plugin lives in export_presets.cfg, which is
 # not in git. Lose it -- a fresh clone, a preset rebuilt in the editor -- and
