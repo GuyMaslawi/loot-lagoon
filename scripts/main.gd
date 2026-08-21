@@ -10,6 +10,27 @@ var coins := 1500
 var spins := 30
 var shields := 0
 var island_level := 1
+
+# =============================================================================
+#  Stars
+# =============================================================================
+#
+# The one number in the game that is not spent on a slot machine. Coins are
+# income and spins are fuel -- both churn, both are back to roughly where they
+# were an hour later, and neither says anything about how far a player has
+# actually got. Stars only ever come from something that stays built:
+#
+#   * a hut, once per upgrade, worth the level it just reached -- so a hut
+#     taken from nothing to 5⭐ has paid 1+2+3+4+5 = 15, and a finished
+#     island is 75
+#   * a card, the first time you own it, worth its own rarity
+#   * a duplicate card, melted down for what its rarity was worth
+#
+# And they are spent on exactly one thing: the card boxes. That is deliberate.
+# The leaderboard ranks on this number, so every star is a live choice between
+# standing higher in the world and opening another box -- which is a decision
+# a coin balance has never once made a player think about.
+var stars := 0
 var buildings := [0, 0, 0, 0, 0]
 var revenge_pending := false
 var npcs: Array = []
@@ -123,9 +144,27 @@ var auto_spin := false
 var _last_bet := 1
 var purchased_ids := []
 var shop_free_last := 0.0
+# Coins banked behind the piggy's glass. Filled by playing, spent only by
+# buying it back -- nothing else in the game reads or drains this.
+var piggy_coins := 0
+# The live limited-time offer: which pack, when it dies, and the earliest the
+# next one may roll. All three persist, so a countdown a player left running
+# is still running when they come back.
+var offer_id := ""
+var offer_until := 0.0
+var offer_next := 0.0
+# Contextual offers interrupt play, so they are rate-limited hard. Firing one
+# on every failed tap would train players to dismiss them on sight.
+var _ctx_offer_last := 0.0
 var _ui_tick := 0.0
 var _shop_gift_timer_label: Label
+var _offer_timer_label: Label
 var col_owned := {}
+# set id -> [count, count, ...], how many spare copies of each card are held.
+# Pulling a card you already have used to be a dead beat with a coin refund
+# stapled to it; the spares are kept now because they are the raw material the
+# boxes are opened with.
+var col_dupes := {}
 var col_claimed := {}
 var col_mega_claimed := false
 var col_deadline := 0.0
@@ -133,6 +172,8 @@ var col_deadline := 0.0
 # the set you tapped. Empty means the shelf.
 var col_open := ""
 var _col_back: Button
+var _convert_btn: Button
+var _convert_badge: Panel
 
 const NOTIF_LOG_MAX := 30
 var notif_enabled := true
@@ -235,11 +276,20 @@ func _boot_warm_art() -> void:
 func _boot_finish_build() -> void:
 	village_page.visible = false
 	_current_page = slot_page
-	if OS.get_environment("DEMO_PAGE") == "island":
+	# DEMO_PAGE opens straight onto one screen, so a change to a page four taps
+	# deep can be looked at without playing four taps' worth of game first.
+	var demo_page := OS.get_environment("DEMO_PAGE")
+	if demo_page == "island":
 		slot_page.visible = false
 		village_page.visible = true
 		_current_page = village_page
+	elif pages.has(demo_page):
+		slot_page.visible = false
+		pages[demo_page].visible = true
+		_current_page = pages[demo_page]
 	_build_nav()
+	if pages.has(demo_page):
+		_fill_page(demo_page)
 	_apply_island_theme()
 	_update_badges()
 	_refresh()
@@ -247,6 +297,13 @@ func _boot_finish_build() -> void:
 # Everything that addresses the player waits until the title screen is gone --
 # a toast or a sign-in sheet fading up behind a splash is one nobody reads.
 func _after_boot() -> void:
+	# Connected here rather than in _ready: a transaction interrupted on a
+	# previous launch is replayed the instant IAP starts popping events, and it
+	# has to land on a game whose pages already exist.
+	IAP.purchase_succeeded.connect(_on_purchase_ok)
+	IAP.purchase_failed.connect(_on_purchase_fail)
+	IAP.products_loaded.connect(_on_products_loaded)
+	IAP.begin()
 	call_deferred("_check_island_complete")
 	if _offline_spins_gained > 0:
 		_notify("spins", "While you were away, spins refilled  +%d  (%d/%d)" % [_offline_spins_gained, spins, SPIN_CAP], "🌀")
@@ -254,6 +311,14 @@ func _after_boot() -> void:
 	_offline_raids()
 	if profile.is_empty():
 		_show_login()
+	# DEMO_RAID sails straight to a raid. An attack needs three hammers on the
+	# reels to happen for real, which is not a thing you can spin up on demand
+	# while looking at the animation it plays.
+	var demo_raid := OS.get_environment("DEMO_RAID")
+	if demo_raid == "attack" or demo_raid == "steal":
+		var go := create_tween()
+		go.tween_interval(0.6)
+		go.tween_callback(_start_visit.bind(demo_raid))
 	if OS.has_environment("DEMO_QUESTS"):
 		var demo_tab := OS.get_environment("DEMO_QUESTS")
 		if MISSION_DEFS.has(demo_tab):
@@ -437,14 +502,17 @@ func _process(delta: float) -> void:
 		_ui_tick = 0.0
 		if slot != null:
 			slot.set_meter(spins, SPIN_CAP, SPIN_REGEN_SECS - _regen_accum, SPIN_REGEN_AMOUNT)
-		if _shop_free_ready():
-			# free gift may have just come off cooldown while playing
+		if _shop_free_ready() or _piggy_full() or not _active_offer().is_empty():
+			# the gift, the piggy or an offer may have come due while playing
 			if _badges.has("shop_free") and not _badges["shop_free"].visible:
 				_update_badges()
 				if _current_page == pages.get("shop"):
 					_fill_page("shop")
 		elif _shop_gift_timer_label != null and is_instance_valid(_shop_gift_timer_label):
 			_shop_gift_timer_label.text = "⏳  Next gift in  %s" % _shop_free_countdown_text()
+		_offer_tick()
+		if _offer_timer_label != null and is_instance_valid(_offer_timer_label):
+			_offer_timer_label.text = "⏳  ENDS  IN  %s" % _offer_countdown_text()
 		if _current_page == pages.get("quests"):
 			# roll missions over live if a cycle ends while the page is open
 			if mission_state.get(quests_tab, {}).is_empty() or int(mission_state[quests_tab]["key"]) != _period_key(quests_tab):
@@ -466,7 +534,10 @@ func _page_rank(p: Control) -> int:
 		return 0
 	if p == village_page:
 		return 1
-	var order := ["shop", "collections", "quests", "options"]
+	# Left-to-right order for the slide transition. Boxes sits immediately right
+	# of Cards because that is where you arrive from, and Alerts at the far end
+	# because nothing leads onward from it.
+	var order := ["shop", "collections", "boxes", "quests", "options", "alerts"]
 	for i in order.size():
 		if pages.get(order[i]) == p:
 			return 2 + i
@@ -1037,7 +1108,7 @@ func _add_side_buttons(page: Control) -> void:
 	row.offset_top = 184.0 + safe_top()
 	row.offset_bottom = 306.0 + safe_top()
 	_side_button(row, "gift", "Daily", "daily", _open_daily)
-	_side_button(row, "bell", "Alerts", "alerts", _open_alerts)
+	_side_button(row, "bell", "Alerts", "alerts", func() -> void: _goto(pages["alerts"]))
 	_side_button(row, "trophy", "Ranks", "ranks", _open_ranks)
 
 func _side_button(container: BoxContainer, icon_kind: String, caption: String, badge_key: String, action: Callable) -> void:
@@ -1097,13 +1168,15 @@ func _side_button(container: BoxContainer, icon_kind: String, caption: String, b
 func _update_badges() -> void:
 	if _badges.is_empty():
 		return
-	_badges["daily"].visible = _daily_ready()
-	var any_claim := false
-	for period in MISSION_DEFS:
-		if _period_claimable(period):
-			any_claim = true
-			break
-	_badges["missions"].visible = any_claim
+	if _badges.has("daily"):
+		_badges["daily"].visible = _daily_ready()
+	if _badges.has("missions"):
+		var any_claim := false
+		for period in MISSION_DEFS:
+			if _period_claimable(period):
+				any_claim = true
+				break
+		_badges["missions"].visible = any_claim
 	if _badges.has("collections"):
 		var any_col := false
 		for c in CV.COLLECTIONS:
@@ -1118,7 +1191,13 @@ func _update_badges() -> void:
 		if bl != null:
 			bl.text = str(mini(unread, 9)) if unread > 0 else "!"
 	if _badges.has("shop_free"):
-		_badges["shop_free"].visible = _shop_free_ready()
+		_badges["shop_free"].visible = _shop_free_ready() or _piggy_full() or not _active_offer().is_empty()
+	if _convert_badge != null and is_instance_valid(_convert_badge):
+		var spare := _dupe_card_count()
+		_convert_badge.visible = spare > 0
+		var cl := _convert_badge.get_child(0) as Label
+		if cl != null:
+			cl.text = str(mini(spare, 99))
 
 func _daily_ready() -> bool:
 	return Time.get_unix_time_from_system() - daily_last >= DAILY_COOLDOWN
@@ -1139,6 +1218,22 @@ func _mission_add(id: String, amount := 1) -> void:
 # out. Anything that skips this decays to nothing: a flat 100-coin reel win is
 # 0.0001% of a build at island 30, which would leave missions as the only
 # income worth collecting and turn the slot machine into decoration.
+# Stars land in the counter the way coins do -- something leaves the thing that
+# paid out and arrives at the number that went up -- because a currency that
+# only ever appears as a label ticking over never becomes a currency the player
+# thinks about.
+func _award_stars(n: int, from_global := Vector2.ZERO) -> void:
+	if n <= 0:
+		return
+	stars += n
+	_update_badges()
+	if _hud_labels.is_empty() or not _hud_labels[0].has("stars"):
+		return
+	var to: Vector2 = _hud_labels[0]["stars"].global_position
+	var src := from_global if from_global != Vector2.ZERO else Vector2(view_size().x * 0.5, view_size().y * 0.45)
+	FX.fly_coins(self, src, to, clampi(n, 3, 10), "star", "\u2b50")
+	Sfx.play("levelup", -10.0)
+
 func _economy_mult() -> float:
 	return pow(1.6, island_level - 1)
 
@@ -1488,43 +1583,62 @@ func _time_ago(ts: float) -> String:
 		return "%dh ago" % (d / 3600)
 	return "%dd ago" % (d / 86400)
 
-func _open_alerts() -> void:
-	var vbox := _open_popup("Notifications")
+# =============================================================================
+#  Notifications
+# =============================================================================
+#
+# This was a modal, and a modal was the wrong shape for it. A raid you slept
+# through is news about your island, sometimes a week of it, and news does not
+# belong in a box that dims the game behind it and has to be dismissed before
+# anything else can happen. It is a place now: it scrolls the whole screen, it
+# holds as many entries as the log has, and you leave it the same way you leave
+# the shop.
+
+func _fill_alerts(vb: VBoxContainer) -> void:
 	if notif_log.is_empty():
-		var empty := _popup_row_label("No notifications yet — you're all caught up!", UI.F_CAPTION)
+		var card := _page_card(vb)
+		var bell := _emoji_label("\U0001F514", 72)
+		bell.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		bell.modulate = Color(1, 1, 1, 0.5)
+		card.add_child(bell)
+		var empty := _popup_row_label("No notifications yet", UI.F_SUBHEAD)
 		empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		empty.add_theme_color_override("font_color", Lagoon.INK_SOFT)
-		vbox.add_child(empty)
+		card.add_child(empty)
+		var sub := _popup_row_label("Raids on your island and spins that refill while you are away turn up here.", UI.F_CAPTION)
+		sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		sub.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		card.add_child(sub)
 	else:
-		var sc := ScrollContainer.new()
-		sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-		sc.custom_minimum_size = Vector2(0, minf(520.0, notif_log.size() * 78.0))
-		vbox.add_child(sc)
-		var list := VBoxContainer.new()
-		list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		list.add_theme_constant_override("separation", 8)
-		sc.add_child(list)
+		var unread_n := _unread_count()
+		if unread_n > 0:
+			var flag := HBoxContainer.new()
+			flag.alignment = BoxContainer.ALIGNMENT_CENTER
+			flag.add_theme_constant_override("separation", 10)
+			vb.add_child(flag)
+			flag.add_child(Lagoon.chip("%d NEW" % unread_n, Lagoon.REEF, UI.F_CAPTION))
+
+		# One card per entry, straight into the page's own scroll. The old modal
+		# nested a scroller inside a fixed-height panel, which is two scrolls
+		# fighting over one flick.
 		for entry in notif_log:
 			var unread: bool = not bool(entry.get("read", true))
-			var card := PanelContainer.new()
-			var sb := StyleBoxFlat.new()
-			sb.bg_color = Color(1, 1, 1, 0.95) if unread else Color(1, 1, 1, 0.62)
-			sb.set_corner_radius_all(14)
-			sb.set_border_width_all(2)
-			sb.border_color = Lagoon.BRASS if unread else Color(Lagoon.INK_FAINT.r, Lagoon.INK_FAINT.g, Lagoon.INK_FAINT.b, 0.3)
-			sb.content_margin_left = 12.0
-			sb.content_margin_right = 12.0
-			sb.content_margin_top = 8.0
-			sb.content_margin_bottom = 8.0
-			card.add_theme_stylebox_override("panel", sb)
-			list.add_child(card)
+			var card := _tinted_card(vb, Lagoon.REEF if unread else Lagoon.BRASS_MID, unread)
+			var pad := MarginContainer.new()
+			for m in [["margin_left", 14], ["margin_right", 14], ["margin_top", 12], ["margin_bottom", 12]]:
+				pad.add_theme_constant_override(m[0], m[1])
+			card.add_child(pad)
 			var row := HBoxContainer.new()
-			row.add_theme_constant_override("separation", 12)
-			card.add_child(row)
-			row.add_child(_emoji_label(str(entry.get("emoji", "🔔")), 26))
+			row.add_theme_constant_override("separation", 14)
+			pad.add_child(row)
+			var tok := Lagoon.token(str(entry.get("emoji", "\U0001F514")), 72.0,
+				Lagoon.REEF if unread else Lagoon.BRASS)
+			tok.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			row.add_child(tok)
 			var col := VBoxContainer.new()
 			col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			col.add_theme_constant_override("separation", 2)
+			col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			col.add_theme_constant_override("separation", 4)
 			row.add_child(col)
 			var txt := Label.new()
 			txt.text = str(entry.get("text", ""))
@@ -1537,6 +1651,9 @@ func _open_alerts() -> void:
 			when.add_theme_font_size_override("font_size", UI.F_TINY)
 			when.add_theme_color_override("font_color", Lagoon.INK_FAINT)
 			col.add_child(when)
+
+		# Marked read on the way out of the builder rather than on the way in,
+		# so the "NEW" chips above are the state the page was opened in.
 		for entry in notif_log:
 			entry["read"] = true
 		_update_badges()
@@ -1544,7 +1661,7 @@ func _open_alerts() -> void:
 
 	var btn_row := HBoxContainer.new()
 	btn_row.add_theme_constant_override("separation", 12)
-	vbox.add_child(btn_row)
+	vb.add_child(btn_row)
 	if not notif_log.is_empty():
 		var clear := Button.new()
 		clear.text = "Clear all"
@@ -1556,7 +1673,7 @@ func _open_alerts() -> void:
 			notif_log = []
 			_update_badges()
 			_save_game()
-			_open_alerts()
+			_fill_page("alerts")
 		)
 		btn_row.add_child(clear)
 	var settings := Button.new()
@@ -1565,35 +1682,69 @@ func _open_alerts() -> void:
 	settings.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_candy_button(settings, Color(0.55, 0.45, 0.65))
 	FX.press_feedback(settings)
-	settings.pressed.connect(func() -> void:
-		_close_popup()
-		_goto(pages["options"])
-	)
+	settings.pressed.connect(func() -> void: _goto(pages["options"]))
 	btn_row.add_child(settings)
 
 # --- full menu pages (shop / collections / quests / options) ---
 
 func _build_menu_pages() -> void:
-	for spec in [["shop", "Shop"], ["collections", "Cards"], ["quests", "Quests"], ["options", "Options"]]:
+	for spec in [["shop", "Shop"], ["collections", "Cards"], ["boxes", "Card Boxes"],
+			["quests", "Quests"], ["options", "Options"], ["alerts", "Alerts"]]:
 		_make_page(spec[0], spec[1])
-	# Parented to the page rather than the scrolling body, so it stays put when
-	# a long set is scrolled -- a back button you have to scroll up to find is
-	# a back button the player uses the system gesture instead of.
-	_col_back = Button.new()
-	_col_back.custom_minimum_size = Vector2(158, 64)
-	_col_back.size = Vector2(158, 64)
-	_col_back.focus_mode = Control.FOCUS_NONE
-	_col_back.text = "\u25C0   BACK"
-	_col_back.add_theme_font_size_override("font_size", UI.F_LABEL)
-	Lagoon.button(_col_back, "brass", 32)
-	FX.press_feedback(_col_back)
-	_col_back.visible = false
-	_col_back.pressed.connect(func() -> void:
+
+	_col_back = _back_button(pages["collections"], func() -> void:
 		col_open = ""
 		_fill_page("collections")
 	)
-	pages["collections"].add_child(_col_back)
-	_col_back.position = Vector2(16.0, 115.0 + safe_top())
+	_col_back.visible = false
+
+	# Neither of these two is on the nav bar, so each keeps a way out of its own.
+	_back_button(pages["boxes"], func() -> void: _goto(pages["collections"]))
+	_back_button(pages["alerts"], func() -> void: _goto(slot_page))
+
+	# The way into the boxes: bottom-right of the Cards page, where the thumb
+	# already is, carrying a count of what is waiting to be melted down.
+	_convert_btn = Button.new()
+	_convert_btn.custom_minimum_size = Vector2(232, 84)
+	_convert_btn.size = Vector2(232, 84)
+	_convert_btn.focus_mode = Control.FOCUS_NONE
+	_convert_btn.text = "\u267B   BOXES"
+	_convert_btn.add_theme_font_size_override("font_size", UI.F_LABEL)
+	Lagoon.button(_convert_btn, "urchin", 34)
+	Lagoon.button_gloss(_convert_btn, 34)
+	FX.press_feedback(_convert_btn)
+	_convert_btn.pressed.connect(func() -> void: _goto(pages["boxes"]))
+	pages["collections"].add_child(_convert_btn)
+	_convert_btn.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
+	_convert_btn.offset_left = -248.0
+	_convert_btn.offset_right = -16.0
+	_convert_btn.offset_top = -(NAV_ROOT_H + 18.0 + safe_bottom() + 84.0)
+	_convert_btn.offset_bottom = -(NAV_ROOT_H + 18.0 + safe_bottom())
+	# _nav_badge anchors to its parent's top centre; nudged out to the button's
+	# top-right corner, which is where a count belongs on a wide button.
+	_convert_badge = _nav_badge(_convert_btn, "0")
+	_convert_badge.offset_left = 74.0
+	_convert_badge.offset_right = 104.0
+	_convert_badge.offset_top = -12.0
+	_convert_badge.offset_bottom = 18.0
+
+# A page that is not on the nav bar has to carry its own way out. Parented to
+# the page rather than to its scrolling body, so it stays put when a long list
+# is scrolled -- a back button you have to scroll up to find is a back button
+# the player uses the system gesture instead of.
+func _back_button(page: Control, action: Callable) -> Button:
+	var b := Button.new()
+	b.custom_minimum_size = Vector2(132, 64)
+	b.size = Vector2(132, 64)
+	b.focus_mode = Control.FOCUS_NONE
+	b.text = "\u25C0   BACK"
+	b.add_theme_font_size_override("font_size", UI.F_LABEL)
+	Lagoon.button(b, "brass", 32)
+	FX.press_feedback(b)
+	b.pressed.connect(action)
+	page.add_child(b)
+	b.position = Vector2(16.0, 115.0 + safe_top())
+	return b
 
 func _make_page(key: String, title: String) -> void:
 	var page := Control.new()
@@ -1641,6 +1792,8 @@ func _fill_page(key: String) -> void:
 		"shop": _fill_shop(vb)
 		"quests": _fill_quests(vb)
 		"collections": _fill_collections(vb)
+		"boxes": _fill_boxes(vb)
+		"alerts": _fill_alerts(vb)
 		"options": _fill_options(vb)
 
 func _page_card(vb: VBoxContainer) -> VBoxContainer:
@@ -1664,10 +1817,27 @@ func _tinted_card(parent: Node, tint: Color, strong := false, radius := Lagoon.R
 
 func _fill_shop(vb: VBoxContainer) -> void:
 	_shop_gift_timer_label = null
+	_offer_timer_label = null
+
+	# Order matters more here than anywhere else on the page. The two things
+	# that expire -- the live offer and the one-time starter -- go above the
+	# standing shelf, because a player who scrolls past a countdown to reach a
+	# price list has already been told the countdown was the less urgent thing.
+	var live := _active_offer()
+	if not live.is_empty():
+		_offer_card(vb, live)
 
 	# one-time starter offer hero banner
 	if not purchased_ids.has(CV.STARTER_PACK["id"]):
 		_shop_hero_offer(vb)
+
+	_shop_section(vb, "🐷", "PIGGY  BANK")
+	_piggy_card(vb)
+
+	_shop_section(vb, "🧳", "BUNDLES")
+	for pack in CV.BUNDLE_PACKS:
+		_bundle_card(vb, pack)
+	vb.add_child(_page_note("Bundles cost less than the same spins, coins and cards bought apart", UI.F_TINY))
 
 	_shop_section(vb, "🗝️", "TREASURE  CHESTS")
 	var chest_row := HBoxContainer.new()
@@ -1781,6 +1951,263 @@ void fragment() {
 	r.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return r
 
+# The live limited-time offer, at the very top of the store.
+#
+# Everything loud about this card is doing one job: making the difference
+# between now and later feel like a difference. The countdown is the headline,
+# the percentage is the reason, and the panel is the only red thing on a page
+# that is otherwise brass and water.
+func _offer_card(vb: VBoxContainer, pack: Dictionary) -> void:
+	var panel := _tinted_card(vb, Lagoon.REEF, true)
+	panel.add_child(_shine_overlay(Lagoon.CORAL_HI))
+
+	var margin := MarginContainer.new()
+	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		margin.add_theme_constant_override(m, 14)
+	panel.add_child(margin)
+
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 8)
+	margin.add_child(col)
+
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 8)
+	col.add_child(head)
+	head.add_child(_tag_chip("LIMITED  TIME", Lagoon.REEF, 11))
+	head.add_child(_tag_chip("+%d%%  VALUE" % CV.bonus_pct(pack), Lagoon.URCHIN, 11))
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(spacer)
+
+	# Held on the node so the once-a-second tick can rewrite it in place
+	# without rebuilding the page under the player's thumb.
+	var timer := Lagoon.label("⏳  ENDS  IN  %s" % _offer_countdown_text(), UI.F_CAPTION, Lagoon.CORAL_LO, true)
+	col.add_child(timer)
+	_offer_timer_label = timer
+	FX.pulse_forever(timer, 1.05, 1.0)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 14)
+	col.add_child(row)
+
+	var art := Control.new()
+	art.custom_minimum_size = Vector2(96, 100)
+	row.add_child(art)
+	art.add_child(_radial_glow(Lagoon.CORAL, 126))
+	var e := _emoji_label(pack["emoji"], 56)
+	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	e.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	art.add_child(e)
+	e.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	FX.pulse_forever(e, 1.1, 1.3)
+
+	var text := VBoxContainer.new()
+	text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	text.alignment = BoxContainer.ALIGNMENT_CENTER
+	text.add_theme_constant_override("separation", 4)
+	row.add_child(text)
+	text.add_child(Lagoon.label(pack["name"], UI.F_BODY, Lagoon.INK, true))
+	var sub := Lagoon.label(_pack_sub(pack), UI.F_CAPTION, Lagoon.INK_SOFT)
+	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	text.add_child(sub)
+
+	var buy := Button.new()
+	buy.text = IAP.price_for(pack)
+	buy.custom_minimum_size = Vector2(140, UI.TAP)
+	buy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
+	_candy_button(buy, Color(0.28, 0.68, 0.34))
+	FX.press_feedback(buy)
+	buy.pressed.connect(_confirm_purchase.bind(pack))
+	row.add_child(buy)
+
+# The piggy bank card: a fill bar, what is inside, and one price.
+#
+# The bar is the whole design. A number alone would read as another pack; a bar
+# creeping toward a line the player can see reads as something of theirs
+# accumulating, and that is the feeling the mechanic is built on.
+func _piggy_card(vb: VBoxContainer) -> void:
+	var full := _piggy_full()
+	var pink := Color(1.0, 0.62, 0.72)
+	var panel := _tinted_card(vb, pink, full)
+	if full:
+		panel.add_child(_shine_overlay(Color(1.0, 0.82, 0.88)))
+
+	var margin := MarginContainer.new()
+	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		margin.add_theme_constant_override(m, 14)
+	panel.add_child(margin)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 14)
+	margin.add_child(row)
+
+	var art := Control.new()
+	art.custom_minimum_size = Vector2(92, 96)
+	row.add_child(art)
+	art.add_child(_radial_glow(pink, 118))
+	var e := _emoji_label("🐷", 56)
+	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	e.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	art.add_child(e)
+	e.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	FX.pulse_forever(e, 1.1 if full else 1.04, 1.1 if full else 2.4)
+
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.alignment = BoxContainer.ALIGNMENT_CENTER
+	col.add_theme_constant_override("separation", 5)
+	row.add_child(col)
+
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 8)
+	col.add_child(head)
+	head.add_child(Lagoon.label("Piggy Bank", UI.F_BODY, Lagoon.INK, true))
+	if full:
+		head.add_child(_tag_chip("FULL!", Lagoon.REEF, 11))
+
+	var amount := Lagoon.label("%s coins inside" % _fmt_compact(piggy_coins), UI.F_LABEL, Lagoon.INK, true)
+	col.add_child(amount)
+
+	# Fill bar: a well with a pink column drawn across the filled fraction.
+	#
+	# The track is a bare Control, not a PanelContainer, for the same reason the
+	# modal's close button is not parented to its panel -- a PanelContainer
+	# stretches every child to its own rect, so a hand-sized fill would sit there
+	# at 100% no matter what the player had banked.
+	var frac := _piggy_frac()
+	var bar := Control.new()
+	bar.custom_minimum_size = Vector2(0, 20)
+	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(bar)
+	var well := Panel.new()
+	well.add_theme_stylebox_override("panel", Lagoon.glass_well(10))
+	well.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bar.add_child(well)
+	well.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var fill := Panel.new()
+	var fsb := StyleBoxFlat.new()
+	fsb.bg_color = pink
+	fsb.set_corner_radius_all(10)
+	fill.add_theme_stylebox_override("panel", fsb)
+	fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bar.add_child(fill)
+	var place_fill := func() -> void:
+		fill.position = Vector2.ZERO
+		fill.size = Vector2(bar.size.x * frac, bar.size.y)
+		fill.visible = frac > 0.0
+	bar.resized.connect(place_fill)
+	place_fill.call_deferred()
+
+	var note := Lagoon.label(
+		"Smash it now and the coins are yours" if full else "Fills as you spin and raid — %d%% of the way there" % int(frac * 100.0),
+		UI.F_TINY, Lagoon.INK_FAINT)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(note)
+
+	var buy := Button.new()
+	buy.text = IAP.price_for(CV.PIGGY_PACK)
+	buy.custom_minimum_size = Vector2(140, UI.TAP)
+	buy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
+	_candy_button(buy, Color(0.28, 0.68, 0.34))
+	FX.press_feedback(buy)
+	# An empty bank is not for sale -- charging for nothing is the one way this
+	# mechanic can leave a player feeling cheated.
+	buy.disabled = piggy_coins <= 0
+	buy.modulate.a = 1.0 if piggy_coins > 0 else 0.45
+	buy.pressed.connect(_confirm_piggy)
+	row.add_child(buy)
+
+func _confirm_piggy() -> void:
+	var vbox := _open_popup("Smash the Piggy?")
+	var e := _emoji_label("🐷", 68)
+	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(e)
+	var amount := _popup_row_label("%s coins inside" % _fmt_compact(piggy_coins), UI.F_BODY)
+	amount.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(amount)
+	if not _piggy_full():
+		var wait := _popup_row_label("It keeps filling — the price never changes.", UI.F_CAPTION)
+		wait.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		wait.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+		wait.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		vbox.add_child(wait)
+	var note := _popup_row_label("Prototype — simulated purchase, no real charge.", UI.F_TINY)
+	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	note.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+	vbox.add_child(note)
+	var pay := Button.new()
+	pay.text = "PAY  %s" % IAP.price_for(CV.PIGGY_PACK)
+	pay.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	_candy_button(pay, Color(0.28, 0.68, 0.34))
+	FX.press_feedback(pay)
+	pay.pressed.connect(func() -> void:
+		if IAP.busy:
+			return
+		pay.disabled = true
+		pay.text = "…"
+		IAP.purchase(CV.PIGGY_PACK)
+	)
+	vbox.add_child(pay)
+
+# A mixed bundle: a wide row, because unlike a spin pack it has three things to
+# say and a two-column tile cannot say them without abbreviating all three.
+func _bundle_card(vb: VBoxContainer, pack: Dictionary) -> void:
+	var cc: Color = pack["color"]
+	var top: bool = pack.get("guarantee5", false)
+	var panel := _tinted_card(vb, cc, top)
+	if top:
+		panel.add_child(_shine_overlay(Lagoon.URCHIN.lightened(0.5)))
+
+	var margin := MarginContainer.new()
+	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		margin.add_theme_constant_override(m, 12)
+	panel.add_child(margin)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	margin.add_child(row)
+
+	var art := Control.new()
+	art.custom_minimum_size = Vector2(84, 88)
+	row.add_child(art)
+	art.add_child(_radial_glow(cc, 108))
+	var e := _emoji_label(pack["emoji"], 50)
+	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	e.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	art.add_child(e)
+	e.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	FX.pulse_forever(e, 1.06, 2.2)
+
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.alignment = BoxContainer.ALIGNMENT_CENTER
+	col.add_theme_constant_override("separation", 4)
+	row.add_child(col)
+
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 7)
+	col.add_child(head)
+	head.add_child(Lagoon.label(pack["name"], UI.F_LABEL, Lagoon.INK, true))
+	if pack.has("tag"):
+		head.add_child(_tag_chip(pack["tag"], pack["tag_color"], 11))
+
+	var sub := Lagoon.label(_pack_sub(pack), UI.F_CAPTION, Lagoon.INK_SOFT)
+	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(sub)
+	col.add_child(Lagoon.label("+%d%%  vs  buying  it  separately" % CV.bonus_pct(pack), UI.F_TINY, Lagoon.KELP_LO, true))
+
+	var buy := Button.new()
+	buy.text = IAP.price_for(pack)
+	buy.custom_minimum_size = Vector2(128, UI.TAP)
+	buy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
+	_candy_button(buy, Color(0.28, 0.68, 0.34))
+	FX.press_feedback(buy)
+	buy.pressed.connect(_confirm_purchase.bind(pack))
+	row.add_child(buy)
+
 func _shop_hero_offer(vb: VBoxContainer) -> void:
 	var pack: Dictionary = CV.STARTER_PACK
 	var panel := _tinted_card(vb, Lagoon.BRASS, true)
@@ -1825,7 +2252,7 @@ func _shop_hero_offer(vb: VBoxContainer) -> void:
 	col.add_child(once)
 
 	var buy := Button.new()
-	buy.text = pack["price"]
+	buy.text = IAP.price_for(pack)
 	buy.custom_minimum_size = Vector2(140, UI.TAP)
 	buy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
@@ -1917,7 +2344,7 @@ func _chest_card(row: HBoxContainer, pack: Dictionary) -> void:
 		FX.pulse_forever(odds, 1.08, 1.2)
 
 	var buy := Button.new()
-	buy.text = pack["price"]
+	buy.text = IAP.price_for(pack)
 	buy.custom_minimum_size = Vector2(0, UI.TAP)
 	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
 	_candy_button(buy, Color(0.28, 0.68, 0.34))
@@ -1963,8 +2390,16 @@ func _shop_tile(grid: GridContainer, pack: Dictionary, accent: Color, amount_tex
 	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(nm)
 
+	# What climbing the ladder actually buys, said out loud. The bottom rung
+	# gets a blank line rather than "+0%" -- it is the thing being compared
+	# against, and the tiles have to stay the same height either way.
+	var bonus := CV.bonus_pct(pack)
+	var value := Lagoon.label("+%d%%  MORE  PER  $" % bonus if bonus > 0 else "", UI.F_TINY, Lagoon.KELP_LO, true)
+	value.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(value)
+
 	var buy := Button.new()
-	buy.text = pack["price"]
+	buy.text = IAP.price_for(pack)
 	buy.custom_minimum_size = Vector2(0, UI.TAP)
 	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
 	_candy_button(buy, Color(0.28, 0.68, 0.34))
@@ -2062,6 +2497,193 @@ func _claim_shop_gift() -> void:
 	if _current_page == pages.get("shop"):
 		_fill_page("shop")
 
+# --- piggy bank ---------------------------------------------------------
+#
+# The bank is fed from play, never from the shop, so what is inside it always
+# reads as the player's own winnings held back rather than a number the store
+# invented. It stops at the cap and stays there: an offer that keeps growing
+# forever gives the player a reason to keep waiting, and the point is to reach
+# a ceiling that makes taking it obvious.
+func _piggy_add(amount: int) -> void:
+	var cap := _scaled(CV.PIGGY_CAP)
+	if piggy_coins >= cap:
+		return
+	# The early return above means this crossing is seen exactly once.
+	piggy_coins = mini(cap, piggy_coins + _scaled(amount))
+	if piggy_coins >= cap:
+		_notify("spins", "Your piggy bank is full — %s coins inside!" % _fmt_compact(piggy_coins), "🐷")
+	if _current_page == pages.get("shop"):
+		_fill_page("shop")
+
+func _piggy_full() -> bool:
+	return piggy_coins >= _scaled(CV.PIGGY_CAP)
+
+func _piggy_frac() -> float:
+	var cap := _scaled(CV.PIGGY_CAP)
+	return 0.0 if cap <= 0 else clampf(float(piggy_coins) / float(cap), 0.0, 1.0)
+
+func _break_piggy() -> void:
+	var got := piggy_coins
+	if got <= 0:
+		return
+	piggy_coins = 0
+	coins += got
+	Sfx.play("jackpot", -3.0)
+	FX.confetti(self, 52)
+	FX.flash(self)
+	_banner("Piggy smashed — +%s coins!" % _fmt_compact(got), Color(1.0, 0.62, 0.72), "🐷")
+	_update_badges()
+	_refresh()
+	_save_game()
+	if _current_page == pages.get("shop"):
+		_fill_page("shop")
+
+# --- limited-time offer -------------------------------------------------
+#
+# One offer at a time, live for two hours, then five hours of nothing. The dark
+# stretch is deliberate: an offer that is always on the shelf is just a price,
+# and the countdown only means something if the player has seen it run out.
+func _offer_tick() -> void:
+	var now := Time.get_unix_time_from_system()
+	if offer_id != "":
+		if now >= offer_until:
+			offer_id = ""
+			offer_until = 0.0
+			offer_next = now + CV.OFFER_COOLDOWN
+			_save_game()
+			if _current_page == pages.get("shop"):
+				_fill_page("shop")
+		return
+	if now < offer_next:
+		return
+	var pick: Dictionary = CV.TIMED_OFFERS[randi() % CV.TIMED_OFFERS.size()]
+	offer_id = String(pick["id"])
+	offer_until = now + CV.OFFER_DURATION
+	_save_game()
+	_notify("spins", "%s — %d%% extra value, 2 hours only!" % [pick["name"], CV.bonus_pct(pick)], pick["emoji"])
+	_update_badges()
+	if _current_page == pages.get("shop"):
+		_fill_page("shop")
+
+# The live offer's pack, or an empty dictionary when nothing is running.
+func _active_offer() -> Dictionary:
+	if offer_id == "" or Time.get_unix_time_from_system() >= offer_until:
+		return {}
+	for o in CV.TIMED_OFFERS:
+		if String(o["id"]) == offer_id:
+			return o
+	return {}
+
+func _offer_countdown_text() -> String:
+	var left := maxi(0, int(offer_until - Time.get_unix_time_from_system()))
+	return "%d:%02d:%02d" % [left / 3600, (left / 60) % 60, left % 60]
+
+# --- contextual offers --------------------------------------------------
+#
+# The moment a player is stopped by a number is the moment the number is worth
+# most to them, and every game in this genre sells into it -- Monopoly GO puts
+# a cash offer in front of you the instant a building costs more than you have.
+# Loot Lagoon used to answer both of those moments with an error beep.
+#
+# The guard rail is the cooldown. These fire on failure, and failure repeats;
+# without a long gap between them the offer becomes wallpaper and the player
+# learns to swipe it away before reading it.
+const CTX_OFFER_COOLDOWN := 900.0
+
+func _ctx_offer_ready() -> bool:
+	return Time.get_unix_time_from_system() - _ctx_offer_last >= CTX_OFFER_COOLDOWN
+
+# Shown when the reels are asked to spin with an empty meter. Leads with the
+# free refill that is already coming, because burying it would make the popup a
+# paywall -- the pack is the shortcut, not the only road.
+func _offer_out_of_spins() -> void:
+	_ctx_offer_last = Time.get_unix_time_from_system()
+	var live := _active_offer()
+	var pack: Dictionary = live if not live.is_empty() else CV.SPIN_PACKS[1]
+	var vbox := _open_popup("Out of Spins")
+	var e := _emoji_label("🌀", 68)
+	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(e)
+	var wait := _popup_row_label("+%d spins free in %d min" % [SPIN_REGEN_AMOUNT, int(SPIN_REGEN_SECS / 60.0)], UI.F_BODY)
+	wait.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(wait)
+	var or_row := _popup_row_label("— or keep the run going —", UI.F_CAPTION)
+	or_row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	or_row.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+	vbox.add_child(or_row)
+	_ctx_offer_card(vbox, pack, not live.is_empty())
+	_ctx_offer_footer(vbox)
+
+# Shown when an upgrade costs more than the vault holds. Names the shortfall,
+# then offers the cheapest pack that actually covers it -- an offer for less
+# than the missing amount is worse than no offer, because it does not unblock.
+func _offer_need_coins(shortfall: int) -> void:
+	_ctx_offer_last = Time.get_unix_time_from_system()
+	var pack: Dictionary = CV.COIN_PACKS[CV.COIN_PACKS.size() - 1]
+	for p in CV.COIN_PACKS:
+		if _scaled(int(p["coins"])) >= shortfall:
+			pack = p
+			break
+	var vbox := _open_popup("Not Enough Coins")
+	var e := _emoji_label("🏗️", 68)
+	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(e)
+	var need := _popup_row_label("You're %s coins short" % _fmt_compact(shortfall), UI.F_BODY)
+	need.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(need)
+	if piggy_coins > 0:
+		var pig := _popup_row_label("🐷  %s coins waiting in your piggy bank" % _fmt_compact(piggy_coins), UI.F_CAPTION)
+		pig.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		pig.add_theme_color_override("font_color", Color(1.0, 0.62, 0.72))
+		vbox.add_child(pig)
+	_ctx_offer_card(vbox, pack, false)
+	_ctx_offer_footer(vbox)
+
+# The pack tile inside a contextual popup: what you get, then the price.
+func _ctx_offer_card(vbox: VBoxContainer, pack: Dictionary, timed: bool) -> void:
+	var card := _tinted_card(vbox, Lagoon.BRASS if timed else Lagoon.KELP, timed)
+	var margin := MarginContainer.new()
+	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		margin.add_theme_constant_override(m, 12)
+	card.add_child(margin)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	margin.add_child(col)
+	if timed:
+		var chip_wrap := CenterContainer.new()
+		col.add_child(chip_wrap)
+		chip_wrap.add_child(_tag_chip("⏳  %s  LEFT" % _offer_countdown_text(), Lagoon.REEF))
+	var nm := Lagoon.label(pack["name"], UI.F_BODY, Lagoon.INK, true)
+	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(nm)
+	var sub := Lagoon.label(_pack_sub(pack), UI.F_CAPTION, Lagoon.INK_SOFT)
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(sub)
+	var buy := Button.new()
+	buy.text = "GET  IT  —  %s" % IAP.price_for(pack)
+	buy.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
+	_candy_button(buy, Color(0.28, 0.68, 0.34))
+	FX.press_feedback(buy)
+	buy.pressed.connect(func() -> void:
+		_close_popup()
+		_confirm_purchase(pack)
+	)
+	col.add_child(buy)
+
+# Every contextual offer keeps a plain way out that is not the close button, so
+# dismissing never requires hunting for the small X.
+func _ctx_offer_footer(vbox: VBoxContainer) -> void:
+	var no := Button.new()
+	no.text = "No thanks"
+	no.custom_minimum_size = Vector2(0, UI.TAP)
+	Lagoon.button(no, "glass", 22)
+	no.add_theme_font_size_override("font_size", UI.F_CAPTION)
+	FX.press_feedback(no)
+	no.pressed.connect(func() -> void: _close_popup())
+	vbox.add_child(no)
+
 func _confirm_purchase(pack: Dictionary) -> void:
 	var vbox := _open_popup("Confirm Purchase")
 	if String(pack.get("id", "")).begins_with("chest_"):
@@ -2084,13 +2706,19 @@ func _confirm_purchase(pack: Dictionary) -> void:
 	note.add_theme_color_override("font_color", Lagoon.INK_FAINT)
 	vbox.add_child(note)
 	var pay := Button.new()
-	pay.text = "PAY  %s" % pack["price"]
+	pay.text = "PAY  %s" % IAP.price_for(pack)
 	pay.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
 	_candy_button(pay, Color(0.28, 0.68, 0.34))
 	FX.press_feedback(pay)
+	# Pay hands off to IAP and waits. The modal stays up under Apple's own
+	# sheet so there is somewhere for a failure to be reported back to, and
+	# _on_purchase_ok is what finally closes it.
 	pay.pressed.connect(func() -> void:
-		_close_popup()
-		_grant_pack(pack)
+		if IAP.busy:
+			return
+		pay.disabled = true
+		pay.text = "…"
+		IAP.purchase(pack)
 	)
 	vbox.add_child(pay)
 
@@ -2102,9 +2730,49 @@ func _pack_sub(pack: Dictionary) -> String:
 		return sub % _fmt_compact(_scaled(int(pack.get("coins", 0))))
 	return sub
 
+# Apple says the money moved. Turn the product id back into the thing that was
+# bought, hand it over, and only then tell Apple the transaction is done -- the
+# grant writes the save, so finishing before it would risk charging a player
+# for coins that never landed.
+func _on_purchase_ok(product_id: String) -> void:
+	_close_popup()
+	var short := product_id.trim_prefix(IAP.PREFIX)
+	if short == String(CV.PIGGY_PACK["id"]):
+		_break_piggy()
+		IAP.finish(product_id)
+		return
+	var pack := CV.pack_by_id(short)
+	if pack.is_empty():
+		# An id the build does not know -- a pack pulled from the store while a
+		# purchase was in flight, most likely. Say so rather than failing mute.
+		_banner("Purchase received, but this build has no such pack.", Color(0.9, 0.4, 0.4))
+		return
+	_grant_pack(pack)
+	IAP.finish(product_id)
+
+# Cancelling is the common case here, not an error, so this stays quiet and
+# small -- no modal, no red, nothing that reads as "something broke".
+func _on_purchase_fail(_product_id: String, message: String) -> void:
+	_close_popup()
+	Sfx.play("error", -6.0)
+	_banner(message, Color(0.9, 0.4, 0.4))
+
+# Apple answered with real products, so every price on screen is now wrong --
+# it is still the hardcoded dollar string. Repaint whatever is open.
+func _on_products_loaded() -> void:
+	if _current_page == pages.get("shop"):
+		_fill_page("shop")
+
 func _grant_pack(pack: Dictionary) -> void:
 	if pack.get("once", false):
 		purchased_ids.append(pack["id"])
+	# Buying the live offer ends it. Leaving the countdown ticking over a pack
+	# the player already owns is the store advertising at someone who just paid.
+	if offer_id != "" and String(pack.get("id", "")) == offer_id:
+		offer_id = ""
+		offer_until = 0.0
+		offer_next = Time.get_unix_time_from_system() + CV.OFFER_COOLDOWN
+		_offer_timer_label = null
 	spins += int(pack.get("spins", 0))
 	coins += _scaled(int(pack.get("coins", 0)))
 	shields = mini(3, shields + int(pack.get("shields", 0)))
@@ -2168,10 +2836,13 @@ func _grant_chest_card(tier: int, forced_star := 0) -> Dictionary:
 	var it: Array = chosen["items"][idx]
 	var owned: Array = col_owned[chosen["id"]]
 	if owned[idx]:
+		_add_dupe(chosen["id"], idx)
 		var refund := _scaled(60 * star)
 		coins += refund
-		return {"emoji": it[0], "name": it[1], "set": chosen["name"], "stars": star, "dup": true, "refund": refund}
+		return {"emoji": it[0], "name": it[1], "set": chosen["name"], "stars": star,
+			"dup": true, "refund": refund, "held": _dupe_count(chosen["id"], idx)}
 	owned[idx] = true
+	stars += star
 	return {"emoji": it[0], "name": it[1], "set": chosen["name"], "stars": star, "dup": false}
 
 func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := "", completed_sets: Array = []) -> void:
@@ -2214,7 +2885,7 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 		colv.add_child(_star_row(stars, UI.F_TINY))
 		var status := Label.new()
 		if card["dup"]:
-			status.text = "dup  +%s" % _fmt_compact(int(card.get("refund", 0)))
+			status.text = "SPARE  x%d" % int(card.get("held", 1))
 			status.add_theme_color_override("font_color", Lagoon.INK_FAINT)
 		else:
 			status.text = "NEW!"
@@ -2573,6 +3244,7 @@ func _ensure_collections() -> void:
 	var now := Time.get_unix_time_from_system()
 	if col_deadline <= 0.0 or now > col_deadline:
 		col_owned = {}
+		col_dupes = {}
 		col_claimed = {}
 		col_mega_claimed = false
 		col_deadline = now + CV.COLLECTION_SEASON_DAYS * 86400.0
@@ -2580,11 +3252,66 @@ func _ensure_collections() -> void:
 		var id: String = c["id"]
 		var n: int = (c["items"] as Array).size()
 		var arr: Array = col_owned.get(id, [])
+		var dup: Array = col_dupes.get(id, [])
 		var norm := []
+		var dnorm := []
 		for i in n:
 			norm.append(bool(arr[i]) if i < arr.size() else false)
+			dnorm.append(maxi(0, int(dup[i])) if i < dup.size() else 0)
 		col_owned[id] = norm
+		col_dupes[id] = dnorm
 		col_claimed[id] = bool(col_claimed.get(id, false))
+
+# One spare copy of card `idx` in set `id` goes onto the pile.
+func _add_dupe(id: String, idx: int) -> void:
+	var arr: Array = col_dupes.get(id, [])
+	if idx < arr.size():
+		arr[idx] = int(arr[idx]) + 1
+
+func _dupe_count(id: String, idx: int) -> int:
+	var arr: Array = col_dupes.get(id, [])
+	return int(arr[idx]) if idx < arr.size() else 0
+
+func _set_dupe_total(c: Dictionary) -> int:
+	var n := 0
+	for v in col_dupes.get(c["id"], []):
+		n += int(v)
+	return n
+
+# Every spare card held, flattened into rows the convert screen can list:
+# {set, idx, emoji, name, stars, count}. Rarest first, because that is the
+# order the player cares about them in.
+func _all_dupes() -> Array:
+	var rows := []
+	for c in CV.COLLECTIONS:
+		var items: Array = c["items"]
+		for i in items.size():
+			var n := _dupe_count(c["id"], i)
+			if n <= 0:
+				continue
+			rows.append({
+				"set": c, "idx": i, "emoji": items[i][0], "name": items[i][1],
+				"stars": int(items[i][2]), "count": n,
+			})
+	rows.sort_custom(func(a, b) -> bool:
+		if int(a["stars"]) != int(b["stars"]):
+			return int(a["stars"]) > int(b["stars"])
+		return int(a["count"]) > int(b["count"]))
+	return rows
+
+# What melting the whole pile down would pay: each spare is worth its own
+# rarity, exactly as the card was worth when it was new.
+func _dupe_star_value() -> int:
+	var total := 0
+	for row in _all_dupes():
+		total += int(row["stars"]) * int(row["count"])
+	return total
+
+func _dupe_card_count() -> int:
+	var total := 0
+	for row in _all_dupes():
+		total += int(row["count"])
+	return total
 
 func _collection_complete(c: Dictionary) -> bool:
 	var owned: Array = col_owned.get(c["id"], [])
@@ -2624,12 +3351,19 @@ func _maybe_drop_card() -> void:
 	var it: Array = items[idx]
 	var owned: Array = col_owned[chosen["id"]]
 	if owned[idx]:
+		# A spare, not a dead draw. It goes on the pile the boxes are opened
+		# with, and the count is said out loud so the pile is visible from the
+		# moment it starts growing.
+		_add_dupe(chosen["id"], idx)
 		var dup_refund := _scaled(150)
 		coins += dup_refund
-		_banner("Duplicate card — +%s coins" % _fmt_compact(dup_refund), Color(0.75, 0.78, 0.9), it[0])
+		Sfx.play("pop", -6.0)
+		_banner("Spare card:  %s  x%d" % [it[1], _dupe_count(chosen["id"], idx)],
+			Color(0.75, 0.78, 0.9), it[0])
 	else:
 		owned[idx] = true
 		Sfx.play("levelup", -8.0)
+		_award_stars(int(it[2]))
 		if _collection_complete(chosen) and not col_claimed.get(chosen["id"], false):
 			_banner("%s complete!  Claim your reward in Collections" % chosen["name"], Color(1.0, 0.85, 0.3), chosen["icon"])
 		else:
@@ -2643,7 +3377,7 @@ func _diff_chip(diff: String) -> Control:
 
 # `big` is the set's own page, where a card gets a third of the width instead
 # of a fifth and can afford to be looked at rather than counted.
-func _collection_item_card(emoji: String, iname: String, owned: bool, stars := 0, big := false) -> Control:
+func _collection_item_card(emoji: String, iname: String, owned: bool, rarity := 0, big := false, spare := 0) -> Control:
 	# Owned cards are brass-rimmed glass; unowned ones are the same glass with
 	# the metal drained out of them, so a set reads as "partly collected" at a
 	# glance rather than as two unrelated card designs.
@@ -2669,10 +3403,22 @@ func _collection_item_card(emoji: String, iname: String, owned: bool, stars := 0
 	n.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	n.clip_text = true
 	col.add_child(n)
-	if stars > 0:
-		var sr := _star_row(stars, UI.F_CAPTION if big else UI.F_TINY)
+	if rarity > 0:
+		var sr := _star_row(rarity, UI.F_CAPTION if big else UI.F_TINY)
 		sr.modulate = Color(1, 1, 1, 1.0) if owned else Color(1, 1, 1, 0.4)
 		col.add_child(sr)
+	# Spares sit on the corner of the card they are spares of, in the same
+	# purple the melt buttons use, so "I have four of these" is answered where
+	# the player is already looking rather than only on the boxes screen.
+	if spare > 0:
+		var tag := Lagoon.chip("x%d" % (spare + 1), Lagoon.URCHIN, UI.F_TINY)
+		tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		p.add_child(tag)
+		tag.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+		tag.offset_left = -60.0
+		tag.offset_right = -4.0
+		tag.offset_top = -8.0
+		tag.offset_bottom = 26.0
 	return p
 
 func _collection_by_id(id: String) -> Dictionary:
@@ -2749,7 +3495,11 @@ func _fill_collection_shelf(vb: VBoxContainer) -> void:
 		mega.pressed.connect(_claim_mega)
 		head.add_child(mega)
 
-	vb.add_child(_page_note("Every spin has a chance to drop a card!", UI.F_CAPTION))
+	var spare_all := _dupe_card_count()
+	if spare_all > 0:
+		vb.add_child(_page_note("Every spin has a chance to drop a card.  You have %d spares — melt them into \u2605 and open boxes." % spare_all, UI.F_CAPTION))
+	else:
+		vb.add_child(_page_note("Every spin has a chance to drop a card, and every new one is worth \u2605 stars!", UI.F_CAPTION))
 
 	var grid := GridContainer.new()
 	grid.columns = 3
@@ -2758,6 +3508,14 @@ func _fill_collection_shelf(vb: VBoxContainer) -> void:
 	vb.add_child(grid)
 	for c in CV.COLLECTIONS:
 		grid.add_child(_collection_tile(c))
+
+	# The BOXES button floats over the bottom-right of this page, which would
+	# otherwise park it permanently on top of the last tile in the grid. A tail
+	# of empty space lets that tile scroll out from under it.
+	var tail := Control.new()
+	tail.custom_minimum_size = Vector2(0, 110)
+	tail.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vb.add_child(tail)
 
 func _collection_tile(c: Dictionary) -> Control:
 	var id: String = c["id"]
@@ -2833,6 +3591,9 @@ func _collection_tile(c: Dictionary) -> Control:
 	cnt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	cnt.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	foot.add_child(cnt)
+	var spare_n := _set_dupe_total(c)
+	if spare_n > 0:
+		foot.add_child(Lagoon.chip("+%d" % spare_n, Lagoon.URCHIN, UI.F_TINY))
 	foot.add_child(_diff_chip(c["diff"]))
 
 	# One badge in the corner, and only when the tile has news: a reward waiting
@@ -2888,6 +3649,10 @@ func _fill_collection_detail(vb: VBoxContainer, c: Dictionary) -> void:
 	meta.add_child(_diff_chip(c["diff"]))
 	meta.add_child(_reward_chip("🌀", "+%s  spins" % _fmt(int(c["reward_spins"])), Lagoon.LAGOON_DEEP))
 
+	var spare_n := _set_dupe_total(c)
+	if spare_n > 0:
+		meta.add_child(Lagoon.chip("%d SPARE" % spare_n, Lagoon.URCHIN, UI.F_TINY))
+
 	var prow := HBoxContainer.new()
 	prow.add_theme_constant_override("separation", 12)
 	head.add_child(prow)
@@ -2927,7 +3692,267 @@ func _fill_collection_detail(vb: VBoxContainer, c: Dictionary) -> void:
 	card.add_child(grid)
 	for i in items.size():
 		var it: Array = items[i]
-		grid.add_child(_collection_item_card(it[0], it[1], i < owned.size() and owned[i], int(it[2]), true))
+		grid.add_child(_collection_item_card(it[0], it[1], i < owned.size() and owned[i],
+			int(it[2]), true, _dupe_count(id, i)))
+
+# =============================================================================
+#  Card Boxes
+# =============================================================================
+#
+# Where spare cards go to be useful. Duplicates are unavoidable in any set
+# collection -- the odds that make a Hard set take a month are the same odds
+# that hand you a fourth Seashell -- so the question was never how to stop them
+# but what they should be worth. They melt down for exactly the stars the card
+# was worth new, and stars open boxes that draw more cards. A spare is the long
+# way round to the card you actually wanted, which is the point.
+#
+# Stars spent here come off your rank. That is the whole tension of the screen
+# and it is deliberate: standing still and standing high are the same act.
+
+func _melt_stack(set_id: String, idx: int, count: int) -> int:
+	var arr: Array = col_dupes.get(set_id, [])
+	if idx >= arr.size():
+		return 0
+	var take := mini(count, int(arr[idx]))
+	if take <= 0:
+		return 0
+	arr[idx] = int(arr[idx]) - take
+	var c := _collection_by_id(set_id)
+	var worth := take * int((c["items"] as Array)[idx][2])
+	stars += worth
+	return worth
+
+func _melt_and_refresh(gained: int, at: Vector2) -> void:
+	if gained <= 0:
+		return
+	Sfx.play("coins", -6.0)
+	FX.rise_label(self, at, "+%d \u2605" % gained, CV.STAR_COLORS[CV.MAX_STAR - 1], 40)
+	if not _hud_labels.is_empty() and _hud_labels[0].has("stars"):
+		FX.fly_coins(self, at, _hud_labels[0]["stars"].global_position,
+			clampi(gained, 4, 12), "star", "\u2b50")
+	_update_badges()
+	_refresh()
+	_save_game()
+	_fill_page("boxes")
+
+func _fill_boxes(vb: VBoxContainer) -> void:
+	var rows := _all_dupes()
+	var pool := _dupe_star_value()
+
+	# --- the bank -----------------------------------------------------------
+	var bank := _page_card(vb)
+	var brow := HBoxContainer.new()
+	brow.alignment = BoxContainer.ALIGNMENT_CENTER
+	brow.add_theme_constant_override("separation", 12)
+	bank.add_child(brow)
+	var big_star := Glyph.new()
+	big_star.kind = "star"
+	big_star.custom_minimum_size = Vector2(64, 64)
+	big_star.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	brow.add_child(big_star)
+	var amount := Lagoon.label(_fmt(stars), UI.F_DISPLAY, Lagoon.INK, true)
+	amount.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	brow.add_child(amount)
+	var bsub := _popup_row_label("Stars are your world rank — and what opens these boxes.", UI.F_CAPTION)
+	bsub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	bsub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	bsub.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	bank.add_child(bsub)
+
+	# --- the spares ---------------------------------------------------------
+	_shop_section(vb, "", "YOUR  SPARE  CARDS")
+	if rows.is_empty():
+		var none := _page_card(vb)
+		var nl := _popup_row_label("No spares yet. Pull a card you already own — on a spin or out of a chest — and it lands here instead of going to waste.", UI.F_CAPTION)
+		nl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		nl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		nl.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		none.add_child(nl)
+	else:
+		var head := _page_card(vb)
+		var hrow := HBoxContainer.new()
+		hrow.add_theme_constant_override("separation", 10)
+		head.add_child(hrow)
+		var count_l := Lagoon.label("%d spare cards" % _dupe_card_count(), UI.F_LABEL, Lagoon.INK, true)
+		count_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		count_l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		hrow.add_child(count_l)
+		hrow.add_child(Lagoon.chip("\u2605 %d" % pool, CV.STAR_COLORS[CV.MAX_STAR - 1], UI.F_CAPTION))
+		var melt_all := Button.new()
+		melt_all.text = "MELT  EVERYTHING   +%d \u2605" % pool
+		melt_all.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+		_candy_button(melt_all, Color(0.72, 0.5, 0.95))
+		FX.press_feedback(melt_all)
+		melt_all.pressed.connect(func() -> void:
+			var gained := 0
+			for r in _all_dupes():
+				gained += _melt_stack((r["set"] as Dictionary)["id"], int(r["idx"]), int(r["count"]))
+			_melt_and_refresh(gained, Vector2(view_size().x * 0.5, view_size().y * 0.42))
+		)
+		head.add_child(melt_all)
+
+		for r in rows:
+			_dupe_row(vb, r)
+
+	# --- the boxes ----------------------------------------------------------
+	_shop_section(vb, "", "BOXES")
+	vb.add_child(_page_note("Every box draws real cards — the pricier the box, the better the star odds.", UI.F_CAPTION))
+	for box in CV.CARD_BOXES:
+		_box_card(vb, box)
+
+func _dupe_row(vb: VBoxContainer, r: Dictionary) -> void:
+	var set_d: Dictionary = r["set"]
+	var idx: int = int(r["idx"])
+	var star: int = int(r["stars"])
+	var count: int = int(r["count"])
+	var sc: Color = CV.STAR_COLORS[star - 1]
+
+	var panel := _tinted_card(vb, sc, star >= 4)
+	var pad := MarginContainer.new()
+	for m in [["margin_left", 12], ["margin_right", 12], ["margin_top", 10], ["margin_bottom", 10]]:
+		pad.add_theme_constant_override(m[0], m[1])
+	panel.add_child(pad)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	pad.add_child(row)
+
+	var tok := Lagoon.token(str(r["emoji"]), 74.0, sc)
+	tok.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(tok)
+
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	col.add_theme_constant_override("separation", 2)
+	row.add_child(col)
+	col.add_child(Lagoon.label(str(r["name"]), UI.F_LABEL, Lagoon.INK, true))
+	var meta := HBoxContainer.new()
+	meta.add_theme_constant_override("separation", 8)
+	col.add_child(meta)
+	meta.add_child(_star_row(star, UI.F_TINY))
+	var setl := Lagoon.label(str(set_d["name"]), UI.F_TINY, Lagoon.INK_FAINT)
+	setl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	meta.add_child(setl)
+
+	var held := Lagoon.label("x%d" % count, UI.F_SUBHEAD, Lagoon.INK, true)
+	held.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(held)
+
+	var melt := Button.new()
+	melt.text = "+%d \u2605" % (star * count)
+	melt.custom_minimum_size = Vector2(150, UI.TAP)
+	melt.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_candy_button(melt, Color(0.72, 0.5, 0.95))
+	FX.press_feedback(melt)
+	melt.pressed.connect(func() -> void:
+		var gained := _melt_stack(str(set_d["id"]), idx, count)
+		_melt_and_refresh(gained, melt.global_position + melt.size * 0.5)
+	)
+	row.add_child(melt)
+
+func _box_card(vb: VBoxContainer, box: Dictionary) -> void:
+	var cost: int = int(box["stars"])
+	var cc: Color = box["color"]
+	var affordable := stars >= cost
+
+	var panel := _tinted_card(vb, cc, bool(box.get("guarantee5", false)))
+	var pad := MarginContainer.new()
+	for m in [["margin_left", 14], ["margin_right", 14], ["margin_top", 12], ["margin_bottom", 12]]:
+		pad.add_theme_constant_override(m[0], m[1])
+	panel.add_child(pad)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 8)
+	pad.add_child(col)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 14)
+	col.add_child(row)
+
+	var well := PanelContainer.new()
+	var wsb := Lagoon.glass_well(18)
+	wsb.bg_color = Color(cc.r, cc.g, cc.b, 0.14)
+	well.add_theme_stylebox_override("panel", wsb)
+	well.custom_minimum_size = Vector2(124, 116)
+	well.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(well)
+	var art := _chest_art(box, 58)
+	art.custom_minimum_size = Vector2(104, 96)
+	well.add_child(art)
+	# A box you cannot open yet is drained rather than hidden -- the reason to
+	# keep melting spares has to stay on screen.
+	if not affordable:
+		art.modulate = Color(0.65, 0.7, 0.72, 0.55)
+
+	var info := VBoxContainer.new()
+	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	info.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	info.add_theme_constant_override("separation", 4)
+	row.add_child(info)
+	info.add_child(Lagoon.label(str(box["name"]), UI.F_SUBHEAD, Lagoon.INK, true))
+	var sub := Lagoon.label(str(box["sub"]), UI.F_CAPTION, Lagoon.INK_SOFT)
+	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	info.add_child(sub)
+	var price := HBoxContainer.new()
+	price.add_theme_constant_override("separation", 6)
+	info.add_child(price)
+	price.add_child(Lagoon.chip("\u2605  %d" % cost, cc, UI.F_CAPTION))
+	if not affordable:
+		var short := Lagoon.label("%d more to go" % (cost - stars), UI.F_TINY, Lagoon.INK_FAINT)
+		short.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		price.add_child(short)
+
+	# How close you are, so a box you cannot afford still tells you something.
+	if not affordable:
+		var pb := _styled_progress(cc)
+		pb.max_value = cost
+		pb.value = stars
+		col.add_child(pb)
+
+	var open := Button.new()
+	open.text = "OPEN  BOX" if affordable else "NOT  ENOUGH  STARS"
+	open.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	open.disabled = not affordable
+	_candy_button(open, Color(0.45, 0.75, 0.35) if affordable else Color(0.6, 0.62, 0.68))
+	FX.press_feedback(open)
+	if affordable:
+		open.pressed.connect(_open_card_box.bind(box))
+	col.add_child(open)
+
+func _open_card_box(box: Dictionary) -> void:
+	var cost: int = int(box["stars"])
+	if stars < cost:
+		Sfx.play("error", -6.0)
+		return
+	stars -= cost
+
+	var pre_complete := {}
+	for c in CV.COLLECTIONS:
+		pre_complete[c["id"]] = _collection_complete(c)
+	var before := stars
+	var cards := []
+	for i in int(box.get("cards", 0)):
+		var forced := CV.MAX_STAR if box.get("guarantee5", false) and i == 0 else 0
+		cards.append(_grant_chest_card(int(box.get("tier", 0)), forced))
+	var completed := []
+	for c in CV.COLLECTIONS:
+		if not pre_complete[c["id"]] and _collection_complete(c) and not col_claimed.get(c["id"], false):
+			completed.append(c["name"])
+
+	Sfx.play("jackpot", -3.0)
+	FX.confetti(self, 40)
+	FX.flash(self)
+	# New cards pay stars back on the way out, so a good box partly refunds
+	# itself -- worth saying, because it is the reason opening one is not
+	# simply a hole in your rank.
+	var earned := stars - before
+	var note := "\u2605 %d spent" % cost
+	if earned > 0:
+		note += "   \u2022   +%d \u2605 back from new cards" % earned
+	_show_chest_result(cards, "%s Opened!" % str(box["name"]), note, completed)
+	_update_badges()
+	_refresh()
+	_save_game()
+	_fill_page("boxes")
 
 func _claim_collection(c: Dictionary) -> void:
 	var id: String = c["id"]
@@ -2936,12 +3961,17 @@ func _claim_collection(c: Dictionary) -> void:
 	col_claimed[id] = true
 	var won := int(c["reward_spins"])
 	spins += won
+	# A finished set is worth stars as well as spins: the spins send you back to
+	# the reels, the stars are what the month of collecting leaves behind. Five
+	# a card, so a long Hard set is worth more than two short Easy ones.
+	var star_bonus := 5 * (c["items"] as Array).size()
 	Sfx.play("jackpot", -2.0)
 	FX.confetti(self, 40)
 	FX.flash(self)
 	FX.fly_coins(self, Vector2(360, 640), _hud_labels[0]["spins"].global_position,
 		clampi(won / 120, 6, 12), "bolt", "🌀")
-	_banner("%s reward:  +%s spins" % [c["name"], _fmt(won)], Color(0.6, 0.9, 1.0), c["icon"])
+	_award_stars(star_bonus, Vector2(360, 620))
+	_banner("%s:  +%s spins  and  +%d \u2605" % [c["name"], _fmt(won), star_bonus], Color(0.6, 0.9, 1.0), c["icon"])
 	_update_badges()
 	_refresh()
 	_save_game()
@@ -2955,24 +3985,45 @@ func _claim_mega() -> void:
 			return
 	col_mega_claimed = true
 	spins += CV.COLLECTION_MEGA_SPINS
+	_award_stars(250, Vector2(360, 600))
 	Sfx.play("levelup", -2.0)
 	FX.confetti(self, 80)
 	FX.flash(self)
 	FX.fly_coins(self, Vector2(360, 620), _hud_labels[0]["spins"].global_position,
 		18, "bolt", "🌀")
-	_banner("GRAND PRIZE!  +%s spins!" % _fmt(CV.COLLECTION_MEGA_SPINS), Color(0.6, 0.9, 1.0), "🏆")
+	_banner("GRAND PRIZE!  +%s spins  and  +250 \u2605" % _fmt(CV.COLLECTION_MEGA_SPINS), Color(0.6, 0.9, 1.0), "🏆")
 	_update_badges()
 	_refresh()
 	_save_game()
 	_fill_page("collections")
 
+# A rival's standing, on the same terms as the player's: what they have built
+# on the island they hold, plus a full island's worth of stars for every one
+# they got through to reach it.
+func _npc_stars(npc: Dictionary) -> int:
+	var total := 0
+	for lv in npc.get("buildings", []):
+		var n := clampi(int(lv), 0, CV.MAX_STAR)
+		total += n * (n + 1) / 2
+	return total + 75 * maxi(0, int(npc.get("island", 1)) - 1)
+
+# The board used to rank on coins, which meant it reshuffled every spin and
+# dropped you twenty places the moment you bought a hut -- a table where doing
+# the right thing loses you rank is a table nobody reads twice. Stars only ever
+# go up for building and collecting, so this is now a standing rather than a
+# balance.
 func _open_ranks() -> void:
 	var vbox := _open_popup("Leaderboard")
+	var head := _popup_row_label("Ranked by \u2b50 stars — build and collect to climb", UI.F_CAPTION)
+	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	head.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	head.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(head)
 	var rows := []
-	rows.append({"name": profile.get("name", "You"), "emoji": "😎", "coins": coins, "me": true})
+	rows.append({"name": profile.get("name", "You"), "emoji": "😎", "stars": stars, "me": true})
 	for n in npcs:
-		rows.append({"name": n["name"], "emoji": n["emoji"], "coins": _scaled(int(n["coins"])), "me": false})
-	rows.sort_custom(func(a, b) -> bool: return a["coins"] > b["coins"])
+		rows.append({"name": n["name"], "emoji": n["emoji"], "stars": _npc_stars(n), "me": false})
+	rows.sort_custom(func(a, b) -> bool: return int(a["stars"]) > int(b["stars"]))
 	for i in rows.size():
 		var r: Dictionary = rows[i]
 		var row := HBoxContainer.new()
@@ -2987,9 +4038,9 @@ func _open_ranks() -> void:
 		if r["me"]:
 			name_l.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 		row.add_child(name_l)
-		var c := _popup_row_label(_fmt_compact(int(r["coins"])))
-		if r["me"]:
-			c.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+		var c := _popup_row_label("\u2605  %s" % _fmt_compact(int(r["stars"])))
+		c.add_theme_color_override("font_color",
+			Color(1.0, 0.85, 0.4) if r["me"] else CV.STAR_COLORS[CV.MAX_STAR - 1])
 		row.add_child(c)
 
 func _build_village_page() -> void:
@@ -3097,6 +4148,14 @@ func _add_topbar(page: Control) -> void:
 	gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	bar.add_child(gap)
 
+	# Stars ride on the right, next to the island number rather than in with the
+	# spendables on the left. That grouping is the whole point: the left of this
+	# bar is what you play with, the right is where you have got to.
+	var st := Lagoon.capsule("star", "0")
+	(st["root"] as Control).tooltip_text = "Stars — your world rank"
+	bar.add_child(st["root"])
+	labels["stars"] = st["value"]
+
 	var isl := Lagoon.capsule("island", "1")
 	bar.add_child(isl["root"])
 	labels["island"] = isl["value"]
@@ -3128,12 +4187,15 @@ func _on_spin_requested() -> void:
 		Sfx.play("error", -6.0)
 		if spins > 0:
 			_banner("Bet x%d needs %d spins!" % [slot.bet, slot.bet], Color(0.9, 0.4, 0.4))
+		elif _ctx_offer_ready() and _popup == null:
+			_offer_out_of_spins()
 		else:
 			_banner("Out of spins!  +%d refill every %d min." % [SPIN_REGEN_AMOUNT, int(SPIN_REGEN_SECS / 60.0)], Color(0.9, 0.4, 0.4))
 		return
 	_last_bet = slot.bet
 	spins -= _last_bet
 	Sfx.play("pop", -8.0)
+	_piggy_add(CV.PIGGY_PER_SPIN * _last_bet)
 	_mission_add("spins")
 	if _last_bet >= 2:
 		_mission_add("big_bet")
@@ -3489,6 +4551,7 @@ func _on_visit_finished(result: Dictionary) -> void:
 	tw.tween_callback(v.queue_free)
 	var npc: Dictionary = result["npc"]
 	_mission_add("steals" if result["mode"] == "steal" else "attacks")
+	_piggy_add(CV.PIGGY_PER_RAID)
 	_raid_target = {}
 	_last_raided = npc
 	if result["mode"] == "steal":
@@ -3596,12 +4659,19 @@ func _on_upgrade_requested(index: int) -> void:
 	var cost: int = _star_costs()[level]
 	if coins < cost:
 		Sfx.play("error", -6.0)
+		if _ctx_offer_ready() and _popup == null:
+			_offer_need_coins(cost - coins)
 		return
 	coins -= cost
 	_refresh()
 	_save_game()
-	village.start_construction(index, func() -> void:
+	village.start_construction(index, level + 1, func() -> void:
 		buildings[index] += 1
+		# Worth the level it just reached, so upgrades get better the deeper you
+		# go and a finished hut has paid out 15 over its life.
+		var slot_rect: Rect2 = CV.SLOT_RECTS[index]
+		_award_stars(buildings[index],
+			village.global_position + (slot_rect.position + slot_rect.size * 0.4) * village.scale)
 		_mission_add("builds")
 		_check_island_complete()
 		_refresh()
@@ -3920,6 +4990,7 @@ func _refresh() -> void:
 		labels["coins"].text = _fmt_compact(coins)
 		labels["spins"].text = ("%d/%d" % [spins, SPIN_CAP]) if spins <= SPIN_CAP else str(spins)
 		labels["shields"].text = str(shields)
+		labels["stars"].text = _fmt_compact(stars)
 		labels["island"].text = str(island_level)
 	village.refresh(buildings, coins, _star_costs())
 	if slot != null:
@@ -3982,6 +5053,7 @@ func _save_game() -> void:
 	var data := {
 		"coins": coins,
 		"spins": spins,
+		"stars": stars,
 		"shields": shields,
 		"island_level": island_level,
 		"buildings": buildings,
@@ -3991,11 +5063,16 @@ func _save_game() -> void:
 		"muted": muted,
 		"missions3": mission_state,
 		"col_owned": col_owned,
+		"col_dupes": col_dupes,
 		"col_claimed": col_claimed,
 		"col_mega": col_mega_claimed,
 		"col_deadline": col_deadline,
 		"purchased": purchased_ids,
 		"shop_free_last": shop_free_last,
+		"piggy": piggy_coins,
+		"offer_id": offer_id,
+		"offer_until": offer_until,
+		"offer_next": offer_next,
 		"notif_enabled": notif_enabled,
 		"notif_types": notif_types,
 		"notif_log": notif_log,
@@ -4024,6 +5101,9 @@ func _load_game() -> void:
 	var lo = data.get("col_owned", {})
 	if typeof(lo) == TYPE_DICTIONARY:
 		col_owned = lo
+	var ld = data.get("col_dupes", {})
+	if typeof(ld) == TYPE_DICTIONARY:
+		col_dupes = ld
 	var lc = data.get("col_claimed", {})
 	if typeof(lc) == TYPE_DICTIONARY:
 		col_claimed = lc
@@ -4033,6 +5113,10 @@ func _load_game() -> void:
 	if typeof(lp) == TYPE_ARRAY:
 		purchased_ids = lp
 	shop_free_last = float(data.get("shop_free_last", 0.0))
+	piggy_coins = int(data.get("piggy", 0))
+	offer_id = String(data.get("offer_id", ""))
+	offer_until = float(data.get("offer_until", 0.0))
+	offer_next = float(data.get("offer_next", 0.0))
 	notif_enabled = bool(data.get("notif_enabled", true))
 	var nt = data.get("notif_types", {})
 	if typeof(nt) == TYPE_DICTIONARY:
@@ -4076,6 +5160,26 @@ func _load_game() -> void:
 		buildings.append(int(v))
 	while buildings.size() < 5:
 		buildings.append(0)
+	# Stars arrived after these saves were written, so a returning player is
+	# credited for everything they had already built and collected -- otherwise
+	# the leaderboard opens on day one with a veteran at zero.
+	if data.has("stars"):
+		stars = int(data["stars"])
+	else:
+		stars = 0
+		for lv in buildings:
+			var n := clampi(int(lv), 0, CV.MAX_STAR)
+			stars += n * (n + 1) / 2
+		stars += 75 * maxi(0, island_level - 1)
+		for c in CV.COLLECTIONS:
+			var have = col_owned.get(c["id"], [])
+			if typeof(have) != TYPE_ARRAY:
+				continue
+			var items: Array = c["items"]
+			for i in mini(items.size(), have.size()):
+				if have[i]:
+					stars += int(items[i][2])
+
 	var elapsed := Time.get_unix_time_from_system() - float(data.get("ts", 0))
 	if elapsed > 0 and spins < SPIN_CAP:
 		var regen := int(elapsed / SPIN_REGEN_SECS) * SPIN_REGEN_AMOUNT

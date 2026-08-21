@@ -14,8 +14,12 @@ is mirrored from his right, the scalp is lifted column-wise out of his
 forehead, and the eye sockets and the iris behind each pupil are grown in
 from their surroundings.
 
-  python3 -m venv venv && venv/bin/pip install pillow numpy scipy
-  venv/bin/python tools/cut_mascot.py
+Keep the venv *outside* the project: Godot imports everything under the
+project root, and scipy ships test .wav files that then break the iOS export.
+
+  python3 -m venv /tmp/mascot-venv
+  /tmp/mascot-venv/bin/pip install pillow numpy scipy
+  /tmp/mascot-venv/bin/python tools/cut_mascot.py
 """
 
 import json, os, numpy as np
@@ -115,10 +119,16 @@ def extend_feet(rgb, alpha):
     return rgb, alpha
 
 RGB0, A0 = extend_feet(RGB0, A0)
-_gap = raw_poly([(372,326),(398,334),(412,362),(406,396),(388,408),(372,392),(364,356)]) > 0.5
+# The daylight between his right arm and his belly. The render filled it with a
+# pale haze rather than leaving it empty, and every rebuild below treats empty
+# as a hole to grow fur into -- so unless it is knocked out here *and* held
+# out, the gap comes back as a smear that hangs in mid-air the moment he lifts
+# that paw. GAP is kept, and passed to everything that fills.
+_gap = raw_poly([(372,320),(400,330),(414,360),(410,398),(392,418),(370,404),(360,356)]) > 0.5
 _lum = RGB0.max(axis=-1)
 _sat = (RGB0.max(axis=-1) - RGB0.min(axis=-1)) / np.maximum(RGB0.max(axis=-1), 1.0)
-A0 = np.where(_gap & (_lum > 208) & (_sat < 0.13), 0.0, A0)
+GAP = _gap & (_lum > 150) & (_sat < 0.16)
+A0 = np.where(GAP, 0.0, A0)
 by = {p["name"]: p for p in PARTS}
 hard = {p["name"]: poly_mask(p, feather=0) > 0.5 for p in PARTS}
 ZS = {p["name"]: p["z"] for p in PARTS}
@@ -133,11 +143,13 @@ def above(name):
 # enough to symmetric that the right half is a better source for it than any
 # amount of blurring, so the jacket is mirrored across the belt buckle and
 # only what the mirror cannot reach is diffused.
-bR, bA = mirror_fill(RGB0, A0, hard["torso"] & (hard["arm_l"] | (A0 < 0.5)), BODY_AXIS)
-bR, bA = diffuse_fill(bR, bA, hard["torso"] & (bA < 0.5), rounds=90)
+bR, bA = mirror_fill(RGB0, A0, hard["torso"] & (hard["arm_l"] | (A0 < 0.5)) & ~GAP, BODY_AXIS)
+bR, bA = diffuse_fill(bR, bA, hard["torso"] & (bA < 0.5) & ~GAP, rounds=90)
+bA[GAP] = 0.0
 for n in ("leg_l", "leg_r", "tail"):
-    hole = hard[n] & (hard["arm_l"] | (bA < 0.5) & above(n))
+    hole = hard[n] & (hard["arm_l"] | (bA < 0.5) & above(n)) & ~GAP
     bR, bA = diffuse_fill(bR, bA, hole, rounds=70)
+    bA[GAP] = 0.0
 
 # --- the head: a scalp under the hat, sockets under the eyes, a mouth ------
 # The hat is allowed to lag behind the head, so there has to be scalp behind

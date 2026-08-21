@@ -139,7 +139,7 @@ func _mascot_reel() -> void:
 	var step := float(OS.get_environment("STEP")) if OS.has_environment("STEP") else 0.075
 	var energy := float(OS.get_environment("ENERGY")) if OS.has_environment("ENERGY") else 0.55
 	var want := OS.get_environment("ACT") if OS.has_environment("ACT") else "auto"
-	var acts := {"dance": 1, "hop": 2, "peek": 3, "coin": 4, "spin": 5, "look": 6,
+	var acts := {"dance": 1, "hop": 2, "peek": 3, "coin": 4, "wave": 5, "look": 6,
 		"party": 7, "exit": 8}
 	DirAccess.make_dir_recursive_absolute(dir)
 

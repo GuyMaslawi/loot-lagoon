@@ -20,6 +20,7 @@ boot_splash/use_filter=true
 [autoload]
 
 Sfx="*res://scripts/sfx.gd"
+IAP="*res://scripts/iap.gd"
 
 [display]
 

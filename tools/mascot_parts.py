@@ -34,8 +34,14 @@ PARTS = [
   dict(name="torso", z=3, pivot=(304,424), feather=6, poly=[
     (206,296),(234,278),(270,268),(302,264),(338,268),(372,280),(392,300),(398,338),(390,376),(392,412),(400,452),(390,488),(354,502),(304,506),(256,500),(228,486),(214,454),(206,410),(200,352)]),
 
+  # The inner edge follows the arm itself, not a straight line down past it.
+  # Left of it is the white side fur, which is the torso's -- carried on the
+  # arm instead it swings out from under him as a pale sliver the moment he
+  # lifts a paw, and a floating scrap of fur is the whole reason a cut-out rig
+  # reads as cut-out. Above the shoulder it can still run wide, because that
+  # is the hinge and nothing there is uncovered by a swing.
   dict(name="arm_r", z=4, pivot=(390,312), feather=6, poly=[
-    (372,292),(402,288),(432,304),(452,336),(464,374),(460,406),(442,432),(412,440),(388,426),(378,398),(376,358),(370,326)]),
+    (372,292),(402,288),(432,304),(452,336),(464,374),(460,406),(442,432),(414,436),(394,420),(387,398),(397,374),(389,360),(374,344),(370,326)]),
 
   # --- the head, and what rides on it -------------------------------------
   dict(name="head", z=5, pivot=(302,298), feather=6, poly=[

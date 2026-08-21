@@ -258,17 +258,138 @@ const CHEST_STAR_WEIGHTS := [
 	[5, 15, 27, 30, 23],
 ]
 
+# Price ladders.
+#
+# The genre's stores all run six or seven rungs from $0.99 to $99.99, and they
+# are shaped so the value per dollar climbs the whole way up -- Coin Master's
+# top spin tier is worth roughly 2.2x its bottom one. That slope is the entire
+# product: the small packs exist to be compared against, and the revenue comes
+# from the rungs above them. A ladder that stops at $7.99 has no top half,
+# which is where the paying players actually live.
+#
+# Rungs here run 30 spins/$ at the bottom to 75 at the top (2.5x), and
+# 25k coins/$ to 50k (2.0x). BASE_RATE is the entry rung, and every tile quotes
+# its own rate against it as a "+N% MORE" chip.
+const SPIN_BASE_RATE := 30.0 / 0.99
+const COIN_BASE_RATE := 25000.0 / 0.99
+
 const SPIN_PACKS := [
 	{"id": "spins_s", "name": "Breeze", "sub": "30 Spins", "emoji": "🌀", "price": "$0.99", "spins": 30},
 	{"id": "spins_m", "name": "Storm", "sub": "80 Spins", "emoji": "⚡", "price": "$1.99", "spins": 80, "tag": "POPULAR", "tag_color": Color(0.88, 0.28, 0.38)},
 	{"id": "spins_l", "name": "Cyclone", "sub": "200 Spins", "emoji": "🔥", "price": "$3.99", "spins": 200},
-	{"id": "spins_xl", "name": "Hurricane", "sub": "450 Spins", "emoji": "🌪️", "price": "$7.99", "spins": 450, "tag": "BEST VALUE", "tag_color": Color(0.55, 0.3, 0.85)},
+	{"id": "spins_xl", "name": "Hurricane", "sub": "450 Spins", "emoji": "🌪️", "price": "$7.99", "spins": 450},
+	{"id": "spins_2xl", "name": "Monsoon", "sub": "1,200 Spins", "emoji": "🌊", "price": "$19.99", "spins": 1200},
+	{"id": "spins_3xl", "name": "Maelstrom", "sub": "3,400 Spins", "emoji": "🌌", "price": "$49.99", "spins": 3400, "tag": "BEST VALUE", "tag_color": Color(0.55, 0.3, 0.85)},
+	{"id": "spins_4xl", "name": "Leviathan", "sub": "7,500 Spins", "emoji": "🐋", "price": "$99.99", "spins": 7500, "tag": "MAX VALUE", "tag_color": Color(0.2, 0.55, 0.9)},
 ]
 
 const COIN_PACKS := [
 	{"id": "coins_s", "name": "Sack of Coins", "sub": "%s Coins", "emoji": "💰", "price": "$0.99", "coins": 25000},
-	{"id": "coins_m", "name": "Wagon of Coins", "sub": "%s Coins", "emoji": "🪙", "price": "$2.99", "coins": 90000, "tag": "x3.6 VALUE", "tag_color": Color(0.3, 0.68, 0.35)},
+	{"id": "coins_m", "name": "Wagon of Coins", "sub": "%s Coins", "emoji": "🪙", "price": "$2.99", "coins": 90000, "tag": "POPULAR", "tag_color": Color(0.88, 0.28, 0.38)},
+	{"id": "coins_l", "name": "Galleon of Coins", "sub": "%s Coins", "emoji": "⛵", "price": "$9.99", "coins": 350000},
+	{"id": "coins_xl", "name": "Reef of Coins", "sub": "%s Coins", "emoji": "🪸", "price": "$24.99", "coins": 1000000},
+	{"id": "coins_2xl", "name": "Trench of Coins", "sub": "%s Coins", "emoji": "🌊", "price": "$59.99", "coins": 2700000, "tag": "BEST VALUE", "tag_color": Color(0.55, 0.3, 0.85)},
+	{"id": "coins_3xl", "name": "Sunken City", "sub": "%s Coins", "emoji": "🏛️", "price": "$99.99", "coins": 5000000, "tag": "MAX VALUE", "tag_color": Color(0.2, 0.55, 0.9)},
 ]
+
+# Mixed bundles -- spins AND coins AND cards in one box.
+#
+# Every top-grossing game in the genre sells these alongside the single-resource
+# ladders, because they are the only product that fits a player who is short of
+# everything at once. They are also where the high price points stop feeling
+# like "a lot of spins" and start feeling like a shortcut through the whole
+# game, which is what a $49.99 buyer is actually paying for. Each is priced
+# under the sum of its parts bought separately -- that gap is the pitch.
+const BUNDLE_PACKS := [
+	{"id": "bundle_s", "name": "Deckhand's Haul", "sub": "150 Spins + %s Coins + 2 Cards", "emoji": "🧳", "price": "$4.99",
+	 "spins": 150, "coins": 150000, "cards": 2, "tier": 1, "value": 140,
+	 "color": Color(0.35, 0.75, 1.0)},
+	{"id": "bundle_m", "name": "Quartermaster's Haul", "sub": "700 Spins + %s Coins + 5 Cards", "emoji": "🗺️", "price": "$19.99",
+	 "spins": 700, "coins": 700000, "cards": 5, "tier": 2, "value": 150,
+	 "color": Color(1.0, 0.78, 0.25), "tag": "POPULAR", "tag_color": Color(0.88, 0.28, 0.38)},
+	{"id": "bundle_l", "name": "Captain's Hoard", "sub": "2,000 Spins + %s Coins + 12 Cards", "emoji": "👑", "price": "$49.99",
+	 "spins": 2000, "coins": 2000000, "cards": 12, "tier": 2, "guarantee5": true, "value": 165,
+	 "color": Color(0.72, 0.45, 1.0), "tag": "5★ GUARANTEED", "tag_color": Color(0.55, 0.3, 0.85)},
+]
+
+# The piggy bank.
+#
+# The highest-converting mechanic in casual games, and the one this store was
+# most obviously missing. It fills with coins as a side-effect of ordinary play
+# -- the player watches their own winnings pile up behind glass -- and breaking
+# it costs one fixed price no matter how full it is. The offer therefore gets
+# better every session the player doesn't take it, which is the opposite of a
+# discount that decays, and it converts because by the time it is full the
+# player feels they are buying back something already theirs.
+#
+# Full, it beats the best rung of the coin ladder (63k coins/$ against 50k), so
+# a patient player who buys it is genuinely getting the store's best deal.
+const PIGGY_CAP := 250000       # island-1 units, scaled like every other coin figure
+const PIGGY_PER_SPIN := 1200    # a slow drip, so filling it takes a few sessions
+const PIGGY_PER_RAID := 6000    # raids and attacks fatten it noticeably faster
+const PIGGY_PRICE := "$3.99"
+
+# The piggy is sold like any other pack, so it needs a pack-shaped record for
+# the purchase path to carry. It has no contents field -- what it pays out is
+# whatever the player already banked, not a fixed amount.
+const PIGGY_PACK := {"id": "piggy", "name": "Piggy Bank", "emoji": "\U0001F437", "price": PIGGY_PRICE}
+
+# Rotating limited-time offer.
+#
+# Coin Master keeps one of these live nearly all the time -- five minutes to a
+# couple of hours, with a loud percentage on it -- and it is what makes opening
+# the store feel like checking whether something is happening rather than
+# browsing a price list. The countdown does the work; the pack behind it only
+# has to be plainly better than the standing shelf.
+const OFFER_DURATION := 7200.0   # 2 hours live
+const OFFER_COOLDOWN := 18000.0  # 5 hours dark before the next one rolls
+
+const TIMED_OFFERS := [
+	{"id": "to_squall", "name": "Squall Bundle", "sub": "150 Spins + %s Coins + 1 Card", "emoji": "🌬️", "price": "$2.99",
+	 "spins": 150, "coins": 120000, "cards": 1, "tier": 1, "value": 300},
+	{"id": "to_tide", "name": "High Tide Chest", "sub": "120 Spins + %s Coins + 3 Cards", "emoji": "🌊", "price": "$4.99",
+	 "spins": 120, "coins": 250000, "cards": 3, "tier": 1, "value": 380},
+	{"id": "to_moon", "name": "Moonlit Raid Pack", "sub": "260 Spins + %s Coins + 2 Cards", "emoji": "🌙", "price": "$6.99",
+	 "spins": 260, "coins": 400000, "cards": 2, "tier": 2, "value": 420},
+	{"id": "to_kraken", "name": "Kraken's Cut", "sub": "400 Spins + %s Coins + 4 Cards", "emoji": "🦑", "price": "$9.99",
+	 "spins": 400, "coins": 600000, "cards": 4, "tier": 2, "guarantee5": true, "value": 450},
+]
+
+# Every money pack, found by its short id. The product ids Apple knows are
+# these same strings behind a bundle prefix, so this is what turns a finished
+# transaction back into the thing the player bought.
+static func pack_by_id(id: String) -> Dictionary:
+	if id == String(STARTER_PACK["id"]):
+		return STARTER_PACK
+	if id == String(PIGGY_PACK["id"]):
+		return PIGGY_PACK
+	for group in [CHEST_PACKS, SPIN_PACKS, COIN_PACKS, BUNDLE_PACKS, TIMED_OFFERS]:
+		for p in group:
+			if String(p["id"]) == id:
+				return p
+	return {}
+
+# "$19.99" -> 19.99. Prices are carried as display strings so the tiles never
+# have to reformat them, and this is the one place that needs the number.
+static func price_usd(pack: Dictionary) -> float:
+	return String(pack.get("price", "$0")).substr(1).to_float()
+
+# How much more per dollar a rung gives than the entry rung of its ladder.
+# Bundles and timed offers carry a hand-set "value" instead, since there is no
+# single base rate to measure a mixed box against.
+static func bonus_pct(pack: Dictionary) -> int:
+	if pack.has("value"):
+		return int(pack["value"]) - 100
+	var usd := price_usd(pack)
+	if usd <= 0.0:
+		return 0
+	var has_spins: bool = int(pack.get("spins", 0)) > 0
+	var has_coins: bool = int(pack.get("coins", 0)) > 0
+	if has_spins and not has_coins:
+		return int(round((float(pack["spins"]) / usd) / SPIN_BASE_RATE * 100.0)) - 100
+	if has_coins and not has_spins:
+		return int(round((float(pack["coins"]) / usd) / COIN_BASE_RATE * 100.0)) - 100
+	return 0
 
 # Free gift claimable in the shop once every 24 hours.
 const SHOP_FREE_COOLDOWN := 86400.0
@@ -282,6 +403,20 @@ const STAR_COLORS := [
 	Color(0.4, 0.65, 1.0),
 	Color(0.75, 0.5, 1.0),
 	Color(1.0, 0.8, 0.25),
+]
+
+# Duplicate cards are melted down for stars, and stars open these. Three boxes
+# so the choice is real: bank a cheap one now, or hold out for odds that can
+# actually finish a Hard set. Tier indexes CHEST_STAR_WEIGHTS, so a Treasure
+# Vault draws on exactly the same table the paid Magical Chest does -- the
+# money buys the shortcut, not the ceiling.
+const CARD_BOXES := [
+	{"id": "box_s", "name": "Driftwood Box", "sub": "2 cards", "emoji": "\U0001F4E6", "stars": 12, "cards": 2, "tier": 0,
+	 "color": Color(0.72, 0.5, 0.3), "art_tint": Color(0.74, 0.62, 0.52)},
+	{"id": "box_m", "name": "Brass Coffer", "sub": "4 cards \u2014 better odds", "emoji": "\U0001F9F0", "stars": 40, "cards": 4, "tier": 1,
+	 "color": Color(1.0, 0.78, 0.25), "art_tint": Color(1.0, 1.0, 1.0)},
+	{"id": "box_l", "name": "Treasure Vault", "sub": "6 cards \u2014 5\u2605 guaranteed", "emoji": "\U0001F52E", "stars": 110, "cards": 6, "tier": 2,
+	 "color": Color(0.72, 0.45, 1.0), "guarantee5": true, "art_tint": Color(0.82, 0.64, 1.0)},
 ]
 
 const COLLECTION_SEASON_DAYS := 30
@@ -500,6 +635,21 @@ static func island_building_tex(level: int, i: int) -> Texture2D:
 	if t == null:
 		t = building_tex(BUILDINGS[i]["id"])
 	return t
+
+# How big a hut stands at each of its five levels.
+#
+# Levels used to be a row of stars under an unchanging drawing, which meant a
+# raid could take one off a building and the island looked identical -- the
+# only evidence was a star that had gone. A hut that grows as it is upgraded
+# gives the level a silhouette, so losing one is visible from across the
+# screen. Scaled about its own base, so it grows upward out of its footprint
+# rather than sinking into the grass.
+# The spread is deliberately wide -- a 5\u2605 hut is half again the size of a
+# 1\u2605 one. A gentler ladder was tried first and it failed the only test that
+# matters: a raid takes a level off, and you could not tell from the island
+# that anything had happened.
+static func level_scale(level: int) -> float:
+	return 0.58 + 0.084 * float(clampi(level, 0, MAX_STAR))
 
 static func island_bg_tex(level: int) -> Texture2D:
 	var idx := (level - 1) % ISLANDS.size()

@@ -46,6 +46,15 @@ func _ready() -> void:
 		fallback.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		fallback.offset_bottom = -86.0
 
+		# A hut's level is its size as well as its stars. Both pieces of art are
+		# pivoted on the middle of their own base, so an upgrade grows the hut up
+		# out of the grass and a raid that takes a level off visibly shrinks it,
+		# rather than either sliding the building into or out of the ground.
+		for art in [tr, fallback]:
+			art.resized.connect(func() -> void:
+				art.pivot_offset = Vector2(art.size.x * 0.5, art.size.y))
+			art.pivot_offset = Vector2(rect.size.x * 0.5, rect.size.y - 86.0)
+
 		var scaffold := TextureRect.new()
 		scaffold.texture = CV.prop_tex("scaffold")
 		scaffold.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
@@ -147,6 +156,14 @@ func refresh(buildings: Array, coins: int, costs: Array) -> void:
 		slot["tex"].modulate = mod
 		slot["fallback"].modulate = mod
 		slot["shadow"].modulate = Color(1, 1, 1, 1.0 if built else 0.35)
+		# The contact shadow rides the same ladder, or a small hut sits on a
+		# puddle drawn for a big one.
+		var k := CV.level_scale(level)
+		for art in [slot["tex"], slot["fallback"]]:
+			(art as Control).scale = Vector2(k, k)
+		var sh: Control = slot["shadow"]
+		sh.pivot_offset = sh.size * Vector2(0.5, 1.0)
+		sh.scale = Vector2(k, k)
 		slot["stars"].text = "⭐".repeat(level)
 		var btn: Button = slot["button"]
 		if level >= CV.MAX_STAR:
@@ -157,7 +174,10 @@ func refresh(buildings: Array, coins: int, costs: Array) -> void:
 			btn.text = ("Build  %s" if level == 0 else "Upgrade  %s") % UI.fmt_compact(cost)
 			btn.disabled = coins < cost
 
-func start_construction(index: int, on_done: Callable, duration := 2.2) -> void:
+# `new_level` is the level the hut will stand at when the scaffold comes down.
+# Passed in rather than inferred, because the caller is the only one that knows
+# it -- the model does not move until the build finishes.
+func start_construction(index: int, new_level: int, on_done: Callable, duration := 2.2) -> void:
 	_constructing[index] = true
 	var slot: Dictionary = _slots[index]
 	(slot["button"] as Button).disabled = true
@@ -180,7 +200,16 @@ func start_construction(index: int, on_done: Callable, duration := 2.2) -> void:
 		var t: TextureRect = slot["tex"]
 		t.visible = t.texture != null
 		slot["fallback"].visible = t.texture == null
-		FX.pop_in(t if t.texture != null else slot["fallback"], 0.4)
+		# FX.pop_in would centre the pivot and settle at scale 1, which is the
+		# wrong size for every level but the last and would sink the hut into
+		# the grass on the way. Same overshoot, aimed at the level it just
+		# reached and hinged on its base.
+		var art: Control = t if t.texture != null else slot["fallback"]
+		var k := CV.level_scale(new_level)
+		art.pivot_offset = Vector2(art.size.x * 0.5, art.size.y)
+		art.scale = Vector2(k * 0.3, k * 0.3)
+		art.create_tween().tween_property(art, "scale", Vector2(k, k), 0.42) \
+			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 		var root: Control = slot["root"]
 		FX.burst(self, root.position + root.size * Vector2(0.5, 0.4), Color(0.9, 0.75, 0.45), 16)
 		Sfx.play("pop", -4.0)

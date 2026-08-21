@@ -131,3 +131,90 @@ static func rise_label(parent: Control, pos: Vector2, text: String, color: Color
 	tw.tween_property(l, "position:y", pos.y - 90.0, 1.1).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	tw.tween_property(l, "modulate:a", 0.0, 0.6).set_delay(0.5)
 	tw.chain().tween_callback(l.queue_free)
+
+# =============================================================================
+#  Impact
+# =============================================================================
+#
+# A raid used to be a tap and a number. These are the four pieces that turn it
+# into an event: something leaves a hand, something arrives, something gives,
+# and something is left burning afterwards. They live here rather than in
+# IslandVisit because none of them knows anything about raiding -- they are
+# just a thrown thing, a shockwave, a puff and a plume.
+
+# One soft round puff. Smoke, dust and steam are the same shape at different
+# sizes and speeds, so they all come from here.
+static func _puff(color: Color, diameter: float) -> Panel:
+	var p := Panel.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = color
+	sb.set_corner_radius_all(int(diameter * 0.5))
+	p.add_theme_stylebox_override("panel", sb)
+	p.size = Vector2(diameter, diameter)
+	p.pivot_offset = Vector2(diameter, diameter) * 0.5
+	p.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return p
+
+# A column of smoke off a damaged building. Puffs are launched over `spill`
+# seconds rather than all at once, because smoke that arrives as one shape is a
+# cloud sticker; smoke that keeps coming reads as something still burning.
+static func smoke(parent: Control, pos: Vector2, count := 9, rise := 210.0,
+		tint := Color(0.30, 0.28, 0.28), spill := 0.9, delay := 0.0) -> void:
+	for i in count:
+		var d := randf_range(34.0, 68.0)
+		var p := _puff(Color(tint.r, tint.g, tint.b, randf_range(0.34, 0.55)), d)
+		p.position = pos + Vector2(randf_range(-34, 34), randf_range(-10, 16)) - p.size * 0.5
+		p.z_index = 92
+		parent.add_child(p)
+		var drift := randf_range(-70.0, 70.0)
+		var tw := parent.create_tween()
+		tw.tween_interval(delay + spill * float(i) / maxf(1.0, float(count)))
+		tw.set_parallel(true)
+		var span := randf_range(1.1, 1.9)
+		tw.tween_property(p, "position:y", p.position.y - rise * randf_range(0.7, 1.25), span) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+		tw.tween_property(p, "position:x", p.position.x + drift, span)
+		# Smoke expands as it cools. Without this it reads as a swarm of dots.
+		tw.tween_property(p, "scale", Vector2(2.4, 2.4), span).set_trans(Tween.TRANS_SINE)
+		tw.tween_property(p, "modulate:a", 0.0, span).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		tw.chain().tween_callback(p.queue_free)
+
+# An expanding shockwave ring. Drawn as a hollow rounded box so it costs one
+# node and no shader; at these radii the corner rounding is a circle.
+static func ring(parent: Control, center: Vector2, color: Color, to_r: float,
+		dur := 0.45, thickness := 9.0, from_r := 10.0) -> void:
+	var r := Panel.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(color.r, color.g, color.b, 0.0)
+	sb.set_border_width_all(int(thickness))
+	sb.border_color = color
+	sb.set_corner_radius_all(int(to_r))
+	r.add_theme_stylebox_override("panel", sb)
+	r.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	r.z_index = 94
+	r.size = Vector2(from_r, from_r) * 2.0
+	r.position = center - r.size * 0.5
+	parent.add_child(r)
+	var tw := parent.create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(r, "size", Vector2(to_r, to_r) * 2.0, dur).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(r, "position", center - Vector2(to_r, to_r), dur).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(r, "modulate:a", 0.0, dur).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.chain().tween_callback(r.queue_free)
+
+# Throws `node` from one point to another along a parabola, spinning on the
+# way. Straight-line tweens between the same two points read as a laser; the
+# arc is the whole reason the throw looks thrown.
+static func throw_arc(node: Control, from: Vector2, to: Vector2, height := 240.0,
+		dur := 0.55, spin := TAU * 1.5) -> Tween:
+	node.pivot_offset = node.size * 0.5
+	node.position = from - node.size * 0.5
+	var half := node.size * 0.5
+	var tw := node.create_tween()
+	tw.tween_method(func(u: float) -> void:
+		var p := from.lerp(to, u)
+		p.y -= sin(u * PI) * height
+		node.position = p - half
+	, 0.0, 1.0, dur)
+	tw.parallel().tween_property(node, "rotation", spin, dur)
+	return tw

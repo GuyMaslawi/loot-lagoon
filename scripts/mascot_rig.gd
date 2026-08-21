@@ -20,9 +20,11 @@ extends Control
 # difference between a jointed drawing and something that looks alive.
 #
 # Two rules hold the whole thing together, and both are about weight:
-#   * the body hinges at the hips and the legs do not hang off it, so a lean
-#     tips his chest over feet that stay where they were put -- which is the
-#     entire reason this is not the old rotating sticker;
+#   * nothing on him turns. Not the figure, not the chest -- he is one frontal
+#     drawing, and a drawing that tips reads as a picture being rotated no
+#     matter how carefully it is hinged, which is the amateur tell this rig
+#     exists to get rid of. What he has instead is displacement, squash and
+#     limbs, which is where the weight reads from anyway;
 #   * nothing loose is ever set directly. Ears, tail and hat are springs whose
 #     targets are what the body is doing, so they arrive late and overshoot,
 #     and he reads as having mass.
@@ -73,7 +75,6 @@ const RIG := [
 
 # --- written by the performance, once a frame, before tick() ---------------
 var energy := 0.0             # 0..1, how far the loading bar has got
-var lean := 0.0               # radians; the body's tilt, hinged at the hips
 var squash := Vector2.ZERO    # added to the torso's scale; -y is compressed
 var body := Vector2.ZERO      # where the whole rig has been displaced to
 var look := Vector2.ZERO      # -1..1; where he is deliberately looking
@@ -205,17 +206,16 @@ func tick(delta: float) -> void:
 
 	# --- the body -----------------------------------------------------------
 	var torso: Node2D = _bone["torso"]
-	torso.rotation = lean
 	torso.scale = Vector2(1.0 - 0.014 * breath + squash.x,
 						  1.0 + 0.020 * breath + squash.y)
 
-	# The legs hang off the hips, not off the chest, so none of that reaches
-	# them: they take only a quarter of the lean, they splay as he compresses,
-	# and they shorten instead of being scaled by the squash above them.
+	# The legs hang off the hips, not off the chest, so the breath and the
+	# squash above them do not reach them: they splay as he compresses, and
+	# they shorten instead of being scaled by it.
 	var leg_l: Node2D = _bone["leg_l"]
 	var leg_r: Node2D = _bone["leg_r"]
-	leg_l.rotation = leg.x + lean * 0.25 - crouch * 0.85
-	leg_r.rotation = leg.y + lean * 0.25 + crouch * 0.85
+	leg_l.rotation = leg.x - crouch * 0.85
+	leg_r.rotation = leg.y + crouch * 0.85
 	var shin := 1.0 - crouch * 0.55
 	leg_l.scale = Vector2(1.0 + crouch * 0.30, shin)
 	leg_r.scale = Vector2(1.0 + crouch * 0.30, shin)
@@ -224,16 +224,15 @@ func tick(delta: float) -> void:
 	# They swing against whatever the body is doing sideways, and they arrive
 	# where the performance put them a beat late.
 	var swing := clampf(-vel.x * 0.00060, -0.30, 0.30)
-	_bone["arm_l"].rotation = _spring("arm_l", arm.x + swing - lean * 0.30, 210.0, 17.0, delta)
-	_bone["arm_r"].rotation = _spring("arm_r", arm.y - swing - lean * 0.30, 210.0, 17.0, delta)
+	_bone["arm_l"].rotation = _spring("arm_l", arm.x + swing, 210.0, 17.0, delta)
+	_bone["arm_r"].rotation = _spring("arm_r", arm.y - swing, 210.0, 17.0, delta)
 
 	# --- the head -----------------------------------------------------------
-	# It does not simply ride the body. It counter-rotates most of the lean,
-	# the way a head stays level over a chest that is tipping, and it gets
-	# there late -- which is the single cheapest thing that reads as a neck.
+	# It does not simply ride the body: it arrives at a turn late and leaves it
+	# late, which is the single cheapest thing that reads as a neck.
 	var head: Node2D = _bone["head"]
 	var yaw := clampf(look.x, -1.0, 1.0)
-	head.rotation = _spring("head", head_turn - lean * 0.45 + yaw * 0.09, 200.0, 15.0, delta)
+	head.rotation = _spring("head", head_turn + yaw * 0.09, 200.0, 15.0, delta)
 	head.position = _home["head"] + Vector2(yaw * 4.0, -1.6 * breath + crouch * 9.0)
 	# A flat drawing cannot turn, so the turn is faked the way it is in every
 	# cut-out rig: the face slides across the skull and the skull narrows.
@@ -248,7 +247,7 @@ func tick(delta: float) -> void:
 		_ear_wait = randf_range(1.7, 4.8) * (1.0 - 0.35 * energy)
 		var k := randf_range(1.6, 2.9)
 		_ear_kick = Vector2(k, 0.0) if randf() < 0.5 else Vector2(0.0, -k)
-	var ear_base := -head.rotation * 0.30 - lean * 0.08
+	var ear_base := -head.rotation * 0.30
 	_bone["ear_l"].rotation = clampf(_spring("ear_l", ear_base - yaw * 0.04, 165.0,
 		12.0, delta, _ear_kick.x - acc.x * 0.00012), -EAR_SWING, EAR_SWING)
 	_bone["ear_r"].rotation = clampf(_spring("ear_r", ear_base - yaw * 0.04, 165.0,
@@ -297,7 +296,7 @@ func tick(delta: float) -> void:
 	# --- tail ---------------------------------------------------------------
 	# Heavy and slow: a soft spring, dragged by the body's sideways speed and
 	# kicked by its acceleration, over a swish it does anyway.
-	var tail_want := -lean * 0.80 - clampf(vel.x * 0.0010, -0.4, 0.4) \
+	var tail_want := -clampf(vel.x * 0.0016, -0.5, 0.5) \
 		+ sin(_t * TAU / 2.15) * (0.055 + 0.075 * energy)
 	_bone["tail"].rotation = _spring("tail", tail_want, 92.0, 9.5, delta,
 		-acc.x * 0.00030)
@@ -307,7 +306,7 @@ func tick(delta: float) -> void:
 	# and settles after he stops. Kept on a short leash, because a hat that
 	# leaves his head is a bug and not a gag.
 	var hat: Node2D = _bone["hat"]
-	hat.rotation = clampf(_spring("hat_a", -head.rotation * 0.24 - lean * 0.13,
+	hat.rotation = clampf(_spring("hat_a", -head.rotation * 0.24,
 		128.0, 11.0, delta, -acc.x * 0.00018), -HAT_TILT, HAT_TILT)
 	var slide := _spring2("hat_o", Vector2.ZERO, 150.0, 12.0, delta,
 		Vector2(-acc.x, -acc.y) * 0.00034).limit_length(HAT_SLIDE)

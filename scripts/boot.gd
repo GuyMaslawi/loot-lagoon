@@ -21,6 +21,7 @@ const LABEL_UP := 216.0       # status/percent row, likewise
 const MASCOT_H := 502.0       # the raccoon's height, in viewport units
 const MASCOT_FEET := 262.0    # where he stands, above the screen's bottom edge
 const HOVER := 16.0           # how far the idle hover lifts him
+const SWAY := 5.0             # how far the idle shifts his weight sideways
 const JUMP_H := 76.0          # an everyday hop
 const PARTY_H := 216.0        # the jump he saves for 100%
 
@@ -173,16 +174,25 @@ func _add_coins() -> void:
 # and shoulders are, where he is looking and how far his mouth is open, and the
 # rig supplies the breathing, the blinking, the ear that flicks, and the tail
 # and hat catching up a beat later. He shuffles, hops, flips a coin, casts a
-# shifty look around, spins on the spot. The bar feeds him: the fuller it gets
+# shifty look around, waves at the player. The bar feeds him: the fuller it gets
 # the faster his clock runs, the shorter his pauses get and the showier the
 # acts he picks, so by the time it reads 100% he is already worked up -- and
 # 100% is where he jumps.
+#
+# One thing he never does is turn. He used to spin on the spot -- scale.x on a
+# cosine, the trick the flipped coin uses -- and to tilt at the hips as he
+# moved. Neither survives being looked at: a flat rig taken edge-on is fifteen
+# cut-outs collapsing into one bright sliver, and a tilt on a drawing this
+# frontal reads as the picture being rotated rather than as a character
+# leaning. So he stays upright and square to the player, and the life comes
+# out of his arms, his weight, his face and the springs underneath -- which is
+# where it reads from anyway.
 #
 # All of it is integrated in _process rather than tweened, which is what lets
 # the layers add together instead of fighting over the same properties, and
 # lets a hitch in the loading slow him down rather than teleport him.
 
-enum {ACT_NONE, ACT_DANCE, ACT_HOP, ACT_PEEK, ACT_COIN, ACT_SPIN, ACT_LOOK, ACT_PARTY, ACT_EXIT}
+enum {ACT_NONE, ACT_DANCE, ACT_HOP, ACT_PEEK, ACT_COIN, ACT_WAVE, ACT_LOOK, ACT_PARTY, ACT_EXIT}
 
 var _live := false            # entrance over, _process owns the transform
 var _clock := 0.0             # his own clock, which runs faster as the bar fills
@@ -198,9 +208,7 @@ var _partied := false
 var _want_party := false      # 100% arrived before he had finished landing
 # What the current act is doing to him this frame, on top of the idle.
 var _off := Vector2.ZERO
-var _lean := 0.0              # tips his chest at the hips, not the picture
-var _squash := Vector2.ZERO
-var _flip := 1.0              # scale.x, so cos() turns him around
+var _squash := Vector2.ZERO   # -y is compressed; he is never tilted or turned
 var _arm := Vector2.ZERO      # radians at each shoulder, left then right
 var _leg := Vector2.ZERO      # radians at each hip, left then right
 var _look := Vector2.ZERO     # -1..1, where the act wants him looking
@@ -325,9 +333,7 @@ func _process(delta: float) -> void:
 		_shadow_home = _mascot_shadow.position
 
 	_off = Vector2.ZERO
-	_lean = 0.0
 	_squash = Vector2.ZERO
-	_flip = 1.0
 	_shadow_gain = 1.0
 	_arm = Vector2.ZERO
 	_leg = Vector2.ZERO
@@ -336,13 +342,6 @@ func _process(delta: float) -> void:
 	_head = 0.0
 	_advance_act(delta)
 
-	# Edge-on, his limbs have to come in. Fifteen pieces at scale.x near zero
-	# are fifteen separate slivers unless they are stacked on top of one
-	# another -- which is also what a body does when it wants to spin faster.
-	var tuck := absf(_flip)
-	_arm *= tuck
-	_leg *= tuck
-
 	# The idle underneath, always running: a breath that trades width for
 	# height so he keeps his volume, a sway, and a hover -- three periods with
 	# no common multiple, which is what stops the eye finding the loop point.
@@ -350,17 +349,16 @@ func _process(delta: float) -> void:
 	var sway := sin(_clock * TAU / 3.70 + 0.7)
 	var hover := 0.5 - 0.5 * cos(_clock * TAU / 3.10)
 
-	var drift := Vector2(_off.x, -HOVER * hover + _off.y)
+	# The sway is a step, not a tilt: his whole weight shifts a few units side
+	# to side, the tail and ears trail it, and nothing about him turns.
+	var drift := Vector2(_off.x + SWAY * sway, -HOVER * hover + _off.y)
 	_mascot_art.position = drift
 	if _rig != null:
-		# The sway and the squash are handed to his hips rather than applied to
-		# the whole picture. He tips his chest over feet that stay where they
-		# were put, his head stays level over the tip, and the tail and the hat
-		# arrive late -- which is the whole of the difference between a
-		# character leaning and a drawing being rotated. The breath belongs to
-		# the rig now too, so it moves his chest and not his boots.
+		# The squash is handed to his hips rather than applied to the whole
+		# picture, so it compresses his chest over feet that stay where they
+		# were put, and the tail and hat arrive late. The breath belongs to the
+		# rig too, so it moves his chest and not his boots.
 		_rig.energy = _energy
-		_rig.lean = deg_to_rad(2.6) * sway + _lean
 		_rig.squash = _squash
 		_rig.body = drift
 		_rig.arm = _arm
@@ -370,12 +368,14 @@ func _process(delta: float) -> void:
 		_rig.head_turn = _head
 		_rig.tick(delta)
 		_mascot.rotation = 0.0
-		_mascot.scale = Vector2(_flip, 1.0)
+		_mascot.scale = Vector2.ONE
 	else:
-		_mascot.rotation = deg_to_rad(2.1) * sway + _lean
-		_mascot.scale = Vector2(
-			(1.0 - 0.016 * breath + _squash.x) * _flip,
-			1.0 + 0.024 * breath + _squash.y)
+		# The undivided drawing has no joints to act with, so all it gets is
+		# the breath -- and not a degree of rotation, which on one flat picture
+		# is the amateur tell this screen is trying not to have.
+		_mascot.rotation = 0.0
+		_mascot.scale = Vector2(1.0 - 0.016 * breath + _squash.x,
+								1.0 + 0.024 * breath + _squash.y)
 
 	# The shadow answers his height rather than copying it: as he goes up it
 	# pulls in and lightens, and it slides only part of the way when he steps.
@@ -407,9 +407,9 @@ func _advance_act(delta: float) -> void:
 func _pick_act() -> int:
 	var pool: Array[int] = [ACT_LOOK, ACT_COIN, ACT_PEEK]
 	if _energy > 0.25:
-		pool.append_array([ACT_DANCE, ACT_HOP])
+		pool.append_array([ACT_DANCE, ACT_HOP, ACT_WAVE])
 	if _energy > 0.55:
-		pool.append_array([ACT_DANCE, ACT_SPIN, ACT_HOP])
+		pool.append_array([ACT_DANCE, ACT_WAVE, ACT_HOP])
 	var choices := pool.filter(func(a: int) -> bool: return a != _last_act)
 	if choices.is_empty():
 		choices = pool
@@ -436,8 +436,8 @@ func _begin_act(a: int) -> void:
 		ACT_COIN:
 			_act_len = 1.35 * tempo
 			_marks = [0.10]
-		ACT_SPIN:
-			_act_len = 0.95 * tempo
+		ACT_WAVE:
+			_act_len = 1.55 * tempo
 		ACT_LOOK:
 			_act_len = 1.65 * tempo
 		ACT_PARTY:
@@ -475,12 +475,14 @@ func _pose(u: float) -> void:
 			var beat := u * TAU * 2.0
 			var bounce := absf(sin(beat * 2.0))
 			var step := sin(beat)
-			_off.x = step * 30.0 * e
+			# The weight shift is the step itself now rather than a tilt over
+			# it, so it is worth more here, and the arms swing against the
+			# legs harder to keep the shuffle reading as a shuffle.
+			_off.x = step * 38.0 * e
 			_off.y = -14.0 * bounce * e
-			_lean = deg_to_rad(-7.0) * step * e
 			_squash = Vector2(0.030, -0.034) * (1.0 - bounce) * e
 			_leg = Vector2(deg_to_rad(-19.0), deg_to_rad(19.0)) * step * e
-			_arm = Vector2(deg_to_rad(24.0), deg_to_rad(24.0)) * step * e
+			_arm = Vector2(deg_to_rad(32.0), deg_to_rad(32.0)) * step * e
 			_head = deg_to_rad(4.5) * sin(beat * 2.0) * e
 			_look = Vector2(step * 0.55, -0.12) * e
 			_mouth = 0.62 * e
@@ -497,7 +499,6 @@ func _pose(u: float) -> void:
 				_off.y = -JUMP_H * h
 				_off.x = (v - 0.5) * 24.0
 				_squash = Vector2(-0.055 * h, 0.065 * h)
-				_lean = deg_to_rad(5.0) * sin(v * TAU)
 				# Arms up and legs tucked at the top: the two things a body
 				# does in the air that a sliding drawing cannot.
 				_arm = Vector2(deg_to_rad(40.0), deg_to_rad(-40.0)) * h
@@ -508,10 +509,12 @@ func _pose(u: float) -> void:
 			# He leans out at the player, the way something with eyes that size
 			# is supposed to, and nods once while he is there.
 			var e := sin(u * PI)
-			_lean = deg_to_rad(-9.0) * e
 			_off.x = -16.0 * e
 			_off.y = (-6.0 - 5.0 * sin(u * TAU * 3.0)) * e
-			_squash = Vector2(0.05, 0.05) * e
+			# Leaning out at the player is a scale-up rather than a tilt: he
+			# comes toward the glass, which is what the tilt was standing in
+			# for anyway.
+			_squash = Vector2(0.075, 0.075) * e
 			_head = deg_to_rad(-7.0) * e
 			_arm = Vector2(deg_to_rad(13.0), deg_to_rad(9.0)) * e
 			_mouth = 0.55 * e
@@ -522,7 +525,6 @@ func _pose(u: float) -> void:
 			# there before his head does, because the rig springs them harder.
 			var e := sin(u * PI)
 			_off.y = -10.0 * e
-			_lean = deg_to_rad(4.0) * e
 			_squash = Vector2(-0.02 * e, 0.03 * e)
 			var flick := -smoothstep(0.0, 1.0, u / 0.10) if u < 0.10 \
 				else sin((u - 0.10) / 0.90 * PI)
@@ -532,17 +534,23 @@ func _pose(u: float) -> void:
 			_look = Vector2(0.62, -0.85) * watch
 			_head = deg_to_rad(-5.0) * watch
 			_mouth = 0.70 * e
-		ACT_SPIN:
-			# A turn on the spot, done as a cosine on scale.x: the same trick
-			# the flipped coin uses, and it reads the same way. Arms out and
-			# feet in, because that is what a body does to spin faster.
-			_flip = cos(u * TAU)
-			var lift := _arc(u)
-			_off.y = -JUMP_H * 0.45 * lift
-			_squash = Vector2(0.0, 0.05 * lift)
-			_arm = Vector2(deg_to_rad(32.0), deg_to_rad(-32.0)) * lift
-			_leg = Vector2(deg_to_rad(-15.0), deg_to_rad(15.0)) * lift
-			_mouth = 0.80 * lift
+		ACT_WAVE:
+			# What the spin used to be: he throws a paw up and swings it twice,
+			# grinning at whoever is holding the phone. One arm does the whole
+			# act -- he lifts on his toes for it and the other paw counters,
+			# and that is the entire act. It is the smallest thing on this
+			# list and it is the one that reads as him being pleased to see
+			# you, which is all a title screen wants from him.
+			var e := smoothstep(0.0, 0.20, u) * smoothstep(1.0, 0.76, u)
+			var swing := sin(u * TAU * 2.0)
+			_arm.y = (deg_to_rad(-62.0) + deg_to_rad(16.0) * swing) * e
+			_arm.x = deg_to_rad(11.0) * e
+			_off.x = 3.0 * swing * e
+			_off.y = -9.0 * e
+			_squash = Vector2(-0.018, 0.026) * e
+			_head = deg_to_rad(3.5) * swing * e
+			_look = Vector2(0.10 * swing, -0.18) * e
+			_mouth = 0.80 * e
 		ACT_LOOK:
 			# The thief's glance: left, hold, right, hold, settle. He is a
 			# character who is about to steal something, and this is the
@@ -559,8 +567,7 @@ func _pose(u: float) -> void:
 				a = 1.0
 			else:
 				a = 1.0 - smoothstep(0.0, 1.0, (u - 0.82) / 0.18)
-			_lean = deg_to_rad(4.0) * a
-			_off.x = 9.0 * a
+			_off.x = 13.0 * a
 			_squash = Vector2(0.02, -0.02) * absf(a)
 			_head = deg_to_rad(7.0) * a
 			_look = Vector2(a, -0.10)
@@ -587,11 +594,11 @@ func _pose_party(u: float) -> void:
 		var h := _arc(v)
 		_off.y = -PARTY_H * h
 		_squash = Vector2(-0.10 * h, 0.12 * h)
-		_flip = cos(v * TAU)
-		_lean = deg_to_rad(11.0) * sin(v * TAU)
-		# Everything thrown open at once. This is the one second of the title
-		# screen anybody will describe afterwards, so nothing on him is held back.
-		_arm = Vector2(deg_to_rad(62.0), deg_to_rad(-62.0)) * h
+		# Everything thrown open at once, and none of it a turn: the height,
+		# the stretch and the limbs carry it. This is the one second of the
+		# title screen anybody will describe afterwards, so nothing on him is
+		# held back except the one thing that looked like a rotating sticker.
+		_arm = Vector2(deg_to_rad(58.0), deg_to_rad(-58.0)) * h
 		_leg = Vector2(deg_to_rad(-26.0), deg_to_rad(26.0)) * h
 		_head = deg_to_rad(-8.0) * h
 		_look = Vector2(0.0, -0.75 * h)
@@ -606,7 +613,7 @@ func _pose_party(u: float) -> void:
 		var v := (u - 0.72) / 0.28
 		var b := absf(sin(v * TAU)) * (1.0 - v)
 		_off.y = -36.0 * b
-		_lean = deg_to_rad(6.0) * sin(v * TAU * 2.0)
+		_off.x = 7.0 * sin(v * TAU * 2.0) * b
 		_squash = Vector2(-0.04 * b, 0.05 * b)
 		_arm = Vector2(deg_to_rad(34.0), deg_to_rad(-34.0)) * b
 		_leg = Vector2(deg_to_rad(-11.0), deg_to_rad(11.0)) * b
@@ -627,8 +634,10 @@ func _pose_exit(u: float) -> void:
 	else:
 		var v := (u - 0.20) / 0.80
 		_off.y = -80.0 * sin(v * PI * 0.55) + 1150.0 * v * v
-		_squash = Vector2(-0.10, 0.13)
-		_lean = deg_to_rad(-14.0) * v
+		# Stretched into the dive rather than pitched into it -- he is going
+		# straight down off the bottom edge, and a tilt on the way would be
+		# the last thing this screen showed anybody.
+		_squash = Vector2(-0.16, 0.22)
 		_shadow_gain = 1.0 - smoothstep(0.0, 0.45, v)
 		# A dive, so: arms thrown forward, legs trailing, and his eyes already
 		# on the water he is about to be in.
