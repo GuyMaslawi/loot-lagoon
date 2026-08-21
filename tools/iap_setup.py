@@ -127,6 +127,42 @@ def ensure_price(iap_id, usd):
 	return True
 
 
+_territories = []
+
+
+def ensure_availability(iap_id):
+	"""Which countries the purchase may be sold in.
+
+	Nothing in App Store Connect's own UI suggests this is a separate step, and
+	a product with a name, a description, a price and a screenshot still sits at
+	MISSING_METADATA without it -- which reads as "you forgot something" while
+	pointing at nothing. It is the last thing standing between a fresh product
+	and READY_TO_SUBMIT.
+
+	The app is on sale in all 175 territories, so the purchases follow it, and
+	availableInNewTerritories keeps that true as Apple opens more.
+	"""
+	try:
+		if asc.call("GET", f"{V2}/inAppPurchases/{iap_id}/inAppPurchaseAvailability").get("data"):
+			return False
+	except SystemExit:
+		pass
+	print("    + availability (all territories)")
+	if not APPLY:
+		return True
+	global _territories
+	if not _territories:
+		_territories = asc.paged("/territories")
+	asc.call("POST", f"{V1}/inAppPurchaseAvailabilities", {"data": {
+		"type": "inAppPurchaseAvailabilities",
+		"attributes": {"availableInNewTerritories": True},
+		"relationships": {
+			"inAppPurchase": {"data": {"type": "inAppPurchases", "id": iap_id}},
+			"availableTerritories": {"data": [
+				{"type": "territories", "id": t["id"]} for t in _territories]}}}})
+	return True
+
+
 def ensure_screenshot(iap_id, path):
 	"""Apple will not let a purchase leave MISSING_METADATA without one.
 
@@ -191,6 +227,7 @@ def main():
 			continue
 		ensure_localization(iap_id, disp, desc)
 		ensure_price(iap_id, usd)
+		ensure_availability(iap_id)
 		if SHOT:
 			ensure_screenshot(iap_id, SHOT)
 	print("\ndone" if APPLY else "\ndry run complete")
