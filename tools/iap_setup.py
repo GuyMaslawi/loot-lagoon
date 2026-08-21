@@ -138,9 +138,20 @@ def ensure_screenshot(iap_id, path):
 	"""
 	# A to-one relationship, so this is a plain GET -- paged() would attach a
 	# limit, which Apple rejects outright on this endpoint.
+	#
+	# A rejected upload still occupies the slot, and because the relationship
+	# holds exactly one screenshot a replacement cannot be posted alongside it.
+	# Clear the bad one out first, or every later run finds the slot full and
+	# skips a product that has no usable screenshot at all.
 	try:
-		if asc.call("GET", f"{V2}/inAppPurchases/{iap_id}/appStoreReviewScreenshot").get("data"):
-			return False
+		existing = asc.call("GET", f"{V2}/inAppPurchases/{iap_id}/appStoreReviewScreenshot").get("data")
+		if existing:
+			state = existing["attributes"].get("assetDeliveryState", {}).get("state")
+			if state != "FAILED":
+				return False
+			print("    - discarding failed screenshot")
+			if APPLY:
+				asc.call("DELETE", f"{V1}/inAppPurchaseAppStoreReviewScreenshots/{existing['id']}")
 	except SystemExit:
 		pass  # 404 when there is none yet
 	print("    + review screenshot")

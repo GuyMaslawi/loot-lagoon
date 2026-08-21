@@ -2768,7 +2768,13 @@ func _on_purchase_ok(product_id: String) -> void:
 	if pack.is_empty():
 		# An id the build does not know -- a pack pulled from the store while a
 		# purchase was in flight, most likely. Say so rather than failing mute.
+		#
+		# It still gets recorded. There is nothing to grant and never will be in
+		# this build, and leaving it unrecorded would park it at the head of the
+		# reconcile queue forever, where it would replay this banner every
+		# launch and block every real transaction waiting behind it.
 		_banner("Purchase received, but this build has no such pack.", Color(0.9, 0.4, 0.4))
+		IAP.finish(product_id)
 		return
 	_grant_pack(pack)
 	IAP.finish(product_id)
