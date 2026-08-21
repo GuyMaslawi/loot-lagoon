@@ -302,6 +302,7 @@ func _after_boot() -> void:
 	# has to land on a game whose pages already exist.
 	IAP.purchase_succeeded.connect(_on_purchase_ok)
 	IAP.purchase_failed.connect(_on_purchase_fail)
+	IAP.purchase_cancelled.connect(_on_purchase_cancel)
 	IAP.products_loaded.connect(_on_products_loaded)
 	IAP.begin()
 	call_deferred("_check_island_complete")
@@ -319,11 +320,33 @@ func _after_boot() -> void:
 		var go := create_tween()
 		go.tween_interval(0.6)
 		go.tween_callback(_start_visit.bind(demo_raid))
+	# SHOT=<page key> opens that page, lets it settle and writes a PNG, then
+	# quits. Apple will not review an in-app purchase without a screenshot of
+	# where it is sold, and there are twenty-five of them -- shooting those by
+	# hand, and again after every redesign of the shop, is not a job worth
+	# doing twice.
+	if OS.has_environment("SHOT"):
+		call_deferred("_capture_page", OS.get_environment("SHOT"))
+		return
 	if OS.has_environment("DEMO_QUESTS"):
 		var demo_tab := OS.get_environment("DEMO_QUESTS")
 		if MISSION_DEFS.has(demo_tab):
 			quests_tab = demo_tab
 		call_deferred("_goto", pages["quests"])
+
+func _capture_page(key: String) -> void:
+	if pages.has(key):
+		_goto(pages[key])
+	elif key == "slot":
+		_goto(slot_page)
+	# Long enough for the page transition and the card art to finish arriving;
+	# a screenshot of a half-built shop is worse than none.
+	await get_tree().create_timer(2.0).timeout
+	var img := get_viewport().get_texture().get_image()
+	var path := "user://shot_%s.png" % key
+	img.save_png(path)
+	print("SHOT written: %s (%dx%d)" % [ProjectSettings.globalize_path(path), img.get_width(), img.get_height()])
+	get_tree().quit()
 
 # Establishes the game's two typefaces (see Lagoon) as the global baseline, so
 # every control that doesn't ask for something specific already speaks in the
@@ -2750,8 +2773,13 @@ func _on_purchase_ok(product_id: String) -> void:
 	_grant_pack(pack)
 	IAP.finish(product_id)
 
-# Cancelling is the common case here, not an error, so this stays quiet and
-# small -- no modal, no red, nothing that reads as "something broke".
+# Backing out of Apple's sheet is a decision, not a fault. Take the spinner
+# down and say nothing -- the player knows what they just did.
+func _on_purchase_cancel(_product_id: String) -> void:
+	_close_popup()
+
+# This is now only reached by genuine failures, so it may be as loud as it
+# looks: something the player asked for did not happen.
 func _on_purchase_fail(_product_id: String, message: String) -> void:
 	_close_popup()
 	Sfx.play("error", -6.0)

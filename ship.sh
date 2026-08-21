@@ -44,6 +44,17 @@ done
 BUILD_NO=$(sed -n 's/^application\/version="\(.*\)"/\1/p' export_presets.cfg)
 echo "==> $BUNDLE  build $BUILD_NO  team $TEAM"
 
+# The flag that links the StoreKit plugin lives in export_presets.cfg, which is
+# not in git. Lose it -- a fresh clone, a preset rebuilt in the editor -- and
+# everything still exports, archives and uploads perfectly, except that IAP
+# quietly falls back to its simulated store and every purchase is free. That is
+# far too quiet a way to ship a game that takes money.
+grep -q '^plugins/IOSInAppPurchase=true' export_presets.cfg || {
+	echo "export_presets.cfg is missing plugins/IOSInAppPurchase=true" >&2
+	echo "without it the build ships a simulated store -- add it before shipping" >&2
+	exit 2
+}
+
 # --- 1. regenerate the Xcode project from the current source ---
 echo "==> exporting release project"
 rm -rf "$OUT"
