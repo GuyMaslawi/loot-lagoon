@@ -29,7 +29,15 @@ BUNDLE=$(sed -n 's/^application\/bundle_identifier="\(.*\)"/\1/p' export_presets
 
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--build) sed -i '' "s|^application/version=.*|application/version=\"$2\"|" export_presets.cfg; shift 2 ;;
+		# Checked here rather than left to the upload: Apple only rejects a bad
+		# CFBundleVersion at the very end, after a full export and archive have
+		# already been paid for. One to three period-separated integers.
+		--build)
+			[[ "$2" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || {
+				echo "build number must be one to three period-separated integers, got: $2" >&2
+				exit 2
+			}
+			sed -i '' "s|^application/version=.*|application/version=\"$2\"|" export_presets.cfg; shift 2 ;;
 		*) echo "unknown option: $1" >&2; exit 2 ;;
 	esac
 done
