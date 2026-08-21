@@ -2794,7 +2794,10 @@ func _on_purchase_fail(_product_id: String, message: String) -> void:
 # Apple answered with real products, so every price on screen is now wrong --
 # it is still the hardcoded dollar string. Repaint whatever is open.
 func _on_products_loaded() -> void:
-	if _current_page == pages.get("shop"):
+	# Unconditionally, not just when the shop happens to be open. Rebuilding a
+	# hidden page costs nothing, and the alternative is a shop that keeps its
+	# dollar placeholders until the player thinks to leave and come back.
+	if pages.has("shop"):
 		_fill_page("shop")
 
 func _grant_pack(pack: Dictionary) -> void:

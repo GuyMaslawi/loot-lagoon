@@ -63,6 +63,11 @@ var _pending_txn := ""
 # completed outside the app is replayed the moment the plugin starts, and
 # emitting that while the title screen is still up would hand a granted pack to
 # a game whose pages do not exist yet.
+#
+# products_loaded goes through the same queue, and must. Apple usually answers
+# the product request within a second or two, while the title screen runs for
+# longer -- so the "prices are real now, repaint" signal routinely fires before
+# main.gd has connected to it, and without the queue it is simply lost.
 var _started := false
 var _queue: Array = []
 var _granted := {}     # transaction id -> true
@@ -155,6 +160,7 @@ func _dispatch(kind: String, pid: String, message: String) -> void:
 	match kind:
 		"ok": purchase_succeeded.emit(pid)
 		"cancel": purchase_cancelled.emit(pid)
+		"prices": products_loaded.emit()
 		_: purchase_failed.emit(pid, message)
 
 # --- the plugin ------------------------------------------------------------
@@ -179,7 +185,7 @@ func _on_products(data: Dictionary) -> void:
 			_prices[pid] = String(p.get("displayPrice", ""))
 	live = not _prices.is_empty()
 	if live:
-		products_loaded.emit()
+		_emit("prices", "", "")
 
 func _on_purchase(data: Dictionary) -> void:
 	var pid := String(data.get("productID", _pending))
