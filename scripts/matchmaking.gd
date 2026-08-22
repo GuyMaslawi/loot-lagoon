@@ -56,7 +56,6 @@ var _run: Tween      # the sweep timer, killed when a tap lands the match early
 var _shuffle_accum := 0.0
 var _blip_accum := 0.0
 var _scanned := 0
-var _online_count := 0
 var _status_step := 0
 var _status_accum := 0.0
 
@@ -90,7 +89,9 @@ func _ready() -> void:
 	col.add_child(plate)
 	_title = plate.get_meta("label")
 
-	_online = Lagoon.label("", UI.F_CAPTION, Color(0.72, 0.88, 0.92))
+	# Was a live-looking count of islands online, invented with randi_range.
+	# A fixed line that happens to be true costs nothing and claims nothing.
+	_online = Lagoon.label("Charting a course", UI.F_CAPTION, Color(0.72, 0.88, 0.92))
 	_online.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(_online)
 
@@ -119,7 +120,6 @@ func _ready() -> void:
 	col.add_child(_hint)
 
 	# A believable room, seeded per search and drifting while you watch.
-	_online_count = randi_range(2_400, 18_500)
 	_scanned = 0
 	_tick_status()
 
@@ -298,8 +298,6 @@ func _process(delta: float) -> void:
 		_tick_status()
 
 	_scanned += int(round(delta * randf_range(900.0, 1500.0)))
-	_online_count += randi_range(-3, 5)
-	_online.text = "%s islands online" % UI.fmt(maxi(0, _online_count))
 
 # A contact under the beam: it appears where the hand is pointing and fades,
 # which is what sells the sweep as a thing that is finding something.
@@ -321,10 +319,19 @@ func _blip() -> void:
 	tw.parallel().tween_property(dot, "scale", Vector2(1.6, 1.6), 0.75)
 	tw.tween_callback(dot.queue_free)
 
+# What this screen is actually doing is choosing one rival out of a fixed cast,
+# and the lines now say so.
+#
+# They used to say "Opening the raid net…" and "Scanning %s islands…" over a
+# running counter, under a headline reading "N islands online" -- an assertion
+# that somewhere there is a service full of other people, made to a player who
+# is one tap from the shop. There is no service: the game makes no network
+# request of any kind, and every rival is a hardcoded entry in cv.gd. The
+# theatre is welcome to stay, but it is not allowed to claim that.
 const STATUS_LINES := [
-	"Opening the raid net…",
-	"Scanning %s islands…",
-	"Reading vaults…",
+	"Unrolling the charts…",
+	"Reading the logbook…",
+	"Weighing up the vaults…",
 	"Checking who has a shield up…",
 	"Picking your rival…",
 ]

@@ -3092,6 +3092,19 @@ func _odds_table(vbox: VBoxContainer, pack: Dictionary) -> void:
 		text = "One of the %d cards is always ★★★★★. The other %d each draw from the table above." % [cards, maxi(0, cards - 1)]
 	else:
 		text = "All %d cards draw from the table above, independently. Duplicates are possible." % cards
+	# The cards being sold here have an expiry date, and this is the only place
+	# the player can be told about it before paying.
+	#
+	# The Collections page has carried the season countdown all along, so the
+	# reset itself was never hidden -- but the shop never repeated it, which
+	# left the one screen where real money changes hands as the one screen that
+	# did not mention that what it sells is cleared at the end of the season. A
+	# disclosure the buyer reaches afterwards is not a disclosure, which is the
+	# same reasoning that put the odds table above the pay button rather than
+	# below it.
+	if col_deadline > 0.0:
+		var season_left := maxf(0.0, col_deadline - _now())
+		text += "\n\nCards belong to the current season, which ends in %s. Every card and spare resets when a season ends, including cards from packs." % _countdown_text(int(season_left))
 	var foot := _popup_row_label(text, UI.F_TINY)
 	foot.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	foot.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -3153,7 +3166,16 @@ func _chest_card(row: HBoxContainer, pack: Dictionary) -> void:
 	cards_row.add_child(_emoji_label("🃏", UI.F_CAPTION))
 	cards_row.add_child(Lagoon.label("x%d CARDS" % int(pack["cards"]), UI.F_TINY, Lagoon.INK_SOFT))
 
-	col.add_child(_star_row(int(pack["star_cap"]), UI.F_CAPTION))
+	# No star row here any more. It was drawn from `star_cap`, which reads as a
+	# ceiling -- the Wooden Chest rendered ★★☆☆☆ -- and sat directly above that
+	# same chest's true line, "5★ CHANCE 1%". Two claims on one tile, disagreeing,
+	# on the surface that exists to publish the odds. `star_cap` never capped
+	# anything: _grant_chest_card rolls from CHEST_STAR_WEIGHTS and has never
+	# looked at it.
+	#
+	# The odds line below is the honest half and is a better ladder anyway --
+	# 1% -> 8% -> GUARANTEED orders the three chests with real numbers, and the
+	# tag, the colour and the card count already carry the tier visually.
 
 	var odds := Label.new()
 	odds.text = _odds_line(pack)

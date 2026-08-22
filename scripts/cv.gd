@@ -241,13 +241,13 @@ const STARTER_PACK := {"id": "starter", "name": "First Timer Pack", "sub": "60 S
 # art_tint modulates the shared treasure-chest sprite per tier.
 const CHEST_PACKS := [
 	{"id": "chest_w", "name": "Wooden Chest", "sub": "2 Cards", "emoji": "📦", "price": "$0.99", "cards": 2, "tier": 0,
-	 "color": Color(0.72, 0.5, 0.3), "tag": "BASIC", "tag_color": Color(0.45, 0.42, 0.5), "star_cap": 2,
+	 "color": Color(0.72, 0.5, 0.3), "tag": "BASIC", "tag_color": Color(0.45, 0.42, 0.5),
 	 "art_tint": Color(0.74, 0.62, 0.52)},
 	{"id": "chest_g", "name": "Golden Chest", "sub": "4 Cards — better star odds", "emoji": "🧰", "price": "$2.99", "cards": 4, "tier": 1,
-	 "color": Color(1.0, 0.78, 0.25), "tag": "POPULAR", "tag_color": Color(0.88, 0.28, 0.38), "star_cap": 4,
+	 "color": Color(1.0, 0.78, 0.25), "tag": "POPULAR", "tag_color": Color(0.88, 0.28, 0.38),
 	 "art_tint": Color(1.0, 1.0, 1.0)},
 	{"id": "chest_m", "name": "Magical Chest", "sub": "6 Cards — 5★ guaranteed", "emoji": "🔮", "price": "$6.99", "cards": 6, "tier": 2,
-	 "color": Color(0.72, 0.45, 1.0), "tag": "BEST VALUE", "tag_color": Color(0.55, 0.3, 0.85), "star_cap": 5, "guarantee5": true,
+	 "color": Color(0.72, 0.45, 1.0), "tag": "BEST VALUE", "tag_color": Color(0.55, 0.3, 0.85), "guarantee5": true,
 	 "art_tint": Color(0.82, 0.64, 1.0)},
 ]
 
