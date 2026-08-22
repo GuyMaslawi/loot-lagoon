@@ -26,11 +26,23 @@ var island_level := 1
 #   * a card, the first time you own it, worth its own rarity
 #   * a duplicate card, melted down for what its rarity was worth
 #
-# And they are spent on exactly one thing: the card boxes. That is deliberate.
-# The leaderboard ranks on this number, so every star is a live choice between
-# standing higher in the world and opening another box -- which is a decision
-# a coin balance has never once made a player think about.
+# The first three of those pay into two counters at once, and the split is the
+# whole design:
+#
+#   * `rank_stars` is what you have earned, ever. It is the number in the top
+#     bar and the number the leaderboard sorts on, and nothing in the game
+#     subtracts from it. A standing you can lose by playing is not a standing,
+#     it is a balance wearing a trophy -- and the board used to do exactly
+#     that, dropping you places for opening a box you had earned.
+#   * `stars` is the spendable half, and it buys exactly one thing: the card
+#     boxes. It lives on the boxes page, where spending happens, and nowhere
+#     else.
+#
+# Melting a duplicate tops up `stars` only. The card was already counted for
+# rank the first time it was owned, and a spare is a second copy of a thing
+# you have, not a second thing.
 var stars := 0
+var rank_stars := 0
 var buildings := [0, 0, 0, 0, 0]
 var revenge_pending := false
 var npcs: Array = []
@@ -175,6 +187,9 @@ var col_deadline := 0.0
 var col_open := ""
 var _convert_btn: Button
 var _convert_badge: Panel
+# The spendable-star figure on the Card Boxes page. Melting flies stars into
+# this rather than into the top bar, which holds rank and does not move.
+var _star_bank_label: Label
 
 const NOTIF_LOG_MAX := 30
 var notif_enabled := true
@@ -1425,10 +1440,19 @@ func _mission_add(id: String, amount := 1) -> void:
 # paid out and arrives at the number that went up -- because a currency that
 # only ever appears as a label ticking over never becomes a currency the player
 # thinks about.
-func _award_stars(n: int, from_global := Vector2.ZERO) -> void:
+# The single door every earned star comes through. Anything that credits stars
+# by touching `stars` directly is a bug: it would pay the wallet and skip the
+# standing, and the leaderboard would quietly stop matching the game.
+func _earn_stars(n: int) -> void:
 	if n <= 0:
 		return
 	stars += n
+	rank_stars += n
+
+func _award_stars(n: int, from_global := Vector2.ZERO) -> void:
+	if n <= 0:
+		return
+	_earn_stars(n)
 	_update_badges()
 	if _hud_labels.is_empty() or not _hud_labels[0].has("stars"):
 		return
@@ -3082,7 +3106,11 @@ func _grant_chest_card(tier: int, forced_star := 0) -> Dictionary:
 		return {"emoji": it[0], "name": it[1], "set": chosen["name"], "stars": star,
 			"dup": true, "refund": refund, "held": _dupe_count(chosen["id"], idx)}
 	owned[idx] = true
-	stars += star
+	# A first copy is a first copy wherever it came from: the same stars a spin
+	# drop would have paid, banked to rank as well as to the wallet. The caller
+	# totals the flight and the sound for the whole handful, so this one is
+	# silent on purpose.
+	_earn_stars(star)
 	return {"emoji": it[0], "name": it[1], "set": chosen["name"], "stars": star, "dup": false}
 
 func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := "", completed_sets: Array = []) -> void:
@@ -3148,6 +3176,22 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 		done.add_theme_color_override("font_color", Lagoon.KELP_LO)
 		done_row.add_child(done)
 		FX.pulse_forever(done_row, 1.04, 1.2)
+
+	# What the handful was worth to your standing. Read off the cards rather
+	# than passed in, so a chest bought with money, a box bought with stars and
+	# the free gift all say it the same way -- and so the spares are visibly
+	# the reason the number is not higher.
+	var rank_gain := 0
+	for c in cards:
+		if not c.get("dup", false):
+			rank_gain += int(c.get("stars", 0))
+	if rank_gain > 0:
+		var gain := _popup_row_label("\u2b50  +%d world rank" % rank_gain, UI.F_LABEL)
+		gain.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		gain.add_theme_color_override("font_color", CV.STAR_COLORS[CV.MAX_STAR - 1])
+		vbox.add_child(gain)
+		FX.pulse_forever(gain, 1.05, 1.1)
+
 	var ok := Button.new()
 	ok.text = "COLLECT!"
 	ok.custom_minimum_size = Vector2(0, UI.TAP)
@@ -3944,8 +3988,10 @@ func _fill_collection_detail(vb: VBoxContainer, c: Dictionary) -> void:
 # was worth new, and stars open boxes that draw more cards. A spare is the long
 # way round to the card you actually wanted, which is the point.
 #
-# Stars spent here come off your rank. That is the whole tension of the screen
-# and it is deliberate: standing still and standing high are the same act.
+# What is spent here is the wallet, never the standing. Rank counts what you
+# have earned, so a box costs you nothing you have already climbed -- the top
+# bar does not move when you open one. This screen is therefore the only place
+# in the game that shows the spendable balance, and it says which is which.
 
 func _melt_stack(set_id: String, idx: int, count: int) -> int:
 	var arr: Array = col_dupes.get(set_id, [])
@@ -3957,6 +4003,9 @@ func _melt_stack(set_id: String, idx: int, count: int) -> int:
 	arr[idx] = int(arr[idx]) - take
 	var c := _collection_by_id(set_id)
 	var worth := take * int((c["items"] as Array)[idx][2])
+	# Wallet only -- deliberately not `_earn_stars`. Rank already paid out for
+	# this card the first time it was owned, and melting the spares of a card
+	# you own would otherwise let one lucky set be farmed into a standing.
 	stars += worth
 	return worth
 
@@ -3965,8 +4014,11 @@ func _melt_and_refresh(gained: int, at: Vector2) -> void:
 		return
 	Sfx.play("coins", -6.0)
 	FX.rise_label(self, at, "+%d \u2605" % gained, CV.STAR_COLORS[CV.MAX_STAR - 1], 40)
-	if not _hud_labels.is_empty() and _hud_labels[0].has("stars"):
-		FX.fly_coins(self, at, _hud_labels[0]["stars"].global_position,
+	# To the bank on this page, not to the top bar. The capsule up there is the
+	# rank, and melting does not move it -- stars flying into a number that
+	# stays put is the animation telling a lie about the rules.
+	if _star_bank_label != null and is_instance_valid(_star_bank_label):
+		FX.fly_coins(self, at, _star_bank_label.global_position + _star_bank_label.size * 0.5,
 			clampi(gained, 4, 12), "star", "\u2b50")
 	_update_badges()
 	_refresh()
@@ -3991,7 +4043,12 @@ func _fill_boxes(vb: VBoxContainer) -> void:
 	var amount := Lagoon.label(_fmt(stars), UI.F_DISPLAY, Lagoon.INK, true)
 	amount.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	brow.add_child(amount)
-	var bsub := _popup_row_label("Stars are your world rank — and what opens these boxes.", UI.F_CAPTION)
+	_star_bank_label = amount
+	# Two glyphs on purpose: \u2b50 for the standing, matching the top bar, and
+	# the plain \u2605 everywhere else on this page for the balance and the
+	# prices. One sentence has to hold both numbers without them reading as the
+	# same number twice.
+	var bsub := _popup_row_label("Stars to spend. Your ⭐ %s world rank is what you have earned — opening a box never takes from it." % _fmt_compact(rank_stars), UI.F_CAPTION)
 	bsub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	bsub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	bsub.add_theme_color_override("font_color", Lagoon.INK_SOFT)
@@ -4180,8 +4237,8 @@ func _open_card_box(box: Dictionary) -> void:
 	FX.confetti(self, 40)
 	FX.flash(self)
 	# New cards pay stars back on the way out, so a good box partly refunds
-	# itself -- worth saying, because it is the reason opening one is not
-	# simply a hole in your rank.
+	# itself. The standing it also bought is said separately, on the result
+	# screen, because that half is never spent and should not read as change.
 	var earned := stars - before
 	var note := "\u2605 %d spent" % cost
 	if earned > 0:
@@ -4247,9 +4304,15 @@ func _npc_stars(npc: Dictionary) -> int:
 
 # The board used to rank on coins, which meant it reshuffled every spin and
 # dropped you twenty places the moment you bought a hut -- a table where doing
-# the right thing loses you rank is a table nobody reads twice. Stars only ever
-# go up for building and collecting, so this is now a standing rather than a
-# balance.
+# the right thing loses you rank is a table nobody reads twice. Then it ranked
+# on the star balance, which had the same fault one layer down: opening a card
+# box, the one thing stars are for, cost you places.
+#
+# So it ranks on `rank_stars`, which only ever goes up -- once for every hut
+# level built, once for every card the first time it is owned, plus the set and
+# grand-prize bonuses. Nothing in the game subtracts from it. The number in the
+# top bar is this one, so what a player watches climb all day is the same
+# number this table sorts on.
 func _open_ranks() -> void:
 	var vbox := _open_popup("Leaderboard")
 	var head := _popup_row_label("Ranked by \u2b50 stars — build and collect to climb", UI.F_CAPTION)
@@ -4258,7 +4321,7 @@ func _open_ranks() -> void:
 	head.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vbox.add_child(head)
 	var rows := []
-	rows.append({"name": profile.get("name", "You"), "emoji": "😎", "stars": stars, "me": true})
+	rows.append({"name": profile.get("name", "You"), "emoji": "😎", "stars": rank_stars, "me": true})
 	for n in npcs:
 		rows.append({"name": n["name"], "emoji": n["emoji"], "stars": _npc_stars(n), "me": false})
 	rows.sort_custom(func(a, b) -> bool: return int(a["stars"]) > int(b["stars"]))
@@ -4390,9 +4453,32 @@ func _add_topbar(page: Control) -> void:
 	# spendables on the left. That grouping is the whole point: the left of this
 	# bar is what you play with, the right is where you have got to.
 	var st := Lagoon.capsule("star", "0")
-	(st["root"] as Control).tooltip_text = "Stars — your world rank"
-	bar.add_child(st["root"])
+	var st_root := st["root"] as Control
+	st_root.tooltip_text = "Stars — your world rank. Earned by building and by every new card; never spent."
+	bar.add_child(st_root)
 	labels["stars"] = st["value"]
+	# The number and the table it decides are the same fact, so the capsule is
+	# the way to the leaderboard from every page. The Ranks button only ever
+	# existed on the slot screen, which left the island and the collections --
+	# the two places the number actually moves -- with no way to go and look.
+	# A transparent hit area rather than a `plus_action`, because the coral "+"
+	# means "buy more of this" and stars are not for sale.
+	var st_tap := Button.new()
+	st_tap.flat = true
+	st_tap.focus_mode = Control.FOCUS_NONE
+	st_tap.pressed.connect(_open_ranks)
+	st_root.add_child(st_tap)
+	st_tap.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	# FX.press_feedback squashes the button it is given; here the button is the
+	# invisible one, so the capsule under it is squashed instead.
+	st_root.resized.connect(func() -> void: st_root.pivot_offset = st_root.size * 0.5)
+	st_tap.button_down.connect(func() -> void:
+		st_root.pivot_offset = st_root.size * 0.5
+		st_root.create_tween().tween_property(st_root, "scale", Vector2(0.93, 0.93), 0.06)
+	)
+	st_tap.button_up.connect(func() -> void:
+		st_root.create_tween().tween_property(st_root, "scale", Vector2.ONE, 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	)
 
 	var isl := Lagoon.capsule("island", "1")
 	bar.add_child(isl["root"])
@@ -5328,7 +5414,7 @@ func _refresh() -> void:
 		labels["coins"].text = _fmt_compact(coins)
 		labels["spins"].text = ("%d/%d" % [spins, SPIN_CAP]) if spins <= SPIN_CAP else str(spins)
 		labels["shields"].text = str(shields)
-		labels["stars"].text = _fmt_compact(stars)
+		labels["stars"].text = _fmt_compact(rank_stars)
 		labels["island"].text = str(island_level)
 	village.refresh(buildings, coins, _star_costs())
 	if slot != null:
@@ -5392,6 +5478,7 @@ func _save_game() -> void:
 		"coins": coins,
 		"spins": spins,
 		"stars": stars,
+		"rank_stars": rank_stars,
 		"shields": shields,
 		"island_level": island_level,
 		"buildings": buildings,
@@ -5498,25 +5585,34 @@ func _load_game() -> void:
 		buildings.append(int(v))
 	while buildings.size() < 5:
 		buildings.append(0)
-	# Stars arrived after these saves were written, so a returning player is
-	# credited for everything they had already built and collected -- otherwise
-	# the leaderboard opens on day one with a veteran at zero.
-	if data.has("stars"):
-		stars = int(data["stars"])
-	else:
-		stars = 0
-		for lv in buildings:
-			var n := clampi(int(lv), 0, CV.MAX_STAR)
-			stars += n * (n + 1) / 2
-		stars += 75 * maxi(0, island_level - 1)
-		for c in CV.COLLECTIONS:
-			var have = col_owned.get(c["id"], [])
-			if typeof(have) != TYPE_ARRAY:
-				continue
-			var items: Array = c["items"]
-			for i in mini(items.size(), have.size()):
-				if have[i]:
-					stars += int(items[i][2])
+	# What this save can still prove it earned, rebuilt from the things that pay
+	# stars and are themselves saved: every hut level standing on the island you
+	# hold, a finished island's worth for each one behind you, and every card
+	# you own. It is a floor, not a replay -- set and grand-prize bonuses are
+	# not recoverable from a save that never wrote them down.
+	var earned := 0
+	for lv in buildings:
+		var n := clampi(int(lv), 0, CV.MAX_STAR)
+		earned += n * (n + 1) / 2
+	earned += 75 * maxi(0, island_level - 1)
+	for c in CV.COLLECTIONS:
+		var have = col_owned.get(c["id"], [])
+		if typeof(have) != TYPE_ARRAY:
+			continue
+		var items: Array = c["items"]
+		for i in mini(items.size(), have.size()):
+			if have[i]:
+				earned += int(items[i][2])
+
+	# Two migrations, in the order they happened. Stars arrived after the
+	# earliest saves were written, so those get the reconstruction for both
+	# counters -- otherwise the leaderboard opens on day one with a veteran at
+	# zero. Rank split off from the balance later, and those saves recorded only
+	# what was left after the boxes had taken their cut; rebuilding the standing
+	# is the only way to give back what opening a box used to quietly cost.
+	# maxi, because melted spares can push a balance above what rank counts.
+	stars = int(data["stars"]) if data.has("stars") else earned
+	rank_stars = int(data["rank_stars"]) if data.has("rank_stars") else maxi(earned, stars)
 
 	var elapsed := Time.get_unix_time_from_system() - float(data.get("ts", 0))
 	if elapsed > 0 and spins < SPIN_CAP:
