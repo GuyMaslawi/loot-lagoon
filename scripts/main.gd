@@ -421,11 +421,15 @@ func _show_login() -> void:
 			tr.texture = coin_t
 			tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 			tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-			var s := randf_range(50, 110)
+			# Clear of the wordmark and of the sign-in column, which runs from
+			# 640 to the bottom of the screen between x=130 and x=590. Half the
+			# coins go big in the open band above it; the rest go small down the
+			# two margins beside it, where no button reaches.
+			var margin := i % 2 == 1
+			var s := randf_range(38, 62) if margin else randf_range(50, 110)
 			tr.size = Vector2(s, s)
-			# clear of the wordmark and the sign-in column
-			tr.position = Vector2(randf_range(20, 630),
-				randf_range(80, 470) if i % 2 == 0 else randf_range(860, 1150))
+			tr.position = Vector2(randf_range(6, 124 - s) if i % 4 == 1 else randf_range(596, 714 - s), randf_range(700, 1180)) if margin \
+				else Vector2(randf_range(20, 610 - s), randf_range(70, 460))
 			tr.modulate = Color(1, 1, 1, randf_range(0.35, 0.6))
 			tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			_login_layer.add_child(tr)
@@ -452,32 +456,60 @@ func _show_login() -> void:
 	box.offset_right = -130.0
 	box.offset_top = 640.0 + safe_top()
 
-	var g_btn := Button.new()
-	g_btn.text = "Sign in with Google"
-	g_btn.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
-	_candy_button(g_btn, Color(0.92, 0.92, 0.92))
-	FX.press_feedback(g_btn)
-	g_btn.pressed.connect(_login_google)
-	box.add_child(g_btn)
+	# Three branded pills stacked in a column is a wall: the eye has to read
+	# each one to find out it is not the other two, and none of them looks like
+	# the way in. So the column has one loud thing in it, and everything else
+	# gets quieter as it goes down -- one full-width button for the sign-in that
+	# belongs on this device, the rest as marks in a row, and the way past all
+	# of it as text.
+	var providers := _providers_here()
+	if not providers.is_empty():
+		var primary := _primary_provider(providers)
+		_provider_button(box, primary)
+		var rest := providers.filter(func(p: Dictionary) -> bool: return p != primary)
+		if not rest.is_empty():
+			var or_line := Lagoon.title("or continue with", UI.F_TINY, Color.WHITE, Lagoon.ABYSS)
+			or_line.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			box.add_child(or_line)
+			var row := HBoxContainer.new()
+			row.alignment = BoxContainer.ALIGNMENT_CENTER
+			row.add_theme_constant_override("separation", 28)
+			box.add_child(row)
+			for p in rest:
+				_provider_chip(row, p)
 
-	var f_btn := Button.new()
-	f_btn.text = "Continue with Facebook"
-	f_btn.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
-	_candy_button(f_btn, Color(0.23, 0.35, 0.6))
-	FX.press_feedback(f_btn)
-	f_btn.pressed.connect(func() -> void:
-		_banner("Facebook login requires a Facebook Developer app — coming soon", Color(0.7, 0.8, 1.0))
-	)
-	box.add_child(f_btn)
+		# What signing in actually buys, said plainly. Nothing here reaches a
+		# server: the island lives in user:// either way and an account is a
+		# name on it. Saying so is not modesty -- an app that demands a login it
+		# does not need is Guideline 5.1.1(v), and "we take your email for
+		# nothing" is the version of this screen that gets rejected.
+		var why := Lagoon.title("Your island is saved on this device either way — signing in just puts your name on it.", UI.F_TINY, Color.WHITE, Lagoon.ABYSS)
+		why.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		why.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		box.add_child(why)
 
+	# The way in. With sign-in above it, it is text rather than a fourth pill --
+	# quiet, but the widest tap target on the screen, because an escape hatch
+	# the eye cannot find is the same dark pattern as no escape hatch at all.
+	# With no sign-in at all there is nothing to be an alternative *to*, and a
+	# grey link asking a player to "play as guest" on a screen with no other
+	# option is a title screen apologising for itself. Then it is simply Play.
+	var alone := providers.is_empty()
 	var guest := Button.new()
-	guest.text = "Play as Guest"
-	guest.custom_minimum_size = Vector2(0, UI.TAP)
-	guest.add_theme_font_size_override("font_size", UI.F_CAPTION)
-	_candy_button(guest, Color(0.6, 0.6, 0.62))
-	# Skipping sign-in is a legitimate choice but not the recommended one, so it
-	# recedes rather than competing with the two account options above it.
-	guest.modulate = Color(1, 1, 1, 0.72)
+	guest.text = "START  PLAYING" if alone else "Play as guest"
+	guest.custom_minimum_size = Vector2(0, UI.TAP_COMFY if alone else UI.TAP)
+	if alone:
+		guest.add_theme_font_size_override("font_size", UI.F_BODY)
+		_candy_button(guest, Color(0.28, 0.68, 0.34))
+	else:
+		guest.flat = true
+		guest.add_theme_font_size_override("font_size", UI.F_LABEL)
+		guest.add_theme_font_override("font", Lagoon.display_font())
+		for c in ["font_color", "font_hover_color", "font_pressed_color", "font_focus_color"]:
+			guest.add_theme_color_override(c, Color.WHITE)
+		guest.add_theme_color_override("font_outline_color", Lagoon.ABYSS)
+		guest.add_theme_constant_override("outline_size", 8)
+		guest.focus_mode = Control.FOCUS_NONE
 	FX.press_feedback(guest)
 	guest.pressed.connect(func() -> void:
 		profile = {"name": "Guest", "email": "", "provider": "guest"}
@@ -485,6 +517,150 @@ func _show_login() -> void:
 		_close_login()
 	)
 	box.add_child(guest)
+
+# Which sign-in gets to be the button rather than a mark in a row. The one the
+# device already knows: Apple's on an Apple platform, Google's elsewhere. On
+# iOS that is also what Guideline 4.8 wants -- Sign in with Apple is meant to
+# be at least as prominent as the alternatives, and full-width above a row of
+# 84px circles is not a close call.
+func _primary_provider(providers: Array) -> Dictionary:
+	var want := "apple" if OS.get_name() in ["iOS", "macOS"] else "google"
+	for p in providers:
+		if String(p["id"]) == want:
+			return p
+	return providers[0]
+
+# A secondary sign-in: the mark alone, on the brand's colour, in a circle. No
+# label, because the marks are the most recognisable thing on the screen and a
+# word next to each would put the wall back.
+func _provider_chip(row: HBoxContainer, p: Dictionary) -> void:
+	var face: Color = p["face"]
+	var ink: Color = p["ink"]
+	var btn := Button.new()
+	btn.custom_minimum_size = Vector2(UI.TAP, UI.TAP)
+	btn.tooltip_text = String(p["label"])
+	var bevel := face.darkened(0.32) if face.get_luminance() > 0.12 else Color("#2E2E2E")
+	Lagoon.button_custom(btn, face, bevel, ink, int(UI.TAP * 0.5))
+	FX.press_feedback(btn)
+	btn.pressed.connect(_start_login.bind(String(p["id"])))
+	row.add_child(btn)
+	Lagoon.button_gloss(btn, int(UI.TAP * 0.5))
+
+	var mark := BrandMark.new()
+	mark.kind = String(p["id"])
+	mark.ink = ink
+	mark.behind = face
+	btn.add_child(mark)
+	mark.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for m in [["offset_left", 22.0], ["offset_right", -22.0], ["offset_top", 22.0], ["offset_bottom", -26.0]]:
+		mark.set(m[0], m[1])
+	# Under the gloss, for the same reason the full-width mark is -- see
+	# _provider_button.
+	btn.move_child(mark, 0)
+
+# Which sign-in buttons this device gets, and it is two questions, not one.
+#
+# `platforms` is the device half. Sign in with Apple is an Apple-platform
+# service: on Android it is a button that cannot work, and on iOS it is one
+# Apple insists on -- Guideline 4.8 says an app offering Google or Facebook
+# sign-in must also offer a privacy-preserving equivalent, and Apple's is the
+# one that qualifies. Google is right everywhere, which is why an Android
+# build ends up with exactly the set Guy expected without anyone writing
+# "if Android" twice.
+#
+# `ready` is the review half, and it is the stricter of the two: a button whose
+# flow does not exist yet is not drawn at all. A black Apple button that opens
+# nothing is Guideline 2.1 -- the same rejection the old "Facebook — coming
+# soon" banner was asking for. The design is finished and waiting; the day a
+# flow works, one flag turns its button on.
+const SIGN_IN_PROVIDERS := [
+	{"id": "apple", "label": "Sign in with Apple", "face": Color("#000000"),
+	 "ink": Color.WHITE, "platforms": ["iOS", "macOS"], "ready": false},
+	{"id": "google", "label": "Sign in with Google", "face": Color("#FFFFFF"),
+	 "ink": Color("#1F1F1F"), "platforms": [], "ready": true},
+	{"id": "facebook", "label": "Continue with Facebook", "face": Color("#1877F2"),
+	 "ink": Color.WHITE, "platforms": [], "ready": false},
+]
+
+func _providers_here() -> Array:
+	var here := OS.get_name()
+	var out := []
+	for p in SIGN_IN_PROVIDERS:
+		if not bool(p["ready"]):
+			continue
+		var only: Array = p["platforms"]
+		if not only.is_empty() and not only.has(here):
+			continue
+		out.append(p)
+	# Guideline 4.8 is a rule about the *set*, not about any one button: on an
+	# Apple platform, offering Google or Facebook obliges the app to offer Sign
+	# in with Apple as well. So on iOS the others are hostages to it -- if
+	# Apple's flow is not there, none of them ship, and the day it is, they all
+	# come back on their own. Encoded here rather than remembered, because the
+	# version of this that gets rejected is the one where somebody turns Google
+	# on for a quick test and forgets.
+	if (here == "iOS" or here == "macOS") and not out.is_empty():
+		var has_apple := false
+		for p in out:
+			if String(p["id"]) == "apple":
+				has_apple = true
+		if not has_apple:
+			return []
+	return out
+
+# A sign-in button in someone else's colours.
+#
+# It keeps the game's moulded shape -- a flat rectangle would look pasted onto
+# this screen -- but nothing else: the face, the ink and the mark are the
+# brand's, the label is set in the plain UI face rather than the game's display
+# one, and it loses the cartoon outline every other button in the game wears.
+func _provider_button(box: VBoxContainer, p: Dictionary) -> void:
+	var face: Color = p["face"]
+	var ink: Color = p["ink"]
+	var btn := Button.new()
+	btn.text = String(p["label"])
+	btn.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	# The lip under the face is the brand colour's own shadow, except under
+	# black, which has none -- there it is a dark grey, or the button loses its
+	# bottom edge against the water.
+	var bevel := face.darkened(0.32) if face.get_luminance() > 0.12 else Color("#2E2E2E")
+	Lagoon.button_custom(btn, face, bevel, ink)
+	btn.add_theme_font_override("font", Lagoon.ui_font())
+	btn.add_theme_font_size_override("font_size", UI.F_LABEL)
+	btn.add_theme_constant_override("outline_size", 0)
+	# Room on the left for the mark, so a long label never runs under it.
+	for st in ["normal", "hover", "pressed", "disabled"]:
+		var sb: StyleBox = btn.get_theme_stylebox(st)
+		if sb != null:
+			sb.content_margin_left = 92.0
+	FX.press_feedback(btn)
+	btn.pressed.connect(_start_login.bind(String(p["id"])))
+	box.add_child(btn)
+	Lagoon.button_gloss(btn, 22)
+
+	var mark := BrandMark.new()
+	mark.kind = String(p["id"])
+	mark.ink = ink
+	mark.behind = face
+	btn.add_child(mark)
+	mark.set_anchors_and_offsets_preset(Control.PRESET_LEFT_WIDE)
+	mark.offset_left = 24.0
+	mark.offset_right = 80.0
+	mark.offset_top = 20.0
+	mark.offset_bottom = -20.0
+	# Beneath the gloss, not over it. The bite in the Apple mark is painted in
+	# the button's own face colour, and the specular arc drawn across the top
+	# is what stops that patch reading as a seam.
+	btn.move_child(mark, 0)
+
+func _start_login(id: String) -> void:
+	match id:
+		"google":
+			_login_google()
+		_:
+			# Unreachable while `ready` gates the buttons, and left in as the
+			# thing that happens if a flag is flipped before a flow exists.
+			_banner("%s sign-in is not wired up in this build yet." % id.capitalize(), Color(1.0, 0.8, 0.4))
 
 func _login_google() -> void:
 	if GoogleAuth.load_config().is_empty():
@@ -3599,7 +3775,67 @@ func _fill_options(vb: VBoxContainer) -> void:
 	)
 	acc.add_child(signout)
 
-	vb.add_child(_page_note("Loot Lagoon  •  prototype", UI.F_CAPTION))
+	# Signing in creates an account, and Guideline 5.1.1(v) then requires a way
+	# to delete it from inside the app -- not an email address, not a web form.
+	# It sits under Sign out, deliberately quieter than it, because the two are
+	# one tap apart and only one of them is reversible.
+	acc.add_child(Lagoon.divider())
+	var wipe := Button.new()
+	wipe.text = "Delete account & data"
+	wipe.custom_minimum_size = Vector2(0, UI.TAP)
+	wipe.add_theme_font_size_override("font_size", UI.F_CAPTION)
+	_candy_button(wipe, Color(0.72, 0.32, 0.34))
+	FX.press_feedback(wipe)
+	wipe.pressed.connect(_confirm_delete_account)
+	acc.add_child(wipe)
+
+	vb.add_child(_page_note("Loot Lagoon  •  %s" % BuildID.label(), UI.F_CAPTION))
+
+# Deleting an account has to actually delete something, and the honest list is
+# short enough to print: who you signed in as, and the island itself. Both are
+# on this device -- nothing about this player has ever left it -- so the delete
+# is a file delete and the reload is what makes it visible.
+#
+# The purchase ledger deliberately survives. It holds Apple's transaction ids
+# and nothing about the player, and clearing it would hand the next launch a
+# blank slate to reconcile against a StoreKit history that still remembers
+# every sale -- see iap.gd. Keeping receipts is also exactly what Apple's own
+# carve-out for legal and transaction records covers.
+func _confirm_delete_account() -> void:
+	var vbox := _open_popup("Delete Account")
+	var e := _emoji_label("⚠️", 64)
+	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(e)
+	var body := _popup_row_label("This erases your sign-in and your island — level, coins, spins, cards and collections — from this device. It cannot be undone, and purchases already made are not refunded.", UI.F_CAPTION)
+	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(body)
+
+	var go := Button.new()
+	go.text = "DELETE  EVERYTHING"
+	go.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	_candy_button(go, Color(0.78, 0.28, 0.3))
+	FX.press_feedback(go)
+	go.pressed.connect(func() -> void:
+		go.disabled = true
+		for path in ["user://profile.json", SAVE_PATH]:
+			if FileAccess.file_exists(path):
+				DirAccess.remove_absolute(path)
+		_close_popup(true)
+		# Rebuilding every page against a wiped save by hand is a long list of
+		# chances to miss one. Restarting the scene is the same thing a fresh
+		# install does, which is the state we just claimed to have produced.
+		get_tree().reload_current_scene()
+	)
+	vbox.add_child(go)
+
+	var keep := Button.new()
+	keep.text = "Keep my account"
+	keep.custom_minimum_size = Vector2(0, UI.TAP)
+	_candy_button(keep, Color(0.45, 0.55, 0.6))
+	FX.press_feedback(keep)
+	keep.pressed.connect(func() -> void: _close_popup())
+	vbox.add_child(keep)
 
 func _styled_progress(fg_color: Color) -> ProgressBar:
 	return Lagoon.progress(fg_color)

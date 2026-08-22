@@ -383,9 +383,13 @@ const BUTTON_KINDS := {
 
 static func button(btn: Button, kind := "primary", radius := 0) -> void:
 	var spec: Array = BUTTON_KINDS.get(kind, BUTTON_KINDS["primary"])
-	var face: Color = spec[0]
-	var bevel: Color = spec[1]
-	var ink: Color = spec[2]
+	button_custom(btn, spec[0], spec[1], spec[2], radius)
+
+# The same moulded button, told its colours outright instead of picking them
+# from the house palette. Sign-in buttons need this: Apple black, Facebook
+# blue and Google white are prescribed by the people whose names are on them,
+# and are the one place in the game that does not get to be lagoon-coloured.
+static func button_custom(btn: Button, face: Color, bevel: Color, ink: Color, radius := 0) -> void:
 	var r := radius if radius > 0 else 22
 
 	for state in ["normal", "hover", "pressed", "disabled"]:
