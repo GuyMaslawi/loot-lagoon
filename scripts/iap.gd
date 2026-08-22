@@ -105,6 +105,13 @@ static func product_id(pack: Dictionary) -> String:
 func price_for(pack: Dictionary) -> String:
 	return _prices.get(product_id(pack), String(pack.get("price", "")))
 
+# Whether the next purchase would be pretend. purchase() below asks the same
+# question, and deliberately asks it through here: the dialog that promises
+# "no real charge" and the code that decides whether to charge must never be
+# able to disagree about which build this is.
+func simulated() -> bool:
+	return _store == null or not live
+
 func purchase(pack: Dictionary) -> void:
 	if busy:
 		return
@@ -112,7 +119,7 @@ func purchase(pack: Dictionary) -> void:
 	busy = true
 	_pending = pid
 	_pending_txn = ""
-	if _store == null or not live:
+	if simulated():
 		_simulate(pid)
 		return
 	if int(_store.request("purchase", {"productID": pid})) != 0:

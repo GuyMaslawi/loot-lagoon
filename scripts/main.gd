@@ -2071,7 +2071,7 @@ func _fill_shop(vb: VBoxContainer) -> void:
 	vb.add_child(chest_row)
 	for pack in CV.CHEST_PACKS:
 		_chest_card(chest_row, pack)
-	vb.add_child(_page_note("Pricier chests hold more cards and better odds for ★★★★★ legendaries", UI.F_TINY))
+	vb.add_child(_page_note("Pricier chests hold more cards and better odds — every chest shows its full odds table before you pay", UI.F_TINY))
 
 	_shop_section(vb, "🎰", "SPIN  PACKS")
 	var sgrid := GridContainer.new()
@@ -2094,7 +2094,10 @@ func _fill_shop(vb: VBoxContainer) -> void:
 	_shop_section(vb, "🎁", "FREE  GIFT")
 	_free_gift_card(vb)
 
-	vb.add_child(_page_note("Prototype store — purchases are simulated, no real charges.", UI.F_TINY))
+	# The store is only a prototype where there is no StoreKit to talk to. On a
+	# phone this line would be telling a paying customer their money is fake.
+	if IAP.simulated():
+		vb.add_child(_page_note("Simulated store — purchases are not charged.", UI.F_TINY))
 
 # Section head:  ───  [ TITLE on brass ]  ───
 #
@@ -2359,10 +2362,11 @@ func _confirm_piggy() -> void:
 		wait.add_theme_color_override("font_color", Lagoon.INK_FAINT)
 		wait.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		vbox.add_child(wait)
-	var note := _popup_row_label("Prototype — simulated purchase, no real charge.", UI.F_TINY)
-	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	note.add_theme_color_override("font_color", Lagoon.INK_FAINT)
-	vbox.add_child(note)
+	if IAP.simulated():
+		var note := _popup_row_label("Simulated purchase — no real charge.", UI.F_TINY)
+		note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		note.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+		vbox.add_child(note)
 	var pay := Button.new()
 	pay.text = "PAY  %s" % IAP.price_for(CV.PIGGY_PACK)
 	pay.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
@@ -2503,6 +2507,72 @@ func _chest_art(pack: Dictionary, emoji_size := 54) -> Control:
 	tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return tr
 
+# --- odds disclosure -------------------------------------------------------
+#
+# App Store Review Guideline 3.1.1: an app selling randomized items must
+# disclose the odds before the purchase. Read as a rule it is an obligation;
+# read as a player it is the difference between a chest and a shell game. So it
+# goes where the decision is actually made -- a rate on the tile, and the whole
+# table inside the confirm dialog, above the pay button rather than under it.
+#
+# Everything that grants cards is covered, not only the products with "chest"
+# in the name: the starter pack, the bundles and the timed offers all draw from
+# the same table, and most of the money is in those.
+func _is_randomized(pack: Dictionary) -> bool:
+	return int(pack.get("cards", 0)) > 0
+
+# The one line a narrow tile has room for: the rate people are actually buying.
+# The full breakdown is one tap away, in the dialog that takes the money.
+func _odds_line(pack: Dictionary) -> String:
+	var odds := CV.star_odds(int(pack.get("tier", 0)))
+	if pack.get("guarantee5", false):
+		return "5★ GUARANTEED"
+	return "5★ CHANCE  %s" % CV.odds_pct(odds[CV.MAX_STAR - 1])
+
+# Every rate on one line, for anywhere with the width to carry it.
+func _odds_strip(pack: Dictionary) -> String:
+	var odds := CV.star_odds(int(pack.get("tier", 0)))
+	var parts: Array[String] = []
+	for i in CV.MAX_STAR:
+		parts.append("%d★ %s" % [i + 1, CV.odds_pct(odds[i])])
+	return "  ·  ".join(parts)
+
+# The full table, for the confirm dialog. Per drawn card, which is the only
+# reading of "the odds" that means anything for a chest that draws six.
+func _odds_table(vbox: VBoxContainer, pack: Dictionary) -> void:
+	var head := _popup_row_label("CARD ODDS  ·  per card drawn", UI.F_TINY)
+	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	head.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	vbox.add_child(head)
+
+	var odds := CV.star_odds(int(pack.get("tier", 0)))
+	var table := VBoxContainer.new()
+	table.add_theme_constant_override("separation", 3)
+	vbox.add_child(table)
+	for i in CV.MAX_STAR:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 12)
+		table.add_child(row)
+		var st := _star_row(i + 1, UI.F_CAPTION)
+		st.alignment = BoxContainer.ALIGNMENT_BEGIN
+		st.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(st)
+		var pct := _popup_row_label(CV.odds_pct(odds[i]), UI.F_LABEL)
+		pct.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		row.add_child(pct)
+
+	var cards := int(pack.get("cards", 0))
+	var text := ""
+	if pack.get("guarantee5", false):
+		text = "One of the %d cards is always ★★★★★. The other %d each draw from the table above." % [cards, maxi(0, cards - 1)]
+	else:
+		text = "All %d cards draw from the table above, independently. Duplicates are possible." % cards
+	var foot := _popup_row_label(text, UI.F_TINY)
+	foot.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	foot.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	foot.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	vbox.add_child(foot)
+
 func _chest_card(row: HBoxContainer, pack: Dictionary) -> void:
 	var cc: Color = pack["color"]
 	var guaranteed: bool = pack.get("guarantee5", false)
@@ -2561,7 +2631,7 @@ func _chest_card(row: HBoxContainer, pack: Dictionary) -> void:
 	col.add_child(_star_row(int(pack["star_cap"]), UI.F_CAPTION))
 
 	var odds := Label.new()
-	odds.text = "5★ GUARANTEED" if guaranteed else ("boosted odds" if int(pack["tier"]) == 1 else "common loot")
+	odds.text = _odds_line(pack)
 	odds.add_theme_font_size_override("font_size", UI.F_TINY)
 	odds.add_theme_color_override("font_color", Lagoon.BRASS_LO if guaranteed else Lagoon.INK_FAINT)
 	odds.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -2925,12 +2995,24 @@ func _confirm_purchase(pack: Dictionary) -> void:
 	vbox.add_child(nm)
 	var sub := _popup_row_label(_pack_sub(pack), UI.F_CAPTION)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	sub.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
+	# Ink, not white: the modal is glass, and what the player is buying was
+	# rendering as a ghost of itself on it.
+	sub.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 	vbox.add_child(sub)
-	var note := _popup_row_label("Prototype — simulated purchase, no real charge.", UI.F_TINY)
-	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	note.add_theme_color_override("font_color", Lagoon.INK_FAINT)
-	vbox.add_child(note)
+	# The odds go above the pay button. A disclosure the player reaches after
+	# deciding is not a disclosure.
+	if _is_randomized(pack):
+		vbox.add_child(Lagoon.divider())
+		_odds_table(vbox, pack)
+		vbox.add_child(Lagoon.divider())
+	# Only where it is true. On a phone the charge is real, and a leftover
+	# "no real charge" under a live StoreKit sheet would be the most expensive
+	# sentence in the app.
+	if IAP.simulated():
+		var note := _popup_row_label("Simulated purchase — no real charge.", UI.F_TINY)
+		note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		note.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+		vbox.add_child(note)
 	var pay := Button.new()
 	pay.text = "PAY  %s" % IAP.price_for(pack)
 	pay.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
@@ -4187,6 +4269,14 @@ func _box_card(vb: VBoxContainer, box: Dictionary) -> void:
 	var sub := Lagoon.label(str(box["sub"]), UI.F_CAPTION, Lagoon.INK_SOFT)
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	info.add_child(sub)
+	# A box row is full width, so it can carry the whole table on one line and
+	# skip the dialog the paid chests need. Stars are earned rather than sold,
+	# so this is honesty rather than Guideline 3.1.1 -- but it is the same
+	# table, and a box that hid it while the chest published it would read as
+	# the free currency being the rigged one.
+	var box_odds := Lagoon.label(_odds_strip(box), UI.F_TINY, Lagoon.INK_FAINT)
+	box_odds.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	info.add_child(box_odds)
 	var price := HBoxContainer.new()
 	price.add_theme_constant_override("separation", 6)
 	info.add_child(price)

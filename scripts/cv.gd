@@ -252,11 +252,46 @@ const CHEST_PACKS := [
 ]
 
 # Chance weights for a drawn card's star rating (1..5), per chest tier.
+#
+# This stopped being a private tuning table the day the chests started taking
+# real money. App Store Review Guideline 3.1.1 requires the odds of a
+# randomized item to be disclosed *before* the purchase, so these numbers are
+# printed on the chest tile and again, in full, in the confirm dialog. Retune
+# them freely -- just remember that whatever is written here is what the player
+# is being promised.
 const CHEST_STAR_WEIGHTS := [
 	[50, 30, 14, 5, 1],
 	[18, 30, 28, 16, 8],
 	[5, 15, 27, 30, 23],
 ]
+
+# The same table as percentages, one entry per star rating.
+#
+# The rows above are written to sum to 100 so they read as percentages already,
+# and this deliberately does not trust that: a retune that lands on 97 or 104
+# must still print honest odds rather than a table that quietly stops adding
+# up. Percentages are per drawn card, which is what the disclosure has to mean
+# for a chest that draws several.
+static func star_odds(tier: int) -> Array:
+	var w: Array = CHEST_STAR_WEIGHTS[clampi(tier, 0, CHEST_STAR_WEIGHTS.size() - 1)]
+	var total := 0.0
+	for v in w:
+		total += float(v)
+	var out: Array = []
+	for v in w:
+		out.append(0.0 if total <= 0.0 else 100.0 * float(v) / total)
+	return out
+
+# "1%" reads as a rounder number than it is, and "0%" for a rate that is not
+# zero would be a lie of exactly the kind the guideline exists to stop. So
+# anything under 1 keeps a decimal, and a real zero is the only thing allowed
+# to print as one.
+static func odds_pct(p: float) -> String:
+	if p <= 0.0:
+		return "0%"
+	if p < 1.0:
+		return "%.1f%%" % p
+	return "%d%%" % roundi(p)
 
 # Price ladders.
 #
