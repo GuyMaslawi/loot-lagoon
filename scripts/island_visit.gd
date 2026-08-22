@@ -455,6 +455,27 @@ func _process(delta: float) -> void:
 	_rac.tick(delta)
 
 func _setup_targets() -> void:
+	# Nothing left standing on this island. There is no button to draw, so
+	# without this the raid overlay sits there forever with no target, no close
+	# and nothing under it reachable -- the game is simply over until the app is
+	# killed. main.gd now steers attacks away from flattened rivals, but the
+	# raid is the last place that can still be holding the player, so it refuses
+	# the job here rather than trusting the caller.
+	var standing := 0
+	for i in CV.BUILDINGS.size():
+		if int(npc["buildings"][i]) > 0:
+			standing += 1
+	if standing == 0:
+		_acted = true
+		var note := Lagoon.title("Nothing left standing here.", UI.F_SUBHEAD, Color.WHITE, Lagoon.ABYSS)
+		note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		add_child(note)
+		note.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+		note.offset_top = 430.0
+		note.offset_bottom = 490.0
+		_finish({"mode": "attack", "npc": npc, "blocked": true, "empty": true}, 1.6)
+		return
+
 	for i in CV.BUILDINGS.size():
 		if int(npc["buildings"][i]) <= 0:
 			continue

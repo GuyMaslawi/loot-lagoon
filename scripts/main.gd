@@ -1,7 +1,16 @@
 extends Control
 
 const SAVE_PATH := "user://coinvillage_save.json"
+# Scratch file and previous-good copy. See _write_save.
+const SAVE_TMP := "user://coinvillage_save.json.tmp"
+const SAVE_BAK := "user://coinvillage_save.json.bak"
 const SPIN_CAP := 50
+# The furthest the island counter is allowed to go. Nothing in the art needs a
+# ceiling -- themes, palettes and building textures all wrap with % -- and the
+# economy stops compounding at CV.ECONOMY_MAX_LEVEL, so this is only here to
+# keep the number itself finite and to give the save loader something honest to
+# clamp against.
+const MAX_ISLAND := 999
 const SPIN_REGEN_SECS := 120.0
 const SPIN_REGEN_AMOUNT := 3
 const STAR_COSTS := [400, 900, 2000, 4500, 9000]
@@ -60,6 +69,106 @@ var village: VillageView
 var _current_page: Control
 var _visit: IslandVisit
 var _match: Matchmaking
+# True from the instant a raid is *decided* until the payout lands.
+#
+# _visit and _match were not enough on their own. An attack builds its search
+# screen synchronously, so _match covers it from the first frame -- but a steal
+# goes straight to the island behind a half-second tween, and for that half
+# second nothing existed to say a raid was coming. The reels have already
+# re-enabled SPIN and BET by then, so the player could raise the bet to x5 and
+# spin again while the STEAL banner was still on screen, and the raid, built
+# later, read the new bet as its multiplier. A x1 stake paid out at x5, minted
+# out of nothing.
+# --- the clock ---------------------------------------------------------
+
+# The furthest forward the game has ever seen the device clock. Rides in the
+# save.
+#
+# Every cooldown, deadline and countdown in this file is a comparison against
+# the device clock, and on iOS that is a number the player edits in Settings.
+# Two taps in Date & Time and the daily bonus is ready again, the free chest is
+# ready again, the quest periods roll over, and a "2 hours only" offer either
+# never expires or can be re-rolled to a better one on demand. The whole loop
+# ran in about fifteen seconds and could be repeated all afternoon, because it
+# depended on setting the clock *back* to real time between claims.
+#
+# _now() is the only clock the game logic is allowed to read: the device clock
+# or the high-water mark, whichever is later. Winding the clock back is now
+# simply ignored -- game time stands still until the real clock catches up.
+#
+# That kills the round trip, which is what made the exploit repeatable. A
+# forward jump is still a forward jump; nothing on a device can stop a player
+# ageing their own save. What it can no longer be is undone. Jump a day forward
+# to claim a daily, and the game's clock is a day ahead for good -- put the
+# phone back to real time and the next bonus is 48 hours away, not 24. Farming
+# now costs the farmer a permanently broken clock.
+#
+# It also fixes the honest version of the same bug. A phone whose battery died,
+# or that boots before it reaches a time server, used to hand _sanitize_clock a
+# backdated "now" and have a whole collection season deleted for it.
+var clock_hw := 0.0
+
+func _now() -> float:
+	var t := Time.get_unix_time_from_system()
+	if t > clock_hw:
+		clock_hw = t
+	return clock_hw
+
+# --- reading a save that may say anything -----------------------------------
+
+# The save is a JSON file on a device the player owns. It can be hand-edited,
+# it can be restored from a backup written by an older build, and a kill at the
+# wrong moment can leave a stale one behind. So every value read out of it goes
+# through one of these.
+#
+# The reason is not cheating -- a single-player balance is the player's own
+# business. It is that GDScript's int(), float(), bool() and String() raise on
+# a Variant they cannot convert, and a raise inside _load_game does not stop
+# the game: it abandons the rest of the function and lets boot carry on. One
+# `"muted": "yes"` and the load quietly gives up partway, the game comes up on
+# defaults, and the next autosave writes those defaults over the real file --
+# rotating the only good copy into .bak on the way past. A wipe, silently, from
+# one wrong type in one field.
+#
+# bool() is the sharpest edge of the four: it raises on any string at all.
+static func _i(v, def := 0) -> int:
+	match typeof(v):
+		TYPE_INT: return v
+		TYPE_BOOL: return 1 if v else 0
+		TYPE_FLOAT:
+			# NAN fails every comparison, including the clamp's, and INF
+			# overflows the cast. Both are reachable: JSON.parse_string turns
+			# 1e400 into INF without complaint.
+			if is_nan(v) or is_inf(v): return def
+			return int(clampf(v, -9.0e15, 9.0e15))
+		TYPE_STRING: return int(v) if (v as String).is_valid_int() else def
+	return def
+
+static func _f(v, def := 0.0) -> float:
+	match typeof(v):
+		TYPE_FLOAT:
+			if is_nan(v) or is_inf(v): return def
+			return v
+		TYPE_INT: return float(v)
+		TYPE_BOOL: return 1.0 if v else 0.0
+		TYPE_STRING: return float(v) if (v as String).is_valid_float() else def
+	return def
+
+static func _b(v, def := false) -> bool:
+	if typeof(v) == TYPE_BOOL:
+		return v
+	if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
+		return v != 0
+	return def
+
+static func _s(v, def := "") -> String:
+	return v if typeof(v) == TYPE_STRING else def
+
+var _raid_pending := false
+# The stake the raid was won at, captured where the raid is decided rather than
+# read back off the machine where it is built. Between those two moments the
+# bet no longer belongs to this raid.
+var _raid_mult := 1
 # The rival the current raid is against, held from the moment the reels land
 # until the raid is paid out. next_target is free to move on afterwards; this
 # is the one the search screen shows and the one the island belongs to, and
@@ -161,6 +270,10 @@ var shop_free_last := 0.0
 # Coins banked behind the piggy's glass. Filled by playing, spent only by
 # buying it back -- nothing else in the game reads or drains this.
 var piggy_coins := 0
+# What the piggy held at the moment Pay was pressed. Persisted, because the
+# transaction it belongs to can be delivered on a later launch -- see
+# _break_piggy for why an empty bank must not be able to swallow a real charge.
+var piggy_promised := 0
 # The live limited-time offer: which pack, when it dies, and the earliest the
 # next one may roll. All three persist, so a countdown a player left running
 # is still running when they come back.
@@ -191,13 +304,41 @@ var _convert_badge: Panel
 # this rather than into the top bar, which holds rank and does not move.
 var _star_bank_label: Label
 
+# How many failed saves in a row before the player is told.
+# A rival's purse, at the very most. Everything about a raid payout is derived
+# from it, so an unbounded one is an unbounded payout.
+const NPC_COIN_CAP := 5_000_000
+
+const SAVE_FAIL_WARN := 3
+var _save_fails := 0
+# Whether this session read the save file through to the end. Guards the backup
+# rotation in _write_save.
+var _load_ok := false
+# The sign-in attempt currently in flight, if any.
+var _auth: Node = null
+
 const NOTIF_LOG_MAX := 30
+# The longest absence any offline system will pay out for. Everything it
+# feeds is capped per load anyway; this stops the *inputs* being absurd.
+const MAX_AWAY_SECS := 7.0 * 86400.0
 var notif_enabled := true
-var notif_types := {"attack": true, "steal": true, "spins": true}
+# Each of these is both an in-game alert and a phone notification -- one
+# switch, because a player who turns off "attack alerts" means the phone one
+# at least as much as the toast.
+var notif_types := {"attack": true, "steal": true, "spins": true, "gift": true, "events": true}
 var notif_log := []
+# Whether the player has already been asked to let the game send phone
+# notifications. iOS puts its prompt up exactly once per install and a refusal
+# is close to permanent, so the ask is spent carefully -- see _ask_for_alerts.
+var notif_prompted := false
 var _toast: Control
 var _offline_spins_gained := 0
-var _offline_elapsed := 0.0
+# What rivals are going to do while the app is asleep, decided before it goes
+# to sleep. See _preroll_raids.
+var pending_raids := []
+# Wall clock at the moment the app went to the background, or 0 while it is in
+# the foreground. See _notification.
+var _away_since := 0.0
 # DEMO_ISLAND=17 previews that island's theme without grinding to it. Saving is
 # disabled while it's set so a preview can never overwrite real progress.
 var _preview_island := false
@@ -322,10 +463,19 @@ func _after_boot() -> void:
 	IAP.products_loaded.connect(_on_products_loaded)
 	IAP.begin()
 	call_deferred("_check_island_complete")
+	# A lock during the title screen. _notification stamped it and left the
+	# credit to here, where there are pages to repaint and a toast to land on.
+	if _away_since > 0.0:
+		_credit_time_away(clampf(_now() - _away_since, 0.0, MAX_AWAY_SECS))
+		_away_since = 0.0
 	if _offline_spins_gained > 0:
 		_notify("spins", "While you were away, spins refilled  +%d  (%d/%d)" % [_offline_spins_gained, spins, SPIN_CAP], "🌀")
 		_offline_spins_gained = 0
 	_offline_raids()
+	# Anything iOS delivered while the app was shut has been read by the act of
+	# opening it, and the icon should stop claiming otherwise.
+	Alerts.clear_delivered()
+	Alerts.set_badge(_unread_count())
 	if profile.is_empty():
 		_show_login()
 	# DEMO_RAID sails straight to a raid. An attack needs three hammers on the
@@ -393,8 +543,17 @@ func _load_profile() -> void:
 	if f == null:
 		return
 	var d = JSON.parse_string(f.get_as_text())
-	if typeof(d) == TYPE_DICTIONARY:
-		profile = d
+	if typeof(d) != TYPE_DICTIONARY:
+		return
+	# Coerced here so no caller has to. The name is passed straight into
+	# _popup_row_label(text: String), and a typed parameter rejects a
+	# Dictionary by raising -- which aborted the leaderboard halfway through
+	# building itself, leaving a half-drawn modal on screen.
+	profile = {
+		"name": _s(d.get("name", "Player"), "Player"),
+		"email": _s(d.get("email", "")),
+		"provider": _s(d.get("provider", "guest"), "guest"),
+	}
 
 func _save_profile() -> void:
 	var f := FileAccess.open("user://profile.json", FileAccess.WRITE)
@@ -666,21 +825,33 @@ func _login_google() -> void:
 	if GoogleAuth.load_config().is_empty():
 		_banner("Google login needs a one-time setup — see SETUP_LOGIN.md", Color(1.0, 0.8, 0.4))
 		return
+	# One at a time. Each attempt binds a fixed loopback port and starts a
+	# repeating poll timer, and the overwhelmingly common outcome is that the
+	# player never comes back from the browser -- so without this, every tap
+	# left another node, another timer and another socket alive for the rest
+	# of the session, and every tap after the first also reopened the browser.
+	if _auth != null and is_instance_valid(_auth):
+		_banner("Sign-in is already open in your browser.", Color(0.7, 0.9, 1.0))
+		return
 	var auth := GoogleAuth.new()
+	_auth = auth
 	add_child(auth)
 	_banner("Opening Google sign-in in your browser...", Color(0.7, 0.9, 1.0))
 	auth.login_finished.connect(func(p: Dictionary) -> void:
 		profile = p
 		_save_profile()
 		_close_login()
+		_auth = null
 		auth.queue_free()
 	)
 	auth.login_failed.connect(func(reason: String) -> void:
 		_banner("Login failed: %s" % reason, Color(0.95, 0.4, 0.4))
+		_auth = null
 		auth.queue_free()
 	)
 	if not auth.start():
 		_banner("Could not start Google login", Color(0.95, 0.4, 0.4))
+		_auth = null
 		auth.queue_free()
 
 func _close_login() -> void:
@@ -703,7 +874,10 @@ func _process(delta: float) -> void:
 
 	_regen_accum += delta
 	if _regen_accum >= SPIN_REGEN_SECS:
-		_regen_accum = 0.0
+		# Subtracted, not zeroed: zeroing threw away however far past the mark
+		# the frame landed, so the meter's countdown drifted a little later
+		# every cycle over a long session.
+		_regen_accum -= SPIN_REGEN_SECS
 		if spins < SPIN_CAP:
 			var gained := mini(SPIN_REGEN_AMOUNT, SPIN_CAP - spins)
 			spins += gained
@@ -712,9 +886,15 @@ func _process(delta: float) -> void:
 				_notify("spins", "Spins refilled — you're full!  (%d/%d)" % [spins, SPIN_CAP], "🌀")
 			else:
 				_notify("spins", "+%d spins refilled  (%d/%d)" % [gained, spins, SPIN_CAP], "🌀")
+	if _save_pending and float(Time.get_ticks_msec()) / 1000.0 - _save_flushed >= SAVE_FLUSH_GAP:
+		_flush_save()
 	_ui_tick += delta
 	if _ui_tick >= 1.0:
 		_ui_tick = 0.0
+		# A raid that came due behind an overlay or a modal, landing as soon as
+		# the screen is the player's again. See _offline_raids.
+		if not pending_raids.is_empty():
+			_offline_raids()
 		if slot != null:
 			slot.set_meter(spins, SPIN_CAP, SPIN_REGEN_SECS - _regen_accum, SPIN_REGEN_AMOUNT)
 		if _shop_free_ready() or _piggy_full() or not _active_offer().is_empty():
@@ -736,11 +916,132 @@ func _process(delta: float) -> void:
 			else:
 				_update_quests_timer()
 
+# The app leaving and coming back.
+#
+# This used to answer NOTIFICATION_WM_CLOSE_REQUEST and nothing else, which is
+# a desktop-only event: a phone never sends it. iOS backgrounds an app and then
+# kills it whenever it likes, with no further warning, so on the platform this
+# game actually ships to *nothing* was ever saved on the way out -- everything
+# rested on the save calls scattered through play, and anything since the last
+# one was gone. Backgrounding is the honest "we might not be back" moment, so
+# that is where the save goes.
+#
+# Coming back is the other half. The offline catch-up -- spins refilled, rivals
+# who came for your island while you were away -- ran only in _load_game, so it
+# was credited on a cold launch and skipped entirely for a player who left the
+# app open in the background overnight. Both paths go through the same code now.
 func _notification(what: int) -> void:
-	# Quitting mid-load would otherwise write the starting 1500/30 over a real
-	# save, since the file has not necessarily been read yet.
-	if what == NOTIFICATION_WM_CLOSE_REQUEST and _boot == null:
-		_save_game()
+	match what:
+		NOTIFICATION_WM_CLOSE_REQUEST, NOTIFICATION_WM_WINDOW_FOCUS_OUT, \
+		MainLoop.NOTIFICATION_APPLICATION_PAUSED, MainLoop.NOTIFICATION_APPLICATION_FOCUS_OUT:
+			# Quitting mid-load would otherwise write the starting 1500/30 over
+			# a real save, since the file has not necessarily been read yet.
+			# The stamp is still taken: somebody who locks the phone on the
+			# title screen and comes back at lunchtime was away for those
+			# hours whether or not the game had finished opening, and it used
+			# to be credited to nobody. _after_boot settles up once there is
+			# something to settle up against.
+			if _boot != null:
+				if _away_since <= 0.0:
+					_away_since = _now()
+				return
+			_go_away()
+		NOTIFICATION_WM_WINDOW_FOCUS_IN, \
+		MainLoop.NOTIFICATION_APPLICATION_RESUMED, MainLoop.NOTIFICATION_APPLICATION_FOCUS_IN:
+			if _boot != null:
+				return
+			_resume_from_away()
+
+# The app is going to sleep, and this is the last code that runs before it
+# does. Three things have to happen here and nowhere else:
+#
+#  - the save, because iOS kills backgrounded apps without further warning;
+#  - the raid roll, because a notification has to carry the same words the
+#    game will say when it is opened, and it cannot roll dice while asleep;
+#  - the notification plan, because nothing can schedule one after this point.
+#
+# iOS sends resignActive and then didEnterBackground for a single screen lock,
+# so this runs twice in a row. Stamping the later of the two is harmless.
+# Re-rolling the raids on the second pass is not -- it would throw away the
+# plan the first pass just handed to iOS and quietly replace it with a
+# different one -- hence the guard.
+func _go_away() -> void:
+	if _away_since <= 0.0:
+		_away_since = _now()
+		_preroll_raids(_away_since)
+	_flush_save()
+	Alerts.schedule(_alert_plan(_now()), _now())
+	Alerts.set_badge(_unread_count())
+
+# Coming back.
+func _resume_from_away() -> void:
+	if _away_since <= 0.0:
+		return
+	# Bounded the way the cold load already bounds its own elapsed figure. A
+	# week is longer than any absence the offline systems have anything left
+	# to give for, and this path used to hand the raw number straight on.
+	var elapsed := clampf(_now() - _away_since, 0.0, MAX_AWAY_SECS)
+	_away_since = 0.0
+	# Whatever iOS has not delivered yet was planned against a state the player
+	# is now standing in front of and about to change, and whatever it did
+	# deliver has been read by the act of opening the game.
+	Alerts.cancel_all()
+	Alerts.clear_delivered()
+	# Every second counts, however short the hop -- see _credit_time_away.
+	_credit_time_away(elapsed)
+	# Announcing it is a separate question. Under a minute is somebody flicking
+	# to another app and back, and "while you were away" over a four-second
+	# glance is the game talking to itself.
+	if elapsed >= 60.0:
+		if _offline_spins_gained > 0:
+			_notify("spins", "While you were away, spins refilled  +%d  (%d/%d)" % [_offline_spins_gained, spins, SPIN_CAP], "🌀")
+		_offline_raids()
+	_offline_spins_gained = 0
+	_refresh()
+	_flush_save()
+	Alerts.set_badge(_unread_count())
+
+# Spins that regenerated over `elapsed` seconds. Shared by the cold load and
+# the resume so the two can never drift apart.
+#
+# The remainder is the whole point of the accumulator. This used to be
+# int(elapsed / SPIN_REGEN_SECS) with the leftover dropped on the floor, which
+# is fine for one long absence and ruinous for the way a phone game is
+# actually played: twelve visits of under two minutes is twenty-two real
+# minutes of regen and it paid nothing at all, twelve times over. Banking the
+# leftover in the same accumulator _process ticks makes a minute away and a
+# minute in front of the screen worth exactly the same, which is what the
+# player already assumes and what the "spins are full" notification promises.
+func _credit_time_away(elapsed: float) -> void:
+	if elapsed <= 0.0:
+		return
+	if spins >= SPIN_CAP:
+		# A full meter is not accruing. Left standing, the leftover would pay
+		# out the instant the player spent down to 49.
+		_regen_accum = 0.0
+		return
+	_regen_accum += elapsed
+	var steps := int(_regen_accum / SPIN_REGEN_SECS)
+	_regen_accum -= float(steps) * SPIN_REGEN_SECS
+	var regen := steps * SPIN_REGEN_AMOUNT
+	if regen <= 0:
+		return
+	# Added rather than assigned: a lock during the title screen is credited on
+	# top of the cold load's own figure, and one report covers both.
+	var gained := mini(regen, SPIN_CAP - spins)
+	_offline_spins_gained += gained
+	spins += gained
+	if spins >= SPIN_CAP:
+		_regen_accum = 0.0
+
+# When the meter will next read full, in game time. The one number the "spins
+# are full" notification is scheduled against, so it lives next to the maths
+# that fills the meter rather than being re-derived at the call site.
+func _spins_full_at(from: float) -> float:
+	if spins >= SPIN_CAP:
+		return 0.0
+	var steps := int(ceil(float(SPIN_CAP - spins) / float(SPIN_REGEN_AMOUNT)))
+	return from + float(steps) * SPIN_REGEN_SECS - _regen_accum
 
 # --- page transitions ---
 
@@ -1131,15 +1432,14 @@ func _build_nav() -> void:
 
 	# raised circular Spin button in the middle of the bar
 	_spin_glow = ColorRect.new()
-	var glow_sh := Shader.new()
-	glow_sh.code = """
+	var glow_sh := Lagoon.shader("""
 shader_type canvas_item;
 void fragment() {
 	float d = length(UV - 0.5) * 2.0;
 	float a = (1.0 - smoothstep(0.3, 1.0, d)) * 0.55;
 	COLOR = vec4(1.0, 0.55, 0.40, a);
 }
-"""
+""")
 	var glow_mat := ShaderMaterial.new()
 	glow_mat.shader = glow_sh
 	_spin_glow.material = glow_mat
@@ -1343,8 +1643,7 @@ func _build_slot_page() -> void:
 
 	# glow behind slot machine
 	var glow := ColorRect.new()
-	var glow_shader := Shader.new()
-	glow_shader.code = """
+	var glow_shader := Lagoon.shader("""
 shader_type canvas_item;
 uniform vec3 glow_col = vec3(1.0, 0.85, 0.4);
 void fragment() {
@@ -1352,7 +1651,7 @@ void fragment() {
 	float a = smoothstep(0.5, 0.05, d) * 0.35;
 	COLOR = vec4(glow_col, a);
 }
-"""
+""")
 	var glow_mat := ShaderMaterial.new()
 	glow_mat.shader = glow_shader
 	glow.material = glow_mat
@@ -1402,8 +1701,7 @@ func _add_slot_stage(page: Control) -> void:
 	bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	bg.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var bg_sh := Shader.new()
-	bg_sh.code = """
+	var bg_sh := Lagoon.shader("""
 shader_type canvas_item;
 
 uniform vec3 haze = vec3(0.72, 0.92, 0.96);
@@ -1431,7 +1729,7 @@ void fragment() {
 	rgb = mix(rgb, haze, smoothstep(0.22, 0.98, length(v)) * 0.45);
 	COLOR = vec4(rgb, 1.0);
 }
-"""
+""")
 	_slot_bg_mat = ShaderMaterial.new()
 	_slot_bg_mat.shader = bg_sh
 	bg.material = _slot_bg_mat
@@ -1440,8 +1738,7 @@ void fragment() {
 	_slot_bg = bg
 
 	var rays := ColorRect.new()
-	var rays_sh := Shader.new()
-	rays_sh.code = """
+	var rays_sh := Lagoon.shader("""
 shader_type canvas_item;
 
 uniform vec3 ray_col = vec3(1.0, 0.82, 0.40);
@@ -1454,7 +1751,7 @@ void fragment() {
 	float fall = smoothstep(1.15, 0.08, length(p));
 	COLOR = vec4(ray_col, rays * fall * smoothstep(1.0, 0.12, UV.y) * 0.24);
 }
-"""
+""")
 	_slot_rays_mat = ShaderMaterial.new()
 	_slot_rays_mat.shader = rays_sh
 	rays.material = _slot_rays_mat
@@ -1463,8 +1760,7 @@ void fragment() {
 	rays.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 	var floor_rect := ColorRect.new()
-	var floor_sh := Shader.new()
-	floor_sh.code = """
+	var floor_sh := Lagoon.shader("""
 shader_type canvas_item;
 
 uniform vec3 floor_col = vec3(0.55, 0.87, 0.90);
@@ -1476,7 +1772,7 @@ void fragment() {
 	float t = smoothstep(0.50, 1.0, UV.y);
 	COLOR = vec4(floor_col, t * 0.80);
 }
-"""
+""")
 	_slot_floor_mat = ShaderMaterial.new()
 	_slot_floor_mat.shader = floor_sh
 	floor_rect.material = _slot_floor_mat
@@ -1594,7 +1890,7 @@ func _update_badges() -> void:
 			cl.text = str(mini(spare, 99))
 
 func _daily_ready() -> bool:
-	return Time.get_unix_time_from_system() - daily_last >= DAILY_COOLDOWN
+	return _now() - daily_last >= DAILY_COOLDOWN
 
 func _mission_add(id: String, amount := 1) -> void:
 	_ensure_missions()
@@ -1630,7 +1926,14 @@ func _award_stars(n: int, from_global := Vector2.ZERO) -> void:
 		return
 	_earn_stars(n)
 	_update_badges()
-	if _hud_labels.is_empty() or not _hud_labels[0].has("stars"):
+	_star_flight(n, from_global)
+
+# The celebration half of _award_stars, on its own, for the one caller that has
+# to bank the stars now and show them arriving later -- see
+# _on_upgrade_requested, where the gap between the two is a scaffold animation
+# the app may not survive.
+func _star_flight(n: int, from_global := Vector2.ZERO) -> void:
+	if n <= 0 or _hud_labels.is_empty() or not _hud_labels[0].has("stars"):
 		return
 	var to: Vector2 = _hud_labels[0]["stars"].global_position
 	var src := from_global if from_global != Vector2.ZERO else Vector2(view_size().x * 0.5, view_size().y * 0.45)
@@ -1638,7 +1941,7 @@ func _award_stars(n: int, from_global := Vector2.ZERO) -> void:
 	Sfx.play("levelup", -10.0)
 
 func _economy_mult() -> float:
-	return pow(1.6, island_level - 1)
+	return CV.curve(island_level)
 
 # Scaled coins, snapped to three significant digits. Payouts should read as
 # "+660" and "+1.25M", never as "+655" and "+1,246,151".
@@ -1672,7 +1975,7 @@ func _bonus_coins(period: String) -> int:
 	return _scaled(int(MISSION_BONUS[period]["coins"]))
 
 func _period_key(period: String) -> int:
-	var now := int(Time.get_unix_time_from_system())
+	var now := int(_now())
 	match period:
 		"weekly":
 			# +3 aligns week boundaries to Monday (unix day 0 was a Thursday)
@@ -1683,7 +1986,7 @@ func _period_key(period: String) -> int:
 	return now / 86400
 
 func _period_reset_secs(period: String) -> int:
-	var now := int(Time.get_unix_time_from_system())
+	var now := int(_now())
 	match period:
 		"weekly":
 			var into := ((now / 86400 + 3) % 7) * 86400 + now % 86400
@@ -1708,8 +2011,17 @@ func _ensure_missions() -> void:
 	var changed := false
 	for period in MISSION_DEFS:
 		var key := _period_key(period)
-		var st: Dictionary = mission_state.get(period, {})
-		if st.is_empty() or int(st.get("key", -1)) != key:
+		var raw_st = mission_state.get(period, {})
+		var st: Dictionary = raw_st if typeof(raw_st) == TYPE_DICTIONARY else {}
+		# Rolls forward only. This was `!= key`, which treats a period key that
+		# has gone *backwards* as a new period -- so winding the device clock
+		# back wiped and re-armed every quest set exactly the way winding it
+		# forward does. Offensively that made the whole board plus its
+		# completion bonus re-earnable on demand; accidentally, it deleted a
+		# nearly-finished monthly set from anyone whose phone lost its clock.
+		# All three key spaces (day count, week count, year*12+month) are
+		# monotonic, so "later than the one we recorded" is well defined.
+		if st.is_empty() or _i(st.get("key", -1), -1) < key:
 			mission_state[period] = {"key": key, "progress": {}, "claimed": {}, "bonus": false}
 			changed = true
 	if changed:
@@ -1806,7 +2118,15 @@ func _open_popup(title: String) -> VBoxContainer:
 	x.pressed.connect(func() -> void: _close_popup())
 	_popup.add_child(x)
 	x.z_index = 2
+	# Guarded, because the call below is deferred to the end of the frame and
+	# the popup may not last that long: _open_popup starts by closing whatever
+	# was already up, so two modals opening in the same frame -- a purchase
+	# confirm handing straight over to a chest result, most often -- free this
+	# one's panel and button before the deferred call runs. GDScript passes a
+	# freed capture as null rather than refusing to call.
 	var place_close := func() -> void:
+		if not is_instance_valid(x) or not is_instance_valid(panel):
+			return
 		x.position = panel.global_position + Vector2(panel.size.x - 40.0, -32.0)
 	panel.resized.connect(place_close)
 	panel.item_rect_changed.connect(place_close)
@@ -1830,7 +2150,9 @@ func _close_popup(instant := false) -> void:
 	if instant:
 		p.queue_free()
 		return
-	var tw := create_tween()
+	# On the popup, so opening another one mid-fade cannot leave a tween on main
+	# calling queue_free on a node that has already gone.
+	var tw := p.create_tween()
 	tw.tween_property(p, "modulate:a", 0.0, 0.16)
 	tw.tween_callback(p.queue_free)
 
@@ -1861,7 +2183,17 @@ func _open_daily() -> void:
 		_candy_button(claim, Color(0.45, 0.75, 0.35))
 		FX.press_feedback(claim)
 		claim.pressed.connect(func() -> void:
-			daily_last = Time.get_unix_time_from_system()
+			# Re-checked on the press, not just when the button was drawn.
+			# _close_popup() fades the popup out over 0.16s and Godot does not
+			# gate input on modulate, so the button stayed live and tappable
+			# through the fade -- a double-tap claimed the day's bonus twice
+			# and ticked the "claim N dailies" quests twice with it. Every
+			# other claim in the game re-checks its own gate first; this was
+			# the one that did not.
+			if not _daily_ready():
+				return
+			claim.disabled = true
+			daily_last = _now()
 			coins += daily_coins
 			# rewards always add — the cap only limits time-based regen
 			spins += DAILY_BONUS_SPINS
@@ -1877,7 +2209,7 @@ func _open_daily() -> void:
 		)
 		vbox.add_child(claim)
 	else:
-		var left := maxi(0, int(DAILY_COOLDOWN - (Time.get_unix_time_from_system() - daily_last)))
+		var left := maxi(0, int(DAILY_COOLDOWN - (_now() - daily_last)))
 		var info := _popup_row_label("Next bonus in  %s" % _countdown_text(left))
 		info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		vbox.add_child(info)
@@ -1917,7 +2249,7 @@ func _grant_mission_reward(coin_amt: int, spin_amt: int) -> void:
 func _notify(ntype: String, text: String, emoji := "🔔", toast := true) -> bool:
 	if not notif_enabled or not bool(notif_types.get(ntype, true)):
 		return false
-	notif_log.push_front({"type": ntype, "text": text, "emoji": emoji, "ts": Time.get_unix_time_from_system(), "read": false})
+	notif_log.push_front({"type": ntype, "text": text, "emoji": emoji, "ts": _now(), "read": false})
 	while notif_log.size() > NOTIF_LOG_MAX:
 		notif_log.pop_back()
 	_update_badges()
@@ -1949,7 +2281,7 @@ func _show_toast(text: String, emoji := "🔔") -> void:
 	sb.content_margin_top = 12.0
 	sb.content_margin_bottom = 12.0
 	panel.add_theme_stylebox_override("panel", sb)
-	panel.custom_minimum_size = Vector2(672, 92)
+	panel.custom_minimum_size = Vector2(view_size().x - 48.0, 92)
 	panel.position = Vector2(24, -90)
 	panel.z_index = 130
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1970,14 +2302,16 @@ func _show_toast(text: String, emoji := "🔔") -> void:
 	hb.add_child(_emoji_label("🔔", UI.F_LABEL))
 
 	Sfx.play("pop", -12.0)
-	var tw := create_tween()
+	# Owned by the toast: the line at the top of this function frees whatever
+	# toast was already up, and a tween on main would then be left driving it.
+	var tw := panel.create_tween()
 	tw.tween_property(panel, "position:y", 78.0 + safe_top(), 0.35).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tw.tween_interval(2.6)
 	tw.tween_property(panel, "modulate:a", 0.0, 0.4)
 	tw.tween_callback(panel.queue_free)
 
 func _time_ago(ts: float) -> String:
-	var d := int(Time.get_unix_time_from_system() - ts)
+	var d := int(_now() - ts)
 	if d < 60:
 		return "now"
 	if d < 3600:
@@ -2166,7 +2500,13 @@ func _make_page(key: String, title: String) -> void:
 
 func _fill_page(key: String) -> void:
 	var vb: VBoxContainer = _page_bodies[key]
+	# Detached first, then freed. queue_free only schedules the free for the end
+	# of the frame, so the old cards were still parented while the new ones were
+	# being added: the container laid out both, the page was briefly twice as
+	# tall, and _let_drags_through below walked a list of dead nodes on its way
+	# through. Removing them is immediate and costs nothing.
 	for c in vb.get_children():
+		vb.remove_child(c)
 		c.queue_free()
 	match key:
 		"shop": _fill_shop(vb)
@@ -2313,8 +2653,7 @@ func _star_row(lit: int, size := UI.F_CAPTION) -> HBoxContainer:
 
 func _radial_glow(color: Color, diameter: float) -> ColorRect:
 	var glow := ColorRect.new()
-	var sh := Shader.new()
-	sh.code = """
+	var sh := Lagoon.shader("""
 shader_type canvas_item;
 uniform vec4 glow_col : source_color = vec4(1.0, 0.8, 0.3, 1.0);
 void fragment() {
@@ -2322,7 +2661,7 @@ void fragment() {
 	float a = (1.0 - smoothstep(0.1, 1.0, d)) * 0.5 * glow_col.a;
 	COLOR = vec4(glow_col.rgb, a);
 }
-"""
+""")
 	var mat := ShaderMaterial.new()
 	mat.shader = sh
 	mat.set_shader_parameter("glow_col", color)
@@ -2338,8 +2677,7 @@ void fragment() {
 # slow diagonal shine sweep laid over premium panels
 func _shine_overlay(tint: Color) -> ColorRect:
 	var r := ColorRect.new()
-	var sh := Shader.new()
-	sh.code = """
+	var sh := Lagoon.shader("""
 shader_type canvas_item;
 uniform vec4 tint : source_color = vec4(1.0);
 void fragment() {
@@ -2348,7 +2686,7 @@ void fragment() {
 	float a = smoothstep(0.1, 0.0, abs(x - band)) * 0.14;
 	COLOR = vec4(tint.rgb, a);
 }
-"""
+""")
 	var mat := ShaderMaterial.new()
 	mat.shader = sh
 	mat.set_shader_parameter("tint", tint)
@@ -2497,7 +2835,12 @@ func _piggy_card(vb: VBoxContainer) -> void:
 	fill.add_theme_stylebox_override("panel", fsb)
 	fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	bar.add_child(fill)
+	# Same guard as the modal's close button: this is deferred, and the shop
+	# page rebuilds itself whenever the piggy takes a coin, so the bar it sizes
+	# can already be gone by the time it runs.
 	var place_fill := func() -> void:
+		if not is_instance_valid(bar) or not is_instance_valid(fill):
+			return
 		fill.position = Vector2.ZERO
 		fill.size = Vector2(bar.size.x * frac, bar.size.y)
 		fill.visible = frac > 0.0
@@ -2551,6 +2894,12 @@ func _confirm_piggy() -> void:
 	pay.pressed.connect(func() -> void:
 		if IAP.busy:
 			return
+		# Written down and saved before Apple is asked for the money. Whatever
+		# happens to this process between here and the grant -- including being
+		# killed and the transaction arriving on a later launch -- the figure
+		# the player was shown on this card is now on disk.
+		piggy_promised = piggy_coins
+		_flush_save()
 		pay.disabled = true
 		pay.text = "…"
 		IAP.purchase(CV.PIGGY_PACK)
@@ -2939,16 +3288,16 @@ func _free_gift_card(vb: VBoxContainer) -> void:
 		row.add_child(claim)
 
 func _shop_free_ready() -> bool:
-	return Time.get_unix_time_from_system() - shop_free_last >= CV.SHOP_FREE_COOLDOWN
+	return _now() - shop_free_last >= CV.SHOP_FREE_COOLDOWN
 
 func _shop_free_countdown_text() -> String:
-	var left := maxi(0, int(CV.SHOP_FREE_COOLDOWN - (Time.get_unix_time_from_system() - shop_free_last)))
+	var left := maxi(0, int(CV.SHOP_FREE_COOLDOWN - (_now() - shop_free_last)))
 	return "%02d:%02d:%02d" % [left / 3600, (left % 3600) / 60, left % 60]
 
 func _claim_shop_gift() -> void:
 	if not _shop_free_ready():
 		return
-	shop_free_last = Time.get_unix_time_from_system()
+	shop_free_last = _now()
 	coins += _scaled(CV.SHOP_FREE_COINS)
 	spins += CV.SHOP_FREE_SPINS
 	var pre_complete := {}
@@ -2994,9 +3343,21 @@ func _piggy_frac() -> float:
 	var cap := _scaled(CV.PIGGY_CAP)
 	return 0.0 if cap <= 0 else clampf(float(piggy_coins) / float(cap), 0.0, 1.0)
 
+# Paid for, so something has to come out of it.
+#
+# The bank is fed by play, which means it can be emptied between the moment a
+# purchase is authorised and the moment the game hears about it -- most plainly
+# when Apple delivers a transaction on the next launch, after an Ask to Buy
+# approval or a kill mid-grant. This used to `return` on an empty bank, which
+# is the single worst outcome the store can produce: a real charge, and nothing
+# handed over. It pays out whatever the bank holds now or whatever it held when
+# Pay was pressed, whichever is larger.
 func _break_piggy() -> void:
-	var got := piggy_coins
+	var got := maxi(piggy_coins, piggy_promised)
+	piggy_promised = 0
 	if got <= 0:
+		_banner("Your piggy bank was already empty.", Color(0.9, 0.6, 0.4), "🐷")
+		_flush_save()
 		return
 	piggy_coins = 0
 	coins += got
@@ -3006,7 +3367,7 @@ func _break_piggy() -> void:
 	_banner("Piggy smashed — +%s coins!" % _fmt_compact(got), Color(1.0, 0.62, 0.72), "🐷")
 	_update_badges()
 	_refresh()
-	_save_game()
+	_flush_save()
 	if _current_page == pages.get("shop"):
 		_fill_page("shop")
 
@@ -3016,7 +3377,7 @@ func _break_piggy() -> void:
 # stretch is deliberate: an offer that is always on the shelf is just a price,
 # and the countdown only means something if the player has seen it run out.
 func _offer_tick() -> void:
-	var now := Time.get_unix_time_from_system()
+	var now := _now()
 	if offer_id != "":
 		if now >= offer_until:
 			offer_id = ""
@@ -3039,7 +3400,7 @@ func _offer_tick() -> void:
 
 # The live offer's pack, or an empty dictionary when nothing is running.
 func _active_offer() -> Dictionary:
-	if offer_id == "" or Time.get_unix_time_from_system() >= offer_until:
+	if offer_id == "" or _now() >= offer_until:
 		return {}
 	for o in CV.TIMED_OFFERS:
 		if String(o["id"]) == offer_id:
@@ -3047,7 +3408,7 @@ func _active_offer() -> Dictionary:
 	return {}
 
 func _offer_countdown_text() -> String:
-	var left := maxi(0, int(offer_until - Time.get_unix_time_from_system()))
+	var left := maxi(0, int(offer_until - _now()))
 	return "%d:%02d:%02d" % [left / 3600, (left / 60) % 60, left % 60]
 
 # --- contextual offers --------------------------------------------------
@@ -3063,13 +3424,13 @@ func _offer_countdown_text() -> String:
 const CTX_OFFER_COOLDOWN := 900.0
 
 func _ctx_offer_ready() -> bool:
-	return Time.get_unix_time_from_system() - _ctx_offer_last >= CTX_OFFER_COOLDOWN
+	return _now() - _ctx_offer_last >= CTX_OFFER_COOLDOWN
 
 # Shown when the reels are asked to spin with an empty meter. Leads with the
 # free refill that is already coming, because burying it would make the popup a
 # paywall -- the pack is the shortcut, not the only road.
 func _offer_out_of_spins() -> void:
-	_ctx_offer_last = Time.get_unix_time_from_system()
+	_ctx_offer_last = _now()
 	var live := _active_offer()
 	var pack: Dictionary = live if not live.is_empty() else CV.SPIN_PACKS[1]
 	var vbox := _open_popup("Out of Spins")
@@ -3090,7 +3451,7 @@ func _offer_out_of_spins() -> void:
 # then offers the cheapest pack that actually covers it -- an offer for less
 # than the missing amount is worse than no offer, because it does not unblock.
 func _offer_need_coins(shortfall: int) -> void:
-	_ctx_offer_last = Time.get_unix_time_from_system()
+	_ctx_offer_last = _now()
 	var pack: Dictionary = CV.COIN_PACKS[CV.COIN_PACKS.size() - 1]
 	for p in CV.COIN_PACKS:
 		if _scaled(int(p["coins"])) >= shortfall:
@@ -3269,7 +3630,7 @@ func _grant_pack(pack: Dictionary) -> void:
 	if offer_id != "" and String(pack.get("id", "")) == offer_id:
 		offer_id = ""
 		offer_until = 0.0
-		offer_next = Time.get_unix_time_from_system() + CV.OFFER_COOLDOWN
+		offer_next = _now() + CV.OFFER_COOLDOWN
 		_offer_timer_label = null
 	spins += int(pack.get("spins", 0))
 	coins += _scaled(int(pack.get("coins", 0)))
@@ -3295,7 +3656,10 @@ func _grant_pack(pack: Dictionary) -> void:
 		_show_chest_result(cards, "Chest Opened!", "", completed)
 	_update_badges()
 	_refresh()
-	_save_game()
+	# Straight to disk: IAP.finish() records this transaction as granted the
+	# moment we return, and a save still sitting in memory when the app dies is
+	# a pack the player paid for that no launch will ever hand over again.
+	_flush_save()
 	if _current_page == pages.get("shop"):
 		_fill_page("shop")
 
@@ -3304,6 +3668,8 @@ func _grant_pack(pack: Dictionary) -> void:
 # reels use, so an Easy set's single gold card is the one a chest usually pays
 # out and a Hard set's stays a chase.
 func _weighted_card(cards: Array) -> Array:
+	if cards.is_empty():
+		return []
 	var total := 0
 	for e in cards:
 		total += int((e[0] as Dictionary)["weight"])
@@ -3353,6 +3719,11 @@ func _grant_chest_card(tier: int, forced_star := 0) -> Dictionary:
 	# bias toward missing cards so progress never fully stalls.
 	var from := missing if not missing.is_empty() and randf() < 0.25 else pool
 	var pick: Array = _weighted_card(from)
+	if pick.is_empty():
+		# No card of this rarity exists anywhere in the season's sets. Not
+		# possible with the sets as written, and a crash on the chest-opening
+		# path is not the way to find out that somebody edited one.
+		return {"emoji": "🃏", "name": "Blank Card", "set": "", "stars": star, "dup": true, "refund": 0, "held": 0}
 	var chosen: Dictionary = pick[0]
 	var idx: int = pick[1]
 	var it: Array = chosen["items"][idx]
@@ -3736,6 +4107,8 @@ func _fill_options(vb: VBoxContainer) -> void:
 		["attack", "Attack alerts", "A rival smashes a building on your island"],
 		["steal", "Steal alerts", "A rival takes coins out of your vault"],
 		["spins", "Spins refilled", "+%d spins every %d min" % [SPIN_REGEN_AMOUNT, int(SPIN_REGEN_SECS / 60.0)]],
+		["gift", "Daily gift", "Your free gift is ready again"],
+		["events", "Events ending", "An hour's warning before an offer or a season ends"],
 	]
 	var per_type: Array[Toggle] = []
 	for def in type_defs:
@@ -3751,14 +4124,52 @@ func _fill_options(vb: VBoxContainer) -> void:
 		ncard.add_child(row)
 		per_type.append(row)
 
-	# Dimming the three in place beats rebuilding the page: the master switch
-	# gets to finish its own animation instead of being replaced mid-slide.
+	# Dimming them in place beats rebuilding the page: the master switch gets
+	# to finish its own animation instead of being replaced mid-slide.
 	master.switched.connect(func(on: bool) -> void:
 		notif_enabled = on
 		for row in per_type:
 			row.set_dimmed(not on)
 		_save_game()
+		# The plan iOS is holding was built from these switches, so it is stale
+		# the moment one moves. Rewritten rather than left to the next
+		# backgrounding, which might be a kill.
+		Alerts.schedule(_alert_plan(_now()), _now())
 	)
+
+	# The switches above decide what the game would like to send. iOS decides
+	# whether any of it reaches the lock screen, and it is entirely normal for
+	# the two to disagree -- so say which one is currently winning rather than
+	# leaving a player with everything switched on wondering why their phone is
+	# silent. Not a nag: the only state that gets a button is the one the
+	# player can still do something about.
+	var perm := Alerts.status()
+	if perm == "denied":
+		ncard.add_child(Lagoon.divider())
+		var off := _popup_row_label("Phone notifications are off for Loot Lagoon in iOS Settings — the alerts above will only appear inside the game.", UI.F_CAPTION)
+		off.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		off.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		ncard.add_child(off)
+		var settings_btn := Button.new()
+		settings_btn.text = "Open iOS Settings"
+		settings_btn.custom_minimum_size = Vector2(0, UI.TAP)
+		_candy_button(settings_btn, Color(0.35, 0.55, 0.8))
+		FX.press_feedback(settings_btn)
+		settings_btn.pressed.connect(func() -> void: OS.shell_open("app-settings:"))
+		ncard.add_child(settings_btn)
+	elif perm == "notDetermined":
+		ncard.add_child(Lagoon.divider())
+		var ask := Button.new()
+		ask.text = "Turn on phone notifications"
+		ask.custom_minimum_size = Vector2(0, UI.TAP)
+		_candy_button(ask, Color(0.28, 0.68, 0.34))
+		FX.press_feedback(ask)
+		ask.pressed.connect(func() -> void:
+			notif_prompted = true
+			_save_game()
+			Alerts.request_permission()
+		)
+		ncard.add_child(ask)
 
 	var acc := _page_card(vb)
 	acc.add_child(_popup_row_label("Signed in as:  %s  (%s)" % [profile.get("name", "Guest"), profile.get("provider", "guest")], UI.F_LABEL))
@@ -3818,10 +4229,22 @@ func _confirm_delete_account() -> void:
 	FX.press_feedback(go)
 	go.pressed.connect(func() -> void:
 		go.disabled = true
-		for path in ["user://profile.json", SAVE_PATH]:
+		# Every copy, not just the live one -- _write_save keeps a .bak beside
+		# the save and may have left a .tmp behind, and _read_save would happily
+		# restore the island from either of them on the very next launch.
+		# Anything still queued would write the island straight back out.
+		_save_pending = false
+		for path in ["user://profile.json", SAVE_PATH, SAVE_BAK, SAVE_TMP]:
 			if FileAccess.file_exists(path):
 				DirAccess.remove_absolute(path)
 		_close_popup(true)
+		# Put the store's signal queue back in front of the gap. The new Main
+		# does not connect to IAP until the end of its boot, a couple of
+		# seconds away, and IAP has been "started" since this one booted -- so
+		# a purchase completing in between would be emitted to nobody, never
+		# reach finish(), and never be written to the ledger. Re-arming the
+		# queue holds it until the new scene calls begin().
+		IAP.rearm()
 		# Rebuilding every page against a wiped save by hand is a long list of
 		# chances to miss one. Restarting the scene is the same thing a fresh
 		# install does, which is the state we just claimed to have produced.
@@ -3843,26 +4266,45 @@ func _styled_progress(fg_color: Color) -> ProgressBar:
 # --- collections ---
 
 func _ensure_collections() -> void:
-	var now := Time.get_unix_time_from_system()
+	var now := _now()
 	if col_deadline <= 0.0 or now > col_deadline:
 		col_owned = {}
 		col_dupes = {}
 		col_claimed = {}
 		col_mega_claimed = false
 		col_deadline = now + CV.COLLECTION_SEASON_DAYS * 86400.0
+	# This is the only thing that normalizes the card tables, and everything
+	# downstream indexes col_owned[id] directly on the strength of it having
+	# run. It used to read the saved arrays with typed assignments and bool()
+	# / int() casts, so one non-array set -- or one string where a bool
+	# belonged -- raised, abandoned the loop, and left every set from that
+	# point on with no entry at all. Card drops then stopped, chests returned
+	# nothing and the Collections page came up blank, permanently: the bad
+	# value was written straight back out on the next autosave, so it survived
+	# every restart with no way back. Read defensively instead, per set, so a
+	# damaged set costs that set and nothing else.
 	for c in CV.COLLECTIONS:
 		var id: String = c["id"]
 		var n: int = (c["items"] as Array).size()
-		var arr: Array = col_owned.get(id, [])
-		var dup: Array = col_dupes.get(id, [])
+		var raw_owned = col_owned.get(id, [])
+		var raw_dupes = col_dupes.get(id, [])
+		var arr: Array = raw_owned if typeof(raw_owned) == TYPE_ARRAY else []
+		var dup: Array = raw_dupes if typeof(raw_dupes) == TYPE_ARRAY else []
 		var norm := []
 		var dnorm := []
 		for i in n:
-			norm.append(bool(arr[i]) if i < arr.size() else false)
-			dnorm.append(maxi(0, int(dup[i])) if i < dup.size() else 0)
+			norm.append(_b(arr[i]) if i < arr.size() else false)
+			dnorm.append(maxi(0, _i(dup[i])) if i < dup.size() else 0)
 		col_owned[id] = norm
 		col_dupes[id] = dnorm
-		col_claimed[id] = bool(col_claimed.get(id, false))
+		col_claimed[id] = _b(col_claimed.get(id, false))
+	# Sets the build no longer has have no business keeping a slot; leaving
+	# them means a renamed collection quietly doubles the save every season.
+	for key in col_owned.keys():
+		if not CV.COLLECTIONS.any(func(c): return c["id"] == key):
+			col_owned.erase(key)
+			col_dupes.erase(key)
+			col_claimed.erase(key)
 
 # One spare copy of card `idx` in set `id` goes onto the pile.
 func _add_dupe(id: String, idx: int) -> void:
@@ -4075,7 +4517,7 @@ func _fill_collection_shelf(vb: VBoxContainer) -> void:
 	gpb.max_value = CV.COLLECTIONS.size()
 	gpb.value = claimed_n
 	head.add_child(gpb)
-	var days_left := maxf(0.0, col_deadline - Time.get_unix_time_from_system())
+	var days_left := maxf(0.0, col_deadline - _now())
 	var season := _popup_row_label("Season ends in %dd %dh \u2014 collections reset!" % [int(days_left / 86400.0), int(fmod(days_left, 86400.0) / 3600.0)], UI.F_TINY)
 	season.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	season.add_theme_color_override("font_color", Lagoon.INK_FAINT)
@@ -4731,15 +5173,14 @@ func _add_background(page: Control, bg_id: String, top_color: Color, bottom_colo
 		return tr
 	else:
 		var bg := ColorRect.new()
-		var shader := Shader.new()
-		shader.code = """
+		var shader := Lagoon.shader("""
 shader_type canvas_item;
 uniform vec3 top_col;
 uniform vec3 bottom_col;
 void fragment() {
 	COLOR = vec4(mix(top_col, bottom_col, UV.y), 1.0);
 }
-"""
+""")
 		var mat := ShaderMaterial.new()
 		mat.shader = shader
 		mat.set_shader_parameter("top_col", Vector3(top_color.r, top_color.g, top_color.b))
@@ -4837,6 +5278,11 @@ func _on_spin_requested() -> void:
 		Sfx.play("error", -6.0)
 		if spins > 0:
 			_banner("Bet x%d needs %d spins!" % [slot.bet, slot.bet], Color(0.9, 0.4, 0.4))
+		elif Alerts.can_ask() and not notif_prompted and notif_enabled and _popup == null:
+			# Ahead of the pack offer, and only ever once: this is the moment
+			# the player most wants to be told when the meter fills, and the
+			# offer will still be there the next time they run dry.
+			_ask_for_alerts()
 		elif _ctx_offer_ready() and _popup == null:
 			_offer_out_of_spins()
 		else:
@@ -4925,7 +5371,16 @@ func _show_win(text: String, color := Color(1.0, 0.85, 0.3), icon_kind := "", co
 
 	root.scale = Vector2(0.4, 0.4)
 	root.modulate.a = 0.0
-	var tw := create_tween()
+	# The tween belongs to the slug, not to the page.
+	#
+	# Started on `self` it outlived the thing it was animating: auto-spin puts
+	# the next win on screen while the last is still counting up, the line above
+	# frees the old slug, and a tween owned by main.gd carried on driving it.
+	# The count-up is a tween_method into a lambda holding the label, and a
+	# Callable has no object for the engine to notice has gone -- so it kept
+	# firing into a freed node, twenty thousand errors deep in a soak of three
+	# thousand spins. Owned by `root`, the whole thing dies with it.
+	var tw := root.create_tween()
 	tw.tween_property(root, "modulate:a", 1.0, 0.10)
 	tw.parallel().tween_property(root, "scale", Vector2.ONE, 0.34) \
 		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
@@ -4975,6 +5430,8 @@ func _weighted_pick(weights: Dictionary) -> String:
 	return weights.keys()[0]
 
 func _on_spin_finished(result: Array) -> void:
+	if result.size() < 3:
+		return
 	var bet := _last_bet
 	var gain := 0
 	var triple: bool = result[0] == result[1] and result[1] == result[2]
@@ -5036,63 +5493,263 @@ func _on_spin_finished(result: Array) -> void:
 			FX.fly_coins(self, slot.reels_center(), _hud_labels[0]["coins"].global_position,
 				clampi(gain / 250, 4, 10))
 		)
+	# The card roll is not a raid concern and belongs outside the gate. It sat
+	# inside it, and because an attack triple sets up its raid synchronously
+	# while a steal triple did not, the two behaved differently: hammers
+	# skipped the roll, raccoons got it. Hammers are 7.7% of all spins, so the
+	# real drop rate was 23.07% against the 25% the Collections page states
+	# for "every spin", and the shortfall fell entirely on one symbol.
+	_maybe_drop_card()
+	# These two do belong inside it. A counter-raid landing behind the island
+	# overlay is invisible, and an auto-spin under it is a spin the player
+	# pays for and never sees.
 	if not _raiding():
-		_maybe_drop_card()
 		_maybe_revenge()
 		_schedule_auto_spin()
 	_refresh()
 	_save_game()
 
-# Raids that happened while the app was closed.
+# Raids that happen while the app is closed.
 #
 # The pool is not a set of dummies waiting to be robbed -- rivals come at you
 # too, and the fact that they do while you are away is what makes a shield
 # worth banking instead of spending. Kept deliberately light: one hit per
 # ninety minutes offline, two at most, and an attack only ever knocks a star
 # off a building that has one to spare. You never come back to rubble.
-func _offline_raids() -> void:
-	if _offline_elapsed < 1800.0 or npcs.is_empty():
+#
+# WHY THIS IS ROLLED BEFORE THE ABSENCE RATHER THAN AFTER IT
+#
+# It used to be rolled on the way back: count the hours, throw the dice, apply
+# the results. That cannot survive a notification. A backgrounded app does not
+# run, so "Kai smashed your Choco Fountain" has to be handed to iOS complete,
+# hours before the player reads it -- and if the game then rolls its own dice
+# on the way back in, the phone and the island are two independent throws
+# saying different things about the same afternoon.
+#
+# So the dice are thrown here, while the app is still awake, and what comes
+# out is a plan: what happens, to whom, and when. The notification quotes it
+# and _offline_raids applies it. One throw, one story.
+const OFFLINE_RAID_GAP := 5400.0
+const OFFLINE_RAID_MAX := 2
+
+func _preroll_raids(from: float) -> void:
+	pending_raids = []
+	if npcs.is_empty() or _preview_island:
 		return
-	var count := mini(2, int(_offline_elapsed / 5400.0))
-	_offline_elapsed = 0.0
-	if count <= 0:
-		return
-	var events := []
-	for i in count:
+	# Simulated against copies rather than against the live island: the second
+	# raid has to see the shield the first one spent and the hut it knocked
+	# down, or a pair of attacks can both promise a save the island can only
+	# make once.
+	var sim_shields := shields
+	var sim_buildings := buildings.duplicate()
+	var sim_coins := coins
+	for i in OFFLINE_RAID_MAX:
 		var npc: Dictionary = npcs.pick_random()
 		var mode := "attack" if randf() < 0.45 else "steal"
-		if shields > 0:
-			shields -= 1
-			events.append({"type": mode, "npc": npc,
-				"text": "%s came for your island — your shield held" % npc["name"]})
+		var ev := {
+			"at": from + OFFLINE_RAID_GAP * float(i + 1),
+			"npc": String(npc["name"]),
+			"emoji": String(npc["emoji"]),
+			"type": mode,
+		}
+		if sim_shields > 0:
+			sim_shields -= 1
+			ev["kind"] = "blocked"
+			ev["text"] = "%s came for your island — your shield held" % npc["name"]
+			pending_raids.append(ev)
 			continue
 		if mode == "attack":
 			var standing := []
-			for b in buildings.size():
-				if int(buildings[b]) >= 2:
+			for b in sim_buildings.size():
+				if int(sim_buildings[b]) >= 2:
 					standing.append(b)
 			if not standing.is_empty():
 				var hit: int = standing.pick_random()
-				buildings[hit] = int(buildings[hit]) - 1
+				sim_buildings[hit] = int(sim_buildings[hit]) - 1
 				var bname: String = CV.island_theme(island_level)["buildings"][hit]
-				events.append({"type": "attack", "npc": npc,
-					"text": "%s smashed your %s — down to %d\u2b50" % [npc["name"], bname, buildings[hit]]})
+				ev["kind"] = "smash"
+				ev["building"] = hit
+				ev["text"] = "%s smashed your %s — down to %d\u2b50" % [npc["name"], bname, sim_buildings[hit]]
+				pending_raids.append(ev)
 				continue
+			# Nothing left standing to hit. Falls through to a robbery rather
+			# than to nothing, exactly as the live raid does.
 			mode = "steal"
-		var stolen: int = mini(_scaled(500), int(coins * 0.08))
-		coins -= stolen
-		npc["coins"] = int(npc["coins"]) + int(round(stolen / maxf(_economy_mult(), 1.0)))
-		events.append({"type": "steal", "npc": npc,
-			"text": "%s raided your vault — %s coins" % [npc["name"], _fmt_compact(stolen)]})
-	for e in events:
-		_notify(e["type"], e["text"], e["npc"]["emoji"], false)
-	var first: Dictionary = events[0]
+			ev["type"] = "steal"
+		var stolen: int = mini(_scaled(500), int(sim_coins * 0.08))
+		sim_coins -= stolen
+		ev["kind"] = "steal"
+		ev["coins"] = stolen
+		ev["text"] = "%s raided your vault — %s coins" % [npc["name"], _fmt_compact(stolen)]
+		pending_raids.append(ev)
+
+# Applies the pre-rolled raids that have come due, and reports them.
+#
+# Deferred, not skipped, while an overlay is up. A raid resolving behind the
+# island-visit screen used to take two thousand coins and a hut out from under
+# a player who was in the middle of taking somebody else's, with the toast
+# landing on the same z-index as the overlay -- so the one message explaining
+# where the coins went was the one message they could not see. The plan is in
+# the save, so waiting a few seconds for the screen to clear costs nothing.
+func _offline_raids() -> void:
+	if pending_raids.is_empty() or _boot != null:
+		return
+	if _raiding() or _popup != null:
+		return
+	var now := _now()
+	var events := []
+	for ev in pending_raids:
+		if typeof(ev) == TYPE_DICTIONARY and float(ev.get("at", 0.0)) <= now:
+			events.append(ev)
+	# Everything, due or not. The player is holding the phone again, so the
+	# rest of the plan was written about an afternoon that is now over; the
+	# next trip to the background writes a fresh one.
+	pending_raids = []
+	if events.is_empty():
+		return
+	for ev in events:
+		match String(ev.get("kind", "")):
+			"blocked":
+				shields = maxi(0, shields - 1)
+			"smash":
+				var b := int(ev.get("building", -1))
+				if b >= 0 and b < buildings.size():
+					buildings[b] = maxi(0, int(buildings[b]) - 1)
+			"steal":
+				# Clamped against the live wallet. The figure was quoted
+				# against the balance at bedtime, and a transaction Apple
+				# delivered overnight can have moved it since.
+				var take := mini(maxi(0, _i(ev.get("coins", 0))), coins)
+				coins -= take
+				# The rival is looked up by name rather than held by
+				# reference: the pool is restocked between sessions, and a
+				# rival who has rotated out simply keeps what they took.
+				for n in npcs:
+					if String(n.get("name", "")) == String(ev.get("npc", "")):
+						n["coins"] = int(n["coins"]) + int(round(take / maxf(_economy_mult(), 1.0)))
+						break
+		_notify(String(ev.get("type", "steal")), String(ev.get("text", "")), String(ev.get("emoji", "🚨")), false)
 	if events.size() == 1:
-		_show_toast(first["text"], first["npc"]["emoji"])
+		_show_toast(String(events[0].get("text", "")), String(events[0].get("emoji", "🚨")))
 	else:
 		_show_toast("%d rivals hit your island while you were away" % events.size(), "🚨")
 	_refresh()
 	_save_game()
+
+# --- what the phone says while the game is closed ---------------------------
+
+# The whole plan, in game time, handed to Alerts on the way to the background.
+#
+# Every row is a promise about what the game will say when it is opened, so
+# nothing goes in here that the game cannot honour. "Your spins are full" is
+# scheduled off the same accumulator _process ticks and _credit_time_away
+# banks; the raid rows quote text that is already sitting in the save waiting
+# to be applied. If either of those drifts, the player taps a notification and
+# finds it was not true, which is worse than never having been told.
+func _alert_plan(from: float) -> Array:
+	var out := []
+	if not notif_enabled:
+		return out
+	if bool(notif_types.get("spins", true)) and spins < SPIN_CAP:
+		out.append({
+			"id": "spins_full", "at": _spins_full_at(from),
+			"title": "Your spins are full 🌀",
+			"body": "All %d back on the meter. The reels are waiting." % SPIN_CAP,
+		})
+	for i in pending_raids.size():
+		var ev: Dictionary = pending_raids[i]
+		var kind := String(ev.get("type", "steal"))
+		if not bool(notif_types.get(kind, true)):
+			continue
+		out.append({
+			"id": "raid_%d" % i, "at": float(ev.get("at", 0.0)),
+			"title": "%s  %s" % [String(ev.get("emoji", "🚨")),
+				"Your island is under attack!" if kind == "attack" else "Someone is in your vault!"],
+			"body": String(ev.get("text", "")),
+		})
+	if bool(notif_types.get("gift", true)):
+		out.append({
+			"id": "free_gift", "at": shop_free_last + CV.SHOP_FREE_COOLDOWN,
+			"title": "Your daily gift is ready 🎁",
+			"body": "Coins, spins and a card, waiting in the shop.",
+		})
+	out.append_array(_event_alerts(from))
+	return out
+
+# Anything with a published end time.
+#
+# This is the seam. Today it is the timed offer and the card season; a cup, a
+# weekend tournament or a live event is a row appended here and nothing else --
+# no new save field, no new toggle, no change to the scheduler. Keep the id
+# stable per event, because it is what iOS cancels and replaces by.
+func _event_deadlines() -> Array:
+	var out := []
+	if offer_id != "" and offer_until > 0.0:
+		out.append({"id": "offer", "ends": offer_until, "name": _active_offer_name(),
+			"body": "Your limited offer is about to go. Last chance at this price."})
+	if col_deadline > 0.0:
+		out.append({"id": "season", "ends": col_deadline, "name": "The card season",
+			"body": "One hour to finish a set before the season resets."})
+	return out
+
+# How long before an event ends the player gets told. An hour: long enough to
+# come back and do something about it, short enough that the reminder is still
+# about tonight.
+const EVENT_WARNING := 3600.0
+
+func _event_alerts(from: float) -> Array:
+	var out := []
+	if not bool(notif_types.get("events", true)):
+		return out
+	for d in _event_deadlines():
+		out.append({
+			"id": "event_%s" % String(d["id"]), "at": float(d["ends"]) - EVENT_WARNING,
+			"title": "%s — one hour left ⏳" % String(d["name"]),
+			"body": String(d["body"]),
+		})
+	return out
+
+func _active_offer_name() -> String:
+	var live := _active_offer()
+	return String(live.get("name", "Your limited offer")) if not live.is_empty() else "Your limited offer"
+
+# The one time the game asks for iOS's permission to reach the player's lock
+# screen.
+#
+# iOS shows its prompt exactly once per install and a refusal can only be
+# undone in the Settings app, so the ask is spent at the single moment it
+# already means something to the player: the reels have stopped because the
+# spins ran out, and the only thing they want to know is when they come back.
+# Asked at launch instead -- before the game has given them any reason to say
+# yes -- it is a box in the way of playing, and most people close it.
+func _ask_for_alerts() -> void:
+	notif_prompted = true
+	_save_game()
+	var vbox := _open_popup("Tell You When?")
+	var e := _emoji_label("🔔", 68)
+	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(e)
+	var line := _popup_row_label("Your spins come back on their own. Want a nudge when the meter is full — and when a rival comes for your island?", UI.F_BODY)
+	line.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	line.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(line)
+	var yes := Button.new()
+	yes.text = "Yes, tell me"
+	yes.custom_minimum_size = Vector2(0, UI.TAP)
+	_candy_button(yes, Color(0.28, 0.68, 0.34))
+	FX.press_feedback(yes)
+	yes.pressed.connect(func() -> void:
+		_close_popup()
+		Alerts.request_permission()
+	)
+	vbox.add_child(yes)
+	var no := Button.new()
+	no.text = "Not now"
+	no.custom_minimum_size = Vector2(0, UI.TAP)
+	_candy_button(no, Color(0.55, 0.45, 0.65))
+	FX.press_feedback(no)
+	no.pressed.connect(func() -> void: _close_popup())
+	vbox.add_child(no)
 
 func _maybe_revenge() -> void:
 	if not revenge_pending:
@@ -5138,6 +5795,8 @@ func _maybe_revenge() -> void:
 func _stock_rivals() -> void:
 	var keep := []
 	for n in npcs:
+		if typeof(n) != TYPE_DICTIONARY:
+			continue
 		var stars := 0
 		for lv in n.get("buildings", []):
 			stars += int(lv)
@@ -5161,7 +5820,7 @@ func _stock_rivals() -> void:
 # True from the moment a raid is announced until its payout lands -- the search
 # screen counts, so nothing auto-spins or changes page underneath it.
 func _raiding() -> bool:
-	return _visit != null or _match != null
+	return _visit != null or _match != null or _raid_pending
 
 # The card above the wheel is a promise: these are the coins at stake and this
 # is whose they are. It is drawn before the spin and it does not move during
@@ -5195,11 +5854,19 @@ func _raid_stake(npc: Dictionary) -> int:
 # victim, so the game genuinely has to go and find one, and the search is what
 # that looks like.
 func _start_visit(mode: String) -> void:
+	# One raid at a time, checked before anything is built. A second triple
+	# landing while the first raid is still assembling used to overwrite _visit
+	# and orphan the overlay it replaced -- a full-screen input blocker with no
+	# owner left to dismiss it.
+	if _raiding():
+		return
 	if mode == "steal":
 		if next_target.is_empty():
 			_pick_next_target()
 		if next_target.is_empty():
 			return
+		_raid_pending = true
+		_raid_mult = _last_bet
 		_raid_target = next_target
 		_announce_raid(mode)
 		var go := create_tween()
@@ -5210,6 +5877,8 @@ func _start_visit(mode: String) -> void:
 	var npc := _pick_attack_target()
 	if npc.is_empty():
 		return
+	_raid_pending = true
+	_raid_mult = _last_bet
 	npc["shield"] = randf() < 0.3
 	_raid_target = npc
 	_announce_raid(mode)
@@ -5232,14 +5901,36 @@ func _announce_raid(mode: String) -> void:
 # Whoever the hammers land on, it is not the rival the raccoons already have
 # their mark on -- the two raids are meant to send you to two different
 # islands, and the search has to have something to find.
+#
+# And it is somebody with a hut left standing. A rival whose island has been
+# flattened -- by you, over several attacks -- still survives _stock_rivals as
+# long as their vault holds 400 coins, because a purse is worth stealing. It is
+# not worth *attacking*: the raid screen draws one target button per standing
+# building, so an attack on an empty island came up with no buttons on it, no
+# way out, and the game frozen behind a full-screen overlay until the app was
+# killed. That is the one bug in here that costs a player their session.
+#
+# The filter is a preference rather than a rule: if literally nobody has a hut
+# up, the caller still gets a rival and IslandVisit hands the raid back rather
+# than parking on it.
 func _pick_attack_target() -> Dictionary:
 	if npcs.is_empty():
 		_stock_rivals()
 	var spared: String = next_target.get("name", "")
 	var pool := []
+	var any := []
 	for n in npcs:
-		if n.get("name", "") != spared:
+		if n.get("name", "") == spared:
+			continue
+		any.append(n)
+		if _rival_stars(n) > 0:
 			pool.append(n)
+	if pool.is_empty():
+		pool = any
+	if pool.is_empty():
+		for n in npcs:
+			if _rival_stars(n) > 0:
+				pool.append(n)
 	if pool.is_empty():
 		pool = npcs
 	if pool.is_empty():
@@ -5257,10 +5948,25 @@ func _rival_stars(npc: Dictionary) -> int:
 func _on_match_found(matched: Dictionary, mode: String) -> void:
 	var m := _match
 	_match = null
+	_raid_pending = false
+	# Belt and braces behind the _raiding() guard in _start_visit: if an
+	# overlay is somehow still standing, it goes now rather than being left
+	# parented and unreferenced over the whole screen.
+	if _visit != null:
+		if _visit.finished.is_connected(_on_visit_finished):
+			_visit.finished.disconnect(_on_visit_finished)
+		_visit.queue_free()
+		_visit = null
 	_visit = IslandVisit.new()
+	# Above the popup layer (120). The search screen already set 118 for
+	# itself, but the island it hands over to was left at 0 -- so a modal the
+	# player opened during the spin (Daily, Alerts: neither is disabled while
+	# the reels run) stayed on top of the raid, and every chest and target
+	# button underneath it was unreachable.
+	_visit.z_index = 130
 	_visit.npc = matched
 	_visit.mode = mode
-	_visit.mult = _last_bet
+	_visit.mult = _raid_mult
 	_visit.coin_mult = _economy_mult()
 	# Rolled here, not on the island, so the island only ever *shows* a payout
 	# it was handed -- same as the chests, which read the rival's own purse.
@@ -5285,11 +5991,16 @@ func _on_match_found(matched: Dictionary, mode: String) -> void:
 		mt.tween_callback(m.queue_free)
 
 func _on_visit_finished(result: Dictionary) -> void:
+	# An overlay that is no longer the live one has nothing to pay out, and
+	# reading .mult off a null _visit is how this used to abort mid-grant --
+	# losing the loot and leaving the island stuck across the screen.
+	if _visit == null:
+		return
 	var v := _visit
 	var vmult: int = v.mult
 	_visit = null
 	var tw := create_tween()
-	tw.tween_property(v, "position", Vector2(-720, 0), 0.4).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	tw.tween_property(v, "position", Vector2(-view_size().x, 0), 0.4).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
 	tw.tween_callback(v.queue_free)
 	var npc: Dictionary = result["npc"]
 	_mission_add("steals" if result["mode"] == "steal" else "attacks")
@@ -5319,7 +6030,11 @@ func _on_visit_finished(result: Dictionary) -> void:
 		if randf() < 0.3:
 			revenge_pending = true
 	else:
-		if result.get("blocked", false):
+		if result.get("empty", false):
+			# The island had nothing left to smash. Not a shield, and saying it
+			# was one would credit a rival with a save they never made.
+			_banner("%s has nothing left standing." % npc["name"], Color(0.8, 0.8, 0.8), npc["emoji"])
+		elif result.get("blocked", false):
 			_banner("%s's shield blocked your attack!" % npc["name"], Color(0.5, 0.75, 1.0), npc["emoji"])
 		else:
 			var reward := int(result.get("reward", _scaled(600 + randi_range(0, 300)) * vmult))
@@ -5394,7 +6109,7 @@ static func _v3(c: Color) -> Vector3:
 	return Vector3(c.r, c.g, c.b)
 
 func _star_costs() -> Array:
-	var mult := pow(1.6, island_level - 1)
+	var mult := CV.curve(island_level)
 	var out := []
 	for c in STAR_COSTS:
 		out.append(int(c * mult))
@@ -5412,21 +6127,37 @@ func _on_upgrade_requested(index: int) -> void:
 		if _ctx_offer_ready() and _popup == null:
 			_offer_need_coins(cost - coins)
 		return
+	# The whole purchase is committed here, before the scaffold goes up: coins
+	# out, level in, stars banked, mission ticked, save written.
+	#
+	# It used to pay the coins now and grant the hut two seconds later, from the
+	# tween's callback. Two seconds is plenty of time for iOS to kill a
+	# backgrounded app, and every one of those kills charged a player for a
+	# building they did not get -- with the coins already saved and the upgrade
+	# living only in a tween that no longer exists. What is on screen for those
+	# two seconds is a construction animation, not the transaction.
 	coins -= cost
-	_refresh()
+	buildings[index] += 1
+	# Worth the level it just reached, so upgrades get better the deeper you go
+	# and a finished hut has paid out 15 over its life.
+	var gained: int = buildings[index]
+	_earn_stars(gained)
+	_mission_add("builds")
+	_update_badges()
 	_save_game()
-	village.start_construction(index, level + 1, func() -> void:
-		buildings[index] += 1
-		# Worth the level it just reached, so upgrades get better the deeper you
-		# go and a finished hut has paid out 15 over its life.
+	# start_construction before the refresh, not after: it is what marks the
+	# slot as under construction, and village.refresh skips those. The other way
+	# round the hut snaps to its new size a frame before the scaffold goes up.
+	village.start_construction(index, buildings[index], func() -> void:
+		# Only the celebration is left: the stars flying to the counter they
+		# were already added to, and the check for a finished island.
 		var slot_rect: Rect2 = CV.SLOT_RECTS[index]
-		_award_stars(buildings[index],
-			village.global_position + (slot_rect.position + slot_rect.size * 0.4) * village.scale)
-		_mission_add("builds")
+		_star_flight(gained, village.global_position + (slot_rect.position + slot_rect.size * 0.4) * village.scale)
 		_check_island_complete()
 		_refresh()
 		_save_game()
 	)
+	_refresh()
 
 func _check_island_complete() -> void:
 	for b in buildings:
@@ -5508,7 +6239,7 @@ func _show_island_complete_popup() -> void:
 	sail.pressed.connect(func() -> void:
 		var from_level := island_level
 		_close_popup(true)
-		island_level += 1
+		island_level = mini(MAX_ISLAND, island_level + 1)
 		_rescale_coin_progress()
 		_pick_next_target()
 		_mission_add("islands")
@@ -5762,7 +6493,9 @@ func _banner(text: String, color: Color, emoji := "") -> void:
 		box.add_child(e)
 	var lbl := Lagoon.title(text, UI.F_SUBHEAD, color, Lagoon.ABYSS)
 	box.add_child(lbl)
-	var tw := create_tween()
+	# On the banner rather than on main, so a banner that is freed for any other
+	# reason takes its own animation with it. See _show_win.
+	var tw := box.create_tween()
 	tw.tween_interval(1.6)
 	tw.tween_property(box, "modulate:a", 0.0, 0.5)
 	tw.tween_callback(box.queue_free)
@@ -5797,9 +6530,66 @@ func _candy_button(btn: Button, color: Color) -> void:
 
 # --- save / load ---
 
+# Every cooldown in the game is a wall-clock stamp compared against
+# _now(), and a phone's clock is not monotonic: it
+# moves when the player crosses a timezone, when they set it by hand, and on a
+# fresh device that boots before it has talked to a time server.
+#
+# Forward is harmless -- things come due early, which is the same exploit as
+# simply setting the clock forward, and no worse. Backward is what breaks: a
+# "last claimed" stamp left in the future never satisfies `now - last >= gap`,
+# so the daily bonus, the free shop gift and the offer rotation go dark and
+# stay dark until real time catches up with whatever the clock was set to.
+# Players do not read that as a clock problem, they read it as the game eating
+# their bonuses.
+#
+# So on the way in, a stamp that claims to be in the future is pulled back to
+# now (the cooldown restarts, which is the choice that cannot be farmed), and a
+# deadline further out than its own maximum span is pulled back to that span.
+func _sanitize_clock() -> void:
+	var now := _now()
+	daily_last = minf(daily_last, now)
+	shop_free_last = minf(shop_free_last, now)
+	_ctx_offer_last = minf(_ctx_offer_last, now)
+	offer_until = minf(offer_until, now + CV.OFFER_DURATION)
+	offer_next = minf(offer_next, now + CV.OFFER_COOLDOWN)
+	col_deadline = minf(col_deadline, now + CV.COLLECTION_SEASON_DAYS * 86400.0)
+	for entry in notif_log:
+		if typeof(entry) == TYPE_DICTIONARY:
+			entry["ts"] = minf(float(entry.get("ts", now)), now)
+
+
+# =============================================================================
+#  Saving
+# =============================================================================
+#
+# Calling this is cheap and calling it often is correct: every place in the game
+# that changes a counter ends with a save, which is what makes progress survive
+# a kill. What it must not do is write the file every time.
+#
+# The save is a few kilobytes of JSON and the write is a stringify, a file
+# create, a write, a close and two renames. On the reels that ran once per spin,
+# and under auto-spin that is a syscall burst every couple of seconds forever --
+# a frame hitch you can feel on an older phone, for no gain, because the state
+# it wrote is superseded seconds later anyway.
+#
+# So a save marks the game dirty and _process flushes it at most every few
+# seconds. The two places where a delay is not acceptable -- money changing
+# hands, and the app being told it may be about to die -- call _flush_save()
+# and get the old behaviour exactly.
+const SAVE_FLUSH_GAP := 4.0
+var _save_pending := false
+var _save_flushed := 0.0
+
 func _save_game() -> void:
 	if _preview_island:
 		return
+	_save_pending = true
+
+func _flush_save() -> void:
+	if _preview_island or _boot != null:
+		return
+	_save_flushed = float(Time.get_ticks_msec()) / 1000.0
 	var data := {
 		"coins": coins,
 		"spins": spins,
@@ -5821,34 +6611,136 @@ func _save_game() -> void:
 		"purchased": purchased_ids,
 		"shop_free_last": shop_free_last,
 		"piggy": piggy_coins,
+		"piggy_promised": piggy_promised,
 		"offer_id": offer_id,
 		"offer_until": offer_until,
 		"offer_next": offer_next,
 		"notif_enabled": notif_enabled,
 		"notif_types": notif_types,
 		"notif_log": notif_log,
-		"ts": Time.get_unix_time_from_system(),
+		"notif_prompted": notif_prompted,
+		# What rivals are part-way through doing. Saved because the absence it
+		# was rolled for usually ends with the app having been killed, and a
+		# plan that only lived in memory would mean the notification fired and
+		# the island it described never happened.
+		"pending_raids": pending_raids,
+		"ts": _now(),
+		# The clock high-water mark. Without it in the save, quitting the game
+		# resets it to zero and every backward-clock exploit reopens on launch.
+		"clock_hw": clock_hw,
 	}
-	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
-	if f:
-		f.store_string(JSON.stringify(data))
+	# The dirty flag is cleared by the write succeeding, not by having attempted
+	# one. It used to be cleared on the way in, so a write that failed -- a full
+	# disk, which is exactly the case _write_save's own comment is about -- left
+	# the debounce believing the save was clean. The game then played on and
+	# persisted nothing at all, silently, until some later _save_game() marked
+	# it dirty again and failed in the same way.
+	_save_pending = not _write_save(data)
+	if _save_pending:
+		_save_fails += 1
+		# Once is a hiccup and the debounce will try again shortly. A run of
+		# them is a disk that is not going to come back on its own, and the
+		# player is entitled to know before they lose an evening's play.
+		if _save_fails == SAVE_FAIL_WARN:
+			_banner("Can't save right now — check your free space.", Color(0.9, 0.4, 0.4))
+	else:
+		_save_fails = 0
+
+# Writing the save is the one operation in the game that can lose everything,
+# so it is not allowed to be a single store_string.
+#
+# The old version opened the real file and wrote into it. Anything that
+# interrupts that -- iOS killing a backgrounded app, a battery dying, the OS
+# reclaiming memory -- leaves a half-written JSON file on disk, and the next
+# launch parses it, gets null, and starts a brand new island. Not a rollback:
+# a wipe, silently, with no way back.
+#
+# So: write the new state to a scratch file and only rename it over the real
+# one once it is closed and complete. A rename is atomic, so the save file on
+# disk is always a whole save -- either the old one or the new one, never a
+# torn one. The previous save is kept beside it as .bak, which is what
+# _load_game falls back to if the real file is somehow still unreadable.
+# Returns whether the save is now on disk. Every caller needs that answer --
+# see _flush_save, which used to assume it.
+func _write_save(data: Dictionary) -> bool:
+	var text := JSON.stringify(data)
+	var f := FileAccess.open(SAVE_TMP, FileAccess.WRITE)
+	if f == null:
+		return false
+	f.store_string(text)
+	# Explicit, and then checked. store_string buffers, and a close that fails
+	# on a full disk must not be mistaken for a save that landed.
+	f.close()
+	if FileAccess.get_open_error() != OK:
+		return false
+	if not FileAccess.file_exists(SAVE_TMP):
+		return false
+	var d := DirAccess.open("user://")
+	if d == null:
+		return false
+	# The backup only rotates when this session actually read a save and
+	# understood all of it. If the load bailed partway, what is in memory is
+	# mostly defaults, and rotating would push the last intact copy out of .bak
+	# to make room for it -- turning a load that went wrong once into a wipe
+	# with nothing left to recover from. Overwrite the live file, keep the
+	# backup where it is.
+	if FileAccess.file_exists(SAVE_PATH) and _load_ok:
+		d.remove(SAVE_BAK)
+		d.rename(SAVE_PATH, SAVE_BAK)
+	if d.rename(SAVE_TMP, SAVE_PATH) != OK:
+		# The rename failed with the real file possibly already moved aside.
+		# Put it back rather than leaving the game with no save at all.
+		if not FileAccess.file_exists(SAVE_PATH) and FileAccess.file_exists(SAVE_BAK):
+			d.rename(SAVE_BAK, SAVE_PATH)
+		return false
+	return true
+
+# The save as a dictionary, or empty if there is nothing readable. Tries the
+# real file, then the backup the last successful write left behind.
+func _read_save() -> Dictionary:
+	for path in [SAVE_PATH, SAVE_BAK]:
+		if not FileAccess.file_exists(path):
+			continue
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f == null:
+			continue
+		var text := f.get_as_text()
+		f.close()
+		var parsed = JSON.parse_string(text)
+		if typeof(parsed) == TYPE_DICTIONARY and not (parsed as Dictionary).is_empty():
+			return parsed
+		push_warning("Save at %s is unreadable; falling back." % path)
+	return {}
 
 func _load_game() -> void:
-	if not FileAccess.file_exists(SAVE_PATH):
+	var data := _read_save()
+	if data.is_empty():
+		# Nothing on disk to lose, so the backup guard in _write_save has
+		# nothing to guard: a first run must be allowed to rotate normally.
+		_load_ok = true
 		return
-	var f := FileAccess.open(SAVE_PATH, FileAccess.READ)
-	if f == null:
-		return
-	var data = JSON.parse_string(f.get_as_text())
-	if data == null or typeof(data) != TYPE_DICTIONARY:
-		return
-	coins = int(data.get("coins", 1500))
-	spins = int(data.get("spins", 30))
-	shields = int(data.get("shields", 0))
-	island_level = int(data.get("island_level", data.get("village_level", 1)))
-	revenge_pending = bool(data.get("revenge", false))
-	daily_last = float(data.get("daily_last", 0.0))
-	muted = bool(data.get("muted", false))
+	# First, before any other line in this function: _now() answers with the
+	# high-water mark, and every cooldown, deadline and elapsed-time figure
+	# below is measured against it. Restored one statement too late and the
+	# whole load would run against a clock the player is free to have wound
+	# back. maxf, so a hand-edited save cannot lower it either.
+	clock_hw = maxf(clock_hw, _f(data.get("clock_hw", 0.0)))
+	coins = maxi(0, _i(data.get("coins", 1500), 1500))
+	spins = maxi(0, _i(data.get("spins", 30), 30))
+	shields = clampi(_i(data.get("shields", 0)), 0, 3)
+	# Clamped against nonsense, not against progress.
+	#
+	# It was pinned to CV.ISLANDS.size() on the grounds that island_level
+	# indexes the theme, the palette and the building textures -- but every one
+	# of those wraps with % ISLANDS.size(), so a level past thirty was always
+	# safe to hold. What the tight clamp did instead was silently roll a player
+	# who had sailed past the last island back to thirty on their next launch,
+	# with the level they earned quietly gone. The economy is what actually had
+	# to stop growing, and CV.curve now flattens it at thirty on its own.
+	island_level = clampi(_i(data.get("island_level", data.get("village_level", 1)), 1), 1, MAX_ISLAND)
+	revenge_pending = _b(data.get("revenge", false))
+	daily_last = _f(data.get("daily_last", 0.0))
+	muted = _b(data.get("muted", false))
 	var lo = data.get("col_owned", {})
 	if typeof(lo) == TYPE_DICTIONARY:
 		col_owned = lo
@@ -5858,27 +6750,69 @@ func _load_game() -> void:
 	var lc = data.get("col_claimed", {})
 	if typeof(lc) == TYPE_DICTIONARY:
 		col_claimed = lc
-	col_mega_claimed = bool(data.get("col_mega", false))
-	col_deadline = float(data.get("col_deadline", 0.0))
+	col_mega_claimed = _b(data.get("col_mega", false))
+	col_deadline = _f(data.get("col_deadline", 0.0))
 	var lp = data.get("purchased", [])
 	if typeof(lp) == TYPE_ARRAY:
-		purchased_ids = lp
-	shop_free_last = float(data.get("shop_free_last", 0.0))
-	piggy_coins = int(data.get("piggy", 0))
-	offer_id = String(data.get("offer_id", ""))
-	offer_until = float(data.get("offer_until", 0.0))
-	offer_next = float(data.get("offer_next", 0.0))
-	notif_enabled = bool(data.get("notif_enabled", true))
+		# Only the strings. Every consumer compares this against a pack id, so
+		# a dictionary in here is dead weight at best and a raise at worst.
+		purchased_ids = []
+		for id in lp:
+			if typeof(id) == TYPE_STRING:
+				purchased_ids.append(id)
+	shop_free_last = _f(data.get("shop_free_last", 0.0))
+	piggy_coins = maxi(0, _i(data.get("piggy", 0)))
+	piggy_promised = maxi(0, _i(data.get("piggy_promised", 0)))
+	offer_id = _s(data.get("offer_id", ""))
+	offer_until = _f(data.get("offer_until", 0.0))
+	offer_next = _f(data.get("offer_next", 0.0))
+	notif_enabled = _b(data.get("notif_enabled", true), true)
+	notif_prompted = _b(data.get("notif_prompted", false))
+	var pr = data.get("pending_raids", [])
+	pending_raids = []
+	if typeof(pr) == TYPE_ARRAY:
+		for ev in pr:
+			# Bounded and type-checked like every other list off the save. Each
+			# entry drives a coin subtraction and a building index, so a
+			# hand-edited one is an out-of-bounds write waiting to happen --
+			# _offline_raids clamps both, and this drops the rest on the floor.
+			if pending_raids.size() >= OFFLINE_RAID_MAX:
+				break
+			if typeof(ev) != TYPE_DICTIONARY:
+				continue
+			pending_raids.append({
+				"at": _f(ev.get("at", 0.0)),
+				"npc": _s(ev.get("npc", "")),
+				"emoji": _s(ev.get("emoji", "🚨"), "🚨"),
+				"type": _s(ev.get("type", "steal"), "steal"),
+				"kind": _s(ev.get("kind", "")),
+				"building": clampi(_i(ev.get("building", -1), -1), -1, CV.BUILDINGS.size() - 1),
+				"coins": maxi(0, _i(ev.get("coins", 0))),
+				"text": _s(ev.get("text", "")),
+			})
 	var nt = data.get("notif_types", {})
 	if typeof(nt) == TYPE_DICTIONARY:
 		for k in notif_types:
-			notif_types[k] = bool(nt.get(k, true))
+			notif_types[k] = _b(nt.get(k, true), true)
 	var nl = data.get("notif_log", [])
 	if typeof(nl) == TYPE_ARRAY:
 		notif_log = []
 		for entry in nl:
-			if typeof(entry) == TYPE_DICTIONARY:
-				notif_log.append(entry)
+			# The same cap _notify enforces on the way out. Without it here a
+			# save can carry an arbitrarily long log, and _fill_alerts builds
+			# about ten Controls per entry with no windowing -- a few hundred
+			# thousand rows is an out-of-memory kill on the Alerts page.
+			if notif_log.size() >= NOTIF_LOG_MAX:
+				break
+			if typeof(entry) != TYPE_DICTIONARY:
+				continue
+			notif_log.append({
+				"type": _s(entry.get("type", "spins"), "spins"),
+				"text": _s(entry.get("text", "")),
+				"emoji": _s(entry.get("emoji", "🔔"), "🔔"),
+				"ts": _f(entry.get("ts", 0.0)),
+				"read": _b(entry.get("read", true), true),
+			})
 	# missions2 banked coins_won in island-1 units, from before coin targets rode
 	# the island curve. Its progress is quoted against a target 1.6^(level-1)
 	# times larger now, so lift it onto the same scale on the way in.
@@ -5896,21 +6830,29 @@ func _load_game() -> void:
 			var pd = pst.get("progress", {})
 			if typeof(pd) == TYPE_DICTIONARY:
 				for k in pd:
-					prog[k] = int(pd[k])
+					prog[k] = maxi(0, _i(pd[k]))
 					if legacy_coin_progress and k in MISSION_COIN_TARGETS:
-						prog[k] = _scaled(int(pd[k]))
+						prog[k] = _scaled(maxi(0, _i(pd[k])))
 			var cl := {}
 			var cd = pst.get("claimed", {})
 			if typeof(cd) == TYPE_DICTIONARY:
 				for k in cd:
-					cl[k] = bool(cd[k])
-			mission_state[period] = {"key": int(pst.get("key", -1)), "progress": prog, "claimed": cl, "bonus": bool(pst.get("bonus", false))}
-	var b = data.get("buildings", [0, 0, 0, 0, 0])
+					cl[k] = _b(cd[k])
+			mission_state[period] = {"key": _i(pst.get("key", -1), -1), "progress": prog, "claimed": cl, "bonus": _b(pst.get("bonus", false))}
+	# Clamped and resized exactly the way the rivals below already are. This
+	# array was the one the loader trusted, and it is the player's own: a level
+	# of -10 sends village_view's costs[level] out of bounds and the island
+	# page then never repaints again, while a sixth entry sends _offline_raids
+	# indexing past the five building names every island theme has. Both
+	# survive a restart, because the bad value is written straight back out.
+	var b = data.get("buildings", [])
 	buildings = []
-	for v in b:
-		buildings.append(int(v))
-	while buildings.size() < 5:
+	if typeof(b) == TYPE_ARRAY:
+		for v in b:
+			buildings.append(clampi(_i(v), 0, CV.MAX_STAR))
+	while buildings.size() < CV.BUILDINGS.size():
 		buildings.append(0)
+	buildings.resize(CV.BUILDINGS.size())
 	# What this save can still prove it earned, rebuilt from the things that pay
 	# stars and are themselves saved: every hut level standing on the island you
 	# hold, a finished island's worth for each one behind you, and every card
@@ -5918,7 +6860,7 @@ func _load_game() -> void:
 	# not recoverable from a save that never wrote them down.
 	var earned := 0
 	for lv in buildings:
-		var n := clampi(int(lv), 0, CV.MAX_STAR)
+		var n := clampi(_i(lv), 0, CV.MAX_STAR)
 		earned += n * (n + 1) / 2
 	earned += 75 * maxi(0, island_level - 1)
 	for c in CV.COLLECTIONS:
@@ -5937,30 +6879,57 @@ func _load_game() -> void:
 	# what was left after the boxes had taken their cut; rebuilding the standing
 	# is the only way to give back what opening a box used to quietly cost.
 	# maxi, because melted spares can push a balance above what rank counts.
-	stars = int(data["stars"]) if data.has("stars") else earned
-	rank_stars = int(data["rank_stars"]) if data.has("rank_stars") else maxi(earned, stars)
+	stars = maxi(0, _i(data["stars"], earned)) if data.has("stars") else earned
+	rank_stars = maxi(0, _i(data["rank_stars"], earned)) if data.has("rank_stars") else maxi(earned, stars)
 
-	var elapsed := Time.get_unix_time_from_system() - float(data.get("ts", 0))
-	if elapsed > 0 and spins < SPIN_CAP:
-		var regen := int(elapsed / SPIN_REGEN_SECS) * SPIN_REGEN_AMOUNT
-		if regen > 0:
-			_offline_spins_gained = mini(regen, SPIN_CAP - spins)
-			spins += _offline_spins_gained
-	var loaded_npcs = data.get("npcs", [])
+	_sanitize_clock()
+
+	# Bounded. `ts` is a number in the save file, so "away since 1970" costs an
+	# attacker one edit and no clock change at all; a week is longer than any
+	# absence the offline systems have anything left to give for.
+	var elapsed := clampf(_now() - _f(data.get("ts", 0.0)), 0.0, MAX_AWAY_SECS)
+	_credit_time_away(elapsed)
+	var raw_npcs = data.get("npcs", [])
+	var loaded_npcs: Array = raw_npcs if typeof(raw_npcs) == TYPE_ARRAY else []
 	npcs = []
 	for n in loaded_npcs:
+		# The pool is a fixed size and _stock_rivals only ever tops it up, so a
+		# save carrying more than a poolful is either damaged or edited. Every
+		# rival is a row on the leaderboard and a card on the raid screen, so
+		# an unbounded list is an unbounded number of Controls to build.
+		if npcs.size() >= CV.RIVAL_POOL:
+			break
+		# A save is a file on a device the player owns; it can be edited, and a
+		# crash can still leave a stale one behind. A rival that is not a
+		# dictionary would take .get() down with it and abort the whole load,
+		# which costs the player the island. Skip it instead.
+		if typeof(n) != TYPE_DICTIONARY:
+			continue
 		var nb := []
-		for v in n.get("buildings", [1, 1, 1, 1, 1]):
-			nb.append(int(v))
+		var raw_b = n.get("buildings", [])
+		if typeof(raw_b) == TYPE_ARRAY:
+			for v in raw_b:
+				nb.append(clampi(_i(v), 0, CV.MAX_STAR))
 		while nb.size() < 5:
 			nb.append(1)
+		nb.resize(5)
 		npcs.append({
-			"name": n.get("name", "Rival"),
-			"emoji": n.get("emoji", "🧔"),
-			"flag": n.get("flag", "??"),
-			"coins": int(n.get("coins", 2000)) + mini(8000, int(maxf(elapsed, 0.0) / 60.0) * 15),
+			"name": _s(n.get("name", "Rival"), "Rival"),
+			"emoji": _s(n.get("emoji", "🧔"), "🧔"),
+			"flag": _s(n.get("flag", "??"), "??"),
+			# Capped, not just grown. mini() bounded what a single load could
+			# add, but nothing bounded the total, and a rival's purse *is* the
+			# steal payout -- so force-quit, jump the clock, relaunch, twenty
+			# times over, and every rival on the island is worth six figures
+			# before the island multiplier and the bet multiplier are applied.
+			# The clock high-water mark makes that loop cost a permanently
+			# broken clock; the ceiling makes it pointless as well.
+			"coins": mini(NPC_COIN_CAP, maxi(0, _i(n.get("coins", 2000), 2000))
+				+ mini(8000, int(elapsed / 60.0) * 15)),
 			"buildings": nb,
-			"shield": bool(n.get("shield", false)),
-			"island": int(n.get("island", randi_range(1, CV.ISLANDS.size()))),
+			"shield": _b(n.get("shield", false)),
+			# Missing keeps its old meaning -- scatter them -- rather than
+			# quietly parking every unlabelled rival on island 1.
+			"island": clampi(_i(n.get("island", 0), 0) if _i(n.get("island", 0), 0) > 0 else randi_range(1, CV.ISLANDS.size()), 1, CV.ISLANDS.size()),
 		})
-	_offline_elapsed = maxf(elapsed, 0.0)
+	_load_ok = true

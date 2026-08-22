@@ -13,8 +13,17 @@ extends Control
 # reason a player watches the third reel land.
 #
 # The strips are fixed, not shuffled, so the machine is the same object every
-# spin. Coin appears three times on each and the rare symbols once, so the
-# strip itself telegraphs the odds the way a real reel does.
+# spin, and coin is the densest symbol on all three (four cells of fourteen)
+# with bolt the sparsest.
+#
+# What the strip does NOT do is set the odds, and the comment here used to say
+# it did. The outcome is rolled first, in main.gd's _roll(), and start_spin()
+# then searches the strip for the symbol it was handed and drives the reel to
+# stop there -- so the strip decides what the near misses look like and nothing
+# else. Sampling the printed cells would give a triple about 3.5% of the time;
+# the real rate is around 31%, because _roll() forces a triple 30% of the time
+# outright. Retuning these arrays changes the show, not the payouts. Anyone
+# after the payouts wants CV.SYMBOLS and _roll().
 
 signal reel_stopped(index: int)
 
@@ -99,6 +108,16 @@ func start_spin(result: Array) -> void:
 	_win = 0.0
 	for c in COLS:
 		_stopped[c] = 0
+		# Wrapped back onto the strip before anything is measured from it.
+		#
+		# A reel travels three to five whole strips per spin and _pos only ever
+		# went up, so on a save that has been played for months it is a number
+		# in the millions -- and these are 32-bit floats, whose spacing at a
+		# million is already a sixteenth of a cell. The scroll quantises, the
+		# blur reads wrong, and far enough out the reel cannot represent a
+		# fractional position at all and starts jumping between symbols. Nothing
+		# downstream cares about the absolute value: _draw takes posmod of it.
+		_pos[c] = fposmod(_pos[c], float(STRIP))
 		_from[c] = _pos[c]
 		var strip: Array = STRIPS[c]
 		var want: int = int(_pos[c]) + int(TRAVEL[c]) * STRIP

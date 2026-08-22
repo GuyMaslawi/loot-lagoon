@@ -110,8 +110,7 @@ func _add_art() -> void:
 	# The illustration was drawn to be looked at, not to be read over. Hazing it
 	# back a little and laying a scrim at each end is what lets sand-coloured
 	# display type sit on the sky and white body type sit on the water.
-	var sh := Shader.new()
-	sh.code = """
+	var sh := Lagoon.shader("""
 shader_type canvas_item;
 
 uniform vec3 haze = vec3(0.827, 0.945, 0.988);
@@ -129,7 +128,7 @@ void fragment() {
 	c.rgb *= mix(0.88, 1.0, 1.0 - smoothstep(0.50, 1.05, length(UV - vec2(0.5))));
 	COLOR = c;
 }
-"""
+""")
 	_art_mat = ShaderMaterial.new()
 	_art_mat.shader = sh
 	_art_mat.set_shader_parameter("art_haze", ART_HAZE)
@@ -784,8 +783,7 @@ func _toss_coin() -> void:
 # same primitive at two colours, so they always agree about where he is.
 func _disc(tint: Color, edge := 0.3) -> ColorRect:
 	var r := ColorRect.new()
-	var sh := Shader.new()
-	sh.code = """
+	var sh := Lagoon.shader("""
 shader_type canvas_item;
 
 uniform vec4 tint = vec4(1.0);
@@ -797,7 +795,7 @@ void fragment() {
 	float a = 1.0 - smoothstep(edge, 1.0, d);
 	COLOR = vec4(tint.rgb, tint.a * a * a * fade);
 }
-"""
+""")
 	var mat := ShaderMaterial.new()
 	mat.shader = sh
 	mat.set_shader_parameter("tint", tint)
@@ -881,8 +879,7 @@ func _add_loader() -> void:
 # "loading" and "stuck".
 func _sheen(inner_h: float) -> ColorRect:
 	var r := ColorRect.new()
-	var sh := Shader.new()
-	sh.code = """
+	var sh := Lagoon.shader("""
 shader_type canvas_item;
 
 uniform vec2 rect_px = vec2(100.0, 32.0);
@@ -904,7 +901,7 @@ void fragment() {
 	float band = smoothstep(0.14, 0.0, d);
 	COLOR = vec4(1.0, 0.98, 0.90, band * inside * 0.34);
 }
-"""
+""")
 	var mat := ShaderMaterial.new()
 	mat.shader = sh
 	mat.set_shader_parameter("radius", inner_h * 0.5)

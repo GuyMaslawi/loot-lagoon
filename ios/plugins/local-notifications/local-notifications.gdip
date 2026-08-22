@@ -1,0 +1,15 @@
+[config]
+name="LocalNotifications"
+binary="local-notifications.xcframework"
+initialization="godot_local_notifications_init"
+deinitialization="godot_local_notifications_deinit"
+
+[dependencies]
+linked=[]
+embedded=[]
+system=["Foundation.framework","UserNotifications.framework","UIKit.framework"]
+capabilities=[]
+files=[]
+linker_flags=[]
+
+[plist]

@@ -53,28 +53,60 @@ static func burst(parent: Control, pos: Vector2, color: Color, count := 14) -> v
 
 static func confetti(parent: Control, count := 40) -> void:
 	var colors := [Color(1, 0.8, 0.2), Color(0.9, 0.3, 0.4), Color(0.4, 0.8, 1.0), Color(0.5, 0.9, 0.5), Color(0.8, 0.5, 1.0)]
+	# The viewport rather than the 720x1280 the game is drawn for: under
+	# stretch/aspect "expand" a wide screen really is wider than the design, and
+	# confetti hard-coded to 720 fell down the left-hand side of an iPad.
+	var view := parent.get_viewport_rect().size
+	var span := maxf(view.x, 720.0)
+	var floor_y := maxf(view.y, 1280.0) + 120.0
 	for i in count:
 		var p := ColorRect.new()
 		p.color = colors.pick_random()
 		p.size = Vector2(randf_range(8, 14), randf_range(10, 18))
-		p.position = Vector2(randf_range(0, 720), randf_range(-120, -20))
+		p.position = Vector2(randf_range(0, span), randf_range(-120, -20))
 		p.rotation = randf() * TAU
 		p.z_index = 95
 		p.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		parent.add_child(p)
 		var tw := parent.create_tween()
 		tw.set_parallel(true)
-		tw.tween_property(p, "position:y", 1400.0, randf_range(1.3, 2.4)).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		tw.tween_property(p, "position:y", floor_y, randf_range(1.3, 2.4)).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 		tw.tween_property(p, "position:x", p.position.x + randf_range(-140, 140), 2.4)
 		tw.tween_property(p, "rotation", p.rotation + randf_range(-7, 7), 2.4)
 		tw.chain().tween_callback(p.queue_free)
 
+# Shakes a node and puts it back exactly where it started.
+#
+# "Where it started" is the catch. This read node.position at the moment it was
+# called, so a second shake arriving while the first was still running captured
+# a rattled mid-shake position as the rest state and left the node parked there
+# -- and the node it is usually handed is a whole page, which then sits a few
+# pixels off for the rest of the session. Two revenge hits in quick succession
+# were enough to do it. The true rest position is remembered on the node itself
+# and the running tween is killed rather than layered on top of.
+const _SHAKE_HOME := "fx_shake_home"
+const _SHAKE_RUN := "fx_shake_tween"
+
 static func shake(node: Control, amount := 12.0, times := 6) -> void:
+	# A shake already in flight is stopped and undone first, so `orig` below is
+	# always the node's true rest position rather than wherever the last rattle
+	# happened to leave it.
+	if node.has_meta(_SHAKE_RUN):
+		var running = node.get_meta(_SHAKE_RUN)
+		if running is Tween and (running as Tween).is_valid():
+			(running as Tween).kill()
+		if node.has_meta(_SHAKE_HOME):
+			node.position = node.get_meta(_SHAKE_HOME)
 	var orig := node.position
+	node.set_meta(_SHAKE_HOME, orig)
 	var tw := node.create_tween()
+	node.set_meta(_SHAKE_RUN, tw)
 	for i in times:
 		tw.tween_property(node, "position", orig + Vector2(randf_range(-amount, amount), randf_range(-amount, amount)), 0.04)
 	tw.tween_property(node, "position", orig, 0.05)
+	tw.tween_callback(func() -> void:
+		node.remove_meta(_SHAKE_RUN)
+		node.remove_meta(_SHAKE_HOME))
 
 static func pulse_forever(node: Control, scale := 1.06, period := 0.8) -> void:
 	node.resized.connect(func() -> void: node.pivot_offset = node.size * 0.5)

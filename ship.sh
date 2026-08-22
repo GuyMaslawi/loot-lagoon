@@ -72,6 +72,12 @@ JSON
 # everything still exports, archives and uploads perfectly, except that IAP
 # quietly falls back to its simulated store and every purchase is free. That is
 # far too quiet a way to ship a game that takes money.
+grep -q '^plugins/LocalNotifications=true' export_presets.cfg || {
+	# export_presets.cfg is gitignored, so a fresh clone has no plugins enabled
+	# and the build comes out silently missing a whole subsystem.
+	echo "export_presets.cfg is missing plugins/LocalNotifications=true" >&2
+	exit 1
+}
 grep -q '^plugins/IOSInAppPurchase=true' export_presets.cfg || {
 	echo "export_presets.cfg is missing plugins/IOSInAppPurchase=true" >&2
 	echo "without it the build ships a simulated store -- add it before shipping" >&2
@@ -82,8 +88,21 @@ grep -q '^plugins/IOSInAppPurchase=true' export_presets.cfg || {
 echo "==> exporting release project"
 rm -rf "$OUT"
 mkdir -p "$OUT"            # Godot refuses to export into a missing directory
-godot --headless --export-release "iOS" "$PWD/$OUT/LootLagoon.ipa" 2>&1 \
-	| grep -iE "^ERROR|error:" && exit 1 || true
+# The export's own exit code decides, and then the log is scanned as well.
+# This used to be a bare pipe into grep: under `set -e` the pipeline's status is
+# grep's, and the trailing `|| true` discarded even that -- so an export that
+# failed without printing a line matching the pattern was read as a success,
+# and the script went on to archive whatever stale project was lying around.
+export_log="$OUT/export.log"
+if ! godot --headless --export-release "iOS" "$PWD/$OUT/LootLagoon.ipa" > "$export_log" 2>&1; then
+	echo "!! godot export failed" >&2
+	tail -40 "$export_log" >&2
+	exit 1
+fi
+if grep -iE "^ERROR|error:" "$export_log"; then
+	echo "!! godot export reported errors" >&2
+	exit 1
+fi
 
 sed -i '' 's/CODE_SIGN_IDENTITY = "Apple Distribution";/CODE_SIGN_IDENTITY = "Apple Development";/' "$PROJ/project.pbxproj"
 

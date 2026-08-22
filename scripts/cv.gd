@@ -698,12 +698,37 @@ static func island_bg_tex(level: int) -> Texture2D:
 		t = bg_tex("village")
 	return t
 
+# =============================================================================
+#  The economy curve
+# =============================================================================
+#
+# Everything priced in coins is written at its island-1 value and multiplied by
+# 1.6 per island. That is a compounding curve with no natural end, and
+# island_level has no ceiling -- the art wraps back to Green Meadows after
+# thirty, but the multiplier just keeps going.
+#
+# It cannot keep going. 1.6^89 is about 10^18, which is where a 64-bit integer
+# stops: a star cost or a rival's vault computed past there wraps to a negative
+# number, and a game whose prices have gone negative is not recoverable. Nobody
+# sails to island 90 in a week, but a player who has held the game for a year
+# is exactly the player who must not have their save walk off a cliff.
+#
+# Thirty is where the design already stops -- "a build that costs 400 on Green
+# Meadows costs 332,306,995 on the last island" is 400 x 1.6^29 exactly -- so
+# the curve flattens where the islands run out. Past that, prices and payouts
+# hold their island-30 values and stay in proportion to each other, which is
+# the only property the curve was ever for.
+const ECONOMY_MAX_LEVEL := 30
+
+static func curve(level: int) -> float:
+	return pow(1.6, clampi(level, 1, ECONOMY_MAX_LEVEL) - 1)
+
 # Coins on the 1.6x-per-island curve, snapped to three significant digits so a
 # payout reads as "+660" and "+1.25M" rather than "+655" and "+1,246,151".
 static func scaled(base: int, level: int) -> int:
 	if base <= 0:
 		return 0
-	var v: float = base * pow(1.6, level - 1)
+	var v: float = base * curve(level)
 	var step := 10.0
 	while v / step >= 1000.0:
 		step *= 10.0

@@ -313,8 +313,7 @@ func _build_card() -> void:
 # rounded-rect distance field instead: a lit top rim, a shadowed base, and the
 # sides falling away so the front face bows toward the player.
 static func _cabinet_material() -> ShaderMaterial:
-	var sh := Shader.new()
-	sh.code = """
+	var sh := Lagoon.shader("""
 shader_type canvas_item;
 
 uniform vec2  rect_px = vec2(692.0, 764.0);
@@ -351,7 +350,7 @@ void fragment() {
 
 	COLOR = vec4(c, inside);
 }
-"""
+""")
 	var mat := ShaderMaterial.new()
 	mat.shader = sh
 	return mat
@@ -446,7 +445,13 @@ func set_target(npc: Dictionary, coin_mult := 1.0) -> void:
 func set_meter(held: int, cap: int, secs_to_refill: float, refill: int) -> void:
 	_meter.max_value = float(cap)
 	_meter.value = float(mini(held, cap))
-	_meter_label.text = "%d / %d" % [held, cap]
+	# Over the cap the "/ 50" is not a limit any more, it is a smaller number
+	# sitting next to a bigger one, and "64 / 50" reads as arithmetic that has
+	# gone wrong. Bolts and spin packs both push the meter past the cap on
+	# purpose -- the cap only ever governs the free refill -- so above it the
+	# meter says what is held and nothing else. The top bar has always done
+	# this; the machine had not.
+	_meter_label.text = ("%d / %d" % [held, cap]) if held <= cap else str(held)
 	if held >= cap:
 		_timer_label.text = "Spins full"
 	else:

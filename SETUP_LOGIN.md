@@ -9,17 +9,22 @@
 3. בתפריט: **APIs & Services → OAuth consent screen**
    - בחר **External**, מלא שם אפליקציה ("Coin Village") ואימייל, שמור
 4. **APIs & Services → Credentials → Create Credentials → OAuth client ID**
-   - Application type: **Desktop app**
+   - Application type: **Desktop app** (או **iOS**) — *לא* "Web application"
    - שם: "Coin Village Desktop"
-5. העתק את ה-**Client ID** ואת ה-**Client Secret**
+5. העתק את ה-**Client ID** בלבד
 6. צור קובץ בשם `google_oauth.json` בתיקיית הפרויקט (ליד `project.godot`) עם התוכן:
 
 ```json
 {
-  "client_id": "XXXXXX.apps.googleusercontent.com",
-  "client_secret": "GOCSPX-XXXXXX"
+  "client_id": "XXXXXX.apps.googleusercontent.com"
 }
 ```
+
+> **אל תוסיף `client_secret` לקובץ הזה.** הזרימה בקוד היא PKCE בלבד
+> (`scripts/google_auth.gd`) — היא לא קוראת סוד ולא צריכה אחד. כל דבר שנמצא
+> בקובץ הזה נארז לתוך האפליקציה ולכן ניתן לקריאה על ידי כל אחד, אז סוד ששמים
+> כאן הוא סוד שדלף. זו גם הסיבה שסוג הקליינט חייב להיות Desktop/iOS ולא
+> "Web application", שדורש סוד.
 
 זהו! מהרגע הזה כפתור "Sign in with Google" יפתח את הדפדפן, תתחבר, והשם שלך יופיע במשחק ובטבלת הדירוג.
 

@@ -169,8 +169,16 @@ func _on_up() -> void:
 
 # A single expanding ring of the island's glow color — the visual "clunk"
 # that tells you the machine took the tap.
-func _ring_pop() -> void:
-	var ring := ColorRect.new()
+# Compiled once for the whole game, not once per tap.
+#
+# This is the most-pressed control in the app and _ring_pop runs on every
+# release of it. Building a fresh Shader each time meant a new shader RID and a
+# new render pipeline per tap -- real per-press cost on Metal, not just a node
+# allocation, and it grew with how fast the player span. The material stays
+# per-ring, because the ring's colour is a uniform on it.
+static var _RING_SHADER: Shader = _make_ring_shader()
+
+static func _make_ring_shader() -> Shader:
 	var sh := Shader.new()
 	sh.code = """
 shader_type canvas_item;
@@ -181,8 +189,12 @@ void fragment() {
 	COLOR = vec4(col, band * 0.75);
 }
 """
+	return sh
+
+func _ring_pop() -> void:
+	var ring := ColorRect.new()
 	var mat := ShaderMaterial.new()
-	mat.shader = sh
+	mat.shader = _RING_SHADER
 	mat.set_shader_parameter("col", _v3(_glow_col))
 	ring.material = mat
 	ring.size = size * 0.7

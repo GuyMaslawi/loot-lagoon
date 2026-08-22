@@ -182,6 +182,32 @@ static func glass(radius := R_CARD, opacity := 0.90) -> StyleBoxFlat:
 
 # A darker piece of glass, for wells that content sits *inside* rather than on
 # top of — the reel window, progress tracks, inset rows.
+# =============================================================================
+#  Shader programs
+# =============================================================================
+#
+# One compiled program per distinct piece of shader source, for the whole run.
+#
+# Every gloss, every brass fitting and every button face in the game asked for
+# a `Shader.new()` of its own and pasted the same source into it. The source is
+# genuinely identical -- radius, tint and rect_px are uniforms set on the
+# *material*, which is still per-node -- so what that bought was a fresh shader
+# RID and a fresh pipeline compile per card and per button. Opening the shop
+# minted 57 of them and cost 48ms on a desktop; on a phone that is the hitch
+# you feel when the page appears, and it came back on every rebuild.
+#
+# Keyed on the source itself, so a caller cannot forget to register a new one
+# and there is no name to keep in sync.
+static var _shaders := {}
+
+static func shader(code: String) -> Shader:
+	var sh: Shader = _shaders.get(code)
+	if sh == null:
+		sh = Shader.new()
+		sh.code = code
+		_shaders[code] = sh
+	return sh
+
 static func glass_well(radius := R_CARD) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(LAGOON_DEEP.r, LAGOON_DEEP.g, LAGOON_DEEP.b, 0.30)
@@ -194,8 +220,7 @@ static func glass_well(radius := R_CARD) -> StyleBoxFlat:
 # the top, cool water pooling at the bottom. Add as the last child of a panel.
 static func gloss(radius := R_CARD, tint := LAGOON) -> ColorRect:
 	var r := ColorRect.new()
-	var sh := Shader.new()
-	sh.code = """
+	var sh := shader("""
 shader_type canvas_item;
 
 uniform vec2 rect_px = vec2(100.0, 100.0);
@@ -224,7 +249,7 @@ void fragment() {
 	float a = max(max(sheen, rim * 0.55), pool) * inside;
 	COLOR = vec4(col, a);
 }
-"""
+""")
 	var mat := ShaderMaterial.new()
 	mat.shader = sh
 	mat.set_shader_parameter("radius", float(radius))
@@ -266,8 +291,7 @@ static func card(parent: Node, radius := R_CARD, pad := 18, opacity := 0.90) -> 
 # down, shadow through the belly, and bounce light along the bottom edge.
 # That four-stop read is what separates brass from "a yellow rectangle".
 static func brass_material(radius := R_CHIP) -> ShaderMaterial:
-	var sh := Shader.new()
-	sh.code = """
+	var sh := shader("""
 shader_type canvas_item;
 
 uniform vec2 rect_px = vec2(100.0, 40.0);
@@ -295,7 +319,7 @@ void fragment() {
 	c = mix(c, lo * 0.55, smoothstep(-3.5, -0.5, d));
 	COLOR = vec4(c, inside);
 }
-"""
+""")
 	var mat := ShaderMaterial.new()
 	mat.shader = sh
 	mat.set_shader_parameter("radius", float(radius))
@@ -440,8 +464,7 @@ static func button_custom(btn: Button, face: Color, bevel: Color, ink: Color, ra
 # are already in the tree.
 static func button_gloss(btn: Button, radius := 22) -> ColorRect:
 	var r := ColorRect.new()
-	var sh := Shader.new()
-	sh.code = """
+	var sh := shader("""
 shader_type canvas_item;
 
 uniform vec2 rect_px = vec2(100.0, 40.0);
@@ -464,7 +487,7 @@ void fragment() {
 	COLOR.rgb = mix(COLOR.rgb, vec3(0.0), base);
 	COLOR.a = max(COLOR.a, base * inside);
 }
-"""
+""")
 	var mat := ShaderMaterial.new()
 	mat.shader = sh
 	mat.set_shader_parameter("radius", float(radius))
@@ -484,8 +507,7 @@ void fragment() {
 # direction is most of why the chrome reads as one material system.
 static func backdrop(page: Control) -> ShaderMaterial:
 	var bg := ColorRect.new()
-	var sh := Shader.new()
-	sh.code = """
+	var sh := shader("""
 shader_type canvas_item;
 
 uniform vec3 sky_hi   = vec3(0.827, 0.945, 0.988);
@@ -519,7 +541,7 @@ void fragment() {
 	c *= mix(0.94, 1.0, 1.0 - smoothstep(0.55, 1.05, length(UV - vec2(0.5))));
 	COLOR = vec4(c, 1.0);
 }
-"""
+""")
 	var mat := ShaderMaterial.new()
 	mat.shader = sh
 	bg.material = mat
