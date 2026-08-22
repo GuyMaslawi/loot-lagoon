@@ -431,29 +431,34 @@ const CARD_DROP_CHANCE := 0.25
 # High-star cards must stay rare or a season is over in days, not a month.
 const DROP_STAR_WEIGHTS := [50, 28, 13, 6, 3]
 
-# weight = relative chance a dropped card comes from this collection.
-# Easy sets drop often; hard sets are rare and long.
-# Each item is [emoji, name, stars]. Stars (1..5) are the card's rarity —
-# 5-star cards only exist in Hard sets, so chest star odds drive set odds.
+# weight = relative chance a dropped card comes from this collection, out of
+# 1000. The spread is the difficulty ladder and it has to be wide: every set is
+# nine cards, so the only thing separating a two-day set from a three-week one
+# is how often the game reaches into it at all. Beach is drawn ~70x more often
+# than Royal Jewels.
+# Each item is [emoji, name, stars]. Stars (1..5) are the card's rarity, and
+# 5★ is gold -- the legendary. Every set ends on at least one gold card, so
+# even an Easy set has something left to chase after the commons fill in, and
+# Royal Jewels is gold all the way across.
 const COLLECTIONS := [
-	{"id": "beach", "name": "Beach Day", "icon": "🏖️", "diff": "Easy", "weight": 30,
+	{"id": "beach", "name": "Beach Day", "icon": "🏖️", "diff": "Easy", "weight": 500,
 	 "reward_spins": 60,
-	 "items": [["🐚", "Seashell", 1], ["🦀", "Crab", 1], ["⛱️", "Umbrella", 1], ["🍦", "Ice Cream", 2], ["🕶️", "Shades", 2], ["🏄", "Surfboard", 3]]},
-	{"id": "fruits", "name": "Fruit Basket", "icon": "🧺", "diff": "Easy", "weight": 26,
+	 "items": [["🐚", "Seashell", 1], ["🦀", "Crab", 1], ["⛱️", "Umbrella", 1], ["🍦", "Ice Cream", 2], ["🕶️", "Shades", 2], ["🩴", "Flip-Flops", 2], ["🏄", "Surfboard", 3], ["🏐", "Beach Ball", 3], ["🌅", "Golden Sunset", 5]]},
+	{"id": "fruits", "name": "Fruit Basket", "icon": "🧺", "diff": "Easy", "weight": 320,
 	 "reward_spins": 100,
-	 "items": [["🍎", "Apple", 1], ["🍌", "Banana", 1], ["🍇", "Grapes", 2], ["🍉", "Watermelon", 2], ["🍍", "Pineapple", 3], ["🥝", "Kiwi", 3]]},
-	{"id": "pirate", "name": "Pirate Treasure", "icon": "🏴‍☠️", "diff": "Medium", "weight": 17,
+	 "items": [["🍎", "Apple", 1], ["🍌", "Banana", 1], ["🍇", "Grapes", 2], ["🍉", "Watermelon", 2], ["🍓", "Strawberry", 2], ["🍍", "Pineapple", 3], ["🥝", "Kiwi", 3], ["🥭", "Mango", 4], ["🍋", "Golden Lemon", 5]]},
+	{"id": "pirate", "name": "Pirate Treasure", "icon": "🏴‍☠️", "diff": "Medium", "weight": 110,
 	 "reward_spins": 250,
-	 "items": [["🗺️", "Old Map", 2], ["🧭", "Compass", 2], ["⚓", "Anchor", 2], ["🦜", "Parrot", 3], ["💰", "Gold Bag", 3], ["🗡️", "Cutlass", 3], ["🛢️", "Rum Barrel", 4], ["☠️", "Jolly Roger", 4]]},
-	{"id": "ocean", "name": "Ocean Life", "icon": "🌊", "diff": "Medium", "weight": 13,
+	 "items": [["🗺️", "Old Map", 2], ["🧭", "Compass", 2], ["⚓", "Anchor", 3], ["🦜", "Parrot", 3], ["🗡️", "Cutlass", 3], ["🛢️", "Rum Barrel", 4], ["☠️", "Jolly Roger", 4], ["💰", "Gold Hoard", 5], ["🚢", "Ghost Ship", 5]]},
+	{"id": "ocean", "name": "Ocean Life", "icon": "🌊", "diff": "Medium", "weight": 45,
 	 "reward_spins": 400,
-	 "items": [["🐠", "Reef Fish", 2], ["🪸", "Coral", 2], ["🐙", "Octopus", 3], ["🐬", "Dolphin", 3], ["🐢", "Turtle", 3], ["🦈", "Shark", 4], ["🐳", "Whale", 4], ["🦞", "Lobster", 4]]},
-	{"id": "relics", "name": "Mystic Relics", "icon": "🔮", "diff": "Hard", "weight": 9,
+	 "items": [["🐠", "Reef Fish", 2], ["🪸", "Coral", 3], ["🐙", "Octopus", 3], ["🐢", "Turtle", 3], ["🐬", "Dolphin", 4], ["🦞", "Lobster", 4], ["🦈", "Shark", 4], ["🐳", "Whale", 5], ["🧜", "Mermaid", 5]]},
+	{"id": "relics", "name": "Mystic Relics", "icon": "🔮", "diff": "Hard", "weight": 18,
 	 "reward_spins": 1000,
-	 "items": [["📿", "Prayer Beads", 3], ["🏺", "Amphora", 3], ["🕯️", "Ritual Candle", 3], ["🗿", "Stone Idol", 4], ["⚱️", "Ancient Urn", 4], ["🪬", "Amulet", 4], ["📜", "Lost Scroll", 4], ["🔮", "Crystal Orb", 5], ["🪄", "Wand", 5], ["🧿", "Evil Eye", 5]]},
-	{"id": "royal", "name": "Royal Jewels", "icon": "👑", "diff": "Hard", "weight": 5,
+	 "items": [["📿", "Prayer Beads", 3], ["🏺", "Amphora", 3], ["🗿", "Stone Idol", 4], ["⚱️", "Ancient Urn", 4], ["🪬", "Amulet", 4], ["📜", "Lost Scroll", 4], ["🔮", "Crystal Orb", 5], ["🪄", "Wand", 5], ["🧿", "Evil Eye", 5]]},
+	{"id": "royal", "name": "Royal Jewels", "icon": "👑", "diff": "Hard", "weight": 7,
 	 "reward_spins": 2000,
-	 "items": [["⚜️", "Fleur-de-Lis", 3], ["🥇", "Medal", 3], ["🛡️", "Crest", 3], ["💍", "Royal Ring", 4], ["🏆", "Gold Cup", 4], ["⚔️", "Twin Swords", 4], ["👑", "Crown", 5], ["💎", "Diamond", 5], ["🔱", "Trident", 5], ["🎖️", "Royal Order", 5]]},
+	 "items": [["⚜️", "Fleur-de-Lis", 5], ["🥇", "Gold Medal", 5], ["💍", "Royal Ring", 5], ["🏆", "Gold Cup", 5], ["⚔️", "Twin Swords", 5], ["🔱", "Trident", 5], ["🎖️", "Royal Order", 5], ["💎", "Diamond", 5], ["👑", "Crown", 5]]},
 ]
 
 static var _efont: Font
