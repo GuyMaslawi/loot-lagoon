@@ -173,7 +173,6 @@ var col_deadline := 0.0
 # The Cards tab is two screens behind one nav button: a shelf of six sets, and
 # the set you tapped. Empty means the shelf.
 var col_open := ""
-var _col_back: Button
 var _convert_btn: Button
 var _convert_badge: Panel
 
@@ -554,19 +553,27 @@ func _notification(what: int) -> void:
 
 # --- page transitions ---
 
+# Left to right: the bottom bar's own order, Island / Shop / Spin / Cards /
+# Quests, with the three pages the bar has no room for hanging off the end --
+# Boxes straight after Cards because that is what you arrive from, then Options
+# and Alerts, which nothing leads onward from.
+#
+# One order now does two jobs. It picks the side a page slides in from, and it
+# is the line a swipe walks, so a page that arrives from the right is always a
+# page that sits to the right on the bar. The old order counted outward from
+# Spin, which had Island and Shop -- opposite ends of the bar -- both sliding
+# in from the same side.
+const PAGE_ORDER := ["island", "shop", "spin", "collections", "boxes", "quests", "options", "alerts"]
+
 func _page_rank(p: Control) -> int:
-	if p == slot_page:
-		return 0
 	if p == village_page:
-		return 1
-	# Left-to-right order for the slide transition. Boxes sits immediately right
-	# of Cards because that is where you arrive from, and Alerts at the far end
-	# because nothing leads onward from it.
-	var order := ["shop", "collections", "boxes", "quests", "options", "alerts"]
-	for i in order.size():
-		if pages.get(order[i]) == p:
-			return 2 + i
-	return 0
+		return 0
+	if p == slot_page:
+		return 2
+	for i in PAGE_ORDER.size():
+		if pages.get(PAGE_ORDER[i]) == p:
+			return i
+	return 2
 
 func _goto(target: Control) -> void:
 	if _transitioning or target == _current_page or _raiding() or _journey_layer != null:
@@ -579,6 +586,12 @@ func _goto(target: Control) -> void:
 	_transitioning = true
 	Sfx.play("pop", -10.0)
 	var from := _current_page
+	# Where a back swipe should leave a page the bar cannot reach. Only ever
+	# recorded as a page that is on the bar, so that drilling from one off-bar
+	# page into another cannot leave the pair swiping back and forth at each
+	# other with no way out.
+	if _strip_index(target) < 0 and _strip_index(from) >= 0:
+		_swipe_home = from
 	_current_page = target
 	target.visible = true
 	var dir := 1.0 if _page_rank(target) > _page_rank(from) else -1.0
@@ -600,6 +613,171 @@ func _goto(target: Control) -> void:
 		call_deferred("_check_island_complete")
 	_update_nav()
 	_refresh()
+
+# --- swipe between pages ---
+#
+# The bar at the bottom stays the way most people move around. This is for the
+# rest, who reach for a page by shoving the one they are on out of the way, and
+# for whom a five-tab bar is something they never look at twice.
+#
+# It reads the touch before the interface does, which is the only place it can
+# work from: by the time a drag has reached the GUI it belongs to whatever
+# button the finger happened to land on. So this watches every touch, stays out
+# of the way while the direction is still in doubt, and takes the gesture over
+# only once it has clearly gone sideways.
+
+const SWIPE_SLOP := 20.0       # travel before a drag has to declare an axis
+const SWIPE_FRACTION := 0.16   # of the screen's width -- turns the page on distance
+const SWIPE_FLICK := 520.0     # px/s -- turns it on speed, however short the throw
+const SCROLL_SLOP := 16.0      # a list's own deadzone; see _make_page
+
+var _swipe_id := -1
+var _swipe_from := Vector2.ZERO
+var _swipe_axis := 0           # 0 undecided, 1 ours (sideways), -1 the list's (up and down)
+var _swipe_dx := 0.0
+var _swipe_vx := 0.0
+var _swipe_px := 0.0
+var _swipe_ms := 0
+var _swipe_home: Control
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventScreenTouch:
+		_swipe_touch(event)
+		return
+	if event is InputEventScreenDrag:
+		_swipe_drag(event)
+		return
+	# Every touch is shadowed by an emulated mouse event, and that is the one a
+	# Button actually listens to. Once a swipe owns the gesture those have to go
+	# too, or the button the finger started on gets its release and fires as the
+	# page is already sliding away.
+	if _swipe_axis == 1 and (event is InputEventMouseButton or event is InputEventMouseMotion):
+		get_viewport().set_input_as_handled()
+
+func _swipe_touch(t: InputEventScreenTouch) -> void:
+	if t.pressed:
+		if t.index == 0 and _swipe_ready():
+			_swipe_id = 0
+			_swipe_from = t.position
+			_swipe_axis = 0
+			_swipe_dx = 0.0
+			_swipe_vx = 0.0
+			_swipe_px = t.position.x
+			_swipe_ms = Time.get_ticks_msec()
+		return
+	if t.index != _swipe_id:
+		return
+	var ours := _swipe_axis == 1
+	_swipe_id = -1
+	_swipe_axis = 0
+	if not ours:
+		return
+	# A cancelled touch is the system taking the finger away -- a call arriving,
+	# the app going to the background. It is not a decision to turn the page.
+	if not t.canceled:
+		_swipe_settle()
+	get_viewport().set_input_as_handled()
+
+func _swipe_drag(d: InputEventScreenDrag) -> void:
+	if d.index != _swipe_id:
+		return
+	if _swipe_axis == 0:
+		var moved := d.position - _swipe_from
+		if moved.length() < SWIPE_SLOP:
+			return
+		if absf(moved.x) <= absf(moved.y):
+			# Up and down: this is a list being scrolled. Hand the whole gesture
+			# back and do not look at it again until the finger lifts.
+			_swipe_axis = -1
+			return
+		# Taken. Let go of whatever is holding the press first -- the order
+		# matters, because the release below is pushed back through this same
+		# handler and must not be swallowed by the branch it is about to enable.
+		_drop_press()
+		_swipe_axis = 1
+	if _swipe_axis != 1:
+		return
+	_swipe_dx = d.position.x - _swipe_from.x
+	# Timed here rather than read off the event. Godot fills a drag's own
+	# velocity from a tracker that needs about a tenth of a second of samples
+	# before it reports anything at all, and a flick -- the one gesture that
+	# lives or dies on speed -- is regularly over before that. It arrives as a
+	# clean zero, which reads as a finger that never moved.
+	var ms := Time.get_ticks_msec()
+	var dt := float(ms - _swipe_ms) / 1000.0
+	if dt >= 0.004:
+		var inst := (d.position.x - _swipe_px) / dt
+		# Smoothed, so one stuttered frame cannot decide a page turn on its own.
+		_swipe_vx = inst if _swipe_vx == 0.0 else lerpf(_swipe_vx, inst, 0.5)
+		_swipe_px = d.position.x
+		_swipe_ms = ms
+	get_viewport().set_input_as_handled()
+
+# Unpresses whatever the finger came down on, without letting it fire. There is
+# no call for this, so it is done the way the control itself understands: the
+# pointer is moved somewhere it cannot be over anything and released there. A
+# button reached that way lifts quietly -- it still reports the release, so the
+# press animation returns to rest, but it does not count as having been clicked.
+func _drop_press() -> void:
+	var away := Vector2(-4000, -4000)
+	var mm := InputEventMouseMotion.new()
+	mm.position = away
+	mm.global_position = away
+	get_viewport().push_input(mm)
+	var mb := InputEventMouseButton.new()
+	mb.button_index = MOUSE_BUTTON_LEFT
+	mb.pressed = false
+	mb.position = away
+	mb.global_position = away
+	get_viewport().push_input(mb)
+
+# A swipe counts if it went far enough, or if it went fast enough -- a short
+# hard flick is how people who know the gesture use it, and asking them for a
+# sixth of the screen as well makes it feel like it is not listening.
+func _swipe_settle() -> void:
+	# A raid announcing itself, or an offer popping, between the finger moving
+	# and the finger lifting. Whatever arrived is what the player is looking at.
+	if not _swipe_ready():
+		return
+	var dir := 0
+	if absf(_swipe_dx) >= view_size().x * SWIPE_FRACTION:
+		dir = 1 if _swipe_dx > 0.0 else -1
+	elif absf(_swipe_vx) >= SWIPE_FLICK:
+		dir = 1 if _swipe_vx > 0.0 else -1
+	if dir != 0:
+		_swipe_page(dir)
+
+# dir is +1 for a finger travelling right, which fetches the page to the left.
+func _swipe_page(dir: int) -> void:
+	# An opened card set is the nearest thing to go back out of, so a back swipe
+	# closes it before it does anything to the page underneath.
+	if dir > 0 and _current_page == pages.get("collections") and not col_open.is_empty():
+		col_open = ""
+		_fill_page("collections")
+		Sfx.play("pop", -12.0)
+		return
+	var here := _strip_index(_current_page)
+	if here < 0:
+		# Somewhere you drilled into. There is nothing forward of it; back leaves.
+		if dir > 0:
+			_goto(_swipe_home if _swipe_home != null else slot_page)
+		return
+	var there := here - dir
+	if there >= 0 and there < _swipe_strip().size():
+		_goto(_swipe_strip()[there])
+
+# The five pages the bar can reach, in the order it shows them.
+func _swipe_strip() -> Array:
+	return [village_page, pages.get("shop"), slot_page, pages.get("collections"), pages.get("quests")]
+
+func _strip_index(p: Control) -> int:
+	return _swipe_strip().find(p)
+
+# Nothing is turning the page out from under a raid, a popup, the title screen,
+# or a transition that has not landed yet.
+func _swipe_ready() -> bool:
+	return _boot == null and not _transitioning and not _raiding() \
+		and _journey_layer == null and _popup == null and _login_layer == null
 
 # --- bottom navigation bar ---
 
@@ -1717,16 +1895,6 @@ func _build_menu_pages() -> void:
 			["quests", "Quests"], ["options", "Options"], ["alerts", "Alerts"]]:
 		_make_page(spec[0], spec[1])
 
-	_col_back = _back_button(pages["collections"], func() -> void:
-		col_open = ""
-		_fill_page("collections")
-	)
-	_col_back.visible = false
-
-	# Neither of these two is on the nav bar, so each keeps a way out of its own.
-	_back_button(pages["boxes"], func() -> void: _goto(pages["collections"]))
-	_back_button(pages["alerts"], func() -> void: _goto(slot_page))
-
 	# The way into the boxes: bottom-right of the Cards page, where the thumb
 	# already is, carrying a count of what is waiting to be melted down.
 	_convert_btn = Button.new()
@@ -1753,24 +1921,6 @@ func _build_menu_pages() -> void:
 	_convert_badge.offset_top = -12.0
 	_convert_badge.offset_bottom = 18.0
 
-# A page that is not on the nav bar has to carry its own way out. Parented to
-# the page rather than to its scrolling body, so it stays put when a long list
-# is scrolled -- a back button you have to scroll up to find is a back button
-# the player uses the system gesture instead of.
-func _back_button(page: Control, action: Callable) -> Button:
-	var b := Button.new()
-	b.custom_minimum_size = Vector2(132, 64)
-	b.size = Vector2(132, 64)
-	b.focus_mode = Control.FOCUS_NONE
-	b.text = "\u25C0   BACK"
-	b.add_theme_font_size_override("font_size", UI.F_LABEL)
-	Lagoon.button(b, "brass", 32)
-	FX.press_feedback(b)
-	b.pressed.connect(action)
-	page.add_child(b)
-	b.position = Vector2(16.0, 115.0 + safe_top())
-	return b
-
 func _make_page(key: String, title: String) -> void:
 	var page := Control.new()
 	add_child(page)
@@ -1793,6 +1943,11 @@ func _make_page(key: String, title: String) -> void:
 
 	var sc := ScrollContainer.new()
 	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	# How far a finger may travel before the list decides it is being scrolled
+	# rather than tapped. Godot ships this at zero, which means a single pixel
+	# of wobble -- and a thumb on glass always wobbles -- cancels the press of
+	# the button underneath. A tap has to survive being a slightly untidy tap.
+	sc.scroll_deadzone = SCROLL_SLOP
 	page.add_child(sc)
 	sc.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	sc.offset_left = 16.0
@@ -1820,6 +1975,28 @@ func _fill_page(key: String) -> void:
 		"boxes": _fill_boxes(vb)
 		"alerts": _fill_alerts(vb)
 		"options": _fill_options(vb)
+	_let_drags_through(vb)
+
+# Why a page full of cards would not scroll unless you found a gap between them.
+#
+# A touch drag goes to the control under the finger and then bubbles up to its
+# parents -- but only until it meets one set to MOUSE_FILTER_STOP, which is what
+# Button and PanelContainer are by default. So on these pages the drag died on
+# whichever card the finger landed on and the ScrollContainer above it never
+# heard a thing. The bare strips between the cards were the only places the
+# list was actually listening, which is why it took several tries to get one
+# moving: you were hunting for a gap without knowing it.
+#
+# PASS keeps every one of them tappable -- a control still handles and accepts
+# the press it understands -- and lets what it does not understand, the drags,
+# carry on up to the scroller. Applied after each fill, because these bodies are
+# rebuilt from scratch every time their page is opened.
+func _let_drags_through(node: Node) -> void:
+	for child in node.get_children():
+		var c := child as Control
+		if c != null and c.mouse_filter == Control.MOUSE_FILTER_STOP:
+			c.mouse_filter = Control.MOUSE_FILTER_PASS
+		_let_drags_through(child)
 
 func _page_card(vb: VBoxContainer) -> VBoxContainer:
 	return Lagoon.card(vb, Lagoon.R_CARD, 16)
@@ -2840,6 +3017,23 @@ func _grant_pack(pack: Dictionary) -> void:
 	if _current_page == pages.get("shop"):
 		_fill_page("shop")
 
+# Picks one [collection, index] entry, each candidate weighted by how often
+# its collection drops. Ties the chest pool to the same difficulty ladder the
+# reels use, so an Easy set's single gold card is the one a chest usually pays
+# out and a Hard set's stays a chase.
+func _weighted_card(cards: Array) -> Array:
+	var total := 0
+	for e in cards:
+		total += int((e[0] as Dictionary)["weight"])
+	if total <= 0:
+		return cards.pick_random()
+	var roll := randi_range(1, total)
+	for e in cards:
+		roll -= int((e[0] as Dictionary)["weight"])
+		if roll <= 0:
+			return e
+	return cards[cards.size() - 1]
+
 func _grant_chest_card(tier: int, forced_star := 0) -> Dictionary:
 	# roll the star rating first (higher tiers skew rarer), then draw a
 	# card of that rarity, favoring ones the player doesn't own yet
@@ -2867,9 +3061,16 @@ func _grant_chest_card(tier: int, forced_star := 0) -> Dictionary:
 			pool.append([c, i])
 			if not owned[i]:
 				missing.append([c, i])
-	# mostly random draws (duplicates are the norm), with a small pity
-	# bias toward missing cards so progress never fully stalls
-	var pick: Array = missing.pick_random() if not missing.is_empty() and randf() < 0.25 else pool.pick_random()
+	# Which set the card comes from is the set's own drop weight, the same
+	# ladder a spin uses. Drawing flat across everything of this rarity was
+	# fine while 5-star cards lived only in Hard sets -- the star roll *was*
+	# the set roll. Now that every set ends on a gold card, a flat draw would
+	# hand Royal Jewels a ninth of every 5-star chest card and collapse a
+	# three-week set into an afternoon of opening boxes.
+	# Mostly random within that (duplicates are the norm), with a small pity
+	# bias toward missing cards so progress never fully stalls.
+	var from := missing if not missing.is_empty() and randf() < 0.25 else pool
+	var pick: Array = _weighted_card(from)
 	var chosen: Dictionary = pick[0]
 	var idx: int = pick[1]
 	var it: Array = chosen["items"][idx]
@@ -3478,8 +3679,6 @@ func _fill_collections(vb: VBoxContainer) -> void:
 	var open_set := _collection_by_id(col_open)
 	if open_set.is_empty():
 		col_open = ""
-	if _col_back != null:
-		_col_back.visible = not col_open.is_empty()
 	if col_open.is_empty():
 		_fill_collection_shelf(vb)
 	else:
