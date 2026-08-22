@@ -349,23 +349,32 @@ func _process(delta: float) -> void:
 	var t := _act_t
 	# Arm signs: positive swings a hand toward screen-left, negative toward
 	# screen-right. The huts are to his right, so a throw is an arc through
-	# negative on the right arm.
+	# negative on the right arm. Legs read the same way, and they are where the
+	# weight of the throw lives: this performance used to hand the rig a `lean`
+	# it has never had, so every frame of it threw the write away and the throw
+	# happened entirely above the waist. Weight is a stance and a step now,
+	# which is also the only way to sell it on flat art -- tilting the drawing
+	# reads as a sticker being waggled.
 	match _act:
 		"idle":
 			var s := sin(t * 1.7)
+			var sway := sin(t * 1.05)
 			_rac.arm = Vector2(0.10 * s, -0.10 * s)
-			_rac.lean = 0.035 * sin(t * 1.05)
+			_rac.leg = Vector2(0.05 * sway, 0.05 * sway)
 			_rac.look = Vector2(0.6, -0.05)
 			_rac.mouth = 0.0
-			_rac.body = Vector2.ZERO
+			_rac.body = Vector2(5.0 * sway, 0.0)
 			_rac.squash = Vector2.ZERO
+			_rac.head_turn = 0.0
 		"wind":
 			# Weight goes back onto the heels and the throwing arm cocks behind
 			# his ear. Squared easing so the load builds instead of snapping.
 			var u := clampf(t / 0.40, 0.0, 1.0)
 			var e := u * u
 			_rac.arm = Vector2(0.55 * e, -2.55 * e)
-			_rac.lean = -0.24 * e
+			# Braced: the back foot plants and the front one takes the load off,
+			# so the whole rig is visibly loaded before anything is released.
+			_rac.leg = Vector2(0.10 * e, 0.36 * e)
 			_rac.body = Vector2(-30.0 * e, 0.0)
 			_rac.squash = Vector2(0.06 * e, -0.08 * e)
 			_rac.look = Vector2(0.95, -0.3)
@@ -374,7 +383,9 @@ func _process(delta: float) -> void:
 		"throw":
 			var u := clampf(t / 0.18, 0.0, 1.0)
 			_rac.arm = Vector2(lerpf(0.55, -0.20, u), lerpf(-2.55, -0.55, u))
-			_rac.lean = lerpf(-0.24, 0.30, u)
+			# ...and it comes out of the legs first. He steps through the throw
+			# rather than pivoting on the spot.
+			_rac.leg = Vector2(lerpf(0.10, -0.32, u), lerpf(0.36, -0.12, u))
 			_rac.body = Vector2(lerpf(-30.0, 34.0, u), 0.0)
 			_rac.squash = Vector2(lerpf(0.06, -0.05, u), lerpf(-0.08, 0.04, u))
 			_rac.look = Vector2(1.0, -0.45)
@@ -385,7 +396,9 @@ func _process(delta: float) -> void:
 			var decay := exp(-t * 1.1)
 			var hop := absf(sin(t * 8.0)) * decay
 			_rac.arm = Vector2(2.35 + 0.30 * hop, -2.35 - 0.30 * hop)
-			_rac.lean = 0.05 * sin(t * 6.0) * decay
+			# Legs tuck under him at the top of each hop, which is what makes a
+			# vertical displacement read as a jump instead of a lift.
+			_rac.leg = Vector2(-0.26 * hop, 0.26 * hop)
 			_rac.body = Vector2(0.0, -46.0 * hop)
 			_rac.squash = Vector2(-0.05 * hop, 0.07 * hop)
 			_rac.look = Vector2(0.35, -0.5)
@@ -397,7 +410,7 @@ func _process(delta: float) -> void:
 			var u := clampf(t / 0.45, 0.0, 1.0)
 			var sag := sin(u * PI * 0.5)
 			_rac.arm = Vector2(-0.45 * sag, 0.45 * sag)
-			_rac.lean = 0.16 * sag
+			_rac.leg = Vector2(0.12 * sag, -0.12 * sag)
 			_rac.body = Vector2(0.0, 16.0 * sag)
 			_rac.squash = Vector2(0.07 * sag, -0.09 * sag)
 			_rac.look = Vector2(0.8, 0.45)
