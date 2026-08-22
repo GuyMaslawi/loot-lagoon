@@ -5,7 +5,15 @@ signal finished(result: Dictionary)
 
 var npc: Dictionary
 var mode := "steal"
+# The bet the spin was played at. It is deliberately NOT folded into the chests
+# or into the attack reward any more -- the raid pays what the island held, and
+# the bet is applied on top of that, on screen, where the player can watch it
+# happen. See `_payout`.
 var mult := 1
+# What a successful smash is worth before the bet is applied, island-scaled by
+# whoever opened the raid. An attack pays coins like a steal does; it just took
+# until now for the player to be shown them on the island rather than after it.
+var attack_reward := 0
 # The rival's purse is written at its island-1 value, like every other coin
 # source; main passes the island multiplier in so the chests show what pays out.
 var coin_mult := 1.0
@@ -17,6 +25,7 @@ var _picks_left := 3
 var _stolen := 0
 var _acted := false
 var _attempts_label: Label
+var _loot_label: Label
 var _target_buttons: Array = []
 var _building_visuals: Array = []
 # Everything that belongs to the rival's island -- the art, their huts, the
@@ -213,16 +222,29 @@ func _flat_button(btn: Button) -> void:
 # --- steal ---
 
 func _setup_chests() -> void:
-	var total: int = int(round(int(npc["coins"]) * coin_mult)) * mult
+	# The chests hold the island's own money, at the island's own price. The bet
+	# is not baked in here: it lands once, at the end, as its own beat.
+	var total: int = int(round(int(npc["coins"]) * coin_mult))
 	var q := int(total * 0.25)
 	var amounts := [q, q, total - 2 * q, 0]
 	amounts.shuffle()
 
+	var t := UI.safe_top(get_viewport_rect().size)
 	_attempts_label = Lagoon.title("Attempts left: 3", UI.F_BODY, Color.WHITE, Lagoon.ABYSS)
 	add_child(_attempts_label)
 	_attempts_label.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	_attempts_label.offset_top = 120.0 + UI.safe_top(get_viewport_rect().size)
-	_attempts_label.offset_bottom = 154.0 + UI.safe_top(get_viewport_rect().size)
+	_attempts_label.offset_top = 120.0 + t
+	_attempts_label.offset_bottom = 154.0 + t
+
+	# A running total, so the third chest is a decision made with a number in
+	# hand rather than three taps in the dark.
+	_loot_label = Lagoon.title("", UI.F_SUBHEAD, Lagoon.BRASS_HI, Lagoon.ABYSS)
+	_loot_label.resized.connect(func() -> void:
+		_loot_label.pivot_offset = _loot_label.size * 0.5)
+	add_child(_loot_label)
+	_loot_label.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	_loot_label.offset_top = 158.0 + t
+	_loot_label.offset_bottom = 204.0 + t
 
 	var idxs := [0, 1, 2, 3, 4]
 	idxs.shuffle()
@@ -259,16 +281,25 @@ func _on_chest(btn: Button, amount: int) -> void:
 	if amount > 0:
 		_stolen += amount
 		Sfx.play("coins", -4.0)
-		FX.rise_label(_stage, pos, "+%s" % UI.fmt_compact(amount), Lagoon.BRASS_HI, 32)
+		FX.rise_label(_stage, pos, "+%s" % UI.fmt_compact(amount), Lagoon.BRASS_HI, 38)
 		FX.fly_coins(_stage, btn.position + btn.size * 0.5, Vector2(90, 40), 5)
 		FX.burst(_stage, btn.position + btn.size * 0.5, Color(1.0, 0.8, 0.3), 10)
+		_loot_label.text = "Loot  %s" % UI.fmt_compact(_stolen)
+		FX.pop_in(_loot_label, 0.26)
 	else:
-		FX.rise_label(_stage, pos, "Empty!", Color(0.85, 0.85, 0.85), 26)
+		FX.rise_label(_stage, pos, "Empty!", Color(0.85, 0.85, 0.85), 30)
 	if _picks_left == 0:
 		var tw := create_tween()
-		tw.tween_interval(1.3)
+		tw.tween_interval(0.55)
 		tw.tween_callback(func() -> void:
-			finished.emit({"mode": "steal", "npc": npc, "stolen": _stolen})
+			if _stolen <= 0:
+				finished.emit({"mode": "steal", "npc": npc, "stolen": 0, "base": 0})
+				return
+			_payout(_stolen, func() -> void:
+				finished.emit({
+					"mode": "steal", "npc": npc,
+					"stolen": _stolen * maxi(1, mult), "base": _stolen,
+				}))
 		)
 
 # =============================================================================
@@ -510,7 +541,18 @@ func _impact(i: int, center: Vector2, proj: Control) -> void:
 		proj.queue_free()
 		npc["buildings"][i] = maxi(0, int(npc["buildings"][i]) - 1)
 		_smash(i, center)
-		_finish({"mode": "attack", "npc": npc, "blocked": false, "target": i}, 2.3)
+		# The gold used to be credited silently back on the SPIN page, one page
+		# transition after the thing that earned it. It is paid here now, while
+		# the hut is still smoking, because that is where the player is looking.
+		var pay := create_tween()
+		pay.tween_interval(0.95)
+		pay.tween_callback(func() -> void:
+			_payout(attack_reward, func() -> void:
+				finished.emit({
+					"mode": "attack", "npc": npc, "blocked": false, "target": i,
+					"reward": attack_reward * maxi(1, mult), "base": attack_reward,
+				}))
+		)
 
 # --- the shield holds --------------------------------------------------------
 #
@@ -674,3 +716,199 @@ func _finish(result: Dictionary, hold := 1.4) -> void:
 	tw.tween_callback(func() -> void:
 		finished.emit(result)
 	)
+
+# =============================================================================
+#  The payout
+# =============================================================================
+#
+# Both raids end on the same card now, because both raids pay the same way: the
+# loot lands first, at the size the island actually held, and the bet comes
+# down on top of it afterwards.
+#
+# It used to be multiplied out of sight. The chests were quietly pre-scaled by
+# the bet, and the smash reward was scaled back on the SPIN page after the
+# island had already slid away -- so the one number the player deliberately
+# raised was the one number they never saw do anything. Now the multiply *is*
+# the beat the sequence is built around: a figure, a stamp landing on it, and
+# the same figure counting up to what the stamp made it.
+#
+# Roughly 1.3s at bet x1 and 2.0s above it. Fast enough not to be in the way,
+# slow enough that the thing you just won does not go past unread.
+
+# Dead centre of the island: above the raccoon, below the banner, clear of the
+# huts' star rows.
+const PAY_AT := Vector2(360.0, 470.0)
+
+func _payout(base: int, done: Callable) -> void:
+	var factor := maxi(1, mult)
+	var total := base * factor
+
+	# The island steps back for a moment. Without it the number is competing
+	# with five huts, a raccoon and a column of smoke.
+	var scrim := ColorRect.new()
+	scrim.color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.0)
+	scrim.mouse_filter = Control.MOUSE_FILTER_STOP
+	scrim.z_index = 150
+	add_child(scrim)
+	scrim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	scrim.create_tween().tween_property(scrim, "color:a", 0.55, 0.16)
+
+	# The card lives on the island's stage, so it is laid out in the same
+	# 720x1280 as everything else here and lands in the same place on every
+	# phone.
+	var card := Control.new()
+	card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	card.size = Vector2(620.0, 210.0)
+	card.position = PAY_AT - card.size * 0.5
+	card.pivot_offset = card.size * 0.5
+	card.z_index = 200
+	_stage.add_child(card)
+
+	var panel := Panel.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.92)
+	sb.set_corner_radius_all(Lagoon.R_PANEL)
+	sb.set_border_width_all(6)
+	sb.border_color = Lagoon.BRASS
+	sb.shadow_size = 24
+	sb.shadow_color = Color(0.0, 0.0, 0.0, 0.45)
+	panel.add_theme_stylebox_override("panel", sb)
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	card.add_child(panel)
+	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	# The left 130px of the card is kept empty for the stamp to park in, so the
+	# figure is not shoved sideways halfway through being read.
+	var cap := Lagoon.label("STOLEN" if mode == "steal" else "PLUNDERED",
+		UI.F_CAPTION, Lagoon.BRASS_HI, true)
+	cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	cap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	card.add_child(cap)
+	cap.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	cap.offset_left = 130.0
+	cap.offset_top = 20.0
+	cap.offset_bottom = 56.0
+
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 14)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	card.add_child(row)
+	row.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	row.offset_left = 130.0
+	row.offset_top = 60.0
+	row.offset_bottom = -16.0
+
+	var coin_t := CV.symbol_tex("coin")
+	if coin_t != null:
+		var ci := TextureRect.new()
+		ci.texture = coin_t
+		ci.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		ci.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		ci.custom_minimum_size = Vector2(84, 84)
+		ci.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		ci.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(ci)
+
+	var amount := Lagoon.title(UI.fmt_compact(base), UI.F_DISPLAY, Lagoon.BRASS_HI, Lagoon.ABYSS)
+	amount.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	# The text grows as it counts, and a stale pivot would swing it off-centre
+	# on the punch. Re-centred every time the label resizes.
+	amount.resized.connect(func() -> void:
+		amount.pivot_offset = amount.size * 0.5)
+	row.add_child(amount)
+
+	var badge := _mult_badge("x%d" % factor)
+	badge.visible = factor > 1
+	card.add_child(badge)
+	var land := Vector2(card.size.x * 0.5 + 52.0, card.size.y * 0.5 + 16.0) - badge.size * 0.5
+	# Parked inside the brass rim, not straddling it -- the left 130px of the
+	# card was left empty for exactly this.
+	var park := Vector2(92.0, card.size.y * 0.5 + 6.0) - badge.size * 0.5
+	badge.position = land
+
+	Sfx.play("coins", -3.0)
+	card.scale = Vector2(0.34, 0.34)
+	card.modulate.a = 0.0
+	var seq := card.create_tween()
+	seq.tween_property(card, "modulate:a", 1.0, 0.10)
+	seq.parallel().tween_property(card, "scale", Vector2.ONE, 0.30) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	seq.parallel().tween_callback(func() -> void:
+		FX.ring(_stage, PAY_AT, Lagoon.BRASS_HI, 300.0, 0.45, 9.0)).set_delay(0.08)
+
+	if factor > 1:
+		badge.scale = Vector2(2.8, 2.8)
+		badge.modulate.a = 0.0
+		var write := func(v: float) -> void:
+			amount.text = UI.fmt_compact(int(round(v)))
+		# The stamp comes down *onto* the figure and accelerates into it, which
+		# is the whole difference between a multiplier landing and a badge
+		# merely appearing next to one.
+		seq.tween_interval(0.22)
+		seq.tween_property(badge, "scale", Vector2.ONE, 0.19) \
+			.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		seq.parallel().tween_property(badge, "modulate:a", 1.0, 0.10)
+		seq.tween_callback(_pay_impact.bind(card, amount))
+		seq.parallel().tween_method(write, float(base), float(total), 0.52) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		# Then it gets out of the figure's way without leaving the card, so the
+		# reason the number grew is still on screen while the number is read.
+		seq.parallel().tween_property(badge, "position", park, 0.34) \
+			.set_delay(0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		seq.tween_interval(0.58)
+	else:
+		seq.tween_interval(0.72)
+
+	seq.tween_property(card, "scale", Vector2(1.14, 1.14), 0.20) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_IN)
+	seq.parallel().tween_property(card, "modulate:a", 0.0, 0.20)
+	seq.parallel().tween_property(scrim, "color:a", 0.0, 0.24)
+	seq.tween_callback(func() -> void:
+		scrim.queue_free()
+		card.queue_free()
+		done.call())
+
+# The moment the bet lands on the loot: a bang big enough that the figure
+# changing under it reads as a consequence rather than a redraw.
+func _pay_impact(card: Control, amount: Label) -> void:
+	Sfx.play("jackpot", -4.0)
+	FX.shake(card, 13.0, 5)
+	FX.burst(_stage, PAY_AT, Lagoon.BRASS_HI, 24)
+	FX.ring(_stage, PAY_AT, Lagoon.CORAL_HI, 360.0, 0.5, 13.0)
+	FX.flash(_stage, Color(1.0, 0.92, 0.62, 0.30))
+	amount.pivot_offset = amount.size * 0.5
+	var pt := amount.create_tween()
+	pt.tween_property(amount, "scale", Vector2(1.34, 1.34), 0.10).set_trans(Tween.TRANS_QUAD)
+	pt.tween_property(amount, "scale", Vector2.ONE, 0.40) \
+		.set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
+
+# The bet, as a stamp. Coral on brass and tilted off true -- deliberately not
+# the game's calm sea glass, because this is the loud half of the payout and it
+# should look borrowed from a louder sign.
+func _mult_badge(text: String) -> Control:
+	var b := Control.new()
+	b.size = Vector2(136.0, 104.0)
+	b.pivot_offset = b.size * 0.5
+	b.rotation = -0.13
+	b.z_index = 4
+	b.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var p := Panel.new()
+	var s := StyleBoxFlat.new()
+	s.bg_color = Lagoon.CORAL
+	s.set_corner_radius_all(Lagoon.R_CARD)
+	s.set_border_width_all(6)
+	s.border_color = Lagoon.BRASS_HI
+	s.shadow_size = 16
+	s.shadow_color = Color(0.0, 0.0, 0.0, 0.45)
+	p.add_theme_stylebox_override("panel", s)
+	p.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	b.add_child(p)
+	p.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	var l := Lagoon.title(text, UI.F_HEAD, Color.WHITE, Lagoon.CORAL_LO)
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	b.add_child(l)
+	l.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	return b

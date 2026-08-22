@@ -40,6 +40,8 @@ var npcs: Array = []
 var next_target: Dictionary = {}
 
 var slot_page: Control
+# The win read-out currently on the reels, if any. See `_show_win`.
+var _win_slug: Control
 var village_page: Control
 var slot: SlotView
 var village: VillageView
@@ -4239,28 +4241,110 @@ func _on_spin_requested() -> void:
 	_refresh()
 	slot.start_spin(_roll())
 
-# big win amount floating above the slot machine
-func _show_win(text: String, color := Color(1.0, 0.85, 0.3)) -> void:
-	var l := Label.new()
-	l.text = text
-	l.add_theme_font_size_override("font_size", 50)
-	l.add_theme_color_override("font_color", color)
-	l.add_theme_color_override("font_outline_color", Color(0.25, 0.08, 0.02))
-	l.add_theme_constant_override("outline_size", 14)
-	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	l.z_index = 100
-	l.size = Vector2(720, 70)
-	l.position = Vector2(0, 812)
-	l.pivot_offset = Vector2(360, 35)
-	l.scale = Vector2(0.3, 0.3)
-	slot_page.add_child(l)
+# The win read-out, on the reels.
+#
+# It used to be a bare number at font 50, floating at a hard-coded y, gone
+# three quarters of a second after it arrived. That is fine for a jackpot --
+# the confetti and the cabinet sign carry that one -- and useless for the 300
+# coins an ordinary spin drops on the way past, which is most of what a player
+# actually wins. Those went by too fast and too plain to register at all.
+#
+# So: a slug rimmed in the colour of whatever was won, dark enough to read
+# against any island's art, sitting on the reels where the eye already is, with
+# the figure counting up into place rather than arriving finished. Still under
+# two seconds from pop to gone.
+func _show_win(text: String, color := Color(1.0, 0.85, 0.3), icon_kind := "", count_to := 0) -> void:
+	if slot_page == null or slot == null:
+		return
+	# Only ever one of these. Auto-spin can start the next spin while the last
+	# win is still on screen, and two opaque slugs stacked on the same spot is
+	# worse than no slug at all.
+	if is_instance_valid(_win_slug):
+		_win_slug.queue_free()
+	var at := slot.reels_center()
+
+	# A centring band the full width of the page: the pill sizes itself to its
+	# contents -- and keeps re-sizing while the number counts -- so it has to
+	# be centred by a container rather than by arithmetic done once.
+	var root := CenterContainer.new()
+	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.z_index = 100
+	root.size = Vector2(view_size().x, 130.0)
+	root.position = Vector2(0.0, at.y - 65.0)
+	root.pivot_offset = Vector2(view_size().x * 0.5, 65.0)
+	slot_page.add_child(root)
+	_win_slug = root
+
+	var pill := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.88)
+	sb.set_corner_radius_all(36)
+	sb.set_border_width_all(5)
+	sb.border_color = color
+	sb.shadow_size = 20
+	sb.shadow_color = Color(0.0, 0.0, 0.0, 0.5)
+	sb.content_margin_left = 26.0
+	sb.content_margin_right = 30.0
+	sb.content_margin_top = 6.0
+	sb.content_margin_bottom = 10.0
+	pill.add_theme_stylebox_override("panel", sb)
+	pill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(pill)
+
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 12)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pill.add_child(row)
+
+	var icon_t := CV.symbol_tex(icon_kind) if icon_kind != "" else null
+	if icon_t != null:
+		var ic := TextureRect.new()
+		ic.texture = icon_t
+		ic.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		ic.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		ic.custom_minimum_size = Vector2(66, 66)
+		ic.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		ic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(ic)
+
+	var l := Lagoon.title(text, UI.F_DISPLAY, color, Lagoon.ABYSS)
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(l)
+
+	root.scale = Vector2(0.4, 0.4)
+	root.modulate.a = 0.0
 	var tw := create_tween()
-	tw.tween_property(l, "scale", Vector2.ONE, 0.3).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.tween_interval(0.75)
-	tw.tween_property(l, "position:y", 758.0, 0.5).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tw.parallel().tween_property(l, "modulate:a", 0.0, 0.5)
-	tw.tween_callback(l.queue_free)
+	tw.tween_property(root, "modulate:a", 1.0, 0.10)
+	tw.parallel().tween_property(root, "scale", Vector2.ONE, 0.34) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	if count_to > 0:
+		var write := func(v: float) -> void:
+			l.text = "+%s" % _fmt_compact(int(round(v)))
+		tw.parallel().tween_method(write, float(count_to) * 0.15, float(count_to), 0.42) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	# The hold is the whole point of the rewrite -- long enough to read the
+	# number, short enough that the next spin is never waiting on it.
+	tw.tween_interval(1.15)
+	tw.tween_property(root, "position:y", root.position.y - 58.0, 0.46) \
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.parallel().tween_property(root, "modulate:a", 0.0, 0.46)
+	tw.tween_callback(root.queue_free)
+
+# Raid loot arriving in the wallet. The island already showed the player the
+# figure and multiplied it in front of them, so this is not another read-out --
+# it is the coins physically getting to the counter they are added to, once the
+# island has finished sliding out of the way.
+func _land_loot(amount: int) -> void:
+	if amount <= 0 or _hud_labels.is_empty():
+		return
+	var tw := create_tween()
+	tw.tween_interval(0.38)
+	tw.tween_callback(func() -> void:
+		Sfx.play("coins", -5.0)
+		FX.fly_coins(self, Vector2(view_size().x * 0.5, view_size().y * 0.42),
+			_hud_labels[0]["coins"].global_position, clampi(amount / 400, 6, 12))
+	)
 
 func _roll() -> Array:
 	if randf() < 0.3:
@@ -4310,13 +4394,13 @@ func _on_spin_finished(result: Array) -> void:
 				shields = mini(3, shields + bet)
 				Sfx.play("shield", -6.0)
 				_banner("Shield up!  (%d/3)" % shields, Color(0.5, 0.75, 1.0))
-				_show_win("+SHIELD", Color(0.5, 0.75, 1.0))
+				_show_win("+SHIELD", Color(0.5, 0.75, 1.0), "shield")
 			"bolt":
 				slot.announce("+SPINS!", Color(0.72, 0.94, 1.0))
 				var bonus := 12 * bet
 				spins += bonus
 				Sfx.play("jackpot", -4.0)
-				_show_win("+%d  SPINS" % bonus, Color(0.6, 0.9, 1.0))
+				_show_win("+%d  SPINS" % bonus, Color(0.6, 0.9, 1.0), "bolt")
 	else:
 		for s in result:
 			match s:
@@ -4332,8 +4416,15 @@ func _on_spin_finished(result: Array) -> void:
 	if gain > 0:
 		coins += gain
 		_mission_add("coins_won", gain)
-		_show_win("+%s" % _fmt_compact(gain))
-		FX.fly_coins(self, Vector2(360, 716), _hud_labels[0]["coins"].global_position, clampi(gain / 250, 3, 9))
+		_show_win("+%s" % _fmt_compact(gain), Color(1.0, 0.85, 0.3), "coin", gain)
+		# The coins leave for the wallet only once the read-out has been read,
+		# so the number and the coins that are it are not two events at once.
+		var fly := create_tween()
+		fly.tween_interval(1.25)
+		fly.tween_callback(func() -> void:
+			FX.fly_coins(self, slot.reels_center(), _hud_labels[0]["coins"].global_position,
+				clampi(gain / 250, 4, 10))
+		)
 	if not _raiding():
 		_maybe_drop_card()
 		_maybe_revenge()
@@ -4560,6 +4651,9 @@ func _on_match_found(matched: Dictionary, mode: String) -> void:
 	_visit.mode = mode
 	_visit.mult = _last_bet
 	_visit.coin_mult = _economy_mult()
+	# Rolled here, not on the island, so the island only ever *shows* a payout
+	# it was handed -- same as the chests, which read the rival's own purse.
+	_visit.attack_reward = _scaled(600 + randi_range(0, 300))
 	_visit.finished.connect(_on_visit_finished)
 	# The nav bar outranks the overlay on z, so the rival's island only has to
 	# reach the same line ours does -- the slab hides everything under it.
@@ -4591,13 +4685,22 @@ func _on_visit_finished(result: Dictionary) -> void:
 	_piggy_add(CV.PIGGY_PER_RAID)
 	_raid_target = {}
 	_last_raided = npc
+	# The island has already shown the player the figure and multiplied it in
+	# front of them, so what comes back here is final. All that is left is to
+	# put it in the wallet and say whose it was.
 	if result["mode"] == "steal":
-		var stolen: int = result.get("stolen", 0)
+		var stolen: int = int(result.get("stolen", 0))
 		coins += stolen
-		npc["coins"] = maxi(200, int(npc["coins"]) - stolen)
+		# The rival's purse is stored at its island-1 price like every other
+		# coin figure in the save, and what we just took is the island-scaled,
+		# bet-multiplied version of it. It has to come back down to base units
+		# before it is subtracted, or one raid at bet x3 drains a rival three
+		# times as hard as it robbed them.
+		var base_taken := int(round(float(result.get("base", stolen)) / maxf(0.001, _economy_mult())))
+		npc["coins"] = maxi(200, int(npc["coins"]) - base_taken)
 		if stolen > 0:
 			_banner("You stole %s coins from %s!" % [_fmt_compact(stolen), npc["name"]], Color(1.0, 0.85, 0.3), npc["emoji"])
-			_show_win("+%s" % _fmt_compact(stolen))
+			_land_loot(stolen)
 			if stolen > 2000:
 				FX.confetti(self, 36)
 		else:
@@ -4608,11 +4711,10 @@ func _on_visit_finished(result: Dictionary) -> void:
 		if result.get("blocked", false):
 			_banner("%s's shield blocked your attack!" % npc["name"], Color(0.5, 0.75, 1.0), npc["emoji"])
 		else:
-			var reward := _scaled(600 + randi_range(0, 300)) * vmult
+			var reward := int(result.get("reward", _scaled(600 + randi_range(0, 300)) * vmult))
 			coins += reward
-			FX.fly_coins(self, Vector2(360, 500), _hud_labels[0]["coins"].global_position, 6)
 			_banner("SMASH!  +%s coins" % _fmt_compact(reward), Color(1.0, 0.85, 0.3), npc["emoji"])
-			_show_win("+%s" % _fmt_compact(reward))
+			_land_loot(reward)
 		if randf() < 0.35:
 			revenge_pending = true
 	# The card only names the next rival once this one's result has been read.

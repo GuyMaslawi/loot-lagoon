@@ -455,6 +455,15 @@ func set_meter(held: int, cap: int, secs_to_refill: float, refill: int) -> void:
 
 # The sign calls the result. It is the one part of the cabinet that talks, so
 # it goes back to the island's name a couple of seconds later.
+# Where the reels actually ended up on screen. The win read-out lands on top of
+# them rather than at a hard-coded y, because that is where the player's eye
+# already is when the last reel stops -- and because the cabinet's height is
+# whatever the phone leaves over, so a fixed y drifts off it.
+func reels_center() -> Vector2:
+	if reels == null or not reels.is_inside_tree():
+		return global_position + size * 0.5
+	return reels.global_position + reels.size * 0.5
+
 func announce(text: String, ink := Lagoon.BRASS_HI) -> void:
 	_set_sign(text, ink)
 	var tw := create_tween()
