@@ -266,7 +266,17 @@ func _t_offline_raids() -> void:
 	m.coins = 500000
 	m.shields = 0
 	m.buildings = [5, 5, 5, 5, 5]
-	m._offline_elapsed = 3.0 * 86400.0
+	# Seeded as a plan, not as an elapsed time. _offline_raids used to roll the
+	# raids itself from a stopwatch; it now replays the plan that was written
+	# when the app went to the background, and this test went on assigning
+	# _offline_elapsed to a property that no longer exists -- which raises,
+	# takes the test out with it, and still prints ALL PASS because the harness
+	# counts failed checks rather than checks that never ran.
+	m.pending_raids = [
+		{"at": 0.0, "kind": "steal", "coins": 900000, "npc": "nobody", "text": "raid", "emoji": "\U0001F6A8"},
+		{"at": 0.0, "kind": "smash", "building": 2, "text": "smash", "emoji": "\U0001F6A8"},
+		{"at": 0.0, "kind": "blocked", "text": "blocked", "emoji": "\U0001F6A8"},
+	]
 	m._offline_raids()
 	var flat := true
 	for b in m.buildings:
@@ -277,7 +287,10 @@ func _t_offline_raids() -> void:
 	# and with nothing to take
 	m.coins = 0
 	m.buildings = [0, 0, 0, 0, 0]
-	m._offline_elapsed = 30.0 * 86400.0
+	m.pending_raids = [
+		{"at": 0.0, "kind": "steal", "coins": 5000, "npc": "nobody", "text": "raid", "emoji": "\U0001F6A8"},
+		{"at": 0.0, "kind": "smash", "building": 0, "text": "smash", "emoji": "\U0001F6A8"},
+	]
 	m._offline_raids()
 	_chk("a stripped island survives another wave", m.coins >= 0 and m.buildings.min() >= 0,
 		"coins=%d %s" % [m.coins, str(m.buildings)])

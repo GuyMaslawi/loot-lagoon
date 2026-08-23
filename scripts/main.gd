@@ -282,7 +282,15 @@ var offer_until := 0.0
 var offer_next := 0.0
 # Contextual offers interrupt play, so they are rate-limited hard. Firing one
 # on every failed tap would train players to dismiss them on sight.
+# Where each shelf starts, by key. Node references, rebuilt with the page every
+# time it is filled -- so this is cleared at the top of _fill_shop rather than
+# held across a rebuild, where every entry would be a freed node.
+var _shop_anchors := {}
 var _ctx_offer_last := 0.0
+# A top-up that has been paid for but not yet delivered: {"id", "coins"}.
+# Saved, because the window it lives in is a StoreKit sheet, and the app can be
+# killed inside one.
+var topup_pending := {}
 var _ui_tick := 0.0
 var _shop_gift_timer_label: Label
 var _offer_timer_label: Label
@@ -486,6 +494,17 @@ func _after_boot() -> void:
 		var go := create_tween()
 		go.tween_interval(0.6)
 		go.tween_callback(_start_visit.bind(demo_raid))
+	# DEMO_OFFER=coins:<shortfall> opens the build-blocked top-up on demand.
+	# Reaching it by playing means spending a village down to the exact wrong
+	# number first, which is not a thing you can do while looking at the dialog
+	# you are trying to lay out.
+	var demo_offer := OS.get_environment("DEMO_OFFER")
+	if demo_offer.begins_with("coins"):
+		var parts := demo_offer.split(":")
+		var short_by := int(parts[1]) if parts.size() > 1 else 43000
+		var go2 := create_tween()
+		go2.tween_interval(0.4)
+		go2.tween_callback(func() -> void: _offer_need_coins(short_by))
 	# SHOT=<page key> opens that page, lets it settle and writes a PNG, then
 	# quits. Apple will not review an in-app purchase without a screenshot of
 	# where it is sold, and there are twenty-five of them -- shooting those by
@@ -500,7 +519,27 @@ func _after_boot() -> void:
 			quests_tab = demo_tab
 		call_deferred("_goto", pages["quests"])
 
+func _scrolls_in(node: Node) -> Array:
+	var out := []
+	for c in node.get_children():
+		if c is ScrollContainer and c.is_visible_in_tree():
+			out.append(c)
+		out.append_array(_scrolls_in(c))
+	return out
+
 func _capture_page(key: String) -> void:
+	# SHOT=shop:spins shoots the shop already scrolled to a named shelf, which
+	# is both how the plus buttons are checked and how a screenshot of one
+	# particular product family gets taken without counting pixels first.
+	if key.begins_with("shop:"):
+		_goto_shop(key.split(":")[1])
+		await get_tree().create_timer(2.0).timeout
+		var shot := get_viewport().get_texture().get_image()
+		var at := "user://shot_%s.png" % key.replace(":", "_")
+		shot.save_png(at)
+		print("SHOT written: %s (%dx%d)" % [ProjectSettings.globalize_path(at), shot.get_width(), shot.get_height()])
+		get_tree().quit()
+		return
 	if pages.has(key):
 		_goto(pages[key])
 	elif key == "slot":
@@ -508,8 +547,17 @@ func _capture_page(key: String) -> void:
 	# Long enough for the page transition and the card art to finish arriving;
 	# a screenshot of a half-built shop is worse than none.
 	await get_tree().create_timer(2.0).timeout
+	# SHOT_SCROLL=<px> shoots the page wound down to that offset. The shop is
+	# four screens tall and the products Apple wants to see sold are on the
+	# third and fourth, so without this the only part of it that can be
+	# screenshotted automatically is the part above the fold.
+	var scroll := OS.get_environment("SHOT_SCROLL")
+	if scroll != "":
+		for sc in _scrolls_in(self):
+			sc.scroll_vertical = int(scroll)
+		await get_tree().create_timer(0.5).timeout
 	var img := get_viewport().get_texture().get_image()
-	var path := "user://shot_%s.png" % key
+	var path := "user://shot_%s%s.png" % [key, scroll]
 	img.save_png(path)
 	print("SHOT written: %s (%dx%d)" % [ProjectSettings.globalize_path(path), img.get_width(), img.get_height()])
 	get_tree().quit()
@@ -1105,6 +1153,63 @@ func _goto(target: Control) -> void:
 		call_deferred("_check_island_complete")
 	_update_nav()
 	_refresh()
+
+# Into the shop, aimed at a shelf.
+#
+# The shop is one scroll of twenty-five products and it stays that way: for a
+# casual title the scroll IS the merchandising, and a player who passes the
+# $49.99 bundle on the way to a $0.99 spin pack has been shown something that
+# tabs would have hidden behind a tap. What the single scroll costs is the
+# player who already knows what they want -- six sections between an empty spin
+# meter and the spin packs. So the plus on each counter carries a destination,
+# and the browsing case keeps the browse.
+#
+# The bottom nav's Shop tab deliberately does not pass one. Tapping "Shop" is
+# not a request for anything in particular, and it should land where the timed
+# offer is.
+const SHOP_ANCHOR_LEAD := 18.0
+
+func _goto_shop(anchor := "") -> void:
+	# Already on the page, so there is no transition to hide the movement --
+	# which makes this the one case that should be seen happening. A list that
+	# teleports when you tap something outside it reads as the page having been
+	# replaced.
+	if _current_page == pages.get("shop"):
+		var sc_here := _shop_scroll()
+		var to_here := _shop_anchor_y(anchor)
+		if sc_here == null or to_here < 0:
+			return
+		var tw := create_tween()
+		tw.tween_property(sc_here, "scroll_vertical", to_here, 0.32) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		return
+
+	_goto(pages["shop"])
+	if anchor == "":
+		return
+	# _goto fills the page; the container still needs a frame of its own to lay
+	# the new cards out before any of them has a position worth reading. Set
+	# rather than tweened: the page is still sliding in, and it should arrive
+	# already looking at the right shelf instead of arriving and then moving.
+	await get_tree().process_frame
+	var sc := _shop_scroll()
+	var to := _shop_anchor_y(anchor)
+	if sc != null and to >= 0:
+		sc.scroll_vertical = to
+
+func _shop_scroll() -> ScrollContainer:
+	var body: VBoxContainer = _page_bodies.get("shop")
+	return body.get_parent() as ScrollContainer if body != null else null
+
+# -1 for "no such shelf", which is not the same answer as 0 -- 0 is the top of
+# the list and a legitimate place to be sent.
+func _shop_anchor_y(anchor: String) -> int:
+	if anchor == "":
+		return 0
+	var node = _shop_anchors.get(anchor)
+	if node == null or not is_instance_valid(node):
+		return -1
+	return int(maxf((node as Control).position.y - SHOP_ANCHOR_LEAD, 0.0))
 
 # --- swipe between pages ---
 #
@@ -2265,6 +2370,16 @@ func _unread_count() -> int:
 			n += 1
 	return n
 
+# Where the toast comes to rest, measured from below the safe area.
+#
+# It used to stop at 78, which put its 92-pixel body across 78..170 -- straight
+# through the slot page's wordmark (92..170) and through every menu page's
+# title plate (104..190). A notification that erases the name of the screen it
+# arrived on reads as the screen having been replaced. Below both, it reads as
+# what it is: a strip that dropped in over the top of the content and will go
+# again on its own.
+const TOAST_REST_Y := 196.0
+
 func _show_toast(text: String, emoji := "🔔") -> void:
 	if _toast != null and is_instance_valid(_toast):
 		_toast.queue_free()
@@ -2305,7 +2420,7 @@ func _show_toast(text: String, emoji := "🔔") -> void:
 	# Owned by the toast: the line at the top of this function frees whatever
 	# toast was already up, and a tween on main would then be left driving it.
 	var tw := panel.create_tween()
-	tw.tween_property(panel, "position:y", 78.0 + safe_top(), 0.35).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(panel, "position:y", TOAST_REST_Y + safe_top(), 0.35).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tw.tween_interval(2.6)
 	tw.tween_property(panel, "modulate:a", 0.0, 0.4)
 	tw.tween_callback(panel.queue_free)
@@ -2466,6 +2581,8 @@ func _make_page(key: String, title: String) -> void:
 	var mat := Lagoon.backdrop(page)
 	Lagoon.tint_backdrop(mat, CV.island_palette(island_level))
 	_page_backdrops.append(mat)
+	if key == "shop":
+		_add_shop_night(page)
 
 	var plate := Lagoon.plaque(title.to_upper(), 0.0, 86.0, UI.F_TITLE)
 	page.add_child(plate)
@@ -2497,6 +2614,51 @@ func _make_page(key: String, title: String) -> void:
 	_add_topbar(page)
 	pages[key] = page
 	_page_bodies[key] = vb
+
+# Dusk over the lagoon, on the shop page only.
+#
+# Everything in this store is brass, gold and coral, and none of it was
+# carrying because it was all sitting on the same bright daylight water as the
+# rest of the game -- pale on pale, with nothing for the gold to be brighter
+# than. The one part of the shop that did read was the chest row, and the only
+# thing separating it was a slightly darker ground.
+#
+# So the shop keeps the same lagoon and drops the sun out of it: the water goes
+# deep, a single warm shaft stays lit over the top of the page where the live
+# offer sits, and the cards on top are unchanged. It is the same island at
+# night, which is a different room to be sold in without being a different
+# game. Nothing else uses this -- a dark Quests page would just be dark.
+func _add_shop_night(page: Control) -> void:
+	var night := ColorRect.new()
+	var sh := Lagoon.shader("""
+shader_type canvas_item;
+uniform vec3 deep = vec3(0.012, 0.110, 0.176);
+uniform vec3 lamp = vec3(1.000, 0.780, 0.400);
+
+void fragment() {
+	// Deliberately opaque. A half-transparent dark blue laid over the bright
+	// daylight sky does not read as night, it reads as grey -- the first pass
+	// at this washed the top of the page out to the colour of wet concrete.
+	// The layer has to commit to being water.
+	float v = smoothstep(0.02, 0.62, UV.y) * 0.16 + 0.80;
+	float edge = smoothstep(0.34, 0.02, abs(UV.x - 0.5) * 2.0 - 0.34);
+	v += (1.0 - edge) * 0.06;
+
+	// One warm shaft from above, over the top card. Cheap, and it is the only
+	// thing on the page that says which end of it matters.
+	float d = length((UV - vec2(0.5, -0.04)) * vec2(0.9, 1.25));
+	float glow = smoothstep(0.80, 0.0, d);
+
+	vec3 c = mix(deep, lamp, glow * 0.30);
+	COLOR = vec4(c, clamp(v - glow * 0.16, 0.0, 1.0));
+}
+""")
+	var mat := ShaderMaterial.new()
+	mat.shader = sh
+	night.material = mat
+	night.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	page.add_child(night)
+	night.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 func _fill_page(key: String) -> void:
 	var vb: VBoxContainer = _page_bodies[key]
@@ -2560,6 +2722,7 @@ func _tinted_card(parent: Node, tint: Color, strong := false, radius := Lagoon.R
 func _fill_shop(vb: VBoxContainer) -> void:
 	_shop_gift_timer_label = null
 	_offer_timer_label = null
+	_shop_anchors.clear()
 
 	# Order matters more here than anywhere else on the page. The two things
 	# that expire -- the live offer and the one-time starter -- go above the
@@ -2573,15 +2736,15 @@ func _fill_shop(vb: VBoxContainer) -> void:
 	if not purchased_ids.has(CV.STARTER_PACK["id"]):
 		_shop_hero_offer(vb)
 
-	_shop_section(vb, "🐷", "PIGGY  BANK")
+	_shop_section(vb, "piggy", "PIGGY  BANK")
 	_piggy_card(vb)
 
-	_shop_section(vb, "🧳", "BUNDLES")
+	_shop_section(vb, "bundles", "BUNDLES")
 	for pack in CV.BUNDLE_PACKS:
 		_bundle_card(vb, pack)
 	vb.add_child(_page_note("Bundles cost less than the same spins, coins and cards bought apart", UI.F_TINY))
 
-	_shop_section(vb, "🗝️", "TREASURE  CHESTS")
+	_shop_section(vb, "chests", "TREASURE  CHESTS")
 	var chest_row := HBoxContainer.new()
 	chest_row.add_theme_constant_override("separation", 10)
 	vb.add_child(chest_row)
@@ -2589,25 +2752,27 @@ func _fill_shop(vb: VBoxContainer) -> void:
 		_chest_card(chest_row, pack)
 	vb.add_child(_page_note("Pricier chests hold more cards and better odds — every chest shows its full odds table before you pay", UI.F_TINY))
 
-	_shop_section(vb, "🎰", "SPIN  PACKS")
+	_shop_section(vb, "spins", "SPIN  PACKS")
 	var sgrid := GridContainer.new()
 	sgrid.columns = 2
 	sgrid.add_theme_constant_override("h_separation", 10)
 	sgrid.add_theme_constant_override("v_separation", 10)
 	vb.add_child(sgrid)
-	for pack in CV.SPIN_PACKS:
-		_shop_tile(sgrid, pack, Color(0.35, 0.75, 1.0), "%d  SPINS" % int(pack["spins"]))
+	for i in CV.SPIN_PACKS.size():
+		var sp: Dictionary = CV.SPIN_PACKS[i]
+		_shop_tile(sgrid, sp, Color(0.35, 0.75, 1.0), "%s  SPINS" % _fmt_compact(int(sp["spins"])), i, CV.SPIN_PACKS.size())
 
-	_shop_section(vb, "💰", "COIN  PACKS")
+	_shop_section(vb, "coins", "COIN  PACKS")
 	var cgrid := GridContainer.new()
 	cgrid.columns = 2
 	cgrid.add_theme_constant_override("h_separation", 10)
 	cgrid.add_theme_constant_override("v_separation", 10)
 	vb.add_child(cgrid)
-	for pack in CV.COIN_PACKS:
-		_shop_tile(cgrid, pack, Color(1.0, 0.78, 0.25), "%s  COINS" % _fmt_compact(_scaled(int(pack["coins"]))))
+	for i in CV.COIN_PACKS.size():
+		var cp: Dictionary = CV.COIN_PACKS[i]
+		_shop_tile(cgrid, cp, Color(1.0, 0.78, 0.25), "%s  COINS" % _fmt_compact(_scaled(int(cp["coins"]))), i, CV.COIN_PACKS.size())
 
-	_shop_section(vb, "🎁", "FREE  GIFT")
+	_shop_section(vb, "gift", "FREE  GIFT")
 	_free_gift_card(vb)
 
 	# The store is only a prototype where there is no StoreKit to talk to. On a
@@ -2621,10 +2786,12 @@ func _fill_shop(vb: VBoxContainer) -> void:
 # down. Gold text floating on the page needed a heavy outline to survive the
 # backdrop; on brass it needs none, and the reader gets a shape they have
 # already learned to read as "heading".
-func _shop_section(vb: VBoxContainer, _emoji: String, title: String) -> void:
+func _shop_section(vb: VBoxContainer, key: String, title: String) -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 12)
 	vb.add_child(row)
+	if key != "":
+		_shop_anchors[key] = row
 	row.add_child(_section_line())
 	var plate := Lagoon.plaque(title, 0.0, 54.0, UI.F_LABEL, false)
 	plate.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -2649,6 +2816,265 @@ func _star_row(lit: int, size := UI.F_CAPTION) -> HBoxContainer:
 		s.add_theme_font_size_override("font_size", size)
 		s.add_theme_color_override("font_color", col if i < lit else Color(Lagoon.INK_FAINT.r, Lagoon.INK_FAINT.g, Lagoon.INK_FAINT.b, 0.35))
 		row.add_child(s)
+	return row
+
+# =============================================================================
+#  Shop art
+# =============================================================================
+#
+# The store used to draw every product with one system emoji at one size. That
+# is two separate problems wearing one coat. The emoji came from Apple's design
+# system rather than this game's, so a row of tiles looked like a settings
+# screen with pictures on it; and because the size never changed, the $0.99 tile
+# and the $99.99 tile were literally the same picture. The ladder was stated in
+# the label and denied by the art.
+#
+# What the genre actually does is make the quantity visible: a handful, a bag, a
+# chest, a chest you cannot close. So these piles are built out of art the game
+# already ships -- the coin, gem and bag symbols and the chest prop -- and get
+# denser and taller the higher the rung. Nothing new had to be drawn, and the
+# tile now answers "how much" before the number is read.
+
+const PILE_W := 200.0
+const PILE_H := 104.0
+
+# Rows of a heap, bottom-first, each narrower than the one under it. Four rows
+# is the ceiling: past that a pile stops reading as a pile and starts reading as
+# a wall of circles.
+func _heap_rows(n: int) -> Array:
+	var rows := []
+	var left := n
+	var w := 5 if n > 10 else 4
+	while left > 0 and rows.size() < 4:
+		var take := mini(w, left)
+		rows.append(take)
+		left -= take
+		w = maxi(1, w - 1)
+	return rows
+
+# Depth here is child order, never z_index. A negative z_index on the child of
+# a panel does not put it behind its siblings, it puts it behind the panel --
+# which is opaque, so the first attempt at this drew a chest and a bag that were
+# invisible underneath their own card.
+func _pile_sprite(box: Control, tex: Texture2D, pos: Vector2, side: float) -> void:
+	if tex == null:
+		return
+	var tr := TextureRect.new()
+	tr.texture = tex
+	tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(tr)
+	tr.position = pos
+	tr.size = Vector2(side, side)
+
+# `rung` is the tile's place on its ladder, `rungs` how long the ladder is, so
+# the same function serves a 6-tile coin shelf and a 7-tile spin shelf without
+# either needing to know the other exists.
+func _pile_art(kind: String, rung: int, rungs: int) -> Control:
+	var wrap := CenterContainer.new()
+	wrap.custom_minimum_size = Vector2(0, PILE_H)
+	wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var box := Control.new()
+	box.custom_minimum_size = Vector2(PILE_W, PILE_H)
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.clip_contents = false
+	wrap.add_child(box)
+
+	var f := float(rung) / float(maxi(1, rungs - 1))
+
+	if kind == "spins":
+		# Ship's wheels, drawn rather than textured -- the same glyph the HUD
+		# counter and the nav disc use, so a bought spin looks like a spin.
+		var n := 1 + int(round(f * 4.0))
+		var side := 46.0 + f * 30.0
+		# Outermost first, centre last, so the fan closes towards the front
+		# instead of the front wheel disappearing under its own neighbours.
+		var order := []
+		for i in n:
+			order.append(i)
+		order.sort_custom(func(a: int, b: int) -> bool:
+			return absf(float(a) - float(n - 1) * 0.5) > absf(float(b) - float(n - 1) * 0.5))
+		for i in order:
+			var g := Glyph.new()
+			g.kind = "wheel"
+			g.tint = Lagoon.LAGOON if i % 2 == 0 else Lagoon.LAGOON.lightened(0.20)
+			g.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			box.add_child(g)
+			# A shallow fan rather than a stack: overlapping discs of one shape
+			# read as a single smeared disc, a fan reads as several.
+			var span := float(n - 1) * side * 0.58
+			g.position = Vector2(
+				PILE_W * 0.5 - span * 0.5 + float(i) * side * 0.58 - side * 0.5,
+				PILE_H - side - (side * 0.16 * absf(float(i) - float(n - 1) * 0.5)))
+			g.size = Vector2(side, side)
+		return wrap
+
+	# Coins, and nothing behind them.
+	#
+	# The first version put a bag behind the middle rungs and an open chest
+	# behind the top ones, which is the obvious way to show scale. Both props
+	# are authored on an opaque near-white backdrop -- invisible on the cream
+	# chest cards where they have always been used, and a pale grey slab on
+	# these. So the heap does the whole job: more coins, larger coins, and gems
+	# once the pile is deep enough that another coin would not register.
+	var coin := CV.symbol_tex("coin")
+	var side := 44.0 + f * 16.0
+	var count := 3 + int(round(f * 17.0))
+	var rows := _heap_rows(count)
+	var dy := side * 0.46
+	for i in rows.size():
+		var per: int = rows[i]
+		var span := float(per - 1) * side * 0.62
+		for j in per:
+			_pile_sprite(box, coin,
+				Vector2(PILE_W * 0.5 - span * 0.5 + float(j) * side * 0.62 - side * 0.5,
+						PILE_H - side * 0.94 - float(i) * dy),
+				side)
+
+	# The top of the ladder gets the one thing coins are not.
+	if f >= 0.55:
+		var gem := CV.symbol_tex("gem")
+		var crest := PILE_H - side * 0.94 - float(rows.size()) * dy
+		_pile_sprite(box, gem, Vector2(PILE_W * 0.5 - side * 0.45, crest + side * 0.18), side * 0.9)
+		if f >= 0.85:
+			_pile_sprite(box, gem, Vector2(PILE_W * 0.5 - side * 1.35, crest + side * 0.62), side * 0.7)
+			_pile_sprite(box, gem, Vector2(PILE_W * 0.5 + side * 0.62, crest + side * 0.62), side * 0.7)
+	return wrap
+
+# The corner ribbon.
+#
+# "POPULAR" and "BEST VALUE" used to be small pills sitting inside the card
+# border, in a fixed-height slot every tile reserved whether it had a tag or
+# not -- which cost every untagged tile 36 wasted pixels to say nothing. A label
+# that stays inside the frame reads as metadata about the product. Crossing the
+# frame is what turns it into an announcement about it, and it costs no layout
+# at all, because it is positioned rather than flowed.
+func _corner_ribbon(panel: Control, text: String, color: Color, reach := 98.0) -> void:
+	# Drawn rather than built out of a rotated Panel, because a PanelContainer
+	# lays out every Control child it has: the first version of this set its own
+	# size and rotation and the card promptly stretched it back over the whole
+	# tile. An overlay that is happy to be stretched to the full card, and draws
+	# a band in one corner of whatever rect it is given, cannot be defeated that
+	# way.
+	var overlay := Control.new()
+	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay.z_index = 8
+	panel.add_child(overlay)
+
+	var font := Lagoon.ui_bold_font()
+	overlay.draw.connect(func() -> void:
+		# A tall narrow tile has a whole empty corner to give; a wide card has
+		# its name starting a hundred pixels in, and the same band would be
+		# drawn straight through it. Callers say how much corner they have.
+		var band := 30.0              # thickness, measured across the diagonal
+		var d := Vector2(1, 1).normalized() * band
+		var a := Vector2(0.0, reach)
+		var b := Vector2(reach, 0.0)
+		var quad := PackedVector2Array([a, b, b + d, a + d])
+		overlay.draw_colored_polygon(quad, color)
+		# A lit top edge and a shadow under the bottom one: the band has to sit
+		# on the card rather than be a coloured hole cut in it.
+		overlay.draw_line(a, b, color.lightened(0.35), 3.0, true)
+		overlay.draw_line(a + d, b + d, color.darkened(0.30), 3.0, true)
+
+		var mid := (a + b) * 0.5 + d * 0.5
+		overlay.draw_set_transform(mid, -PI * 0.25, Vector2.ONE)
+		# "BEST VALUE" is half again as long as "NEW", and a band that fits one
+		# does not fit the other -- so the type is shrunk to the chord it has to
+		# live on rather than the chord being sized for the longest tag any
+		# pack might ever carry.
+		var chord := a.distance_to(b) - 22.0
+		var fs := UI.F_TINY
+		var w := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+		if w > chord:
+			fs = maxi(14, int(float(fs) * chord / w))
+			w = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+		overlay.draw_string_outline(font, Vector2(-w * 0.5, float(fs) * 0.36), text,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, fs, 5, color.darkened(0.45))
+		overlay.draw_string(font, Vector2(-w * 0.5, float(fs) * 0.36), text,
+			HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(1, 1, 1))
+		overlay.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	)
+
+# What a mixed pack contains, as icons and numbers instead of a sentence.
+#
+# "400 Spins + 600K Coins + 4 Cards" was set in caption grey under the name,
+# which made the single most valuable line on the card the third-quietest thing
+# on it. Same three facts, in the same order, at a size that matches what they
+# are worth -- and each one next to the icon the HUD already uses for it, so the
+# reader is being shown the counters they are about to move.
+func _reward_row(pack: Dictionary) -> Control:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 16)
+
+	var spins_n := int(pack.get("spins", 0))
+	var coins_n := _scaled(int(pack.get("coins", 0)))
+	var cards_n := int(pack.get("cards", 0))
+
+	for entry in [["wheel", spins_n], ["coin", coins_n], ["cards", cards_n]]:
+		var n: int = entry[1]
+		if n <= 0:
+			continue
+		var item := HBoxContainer.new()
+		item.add_theme_constant_override("separation", 5)
+		row.add_child(item)
+		var icon := Glyph.new()
+		icon.kind = String(entry[0])
+		icon.custom_minimum_size = Vector2(34, 34)
+		icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		item.add_child(icon)
+		var num := Lagoon.label(_fmt_compact(n), UI.F_BODY, Lagoon.INK, true)
+		num.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		item.add_child(num)
+	return row
+
+# What the same goods would have cost at the shelf's own entry rate, struck
+# through, beside what they cost here.
+#
+# The shop already said this, as "+65% MORE PER $". That is accurate, and it is
+# arithmetic: it asks the reader to do the sum before they can feel the size of
+# it. A crossed-out number says the identical thing and asks for nothing. Both
+# are derived from the same published base rate, so neither can drift from the
+# other or from the prices actually charged.
+#
+# Returns null for the bottom rung, which is the thing being compared against
+# and therefore has no honest number to strike.
+func _struck_price_row(pack: Dictionary, ink := Lagoon.INK_FAINT) -> Control:
+	var bonus := CV.bonus_pct(pack)
+	if bonus < 8:
+		return null
+	var usd := CV.price_usd(pack)
+	if usd <= 0.0:
+		return null
+	var was := usd * (1.0 + float(bonus) / 100.0)
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 8)
+
+	var old_price := Lagoon.label("$%.2f" % was, UI.F_CAPTION, ink)
+	# Godot has no strikethrough on Label, so the rule is drawn over it -- which
+	# also lets it be coral rather than the text colour, the way a price is
+	# struck on a shelf tag.
+	var bar := Panel.new()
+	var bsb := StyleBoxFlat.new()
+	bsb.bg_color = Lagoon.CORAL
+	bsb.set_corner_radius_all(2)
+	bar.add_theme_stylebox_override("panel", bsb)
+	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	old_price.add_child(bar)
+	# Anchored across the label rather than given a fixed width: "$6.58" and
+	# "$149.98" are not the same number of characters, and a rule that stops
+	# short of the digits it is cancelling reads as a stray line.
+	bar.set_anchors_preset(Control.PRESET_CENTER_LEFT)
+	bar.anchor_right = 1.0
+	bar.offset_left = -1.0
+	bar.offset_right = 1.0
+	bar.offset_top = -2.0
+	bar.offset_bottom = 2.0
+	row.add_child(old_price)
+
+	row.add_child(_tag_chip("SAVE  %d%%" % int(round((1.0 - usd / was) * 100.0)), Lagoon.BRASS, UI.F_TINY))
 	return row
 
 func _radial_glow(color: Color, diameter: float) -> ColorRect:
@@ -2750,9 +3176,16 @@ func _offer_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	text.add_theme_constant_override("separation", 4)
 	row.add_child(text)
 	text.add_child(Lagoon.label(pack["name"], UI.F_BODY, Lagoon.INK, true))
-	var sub := Lagoon.label(_pack_sub(pack), UI.F_CAPTION, Lagoon.INK_SOFT)
-	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	text.add_child(sub)
+	text.add_child(_reward_row(pack))
+	# In the text column, not beside the button. The pay column's minimum width
+	# is the button's; hanging "$29.36  SAVE 76%" off it instead made this the
+	# widest row on the page, and a VBoxContainer gives its widest child's
+	# minimum width to all of them -- which pushed the chest shelf and both tile
+	# grids off the right edge of a 720-wide screen.
+	var struck := _struck_price_row(pack)
+	if struck != null:
+		struck.alignment = BoxContainer.ALIGNMENT_BEGIN
+		text.add_child(struck)
 
 	var buy := Button.new()
 	buy.text = IAP.price_for(pack)
@@ -2945,13 +3378,25 @@ func _bundle_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	head.add_theme_constant_override("separation", 7)
 	col.add_child(head)
 	head.add_child(Lagoon.label(pack["name"], UI.F_LABEL, Lagoon.INK, true))
+	# Inline rather than a corner ribbon. The ribbon is for the narrow grid
+	# tiles, which have a whole empty corner to give it; on a card laid out
+	# left-to-right it either crosses the name or gets shrunk to a corner too
+	# small to read "5\u2605 GUARANTEED" in.
 	if pack.has("tag"):
 		head.add_child(_tag_chip(pack["tag"], pack["tag_color"], 11))
 
-	var sub := Lagoon.label(_pack_sub(pack), UI.F_CAPTION, Lagoon.INK_SOFT)
-	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	col.add_child(sub)
-	col.add_child(Lagoon.label("+%d%%  vs  buying  it  separately" % CV.bonus_pct(pack), UI.F_TINY, Lagoon.KELP_LO, true))
+	col.add_child(_reward_row(pack))
+	# In the text column, not beside the button. The pay column's minimum width
+	# is the button's; hanging "$29.36  SAVE 76%" off it instead made this the
+	# widest row on the page, and a VBoxContainer gives its widest child's
+	# minimum width to all of them -- which pushed the chest shelf and both tile
+	# grids off the right edge of a 720-wide screen.
+	var struck := _struck_price_row(pack)
+	if struck != null:
+		struck.alignment = BoxContainer.ALIGNMENT_BEGIN
+		col.add_child(struck)
+	else:
+		col.add_child(Lagoon.label("+%d%%  vs  buying  it  separately" % CV.bonus_pct(pack), UI.F_TINY, Lagoon.KELP_LO, true))
 
 	var buy := Button.new()
 	buy.text = IAP.price_for(pack)
@@ -2999,10 +3444,7 @@ func _shop_hero_offer(vb: VBoxContainer) -> void:
 	var nm := Lagoon.label(pack["name"], UI.F_BODY, Lagoon.INK, true)
 	name_row.add_child(nm)
 	name_row.add_child(_tag_chip(pack["tag"], Lagoon.REEF))
-	var sub := _popup_row_label(_pack_sub(pack), UI.F_CAPTION)
-	sub.add_theme_color_override("font_color", Lagoon.INK_SOFT)
-	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	col.add_child(sub)
+	col.add_child(_reward_row(pack))
 	var once := Lagoon.label("One time only!", UI.F_TINY, Lagoon.CORAL_LO, true)
 	col.add_child(once)
 
@@ -3196,59 +3638,140 @@ func _chest_card(row: HBoxContainer, pack: Dictionary) -> void:
 	col.add_child(buy)
 
 # square tile used for spin & coin packs (2-column grid)
-func _shop_tile(grid: GridContainer, pack: Dictionary, accent: Color, amount_text: String) -> void:
-	var panel := _tinted_card(grid, accent)
+# The treasure card: deep water in a brass frame, with light coming off the
+# goods.
+#
+# Everywhere else in the game a card is sea glass -- milky, translucent, lit
+# along the top edge -- and that is right for a card holding a mission or a
+# collection, which are things to be read. It is wrong for a card whose whole
+# job is to make a pile of gold look like a pile of gold, because pale gold on
+# a pale panel has nothing to be brighter than. Darkening the shop page helped
+# the cards; darkening the cards is what lets the contents glow.
+#
+# Only the two quantity shelves use it. The bundles, chests and piggy bank stay
+# sea glass: they are cards you read before you decide, and they sit next to
+# each other down the same column, so turning the whole page dark would take
+# the emphasis back off the thing that is meant to have it.
+func _treasure_card(parent: Node, top: bool) -> PanelContainer:
+	var panel := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.043, 0.204, 0.271, 0.97)
+	sb.set_corner_radius_all(Lagoon.R_CARD)
+	sb.set_border_width_all(4 if top else 3)
+	sb.border_color = Lagoon.BRASS_HI if top else Lagoon.BRASS
+	sb.shadow_size = 14 if top else 10
+	sb.shadow_color = Color(0, 0, 0, 0.45)
+	sb.shadow_offset = Vector2(0, 5)
+	panel.add_theme_stylebox_override("panel", sb)
+	parent.add_child(panel)
+
+	# Light from above the goods: a soft pool plus a slow fan of rays. Both are
+	# strongest on the top rungs, which is one more thing saying "this one is
+	# the one" without another badge on the card.
+	var lit := ColorRect.new()
+	var sh := Lagoon.shader("""
+shader_type canvas_item;
+uniform float strength = 1.0;
+uniform vec4 warm : source_color = vec4(1.0, 0.86, 0.55, 1.0);
+
+void fragment() {
+	vec2 src = vec2(0.5, 0.04);
+	vec2 d = UV - src;
+	float dist = length(d * vec2(1.0, 0.85));
+
+	// The pool the pile sits in.
+	float pool = smoothstep(0.72, 0.0, dist) * 0.30;
+
+	// Rays, thrown from the same point. Kept faint and wide -- a hard starburst
+	// on a card this small reads as a scratch on the glass.
+	float ang = atan(d.y, d.x);
+	float fan = abs(sin(ang * 8.0 + TIME * 0.10));
+	float rays = smoothstep(0.62, 1.0, fan) * smoothstep(0.66, 0.06, dist) * 0.16;
+
+	COLOR = vec4(warm.rgb, (pool + rays) * strength);
+}
+""")
+	var mat := ShaderMaterial.new()
+	mat.shader = sh
+	mat.set_shader_parameter("strength", 1.35 if top else 1.0)
+	lit.material = mat
+	lit.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(lit)
+	return panel
+
+# One rung of a price ladder: spins or coins, six or seven of them in a
+# two-column grid.
+#
+# The order of the column is the whole argument. What you get is now the
+# largest thing on the tile and the first thing read; what it costs is the last.
+# It used to be the other way round -- the price sat in a saturated green slab
+# at 30px while the quantity was 19px of body text above it -- which is a tile
+# that leads with the ask and buries the offer.
+func _shop_tile(grid: GridContainer, pack: Dictionary, _accent: Color, amount_text: String,
+		rung := 0, rungs := 1) -> void:
+	var top := rungs > 1 and rung >= rungs - 2
+	var panel := _treasure_card(grid, top)
 	panel.custom_minimum_size = Vector2(338, 0)
 
 	var margin := MarginContainer.new()
 	margin.add_theme_constant_override("margin_left", 10)
 	margin.add_theme_constant_override("margin_right", 10)
-	margin.add_theme_constant_override("margin_top", 10)
-	margin.add_theme_constant_override("margin_bottom", 10)
+	margin.add_theme_constant_override("margin_top", 12)
+	margin.add_theme_constant_override("margin_bottom", 12)
 	panel.add_child(margin)
 
 	var col := VBoxContainer.new()
 	col.alignment = BoxContainer.ALIGNMENT_CENTER
-	col.add_theme_constant_override("separation", 4)
+	col.add_theme_constant_override("separation", 2)
 	margin.add_child(col)
 
-	# fixed-height tag slot (empty when the pack has no tag) so every tile
-	# in the grid keeps the exact same content height as its siblings
-	var tag_wrap := CenterContainer.new()
-	tag_wrap.custom_minimum_size = Vector2(0, 36)
-	col.add_child(tag_wrap)
-	if pack.has("tag"):
-		tag_wrap.add_child(_tag_chip(pack["tag"], pack.get("tag_color", Color(0.88, 0.28, 0.38)), 11))
+	col.add_child(_pile_art("spins" if int(pack.get("spins", 0)) > 0 else "coins", rung, rungs))
 
-	var e := _emoji_label(pack["emoji"], 42)
-	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	col.add_child(e)
-	FX.pulse_forever(e, 1.06, 2.4)
-
-	var amount := Lagoon.label(amount_text, UI.F_LABEL, Lagoon.INK, true)
+	# The quantity, split so the number carries the weight and the unit only
+	# labels it. "3,400 SPINS" set as one string at one size spends half its
+	# width on the word.
+	var parts := amount_text.split("  ", false)
+	var amount := Lagoon.wordmark(String(parts[0]), 52)
 	amount.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(amount)
+	if parts.size() > 1:
+		var unit := Lagoon.label(String(parts[1]), UI.F_TINY, Lagoon.BRASS_HI, true)
+		unit.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		col.add_child(unit)
 
-	var nm := Lagoon.label(pack["name"], UI.F_TINY, Lagoon.INK_FAINT)
+	var nm := Lagoon.label(pack["name"], UI.F_TINY, Color(0.60, 0.76, 0.80))
 	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(nm)
 
-	# What climbing the ladder actually buys, said out loud. The bottom rung
-	# gets a blank line rather than "+0%" -- it is the thing being compared
-	# against, and the tiles have to stay the same height either way.
-	var bonus := CV.bonus_pct(pack)
-	var value := Lagoon.label("+%d%%  MORE  PER  $" % bonus if bonus > 0 else "", UI.F_TINY, Lagoon.KELP_LO, true)
-	value.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	col.add_child(value)
+	var struck := _struck_price_row(pack, Color(0.56, 0.71, 0.76))
+	if struck != null:
+		var pad := Control.new()
+		pad.custom_minimum_size = Vector2(0, 4)
+		col.add_child(pad)
+		col.add_child(struck)
+
+	var pad2 := Control.new()
+	pad2.custom_minimum_size = Vector2(0, 6)
+	col.add_child(pad2)
 
 	var buy := Button.new()
 	buy.text = IAP.price_for(pack)
 	buy.custom_minimum_size = Vector2(0, UI.TAP)
 	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
-	_candy_button(buy, Color(0.28, 0.68, 0.34))
+	# Green all the way up the ladder said nothing about where you were on it.
+	# The last two rungs are brass, which is the material this game already uses
+	# to mean "worth more" -- on the frames, the plaques and the icon set.
+	if top:
+		Lagoon.button(buy, "brass")
+		Lagoon.button_gloss(buy, 22)
+	else:
+		_candy_button(buy, Color(0.28, 0.68, 0.34))
 	FX.press_feedback(buy)
 	buy.pressed.connect(_confirm_purchase.bind(pack))
 	col.add_child(buy)
+
+	if pack.has("tag"):
+		_corner_ribbon(panel, String(pack["tag"]), pack.get("tag_color", Lagoon.REEF))
 
 func _free_gift_card(vb: VBoxContainer) -> void:
 	var ready := _shop_free_ready()
@@ -3469,29 +3992,166 @@ func _offer_out_of_spins() -> void:
 	_ctx_offer_card(vbox, pack, not live.is_empty())
 	_ctx_offer_footer(vbox)
 
-# Shown when an upgrade costs more than the vault holds. Names the shortfall,
-# then offers the cheapest pack that actually covers it -- an offer for less
-# than the missing amount is worse than no offer, because it does not unblock.
+# =============================================================================
+#  The gap, sold as the gap
+# =============================================================================
+#
+# A player who taps a hut they cannot afford is short a specific number. The
+# store's answer to that used to be "here is the cheapest tin on the shelf that
+# is bigger than your hole" -- 43,000 coins missing, so buy 90,000 for $2.99.
+# That is a real answer, and it is the answer of a shop that would rather sell
+# its own shelf than solve the problem: more than half of what it charges for is
+# change the player did not ask for.
+#
+# So the gap is priced as the gap. Two rules keep that from becoming a trick in
+# the other direction:
+#
+#   * The rate is the BEST rate published anywhere on the coin shelf, not the
+#     worst and not one invented for this dialog. The player buying 43,000 coins
+#     at the moment they are stuck pays the same per coin as the player who
+#     calmly bought the $99.99 tier.
+#   * The grant is never less than what that price buys in the shop. Rounding up
+#     to a real Apple price tier always leaves a few cents of slack, and the
+#     slack goes to the player, not the house.
+#
+# Which means the top-up is, by construction, never a worse deal than walking
+# into the store and buying the same thing -- and usually a better one. It also
+# needs no new products: it settles up through the coin-pack ids that are
+# already registered, so nothing here waits on an App Store Connect round trip.
+func _coin_rate() -> float:
+	var best := 0.0
+	for p in CV.COIN_PACKS:
+		var usd := CV.price_usd(p)
+		if usd > 0.0:
+			best = maxf(best, float(_scaled(int(p["coins"]))) / usd)
+	return best
+
+func _topup_for(shortfall: int) -> Dictionary:
+	var rate := _coin_rate()
+	if rate <= 0.0 or shortfall <= 0:
+		return {}
+	var chosen: Dictionary = CV.COIN_PACKS[CV.COIN_PACKS.size() - 1]
+	for p in CV.COIN_PACKS:
+		if CV.price_usd(p) * rate >= float(shortfall):
+			chosen = p
+			break
+	# Floored at what the shelf gives for this price, so the top-up is never the
+	# worse deal; ceilinged at what that price is worth at the published rate,
+	# so it is never a giveaway either. Without the ceiling, a shortfall bigger
+	# than the whole top tier -- which is an ordinary Tuesday twenty islands in,
+	# where a hut costs tens of millions -- would have sold ten times the
+	# largest coin pack in the game for the price of one.
+	var ceiling := int(CV.price_usd(chosen) * rate)
+	var grant := clampi(shortfall, _scaled(int(chosen["coins"])), maxi(ceiling, _scaled(int(chosen["coins"]))))
+	return {"pack": chosen, "coins": grant, "exact": grant >= shortfall}
+
+# Shown the moment a build is tapped that the vault cannot cover.
+#
+# Deliberately not behind the 15-minute cooldown the other contextual offers
+# use. Those fire on a wall the player will walk through on their own in a few
+# minutes -- the spin meter refills itself -- so repeating them is nagging. This
+# one fires on a wall that does not move: the hut costs what it costs, and the
+# player asked for it by tapping it. Answering that with silence because the
+# same thing happened twelve minutes ago is the store being coy at the one
+# moment it was actually addressed.
 func _offer_need_coins(shortfall: int) -> void:
 	_ctx_offer_last = _now()
-	var pack: Dictionary = CV.COIN_PACKS[CV.COIN_PACKS.size() - 1]
-	for p in CV.COIN_PACKS:
-		if _scaled(int(p["coins"])) >= shortfall:
-			pack = p
-			break
+	var offer := _topup_for(shortfall)
+	if offer.is_empty():
+		return
+	var pack: Dictionary = offer["pack"]
+	var grant: int = offer["coins"]
+	var exact: bool = offer["exact"]
+
 	var vbox := _open_popup("Not Enough Coins")
-	var e := _emoji_label("🏗️", 68)
-	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vbox.add_child(e)
+
+	var art := _pile_art("coins", 3, 5)
+	vbox.add_child(art)
+
 	var need := _popup_row_label("You're %s coins short" % _fmt_compact(shortfall), UI.F_BODY)
 	need.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(need)
+
+	# Free money first. The piggy bank is coins the player has already earned,
+	# and a store that hides that behind its own price list to make the sale is
+	# a store that has decided its player is a mark.
 	if piggy_coins > 0:
-		var pig := _popup_row_label("🐷  %s coins waiting in your piggy bank" % _fmt_compact(piggy_coins), UI.F_CAPTION)
+		var pig := _popup_row_label("\U0001F437  %s coins waiting in your piggy bank" % _fmt_compact(piggy_coins), UI.F_CAPTION)
 		pig.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		pig.add_theme_color_override("font_color", Color(1.0, 0.62, 0.72))
 		vbox.add_child(pig)
-	_ctx_offer_card(vbox, pack, false)
+
+	var card := _tinted_card(vbox, Lagoon.BRASS, true)
+	var margin := MarginContainer.new()
+	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		margin.add_theme_constant_override(m, 14)
+	card.add_child(margin)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	margin.add_child(col)
+
+	var head := CenterContainer.new()
+	col.add_child(head)
+	# Three honest things this can be, and the badge says which. "Exactly what
+	# you need" is only true when the number really is the number: under the
+	# bottom rung it overshoots, and past the top rung it falls short. A badge
+	# that says "exactly" over either is one the player learns to stop reading.
+	var badge := "EXACTLY  WHAT  YOU  NEED"
+	var badge_col := Lagoon.KELP_LO
+	if not exact:
+		badge = "THE  BIGGEST  PACK  THERE  IS"
+		badge_col = Lagoon.BRASS_MID
+	elif grant > shortfall:
+		badge = "COVERS  IT,  WITH  CHANGE"
+	head.add_child(_tag_chip(badge, badge_col, UI.F_TINY))
+
+	var amount := Lagoon.wordmark("+%s" % _fmt_compact(grant), 56)
+	amount.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(amount)
+	var unit := Lagoon.label("COINS", UI.F_TINY, Lagoon.BRASS_MID, true)
+	unit.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(unit)
+
+	# Said out loud, because the whole point of this dialog is that it is not
+	# the shelf price. A player who cannot check the claim has only been told
+	# to trust it.
+	var fair := Lagoon.label("Best coin rate in the shop — %s coins per $1" % _fmt_compact(int(_coin_rate())),
+			UI.F_TINY, Lagoon.KELP_LO, true)
+	fair.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(fair)
+	if not exact:
+		var rest := Lagoon.label("Still %s short of this build after it" % _fmt_compact(shortfall - grant),
+				UI.F_TINY, Lagoon.CORAL_LO, true)
+		rest.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		col.add_child(rest)
+
+	if IAP.simulated():
+		var note := Lagoon.label("Simulated purchase — no real charge.", UI.F_TINY, Lagoon.INK_FAINT)
+		note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		col.add_child(note)
+
+	var pay := Button.new()
+	pay.text = "PAY  %s" % IAP.price_for(pack)
+	pay.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	pay.add_theme_font_size_override("font_size", UI.F_LABEL)
+	_candy_button(pay, Color(0.28, 0.68, 0.34))
+	FX.press_feedback(pay)
+	pay.pressed.connect(func() -> void:
+		if IAP.busy:
+			return
+		pay.disabled = true
+		pay.text = "…"
+		# Written before the sheet opens and flushed to disk, not held in
+		# memory until Apple answers. Between those two moments iOS is free to
+		# kill the app, and a top-up that only existed in RAM would come back
+		# on the next launch as an ordinary pack -- the player charged for the
+		# gap and handed the shelf tin instead.
+		topup_pending = {"id": String(pack["id"]), "coins": grant}
+		_flush_save()
+		IAP.purchase(pack)
+	)
+	col.add_child(pay)
+
 	_ctx_offer_footer(vbox)
 
 # The pack tile inside a contextual popup: what you get, then the price.
@@ -3620,17 +4280,30 @@ func _on_purchase_ok(product_id: String) -> void:
 		_banner("Purchase received, but this build has no such pack.", Color(0.9, 0.4, 0.4))
 		IAP.finish(product_id)
 		return
+	# A top-up settles up through an ordinary coin-pack id, so this is the only
+	# place that can tell the two apart. Cleared before the grant, not after:
+	# the grant writes the save, and a record left standing through it would
+	# survive a crash mid-grant and pay out twice.
+	if String(topup_pending.get("id", "")) == short:
+		var exact := int(topup_pending.get("coins", 0))
+		topup_pending = {}
+		if exact > 0:
+			pack = pack.duplicate()
+			pack["coins_exact"] = exact
+			pack["name"] = "%s Coins" % _fmt_compact(exact)
 	_grant_pack(pack)
 	IAP.finish(product_id)
 
 # Backing out of Apple's sheet is a decision, not a fault. Take the spinner
 # down and say nothing -- the player knows what they just did.
 func _on_purchase_cancel(_product_id: String) -> void:
+	topup_pending = {}
 	_close_popup()
 
 # This is now only reached by genuine failures, so it may be as loud as it
 # looks: something the player asked for did not happen.
 func _on_purchase_fail(_product_id: String, message: String) -> void:
+	topup_pending = {}
 	_close_popup()
 	Sfx.play("error", -6.0)
 	_banner(message, Color(0.9, 0.4, 0.4))
@@ -3655,7 +4328,13 @@ func _grant_pack(pack: Dictionary) -> void:
 		offer_next = _now() + CV.OFFER_COOLDOWN
 		_offer_timer_label = null
 	spins += int(pack.get("spins", 0))
-	coins += _scaled(int(pack.get("coins", 0)))
+	# coins_exact is set only by the build-blocked top-up, which has already
+	# done its own scaling against the island the shortfall was measured on.
+	# Running it through _scaled again would multiply it a second time.
+	if pack.has("coins_exact"):
+		coins += int(pack["coins_exact"])
+	else:
+		coins += _scaled(int(pack.get("coins", 0)))
 	shields = mini(3, shields + int(pack.get("shields", 0)))
 	var pre_complete := {}
 	for c in CV.COLLECTIONS:
@@ -5227,10 +5906,15 @@ func _add_topbar(page: Control) -> void:
 	bar.offset_top = 16.0 + safe_top()
 	bar.offset_bottom = 16.0 + 70.0 + safe_top()
 
-	var to_shop := func() -> void: _goto(pages["shop"])
 	var labels := {}
-	for spec in [["coin", "coins", true], ["wheel", "spins", true], ["shield", "shields", false]]:
-		var cap := Lagoon.capsule(spec[0], "0", to_shop if spec[2] else Callable())
+	# Third field is the shelf the plus goes to; empty means the counter has no
+	# plus at all, which is the shield's case -- shields are not sold.
+	for spec in [["coin", "coins", "coins"], ["wheel", "spins", "spins"], ["shield", "shields", ""]]:
+		var shelf: String = spec[2]
+		var jump := Callable()
+		if shelf != "":
+			jump = func() -> void: _goto_shop(shelf)
+		var cap := Lagoon.capsule(spec[0], "0", jump)
 		bar.add_child(cap["root"])
 		labels[spec[1]] = cap["value"]
 
@@ -6146,7 +6830,7 @@ func _on_upgrade_requested(index: int) -> void:
 	var cost: int = _star_costs()[level]
 	if coins < cost:
 		Sfx.play("error", -6.0)
-		if _ctx_offer_ready() and _popup == null:
+		if _popup == null:
 			_offer_need_coins(cost - coins)
 		return
 	# The whole purchase is committed here, before the scaffold goes up: coins
@@ -6631,6 +7315,7 @@ func _flush_save() -> void:
 		"col_mega": col_mega_claimed,
 		"col_deadline": col_deadline,
 		"purchased": purchased_ids,
+		"topup_pending": topup_pending,
 		"shop_free_last": shop_free_last,
 		"piggy": piggy_coins,
 		"piggy_promised": piggy_promised,
@@ -6782,6 +7467,16 @@ func _load_game() -> void:
 		for id in lp:
 			if typeof(id) == TYPE_STRING:
 				purchased_ids.append(id)
+	# Coerced field by field rather than assigned whole: this is read back
+	# straight into a purchase-delivery path, and a malformed save must not be
+	# able to name an arbitrary product or an arbitrary number of coins.
+	topup_pending = {}
+	var tp = data.get("topup_pending", {})
+	if typeof(tp) == TYPE_DICTIONARY:
+		var tp_id := _s(tp.get("id", ""))
+		var tp_coins := maxi(0, _i(tp.get("coins", 0)))
+		if tp_id != "" and tp_coins > 0 and not CV.pack_by_id(tp_id).is_empty():
+			topup_pending = {"id": tp_id, "coins": tp_coins}
 	shop_free_last = _f(data.get("shop_free_last", 0.0))
 	piggy_coins = maxi(0, _i(data.get("piggy", 0)))
 	piggy_promised = maxi(0, _i(data.get("piggy_promised", 0)))
