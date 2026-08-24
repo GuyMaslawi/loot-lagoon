@@ -83,8 +83,14 @@ begin
     r := public.record_raid(p_bob, 'steal', 3000);
     perform pg_temp.ck('record_raid returns what was actually taken', (r->>'coins')::bigint = 3000);
     r := public.find_target('steal');
+    -- "a bot", not "the bot this test made". Once the seeded population exists
+    -- the fallback picks at random from it, and pinning the assertion to one
+    -- row would fail for the right behaviour.
     perform pg_temp.ck('with no eligible human, find_target falls back to a bot',
-                       (r->>'id')::uuid = p_bot, coalesce(r::text, 'NULL'));
+                       (select is_bot from public.players where id = (r->>'id')::uuid),
+                       coalesce(r::text, 'NULL'));
+    perform pg_temp.ck('and the bot it found is in band, not just any bot',
+                       abs((r->>'island_level')::int - 6) <= 3, coalesce(r::text, 'NULL'));
 
     -- --- the server clamps a lying client ----------------------------------
     update public.players set vault_coins = 500 where id = p_bob;
