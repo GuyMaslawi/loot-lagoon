@@ -34,6 +34,11 @@ signal signed_in(player: Dictionary, is_new: bool, remote_save: Dictionary)
 signal sign_in_failed(reason: String)
 signal signed_out()
 
+# The session landed and RPCs will now authenticate. Not the same thing as
+# having an island: claim_player is what turns a session into one, and only
+# main.gd can build the payload for it, because that payload is the save.
+signal session_ready()
+
 # The server refused a push because it holds a further-along island. Carries
 # what it holds, so main.gd can offer to adopt it.
 signal save_rejected(stored_rank: int, remote_save: Dictionary)
@@ -206,6 +211,7 @@ func sign_in(provider: String, id_token: String, nonce: String) -> void:
 			return
 		_take_session(body)
 		_set_state("synced")
+		session_ready.emit()
 	_post("/auth/v1/token?grant_type=id_token", {
 		"provider": provider,
 		"id_token": id_token,
@@ -262,8 +268,13 @@ func claim(local: Dictionary, name: String, emoji: String,
 #
 # main.gd calls this wherever it already calls _save_game(). It marks the copy
 # dirty and returns; _process sends it at most every PUSH_GAP seconds.
+# `force` is for the one case where a lower rank is the truth rather than a
+# stale device: the player was shown both islands and deliberately chose the
+# smaller one. Without it push_save rejects the write, main.gd is handed the
+# server's island again, and the two sides argue for ever over a decision that
+# has already been made.
 func note_save(data: Dictionary, rank: int, level: int,
-		coins: int, shields: int, buildings: Array) -> void:
+		coins: int, shields: int, buildings: Array, force := false) -> void:
 	if not linked():
 		return
 	_pending = {
@@ -273,6 +284,7 @@ func note_save(data: Dictionary, rank: int, level: int,
 		"p_vault_coins": coins,
 		"p_shields": shields,
 		"p_buildings": buildings,
+		"p_force": force,
 	}
 	_dirty = true
 

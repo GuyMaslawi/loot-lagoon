@@ -467,6 +467,17 @@ func _after_boot() -> void:
 	IAP.purchase_cancelled.connect(_on_purchase_cancel)
 	IAP.products_loaded.connect(_on_products_loaded)
 	IAP.begin()
+
+	# Same reasoning as IAP above: an island adopted from the server repaints
+	# pages, and those pages have to exist by the time it lands.
+	Cloud.session_ready.connect(_cloud_claim)
+	Cloud.signed_in.connect(_on_cloud_signed_in)
+	Cloud.save_rejected.connect(_on_cloud_save_rejected)
+	Cloud.raids_arrived.connect(_on_cloud_raids)
+	# A session that survived from a previous launch still has to claim, because
+	# claiming is also how the game asks what happened while it was closed.
+	if Cloud.linked():
+		_cloud_claim()
 	call_deferred("_check_island_complete")
 	# A lock during the title screen. _notification stamped it and left the
 	# credit to here, where there are pages to repaint and a toast to land on.
@@ -925,6 +936,137 @@ func _on_login(p: Dictionary) -> void:
 	if token == "":
 		return
 	Cloud.sign_in(str(p.get("provider", "")), token, str(p.get("nonce", "")))
+
+# =============================================================================
+#  The island, and the server's copy of it
+# =============================================================================
+#
+# Sending the local save is not a nicety. Everyone who reaches a sign-in button
+# has already been playing -- until Sign in with Apple existed the title screen
+# was one green START PLAYING button and nothing else -- so the ordinary case is
+# a real island meeting the server for the first time. Claiming without it would
+# create an empty row and strand the island on the device.
+func _cloud_claim() -> void:
+	if not Cloud.linked():
+		return
+	Cloud.claim(_save_dict(), str(profile.get("name", "Islander")), "😎",
+			rank_stars, island_level, coins, shields, buildings)
+
+# What the server had. `is_new` means it had nothing and has just been given
+# what was on this device, so there is nothing to reconcile.
+func _on_cloud_signed_in(_who: Dictionary, is_new: bool, remote: Dictionary) -> void:
+	if is_new or remote.is_empty():
+		_flush_save()
+		return
+	_reconcile(remote)
+
+# push_save refused: the server holds an island further along than this one.
+func _on_cloud_save_rejected(_stored_rank: int, remote: Dictionary) -> void:
+	if remote.is_empty():
+		return
+	_reconcile(remote)
+
+# Which island wins, and the rule is rank_stars for the reason main.gd already
+# relies on everywhere else: nothing in the game subtracts from it. Between two
+# states of the SAME island the larger one is strictly the later one, so there
+# is nothing to ask about.
+#
+# The case that does need asking is two DIFFERENT islands -- somebody who played
+# as a guest, then signed into an account that already had one. Rank cannot tell
+# those apart from a stale device, so anything with real progress on both sides
+# stops and asks rather than quietly throwing an evening away.
+func _reconcile(remote: Dictionary) -> void:
+	var theirs := int(remote.get("rank_stars", 0))
+	if theirs <= rank_stars:
+		# Ours is the same or further on. Push over it.
+		_flush_save()
+		return
+	if rank_stars == 0:
+		# Nothing here to lose -- a fresh install signing in. This is the whole
+		# point of the feature, and stopping to ask would be theatre.
+		_adopt_remote(remote)
+		return
+	_ask_which_island(remote)
+
+func _adopt_remote(remote: Dictionary) -> void:
+	if not _write_save(remote):
+		_banner("Couldn't restore your island — check your free space.", Color(0.95, 0.4, 0.4))
+		return
+	_load_game()
+	_refresh()
+	_banner("Your island is back.", Color(0.5, 0.9, 0.6), "🏝️")
+
+func _ask_which_island(remote: Dictionary) -> void:
+	var box := _open_popup("Two islands")
+	var head := _popup_row_label(
+		"This account already has an island. Only one can be kept — the other is gone.",
+		UI.F_CAPTION)
+	head.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(head)
+
+	var keep_theirs := Button.new()
+	keep_theirs.text = "Restore  ⭐ %s  ·  island %d" % [
+		_fmt_compact(int(remote.get("rank_stars", 0))), int(remote.get("island_level", 1))]
+	keep_theirs.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	_candy_button(keep_theirs, Color(0.28, 0.68, 0.34))
+	FX.press_feedback(keep_theirs)
+	keep_theirs.pressed.connect(func() -> void:
+		_close_popup()
+		_adopt_remote(remote)
+	)
+	box.add_child(keep_theirs)
+
+	var keep_mine := Button.new()
+	keep_mine.text = "Keep this one  ⭐ %s  ·  island %d" % [_fmt_compact(rank_stars), island_level]
+	keep_mine.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	_candy_button(keep_mine, Color(0.85, 0.45, 0.25))
+	FX.press_feedback(keep_mine)
+	keep_mine.pressed.connect(func() -> void:
+		_close_popup()
+		# Deliberate, so it goes up with force -- otherwise the server refuses a
+		# lower rank and the two sides argue with each other for ever.
+		Cloud.note_save(_save_dict(), rank_stars, island_level, coins, shields, buildings, true)
+		Cloud.flush()
+	)
+	box.add_child(keep_mine)
+
+# What happened while the app was shut.
+#
+# The server recorded that a raid happened and did not touch the save -- see the
+# note on record_raid in migration 0002. Applying it is this side's job, under
+# this side's rules, which is the only place those rules exist.
+func _on_cloud_raids(raids: Array) -> void:
+	var ids := []
+	var taken := 0
+	var smashed := 0
+	for r in raids:
+		if typeof(r) != TYPE_DICTIONARY:
+			continue
+		ids.append(str(r.get("id", "")))
+		match str(r.get("mode", "")):
+			"steal":
+				var c := int(r.get("coins", 0))
+				# maxi, because the vault moved on while the app was closed and
+				# a raid must never push a player into debt.
+				taken += mini(c, coins)
+				coins = maxi(0, coins - c)
+			"attack":
+				var h := int(r.get("hut", -1))
+				if h >= 0 and h < buildings.size() and int(buildings[h]) > 0:
+					buildings[h] = int(buildings[h]) - 1
+					smashed += 1
+	if ids.is_empty():
+		return
+	Cloud.ack_raids(ids)
+	_flush_save()
+	_refresh()
+	if taken > 0:
+		_banner("Raided while you were away — %s taken." % _fmt_compact(taken),
+				Color(0.95, 0.55, 0.3), "🏴‍☠️")
+	elif smashed > 0:
+		_banner("Someone knocked a hut down while you were away.",
+				Color(0.95, 0.55, 0.3), "🔨")
 
 func _login_apple() -> void:
 	if _auth != null and is_instance_valid(_auth):
@@ -7516,11 +7658,15 @@ func _save_game() -> void:
 		return
 	_save_pending = true
 
-func _flush_save() -> void:
-	if _preview_island or _boot != null:
-		return
-	_save_flushed = float(Time.get_ticks_msec()) / 1000.0
-	var data := {
+# The save, as one dictionary, in one place.
+#
+# Lifted out of _flush_save because there are now two callers who need exactly
+# this and must not drift: the disk write, and claim_player -- which sends the
+# island to the server the first time somebody signs in. A second hand-built
+# copy of this literal would be a save that is missing whatever was added to the
+# other one.
+func _save_dict() -> Dictionary:
+	return {
 		"coins": coins,
 		"spins": spins,
 		"stars": stars,
@@ -7560,6 +7706,12 @@ func _flush_save() -> void:
 		# resets it to zero and every backward-clock exploit reopens on launch.
 		"clock_hw": clock_hw,
 	}
+
+func _flush_save() -> void:
+	if _preview_island or _boot != null:
+		return
+	_save_flushed = float(Time.get_ticks_msec()) / 1000.0
+	var data := _save_dict()
 	# The dirty flag is cleared by the write succeeding, not by having attempted
 	# one. It used to be cleared on the way in, so a write that failed -- a full
 	# disk, which is exactly the case _write_save's own comment is about -- left
