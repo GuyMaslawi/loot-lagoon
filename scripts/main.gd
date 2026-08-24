@@ -5263,9 +5263,19 @@ func _fill_options(vb: VBoxContainer) -> void:
 	vb.add_child(_page_note("Loot Lagoon  •  %s" % BuildID.label(), UI.F_CAPTION))
 
 # Deleting an account has to actually delete something, and the honest list is
-# short enough to print: who you signed in as, and the island itself. Both are
-# on this device -- nothing about this player has ever left it -- so the delete
-# is a file delete and the reload is what makes it visible.
+# short enough to print: who you signed in as, and the island itself.
+#
+# That list used to end "and both are on this device, because nothing about this
+# player has ever left it". That stopped being true the day cloud.gd landed. A
+# signed-in player has a row on a server, and a delete that only cleared the
+# phone would leave it there -- so the next sign-in would hand the island
+# straight back, and the player would be told they had deleted something they
+# had not. Guideline 5.1.1(v) is about the account, not the copy of it that
+# happens to be nearest.
+#
+# So the server goes first and the local wipe only happens if it succeeded. The
+# other order is worse than doing nothing: local gone, server intact, and no way
+# left to sign in and ask again.
 #
 # The purchase ledger deliberately survives. It holds Apple's transaction ids
 # and nothing about the player, and clearing it would hand the next launch a
@@ -5277,7 +5287,11 @@ func _confirm_delete_account() -> void:
 	var e := _emoji_label("⚠️", 64)
 	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(e)
-	var body := _popup_row_label("This erases your sign-in and your island — level, coins, spins, cards and collections — from this device. It cannot be undone, and purchases already made are not refunded.", UI.F_CAPTION)
+	# Two versions, because saying "from this device" to someone whose island is
+	# also on a server is a false promise, and saying "and from our servers" to a
+	# guest is a claim about data that never existed.
+	var where := "from this device and from our servers" if Cloud.linked() else "from this device"
+	var body := _popup_row_label("This erases your sign-in and your island — level, coins, spins, cards and collections — %s. It cannot be undone, and purchases already made are not refunded." % where, UI.F_CAPTION)
 	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vbox.add_child(body)
@@ -5287,14 +5301,19 @@ func _confirm_delete_account() -> void:
 	go.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
 	_candy_button(go, Color(0.78, 0.28, 0.3))
 	FX.press_feedback(go)
-	go.pressed.connect(func() -> void:
-		go.disabled = true
+	# The local wipe, unchanged, lifted into a callable so the cloud path can
+	# run it after the server has confirmed rather than duplicating it.
+	var wipe := func() -> void:
 		# Every copy, not just the live one -- _write_save keeps a .bak beside
 		# the save and may have left a .tmp behind, and _read_save would happily
 		# restore the island from either of them on the very next launch.
 		# Anything still queued would write the island straight back out.
 		_save_pending = false
-		for path in ["user://profile.json", SAVE_PATH, SAVE_BAK, SAVE_TMP]:
+		# Cloud.SESSION_PATH is in the list even though delete_account() already
+		# clears it on the way through: the guest path never calls that, and a
+		# session file left behind by an earlier build would have the next launch
+		# quietly adopt an island the player believes they deleted.
+		for path in ["user://profile.json", SAVE_PATH, SAVE_BAK, SAVE_TMP, Cloud.SESSION_PATH]:
 			if FileAccess.file_exists(path):
 				DirAccess.remove_absolute(path)
 		_close_popup(true)
@@ -5309,6 +5328,25 @@ func _confirm_delete_account() -> void:
 		# chances to miss one. Restarting the scene is the same thing a fresh
 		# install does, which is the state we just claimed to have produced.
 		get_tree().reload_current_scene()
+
+	go.pressed.connect(func() -> void:
+		go.disabled = true
+		if not Cloud.linked():
+			wipe.call()
+			return
+		go.text = "DELETING…"
+		Cloud.delete_account(func(ok: bool) -> void:
+			if ok:
+				wipe.call()
+				return
+			# Nothing has been touched yet, which is the point. Re-arm the
+			# button and say so plainly -- a player who meant to delete and was
+			# told nothing would assume it worked.
+			go.disabled = false
+			go.text = "DELETE  EVERYTHING"
+			_banner("Couldn't reach the server — nothing was deleted. Try again.",
+					Color(0.95, 0.4, 0.4))
+		)
 	)
 	vbox.add_child(go)
 
