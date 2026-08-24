@@ -21,6 +21,19 @@ var _state := ""
 const MAX_REQUEST_BYTES := 8192
 var _client_id := ""
 var _poll_timer: Timer
+# The OIDC nonce, and it is not the same mechanism as the PKCE verifier above.
+# PKCE binds the authorization *code* to this device, so a stolen code cannot be
+# exchanged. The nonce binds the resulting *identity token* to this particular
+# sign-in, so a token captured from one session cannot be replayed into another
+# -- which is exactly what Supabase checks when the token is handed to it.
+#
+# Sent raw, unlike Apple's. Google follows OIDC and copies the value into the
+# token's `nonce` claim unmodified, so the raw value is what verifies; Apple
+# takes a SHA-256 of it and expects the raw one alongside. Getting those two
+# backwards produces a token that verifies nowhere, so they are kept apart on
+# purpose: this is raw end to end, and sign_in_with_apple.mm takes the hash.
+var _nonce := ""
+var _id_token := ""
 
 static func load_config() -> Dictionary:
 	if FileAccess.file_exists("res://google_oauth.json"):
@@ -51,6 +64,7 @@ func start() -> bool:
 	ctx.start(HashingContext.HASH_SHA256)
 	ctx.update(_verifier.to_utf8_buffer())
 	var challenge := _b64url(ctx.finish())
+	_nonce = _b64url(crypto.generate_random_bytes(32))
 	# Names this particular sign-in. The loopback listener answers to anything
 	# that can open a TCP connection to localhost -- another app on the machine,
 	# or any web page the player has open, via an <img src="http://127.0.0.1:
@@ -65,9 +79,9 @@ func start() -> bool:
 	if _server.listen(REDIRECT_PORT, "127.0.0.1") != OK:
 		return false
 	var redirect := "http://127.0.0.1:%d" % REDIRECT_PORT
-	var url := "https://accounts.google.com/o/oauth2/v2/auth?client_id=%s&redirect_uri=%s&response_type=code&scope=%s&state=%s&code_challenge=%s&code_challenge_method=S256" % [
+	var url := "https://accounts.google.com/o/oauth2/v2/auth?client_id=%s&redirect_uri=%s&response_type=code&scope=%s&state=%s&nonce=%s&code_challenge=%s&code_challenge_method=S256" % [
 		_client_id.uri_encode(), redirect.uri_encode(), "openid profile email".uri_encode(),
-		_state.uri_encode(), challenge]
+		_state.uri_encode(), _nonce.uri_encode(), challenge]
 	OS.shell_open(url)
 	_poll_timer = Timer.new()
 	_poll_timer.wait_time = 0.4
@@ -186,6 +200,12 @@ func _exchange(code: String) -> void:
 		if response_code != 200 or typeof(d) != TYPE_DICTIONARY or not d.has("access_token"):
 			login_failed.emit("Token exchange failed (%d)" % response_code)
 			return
+		# Google returns this because the scope asks for `openid`, and until now
+		# it was parsed and discarded -- the flow only ever wanted a display
+		# name. It is the credential Supabase actually authenticates with, so
+		# from here it is carried through to login_finished rather than thrown
+		# away and re-fetched by some second, weaker means later.
+		_id_token = str(d.get("id_token", ""))
 		_userinfo(str(d["access_token"]))
 	)
 	http.request("https://oauth2.googleapis.com/token",
@@ -205,6 +225,11 @@ func _userinfo(token: String) -> void:
 			"name": str(d.get("name", "Player")),
 			"email": str(d.get("email", "")),
 			"provider": "google",
+			# What cloud.gd trades for a Supabase session. Both halves are
+			# needed: the token carries the nonce claim, and the raw nonce is
+			# what Supabase compares it against.
+			"id_token": _id_token,
+			"nonce": _nonce,
 		})
 	)
 	http.request("https://openidconnect.googleapis.com/v1/userinfo",
