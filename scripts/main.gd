@@ -280,13 +280,10 @@ var piggy_promised := 0
 var offer_id := ""
 var offer_until := 0.0
 var offer_next := 0.0
-# Contextual offers interrupt play, so they are rate-limited hard. Firing one
-# on every failed tap would train players to dismiss them on sight.
 # Where each shelf starts, by key. Node references, rebuilt with the page every
 # time it is filled -- so this is cleared at the top of _fill_shop rather than
 # held across a rebuild, where every entry would be a freed node.
 var _shop_anchors := {}
-var _ctx_offer_last := 0.0
 # A top-up that has been paid for but not yet delivered: {"id", "coins"}.
 # Saved, because the window it lives in is a StoreKit sheet, and the app can be
 # killed inside one.
@@ -498,6 +495,10 @@ func _after_boot() -> void:
 	# Reaching it by playing means spending a village down to the exact wrong
 	# number first, which is not a thing you can do while looking at the dialog
 	# you are trying to lay out.
+	# DEMO_OFFER=spins:<held>:<bet> does the same for the spin wall, at either of
+	# the two shapes it comes in -- an empty meter, or a meter a raised bet
+	# outruns -- because arriving at the second one honestly means burning a
+	# balance down to exactly four and then remembering to set bet x5.
 	var demo_offer := OS.get_environment("DEMO_OFFER")
 	if demo_offer.begins_with("coins"):
 		var parts := demo_offer.split(":")
@@ -505,6 +506,13 @@ func _after_boot() -> void:
 		var go2 := create_tween()
 		go2.tween_interval(0.4)
 		go2.tween_callback(func() -> void: _offer_need_coins(short_by))
+	elif demo_offer.begins_with("spins"):
+		var parts := demo_offer.split(":")
+		spins = int(parts[1]) if parts.size() > 1 else 0
+		var bet := int(parts[2]) if parts.size() > 2 else 1
+		var go3 := create_tween()
+		go3.tween_interval(0.4)
+		go3.tween_callback(func() -> void: _offer_out_of_spins(bet))
 	# SHOT=<page key> opens that page, lets it settle and writes a PNG, then
 	# quits. Apple will not review an in-app purchase without a screenshot of
 	# where it is sold, and there are twenty-five of them -- shooting those by
@@ -3034,7 +3042,10 @@ func _corner_ribbon(panel: Control, text: String, color: Color, reach := 98.0) -
 # on it. Same three facts, in the same order, at a size that matches what they
 # are worth -- and each one next to the icon the HUD already uses for it, so the
 # reader is being shown the counters they are about to move.
-func _reward_row(pack: Dictionary) -> Control:
+# `ink` exists because this row is now read on two backgrounds. On sea glass it
+# is dark type on a pale panel; on the dark treasure card the same dark type is
+# a smudge, so the caller passes the light it needs.
+func _reward_row(pack: Dictionary, ink := Lagoon.INK, size := UI.F_BODY) -> Control:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 16)
 
@@ -3054,7 +3065,7 @@ func _reward_row(pack: Dictionary) -> Control:
 		icon.custom_minimum_size = Vector2(34, 34)
 		icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		item.add_child(icon)
-		var num := Lagoon.label(_fmt_compact(n), UI.F_BODY, Lagoon.INK, true)
+		var num := Lagoon.label(_fmt_compact(n), size, ink, true)
 		num.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		item.add_child(num)
 	return row
@@ -3773,12 +3784,21 @@ func _shop_tile(grid: GridContainer, pack: Dictionary, _accent: Color, amount_te
 	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(nm)
 
+	# The struck-price slot is reserved on every rung, discount or no discount.
+	#
+	# A grid row is as tall as its tallest cell and this column is centred, so a
+	# tile that skipped the row did not come out shorter -- it came out the same
+	# height with all of its contents shifted up by half a missing row. Breeze
+	# and Storm sit side by side with their piles, their prices and their buy
+	# buttons on three different lines, which reads as a rendering fault rather
+	# than as one pack having a saving and the other not. The empty slot costs
+	# the two entry rungs 40px of air and buys the whole grid one skyline.
+	var save_slot := CenterContainer.new()
+	save_slot.custom_minimum_size = Vector2(0, 40)
+	col.add_child(save_slot)
 	var struck := _struck_price_row(pack, Color(0.56, 0.71, 0.76))
 	if struck != null:
-		var pad := Control.new()
-		pad.custom_minimum_size = Vector2(0, 4)
-		col.add_child(pad)
-		col.add_child(struck)
+		save_slot.add_child(struck)
 
 	var pad2 := Control.new()
 	pad2.custom_minimum_size = Vector2(0, 6)
@@ -3993,34 +4013,55 @@ func _offer_countdown_text() -> String:
 # a cash offer in front of you the instant a building costs more than you have.
 # Loot Lagoon used to answer both of those moments with an error beep.
 #
-# The guard rail is the cooldown. These fire on failure, and failure repeats;
-# without a long gap between them the offer becomes wallpaper and the player
-# learns to swipe it away before reading it.
-const CTX_OFFER_COOLDOWN := 900.0
+# Neither of them is rate-limited any more. Both fire only on a tap the player
+# made on purpose -- spin, or build -- and both answer the exact thing that tap
+# could not do. A cooldown on an answer to a direct question is not a guard
+# rail, it is the shop deciding to be shut.
 
-func _ctx_offer_ready() -> bool:
-	return _now() - _ctx_offer_last >= CTX_OFFER_COOLDOWN
-
-# Shown when the reels are asked to spin with an empty meter. Leads with the
-# free refill that is already coming, because burying it would make the popup a
-# paywall -- the pack is the shortcut, not the only road.
-func _offer_out_of_spins() -> void:
-	_ctx_offer_last = _now()
+# Shown when the reels are asked to spin and the meter cannot cover the bet.
+#
+# Two ways to arrive and they are the same wall: the meter is empty, or it holds
+# four spins and the player has set bet x5. Both are "I asked to spin and could
+# not", both are answered by the same pack, and answering the second with a red
+# banner while the first got a store front was the shop closing at the one
+# moment the player had already decided to spend.
+#
+# Leads with the free refill that is already coming, because burying it would
+# make this a paywall -- the pack is the shortcut, not the only road.
+func _offer_out_of_spins(bet := 1) -> void:
 	var live := _active_offer()
-	var pack: Dictionary = live if not live.is_empty() else CV.SPIN_PACKS[1]
-	var vbox := _open_popup("Out of Spins")
-	var e := _emoji_label("🌀", 68)
-	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vbox.add_child(e)
-	var wait := _popup_row_label("+%d spins free in %d min" % [SPIN_REGEN_AMOUNT, int(SPIN_REGEN_SECS / 60.0)], UI.F_BODY)
+	var pack: Dictionary = live if not live.is_empty() else _default_spin_pack()
+	var short := bet > 1 and spins > 0
+	var vbox := _open_popup("Not Enough Spins" if short else "Out of Spins")
+
+	# What the wall actually is. A player holding four spins at bet x5 is not out
+	# of spins, and a popup that tells them they are is wrong about the very
+	# thing it interrupted them for.
+	if short:
+		var need := _popup_row_label("Bet  x%d  needs  %d  —  you have %d" % [bet, bet, spins], UI.F_BODY)
+		need.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		vbox.add_child(need)
+	var wait := _popup_row_label("+%d spins free in %d min" % [SPIN_REGEN_AMOUNT, int(SPIN_REGEN_SECS / 60.0)],
+		UI.F_CAPTION if short else UI.F_BODY)
 	wait.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	if short:
+		wait.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 	vbox.add_child(wait)
 	var or_row := _popup_row_label("— or keep the run going —", UI.F_CAPTION)
 	or_row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	or_row.add_theme_color_override("font_color", Lagoon.INK_FAINT)
 	vbox.add_child(or_row)
-	_ctx_offer_card(vbox, pack, not live.is_empty())
+	_spin_offer_card(vbox, pack, not live.is_empty())
 	_ctx_offer_footer(vbox)
+
+# The rung this popup falls back to when no timed offer is live: whichever spin
+# pack the shelf itself has marked POPULAR, so the interrupt and the store agree
+# on what the sensible buy is instead of the popup holding its own opinion.
+func _default_spin_pack() -> Dictionary:
+	for p in CV.SPIN_PACKS:
+		if p.has("tag"):
+			return p
+	return CV.SPIN_PACKS[mini(1, CV.SPIN_PACKS.size() - 1)]
 
 # =============================================================================
 #  The gap, sold as the gap
@@ -4075,17 +4116,11 @@ func _topup_for(shortfall: int) -> Dictionary:
 	var grant := clampi(shortfall, _scaled(int(chosen["coins"])), maxi(ceiling, _scaled(int(chosen["coins"]))))
 	return {"pack": chosen, "coins": grant, "exact": grant >= shortfall}
 
-# Shown the moment a build is tapped that the vault cannot cover.
-#
-# Deliberately not behind the 15-minute cooldown the other contextual offers
-# use. Those fire on a wall the player will walk through on their own in a few
-# minutes -- the spin meter refills itself -- so repeating them is nagging. This
-# one fires on a wall that does not move: the hut costs what it costs, and the
-# player asked for it by tapping it. Answering that with silence because the
-# same thing happened twelve minutes ago is the store being coy at the one
-# moment it was actually addressed.
+# Shown the moment a build is tapped that the vault cannot cover. Fires on every
+# such tap: the hut costs what it costs, the player asked for it by tapping it,
+# and answering that with silence because the same thing happened twelve minutes
+# ago is the store being coy at the one moment it was addressed.
 func _offer_need_coins(shortfall: int) -> void:
-	_ctx_offer_last = _now()
 	var offer := _topup_for(shortfall)
 	if offer.is_empty():
 		return
@@ -4184,31 +4219,87 @@ func _offer_need_coins(shortfall: int) -> void:
 
 	_ctx_offer_footer(vbox)
 
-# The pack tile inside a contextual popup: what you get, then the price.
-func _ctx_offer_card(vbox: VBoxContainer, pack: Dictionary, timed: bool) -> void:
-	var card := _tinted_card(vbox, Lagoon.BRASS if timed else Lagoon.KELP, timed)
+# The pack, sold the way the shop sells one.
+#
+# This card used to be a paragraph. Name in body type, contents as a grey
+# sentence underneath -- "260 Spins + 4.19M Coins + 2 Cards" -- and a button.
+# Every one of those facts was true and none of them was shown: the shelf four
+# taps away draws the same product with a fan of wheels, the quantity at 52px,
+# the old price struck through and a ribbon across the corner, and it does that
+# because a pile of goods has to look like a pile of goods before a price means
+# anything. The popup was asking for the sale in the harder position -- mid
+# interrupt, unasked-for -- with a tenth of the art.
+#
+# So it is the shop tile now: same treasure card, same pile, same ladder of
+# type, same ribbon. The one thing it keeps from the old card is the countdown,
+# which is the only fact here the shelf cannot state.
+func _spin_offer_card(vbox: VBoxContainer, pack: Dictionary, timed: bool) -> void:
+	var card := _treasure_card(vbox, true)
+	if timed:
+		card.add_child(_shine_overlay(Lagoon.BRASS_HI))
+
 	var margin := MarginContainer.new()
-	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
-		margin.add_theme_constant_override(m, 12)
+	margin.add_theme_constant_override("margin_left", 16)
+	margin.add_theme_constant_override("margin_right", 16)
+	margin.add_theme_constant_override("margin_top", 14)
+	margin.add_theme_constant_override("margin_bottom", 14)
 	card.add_child(margin)
+
 	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 4)
+	col.alignment = BoxContainer.ALIGNMENT_CENTER
+	col.add_theme_constant_override("separation", 2)
 	margin.add_child(col)
+
+	# The clock first, and only when there is one. On a timed offer the deadline
+	# is the reason to read the rest of the card; on the standing pack there is
+	# no deadline, and inventing a chip to fill the slot would be inventing
+	# urgency.
 	if timed:
 		var chip_wrap := CenterContainer.new()
 		col.add_child(chip_wrap)
-		chip_wrap.add_child(_tag_chip("⏳  %s  LEFT" % _offer_countdown_text(), Lagoon.REEF))
-	var nm := Lagoon.label(pack["name"], UI.F_BODY, Lagoon.INK, true)
+		chip_wrap.add_child(_tag_chip("⏳  %s  LEFT" % _offer_countdown_text(), Lagoon.REEF, UI.F_CAPTION))
+		var gap := Control.new()
+		gap.custom_minimum_size = Vector2(0, 6)
+		col.add_child(gap)
+
+	var spins_n := int(pack.get("spins", 0))
+	col.add_child(_pile_art("spins", _spin_pile_rung(spins_n), 5))
+
+	# Spins are what the player came here short of, so spins are the headline and
+	# everything else in the box is a supporting row -- even when the coins are
+	# the larger number.
+	var amount := Lagoon.wordmark(_fmt_compact(spins_n), 56)
+	amount.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(amount)
+	var unit := Lagoon.label("SPINS", UI.F_CAPTION, Lagoon.BRASS_HI, true)
+	unit.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(unit)
+
+	var nm := Lagoon.label(pack["name"], UI.F_CAPTION, Color(0.60, 0.76, 0.80))
 	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(nm)
-	var sub := Lagoon.label(_pack_sub(pack), UI.F_CAPTION, Lagoon.INK_SOFT)
-	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	col.add_child(sub)
+
+	# The rest of the box, as counters rather than as a sentence -- and only the
+	# rest of it: the spin count is already the headline, so repeating it here
+	# would make the card argue with itself about what it is selling.
+	if int(pack.get("coins", 0)) > 0 or int(pack.get("cards", 0)) > 0:
+		var extras := {"coins": pack.get("coins", 0), "cards": pack.get("cards", 0)}
+		var extras_wrap := CenterContainer.new()
+		extras_wrap.custom_minimum_size = Vector2(0, 44)
+		col.add_child(extras_wrap)
+		extras_wrap.add_child(_reward_row(extras, Color(0.88, 0.95, 0.97), UI.F_LABEL))
+
+	var save_slot := CenterContainer.new()
+	save_slot.custom_minimum_size = Vector2(0, 40)
+	col.add_child(save_slot)
+	var struck := _struck_price_row(pack, Color(0.56, 0.71, 0.76))
+	if struck != null:
+		save_slot.add_child(struck)
+
 	var buy := Button.new()
 	buy.text = "GET  IT  —  %s" % IAP.price_for(pack)
 	buy.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
-	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
+	buy.add_theme_font_size_override("font_size", UI.F_BODY)
 	_candy_button(buy, Color(0.28, 0.68, 0.34))
 	FX.press_feedback(buy)
 	buy.pressed.connect(func() -> void:
@@ -4216,6 +4307,28 @@ func _ctx_offer_card(vbox: VBoxContainer, pack: Dictionary, timed: bool) -> void
 		_confirm_purchase(pack)
 	)
 	col.add_child(buy)
+
+	# Reach is wider than the shop tile's because this card is wider: the band is
+	# drawn corner-to-corner across the reach it is given, and 98px on a 500px
+	# card is a stub sitting in open water rather than a ribbon crossing a frame.
+	if pack.has("tag"):
+		_corner_ribbon(card, String(pack["tag"]), pack.get("tag_color", Lagoon.REEF), 132.0)
+	elif CV.bonus_pct(pack) >= 8:
+		_corner_ribbon(card, "+%d%%  VALUE" % CV.bonus_pct(pack), Lagoon.URCHIN, 132.0)
+
+# Where a spin count sits on the pile ladder, as a rung out of five.
+#
+# Floored at 2 rather than 0. The art fans one wheel at the bottom of the ladder
+# and five at the top, which is right on a shelf where all seven rungs are on
+# screen together and the smallest one has to look like the smallest one. Here
+# there is exactly one card and nothing to be smaller than, so a single wheel
+# is not modest, it is just a thin picture of the thing being sold.
+func _spin_pile_rung(spins_n: int) -> int:
+	var idx := 0
+	for i in CV.SPIN_PACKS.size():
+		if spins_n >= int(CV.SPIN_PACKS[i]["spins"]):
+			idx = i
+	return clampi(idx + 1, 2, 4)
 
 # Every contextual offer keeps a plain way out that is not the close button, so
 # dismissing never requires hunting for the small X.
@@ -6010,19 +6123,27 @@ func _schedule_auto_spin(delay := 0.8) -> void:
 func _on_spin_requested() -> void:
 	if slot.is_spinning() or _raiding():
 		return
+	# Every tap that cannot spin gets the offer, every time.
+	#
+	# It used to get it once every fifteen minutes and a red banner the rest of
+	# the time, on the theory that a repeated interrupt trains players to dismiss
+	# it. That theory is about interrupts the player did not ask for. This one is
+	# a direct answer to a button they just pressed with intent, and the fourth
+	# press is the one where the intent is strongest -- so the cooldown was the
+	# store being unavailable precisely when it was wanted. Nothing here fires
+	# unprompted: no tap, no popup. Auto-spin stops itself before it reaches this
+	# branch, so a held spin button cannot machine-gun the modal either.
 	if spins < slot.bet:
 		Sfx.play("error", -6.0)
-		if spins > 0:
-			_banner("Bet x%d needs %d spins!" % [slot.bet, slot.bet], Color(0.9, 0.4, 0.4))
-		elif Alerts.can_ask() and not notif_prompted and notif_enabled and _popup == null:
-			# Ahead of the pack offer, and only ever once: this is the moment
-			# the player most wants to be told when the meter fills, and the
-			# offer will still be there the next time they run dry.
+		if _popup != null:
+			return
+		# Ahead of the pack offer, and only ever once: an empty meter is the
+		# moment the player most wants to be told when it fills, and the offer
+		# will still be there on the very next tap.
+		if spins <= 0 and Alerts.can_ask() and not notif_prompted and notif_enabled:
 			_ask_for_alerts()
-		elif _ctx_offer_ready() and _popup == null:
-			_offer_out_of_spins()
-		else:
-			_banner("Out of spins!  +%d refill every %d min." % [SPIN_REGEN_AMOUNT, int(SPIN_REGEN_SECS / 60.0)], Color(0.9, 0.4, 0.4))
+			return
+		_offer_out_of_spins(slot.bet)
 		return
 	_last_bet = slot.bet
 	spins -= _last_bet
@@ -7286,7 +7407,6 @@ func _sanitize_clock() -> void:
 	var now := _now()
 	daily_last = minf(daily_last, now)
 	shop_free_last = minf(shop_free_last, now)
-	_ctx_offer_last = minf(_ctx_offer_last, now)
 	offer_until = minf(offer_until, now + CV.OFFER_DURATION)
 	offer_next = minf(offer_next, now + CV.OFFER_COOLDOWN)
 	col_deadline = minf(col_deadline, now + CV.COLLECTION_SEASON_DAYS * 86400.0)
