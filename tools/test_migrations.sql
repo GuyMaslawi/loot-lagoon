@@ -147,6 +147,55 @@ begin
     perform pg_temp.ck('the first provider was not evicted by the link',
                        public.current_player() = p_alice);
 
+    -- --- display names -----------------------------------------------------
+    perform pg_temp.be(alice);
+
+    -- The 46 seeded bot faces are in `players` like everyone else, so this is
+    -- the same query that catches another human -- there is no second list.
+    perform pg_temp.ck('a name held by a bot cannot be taken',
+                       (public.name_available('Maya')->>'ok')::boolean = false,
+                       public.name_available('Maya')::text);
+
+    perform pg_temp.ck('nor a name held by another player',
+                       (public.name_available('Bob')->>'ok')::boolean = false,
+                       public.name_available('Bob')::text);
+
+    -- Maya, maya and "maya   " are three strings and one name. Without
+    -- normalisation the whole rule is sidestepped with the space bar.
+    perform pg_temp.ck('case and spacing do not create a second name',
+                       (public.name_available('  MAYA  ')->>'ok')::boolean = false);
+
+    perform pg_temp.ck('profanity is refused', public.name_problem('shitlord') is not null);
+    perform pg_temp.ck('so is posing as the game itself',
+                       public.name_problem('Official Support') is not null);
+    perform pg_temp.ck('a one-letter name is refused', public.name_problem('x') is not null);
+    perform pg_temp.ck('and one longer than the card can show',
+                       public.name_problem('Bartholomew Fitzgerald III') is not null);
+
+    -- 175 countries. Insisting on A-Z would be its own kind of bug.
+    perform pg_temp.ck('a Hebrew name is accepted', public.name_problem('גיא') is null,
+                       coalesce(public.name_problem('גיא'), 'null'));
+
+    perform pg_temp.ck('a free name is free', (public.name_available('Seashell')->>'ok')::boolean);
+    r := public.set_display_name('Seashell');
+    perform pg_temp.ck('and setting it works', (r->>'ok')::boolean, r::text);
+    perform pg_temp.ck('the island now wears it',
+                       public.public_player(p_alice)->>'name' = 'Seashell');
+    perform pg_temp.ck('re-checking your OWN name does not report it taken',
+                       (public.name_available('Seashell')->>'ok')::boolean);
+
+    -- What a new sign-in gets when the provider hands over a name somebody --
+    -- or some bot -- already has.
+    perform pg_temp.ck('unique_name works around a bot collision',
+                       public.normalize_name(public.unique_name('Maya')) <> 'maya',
+                       public.unique_name('Maya'));
+    perform pg_temp.ck('and never returns something too long for the card',
+                       length(public.unique_name('Bartholomew Fitz')) <= 16,
+                       public.unique_name('Bartholomew Fitz'));
+    perform pg_temp.ck('an empty provider name still yields something usable',
+                       public.name_problem(public.unique_name('')) is null,
+                       public.unique_name(''));
+
     -- --- deletion ----------------------------------------------------------
     perform pg_temp.be(bob);
     r := public.delete_account();

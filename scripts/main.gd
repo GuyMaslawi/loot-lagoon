@@ -7039,8 +7039,24 @@ func _stock_rivals() -> void:
 	# Whoever is still on the wheel's card has to survive the sweep, or the
 	# promise on the card outlives the rival it named.
 	if not next_target.is_empty() and not taken.has(next_target.get("name", "")):
-		npcs.append(next_target)
-		taken.append(next_target["name"])
+		# A COPY, with the server's id taken off it.
+		#
+		# Two separate bugs live in the obvious one-liner here. Dictionaries are
+		# references, so appending next_target puts the very same object in the
+		# pool -- and stripping anything from "the pool's copy" would strip it
+		# from the rival currently promised on the wheel's card as well.
+		#
+		# And the id has to go. A rival fetched from the server is a real
+		# islander; keeping their id in the local pool means they get saved into
+		# this player's save file and drawn again, days later, by the local
+		# picker -- and raided again, reported again, straight past the two
+		# rules find_target enforces so that a rich island cannot be farmed
+		# (not by the same player within a day, not by anyone within ten
+		# minutes). What stays behind is a memory of them, not them.
+		var keepsake := next_target.duplicate(true)
+		keepsake.erase("cloud_id")
+		npcs.append(keepsake)
+		taken.append(String(keepsake["name"]))
 	for fresh in CV.draw_rivals(CV.RIVAL_POOL - npcs.size(), island_level, taken):
 		npcs.append(fresh)
 
