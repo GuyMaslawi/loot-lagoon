@@ -131,6 +131,11 @@ begin
     perform pg_temp.ck('a spent token cannot be spent twice',
                        public.redeem_link_token(tok)->>'status' = 'expired');
 
+    -- --- the linking screen can tell what is already connected -------------
+    perform pg_temp.ck('my_identities reports both providers after a link',
+                       public.my_identities() @> '["apple","google"]'::jsonb,
+                       public.my_identities()::text);
+
     -- --- Alice's original Google sign-in still opens the same island --------
     perform pg_temp.be(alice);
     perform pg_temp.ck('the first provider was not evicted by the link',

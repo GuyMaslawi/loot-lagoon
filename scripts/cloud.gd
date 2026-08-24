@@ -39,6 +39,11 @@ signal signed_out()
 # main.gd can build the payload for it, because that payload is the save.
 signal session_ready()
 
+# A link attempt finished. status is "linked", "conflict" or "expired". On
+# "conflict" both islands are described so the player can be asked which one
+# survives; resolve_link() finishes it.
+signal link_result(status: String, mine: Dictionary, theirs: Dictionary)
+
 # The server refused a push because it holds a further-along island. Carries
 # what it holds, so main.gd can offer to adopt it.
 signal save_rejected(stored_rank: int, remote_save: Dictionary)
@@ -55,6 +60,13 @@ signal sync_state_changed(state: String)
 
 const CONFIG_PATH := "res://supabase.json"
 const SESSION_PATH := "user://cloud_session.json"
+
+# A link in progress, on disk rather than in memory, because the thing that
+# happens between handing the token out and redeeming it is a sign-in -- and a
+# sign-in means a browser on Android or a system sheet on iOS, either of which
+# can put this process in the background long enough for iOS to kill it. A token
+# that only lived in a variable would be gone exactly when it was needed.
+const LINK_PATH := "user://cloud_link.json"
 
 # The network equivalent of main.gd's SAVE_FLUSH_GAP, and much longer for the
 # same reason taken further: a disk write costs a frame hitch, a request costs
@@ -177,6 +189,7 @@ func sign_out() -> void:
 	_dirty = false
 	_pending = {}
 	DirAccess.remove_absolute(SESSION_PATH)
+	_clear_pending_link()
 	_set_state("off")
 	signed_out.emit()
 
@@ -211,7 +224,21 @@ func sign_in(provider: String, id_token: String, nonce: String) -> void:
 			return
 		_take_session(body)
 		_set_state("synced")
-		session_ready.emit()
+		# Order matters here and it is easy to get backwards.
+		#
+		# If there is a link in flight, it has to be redeemed BEFORE the island
+		# is claimed. Claiming first would hand this brand-new identity an island
+		# of its own, and the redeem that followed would then be a genuine
+		# collision between the player's real island and the empty one this code
+		# had just created -- so the game would stop and ask the player to choose
+		# between their island and nothing, which is not a question.
+		#
+		# Redeeming first attaches the identity to the island that already
+		# exists, and the claim that follows simply finds it.
+		if _pending_link() != "":
+			_redeem_pending()
+		else:
+			session_ready.emit()
 	_post("/auth/v1/token?grant_type=id_token", {
 		"provider": provider,
 		"id_token": id_token,
@@ -410,6 +437,109 @@ func leaderboard(then: Callable) -> void:
 func create_link_token(then: Callable) -> void:
 	_rpc("create_link_token", {}, func(code: int, body) -> void:
 		then.call(str(body) if code == 200 else "")
+	)
+
+
+func _pending_link() -> String:
+	if not FileAccess.file_exists(LINK_PATH):
+		return ""
+	var f := FileAccess.open(LINK_PATH, FileAccess.READ)
+	if f == null:
+		return ""
+	var d = JSON.parse_string(f.get_as_text())
+	if typeof(d) != TYPE_DICTIONARY:
+		return ""
+	# The server gives a token ten minutes; expiring it here as well means a
+	# stale file from a sign-in the player abandoned last week does not quietly
+	# attach the next one to an island they have forgotten about.
+	if _now() - float(d.get("at", 0.0)) > 600.0:
+		DirAccess.remove_absolute(LINK_PATH)
+		return ""
+	return str(d.get("token", ""))
+
+
+func _clear_pending_link() -> void:
+	if FileAccess.file_exists(LINK_PATH):
+		DirAccess.remove_absolute(LINK_PATH)
+
+
+# Step one, run while still signed in as the FIRST provider: ask the island for
+# a token and write it down. `then` fires once it is safely on disk, and only
+# then may the caller start the second sign-in -- which replaces this session.
+func begin_link(then: Callable) -> void:
+	if not linked():
+		then.call(false)
+		return
+	create_link_token(func(token: String) -> void:
+		if token == "":
+			then.call(false)
+			return
+		var f := FileAccess.open(LINK_PATH, FileAccess.WRITE)
+		if f == null:
+			then.call(false)
+			return
+		f.store_string(JSON.stringify({"token": token, "at": _now()}))
+		f.close()
+		then.call(true)
+	)
+
+
+# Step two, after the second sign-in has replaced the session. Called
+# automatically; see the ordering note in sign_in.
+func _redeem_pending() -> void:
+	var token := _pending_link()
+	if token == "":
+		session_ready.emit()
+		return
+	redeem_link_token(token, "", func(body: Dictionary) -> void:
+		var status := str(body.get("status", "expired"))
+		if status == "conflict":
+			# Left on disk: resolve_link needs it, and the player has not
+			# answered yet.
+			var mine = body.get("mine", {})
+			var theirs = body.get("theirs", {})
+			link_result.emit("conflict",
+					mine if typeof(mine) == TYPE_DICTIONARY else {},
+					theirs if typeof(theirs) == TYPE_DICTIONARY else {})
+			return
+		_clear_pending_link()
+		var who = body.get("player", {})
+		if typeof(who) == TYPE_DICTIONARY:
+			_player = who
+			_save_session()
+		link_result.emit(status, {}, {})
+		# Whatever happened, the game still needs its island. An expired token
+		# is not a reason to leave the player signed in with nothing.
+		session_ready.emit()
+	)
+
+
+# The player picked. `keep_player_id` is the id of the island that survives.
+func resolve_link(keep_player_id: String) -> void:
+	var token := _pending_link()
+	if token == "":
+		session_ready.emit()
+		return
+	redeem_link_token(token, keep_player_id, func(body: Dictionary) -> void:
+		_clear_pending_link()
+		var who = body.get("player", {})
+		if typeof(who) == TYPE_DICTIONARY:
+			_player = who
+			_save_session()
+		link_result.emit(str(body.get("status", "expired")), {}, {})
+		session_ready.emit()
+	)
+
+
+# Which providers already open this island. Answered by the server, not by this
+# device: on a second phone the local answer is wrong, and a second phone is
+# exactly what linking is for.
+func identities(then: Callable) -> void:
+	if not linked():
+		then.call([])
+		return
+	_rpc("my_identities", {}, func(code: int, body) -> void:
+		then.call(body if code == 200 and typeof(body) == TYPE_ARRAY else [])
 	)
 
 

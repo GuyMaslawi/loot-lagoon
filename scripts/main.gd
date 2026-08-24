@@ -474,6 +474,7 @@ func _after_boot() -> void:
 	Cloud.signed_in.connect(_on_cloud_signed_in)
 	Cloud.save_rejected.connect(_on_cloud_save_rejected)
 	Cloud.raids_arrived.connect(_on_cloud_raids)
+	Cloud.link_result.connect(_on_cloud_link_result)
 	# A session that survived from a previous launch still has to claim, because
 	# claiming is also how the game asks what happened while it was closed.
 	if Cloud.linked():
@@ -1030,6 +1031,47 @@ func _ask_which_island(remote: Dictionary) -> void:
 		Cloud.flush()
 	)
 	box.add_child(keep_mine)
+
+# A second sign-in was attached to this island -- or could not be.
+#
+# "conflict" is the only one that stops the game: both identities already had an
+# island with progress on them, and merging silently would throw one away. It
+# reuses the same chooser the save reconciliation uses, because it is the same
+# question asked from a different direction.
+func _on_cloud_link_result(status: String, mine: Dictionary, theirs: Dictionary) -> void:
+	match status:
+		"linked":
+			_banner("Sign-ins connected — your island is safe.", Color(0.5, 0.9, 0.6), "🔗")
+		"conflict":
+			_ask_which_link(mine, theirs)
+		_:
+			# Expired, or the token was already spent. Nothing is broken and
+			# nothing was lost; the player can start it again.
+			_banner("That took too long — try connecting again.", Color(0.95, 0.55, 0.3))
+
+func _ask_which_link(mine: Dictionary, theirs: Dictionary) -> void:
+	var box := _open_popup("Two islands")
+	var head := _popup_row_label(
+		"Both sign-ins already have an island. Only one can be kept — the other is gone.",
+		UI.F_CAPTION)
+	head.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(head)
+	for pair in [[theirs, Color(0.28, 0.68, 0.34)], [mine, Color(0.85, 0.45, 0.25)]]:
+		var isl: Dictionary = pair[0]
+		if isl.is_empty():
+			continue
+		var b := Button.new()
+		b.text = "Keep  ⭐ %s  ·  island %d" % [
+			_fmt_compact(int(isl.get("rank_stars", 0))), int(isl.get("island_level", 1))]
+		b.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+		_candy_button(b, pair[1])
+		FX.press_feedback(b)
+		b.pressed.connect(func() -> void:
+			_close_popup()
+			Cloud.resolve_link(str(isl.get("id", "")))
+		)
+		box.add_child(b)
 
 # What happened while the app was shut.
 #
@@ -5242,9 +5284,75 @@ func _fill_options(vb: VBoxContainer) -> void:
 		profile = {}
 		if FileAccess.file_exists("user://profile.json"):
 			DirAccess.remove_absolute("user://profile.json")
+		# The session has to go too. Clearing only the local profile left the
+		# player looking signed out while the game carried on pushing their
+		# island to a server under the name they had just removed.
+		Cloud.sign_out()
 		_show_login()
 	)
 	acc.add_child(signout)
+
+	# --- connected sign-ins -------------------------------------------------
+	#
+	# This is the screen that makes "he had Android, now he has an iPhone" work,
+	# and it only works if the player uses it BEFORE they lose the old phone.
+	# Identity is an explicit row on the server, never an email match -- Apple's
+	# Hide My Email makes email matching fail in both directions -- so a second
+	# provider has to be attached deliberately, in advance.
+	#
+	# The list is what CAN BE CONNECTED, which is not the same list as what can
+	# be signed in with. They coincide today because Apple's off-platform web
+	# flow is not built yet; when it is, Android grows a Connect Apple button
+	# without growing an Apple sign-in button.
+	if Cloud.linked():
+		acc.add_child(Lagoon.divider())
+		var link_head := _popup_row_label("Keep your island if you change phone", UI.F_CAPTION)
+		link_head.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		acc.add_child(link_head)
+		var link_box := VBoxContainer.new()
+		link_box.add_theme_constant_override("separation", 8)
+		acc.add_child(link_box)
+		var pending := _popup_row_label("Checking…", UI.F_TINY)
+		link_box.add_child(pending)
+		Cloud.identities(func(list: Array) -> void:
+			# The answer arrives from a server; the page it was asked for may
+			# have been closed several taps ago.
+			if not is_instance_valid(link_box):
+				return
+			for c in link_box.get_children():
+				c.queue_free()
+			for prov in _providers_here():
+				var id := String(prov["id"])
+				if list.has(id):
+					var done := _popup_row_label("%s  ·  connected" % String(prov["label"]), UI.F_TINY)
+					done.add_theme_color_override("font_color", Color(0.5, 0.85, 0.6))
+					link_box.add_child(done)
+					continue
+				var b := Button.new()
+				b.text = "Connect %s" % id.capitalize()
+				b.custom_minimum_size = Vector2(0, UI.TAP)
+				b.add_theme_font_size_override("font_size", UI.F_CAPTION)
+				_candy_button(b, Color(0.35, 0.55, 0.75))
+				FX.press_feedback(b)
+				b.pressed.connect(func() -> void:
+					b.disabled = true
+					# The token is written to disk before the sign-in starts,
+					# because the sign-in is what replaces this session -- and
+					# on Android it opens a browser, which can put the game in
+					# the background long enough to be killed.
+					Cloud.begin_link(func(ok: bool) -> void:
+						if not ok:
+							if is_instance_valid(b):
+								b.disabled = false
+							_banner("Couldn't start — try again in a moment.",
+									Color(0.95, 0.55, 0.3))
+							return
+						_close_popup()
+						_start_login(id)
+					)
+				)
+				link_box.add_child(b)
+		)
 
 	# Signing in creates an account, and Guideline 5.1.1(v) then requires a way
 	# to delete it from inside the app -- not an email address, not a web form.
