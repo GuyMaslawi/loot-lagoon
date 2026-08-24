@@ -1,0 +1,15 @@
+[config]
+name="SignInWithApple"
+binary="sign-in-with-apple.xcframework"
+initialization="godot_sign_in_with_apple_init"
+deinitialization="godot_sign_in_with_apple_deinit"
+
+[dependencies]
+linked=[]
+embedded=[]
+system=["Foundation.framework","AuthenticationServices.framework","UIKit.framework"]
+capabilities=[]
+files=[]
+linker_flags=[]
+
+[plist]
