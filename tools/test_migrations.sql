@@ -196,6 +196,29 @@ begin
                        public.name_problem(public.unique_name('')) is null,
                        public.unique_name(''));
 
+    -- --- reporting and blocking --------------------------------------------
+    perform pg_temp.be(alice);
+    r := public.find_target('steal', 30);
+    perform pg_temp.ck('there is somebody to find before any blocking',
+                       r is not null, coalesce(r::text, 'NULL'));
+    -- Block every bot in band, then confirm the well really is dry, so the
+    -- next assertion is testing the block and not an empty pool.
+    insert into public.blocks (blocker, blocked)
+        select p_alice, id from public.players where is_bot = true;
+    perform pg_temp.ck('blocking every candidate leaves find_target with nobody',
+                       public.find_target('steal', 30) is null,
+                       coalesce(public.find_target('steal', 30)::text, 'NULL'));
+    delete from public.blocks where blocker = p_alice;
+
+    r := public.report_player((select id from public.players where is_bot = true limit 1), 'name');
+    perform pg_temp.ck('reporting succeeds', (r->>'ok')::boolean, r::text);
+    perform pg_temp.ck('and blocks in the same breath',
+                       (select count(*) from public.blocks where blocker = p_alice) = 1);
+    perform pg_temp.ck('reporting twice does not raise or duplicate',
+                       (public.report_player((select id from public.players where is_bot = true limit 1))->>'ok')::boolean
+                   and (select count(*) from public.reports where reporter = p_alice) = 1);
+    delete from public.blocks where blocker = p_alice;
+
     -- --- deletion ----------------------------------------------------------
     perform pg_temp.be(bob);
     r := public.delete_account();

@@ -58,6 +58,11 @@ var npcs: Array = []
 # The raccoons' mark. Picked before the spin, not after it, so the pot on the
 # machine's card is a promise rather than a decoration -- the coins you see are
 # the coins at stake, and the name you see is whose vault gets opened.
+# The faces a player may wear. Mirrored in set_emoji on the server, which
+# re-checks the choice -- "the client only offers these twelve" stops being true
+# the moment somebody edits the client.
+const AVATARS := ["😎", "🧑‍🚀", "🏴‍☠️", "🦜", "🐙", "🦈", "🐢", "🦀", "🌴", "⛵", "🗺️", "💎"]
+
 var next_target: Dictionary = {}
 # A rival fetched from the server, waiting to be the next one on the card.
 #
@@ -486,8 +491,10 @@ func _after_boot() -> void:
 	Cloud.raids_arrived.connect(_on_cloud_raids)
 	Cloud.link_result.connect(_on_cloud_link_result)
 	Cloud.sign_in_failed.connect(_on_cloud_sign_in_failed)
+	Cloud.signed_out.connect(_on_cloud_signed_out)
 	# A session that survived from a previous launch still has to claim, because
 	# claiming is also how the game asks what happened while it was closed.
+	_check_apple_revoked()
 	if Cloud.linked():
 		_cloud_claim()
 	call_deferred("_check_island_complete")
@@ -934,20 +941,31 @@ func _on_login(p: Dictionary) -> void:
 	# player who deleted their name. Keep what is already stored.
 	if str(p.get("name", "")) == "" and str(profile.get("name", "")) != "":
 		p["name"] = profile["name"]
+	# Held here, then taken OUT of the profile before it is written.
+	#
+	# _save_profile stringifies the whole dictionary into user://profile.json,
+	# so leaving these in would put an identity token and its nonce on disk in
+	# plain text. They are short-lived and they are single-use, and neither is a
+	# reason to keep a credential in a file the game rewrites on every sign-in.
+	# What is worth keeping is user_id, which is not a credential -- it is the
+	# handle credential_state() needs to ask iOS whether this app has been
+	# revoked since.
+	var token := str(p.get("id_token", ""))
+	var nonce := str(p.get("nonce", ""))
+	p.erase("id_token")
+	p.erase("nonce")
+
 	profile = p
 	_save_profile()
 	_close_login()
 
 	# From here on nothing is required for the game to carry on. A player whose
 	# sign-in worked and whose cloud save did not is a player with a name on
-	# their island and a grey sync icon, which is exactly what they had a moment
-	# ago -- not an error worth a banner.
-	if not Cloud.configured():
+	# their island and a grey sync line in Options, which is what they had a
+	# moment ago -- not an error worth a banner.
+	if not Cloud.configured() or token == "":
 		return
-	var token := str(p.get("id_token", ""))
-	if token == "":
-		return
-	Cloud.sign_in(str(p.get("provider", "")), token, str(p.get("nonce", "")))
+	Cloud.sign_in(str(p.get("provider", "")), token, nonce)
 
 # =============================================================================
 #  The island, and the server's copy of it
@@ -958,6 +976,31 @@ func _on_login(p: Dictionary) -> void:
 # was one green START PLAYING button and nothing else -- so the ordinary case is
 # a real island meeting the server for the first time. Claiming without it would
 # create an empty row and strand the island on the device.
+# Did the player take this app's Apple ID permission away?
+#
+# They can, at any time, from iOS Settings, while the game is not running -- and
+# nothing tells the app. The session keeps working for a while and then quietly
+# stops, so the player is left believing their island is backed up when it is
+# not, which is the exact belief this whole system exists to make true.
+#
+# "unknown" means iOS did not answer in time and is treated as "ask again next
+# launch", never as a revocation: signing somebody out because a system call was
+# slow would be its own bug.
+func _check_apple_revoked() -> void:
+	if str(profile.get("provider", "")) != "apple":
+		return
+	var uid := str(profile.get("user_id", ""))
+	if uid == "":
+		return
+	if AppleAuth.credential_state(uid) != "revoked":
+		return
+	Cloud.sign_out()
+	profile = {}
+	if FileAccess.file_exists("user://profile.json"):
+		DirAccess.remove_absolute("user://profile.json")
+	_banner("Sign in with Apple was turned off for Loot Lagoon — sign in again to keep backing up.",
+			Color(0.95, 0.55, 0.3))
+
 # Held up while the server is being asked what it has.
 #
 # Without this the player watches their island be wrong. A fresh install shows
@@ -984,6 +1027,23 @@ func _on_cloud_signed_in(_who: Dictionary, is_new: bool, remote: Dictionary) -> 
 		_flush_save()
 		return
 	_reconcile(remote)
+
+# cloud.gd ends the session by itself when the refresh token is gone for good --
+# revoked in Settings, password changed, the account deleted from another device.
+# Until this was connected that happened in silence: the player stayed on a
+# screen that said they were signed in, and their island simply stopped being
+# backed up.
+#
+# The local profile goes with it. Leaving a name on screen for an account the
+# game can no longer reach is the same lie in a smaller font.
+func _on_cloud_signed_out() -> void:
+	if profile.is_empty():
+		return
+	profile = {}
+	if FileAccess.file_exists("user://profile.json"):
+		DirAccess.remove_absolute("user://profile.json")
+	_banner("You've been signed out — sign in again to keep backing up your island.",
+			Color(0.95, 0.55, 0.3))
 
 func _on_cloud_sign_in_failed(reason: String) -> void:
 	# Was silent until now, which meant a sign-in that failed looked exactly
@@ -5336,6 +5396,107 @@ func _fill_options(vb: VBoxContainer) -> void:
 
 	var acc := _page_card(vb)
 	acc.add_child(_popup_row_label("Signed in as:  %s  (%s)" % [profile.get("name", "Guest"), profile.get("provider", "guest")], UI.F_LABEL))
+	# Whether the island is actually backed up, in words, on the screen where
+	# somebody would go to check. sync_state_changed had no listener at all
+	# until now, so the answer existed and was shown to nobody.
+	if Cloud.configured():
+		var sync := _popup_row_label("", UI.F_TINY)
+		sync.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		acc.add_child(sync)
+		var paint := func(st: String) -> void:
+			if not is_instance_valid(sync):
+				return
+			match st:
+				"synced":
+					sync.text = "☁ Backed up"
+					sync.add_theme_color_override("font_color", Color(0.5, 0.85, 0.6))
+				"syncing":
+					sync.text = "☁ Backing up…"
+					sync.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+				"error":
+					sync.text = "☁ Can't reach the server — your island is safe on this device and will back up when you're online."
+					sync.add_theme_color_override("font_color", Color(0.95, 0.55, 0.3))
+				_:
+					sync.text = "☁ Not backed up — sign in to keep your island if you lose this phone."
+					sync.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		paint.call(Cloud.state())
+		Cloud.sync_state_changed.connect(paint)
+
+	# --- the name other players see ----------------------------------------
+	#
+	# It used to be whatever the provider handed over, which meant signing in
+	# with Google put somebody's real full name on a leaderboard in front of
+	# strangers who never asked for it and whom they never agreed to show it to.
+	# Now the provider's name is only the first suggestion, and this is where it
+	# stops being the last word.
+	if Cloud.linked():
+		acc.add_child(Lagoon.divider())
+		acc.add_child(_popup_row_label("Name other players see", UI.F_CAPTION))
+		var name_row := HBoxContainer.new()
+		name_row.add_theme_constant_override("separation", 8)
+		acc.add_child(name_row)
+		var field := LineEdit.new()
+		field.text = str(Cloud.player().get("name", profile.get("name", "")))
+		field.max_length = 16
+		field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		field.custom_minimum_size = Vector2(0, UI.TAP)
+		name_row.add_child(field)
+		var save_name := Button.new()
+		save_name.text = "Save"
+		save_name.custom_minimum_size = Vector2(90, UI.TAP)
+		_candy_button(save_name, Color(0.35, 0.6, 0.45))
+		FX.press_feedback(save_name)
+		name_row.add_child(save_name)
+		var name_note := _popup_row_label("", UI.F_TINY)
+		name_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		acc.add_child(name_note)
+		save_name.pressed.connect(func() -> void:
+			save_name.disabled = true
+			Cloud.set_display_name(field.text, func(res: Dictionary) -> void:
+				if not is_instance_valid(save_name):
+					return
+				save_name.disabled = false
+				if not is_instance_valid(name_note):
+					return
+				# The server is the one that decides, so the server's words are
+				# what gets shown -- "That name is taken" and "Please pick
+				# another name" are answers, not error codes.
+				if bool(res.get("ok", false)):
+					name_note.text = "Saved."
+					name_note.add_theme_color_override("font_color", Color(0.5, 0.85, 0.6))
+					profile["name"] = str(res.get("name", field.text))
+					_save_profile()
+				else:
+					name_note.text = str(res.get("reason", "Couldn't save that name"))
+					name_note.add_theme_color_override("font_color", Color(0.95, 0.55, 0.4))
+			)
+		)
+
+		# --- the face ------------------------------------------------------
+		#
+		# A set, not an upload. An uploaded picture is the hardest user content
+		# there is to moderate, one bad one in front of other players is a
+		# removal-level problem, and a fixed set removes the question rather
+		# than committing a solo developer to answering it every day forever.
+		acc.add_child(_popup_row_label("Your face", UI.F_CAPTION))
+		var faces := HFlowContainer.new()
+		acc.add_child(faces)
+		for face in AVATARS:
+			var fb := Button.new()
+			fb.custom_minimum_size = Vector2(UI.TAP, UI.TAP)
+			fb.flat = true
+			fb.add_theme_font_size_override("font_size", UI.F_SUBHEAD)
+			fb.text = face
+			FX.press_feedback(fb)
+			fb.pressed.connect(func() -> void:
+				Cloud.set_emoji(face, func(res: Dictionary) -> void:
+					if bool(res.get("ok", false)) and is_instance_valid(name_note):
+						name_note.text = "Face updated."
+						name_note.add_theme_color_override("font_color", Color(0.5, 0.85, 0.6))
+				)
+			)
+			faces.add_child(fb)
+
 	var signout := Button.new()
 	signout.text = "Sign out"
 	signout.custom_minimum_size = Vector2(0, UI.TAP)
@@ -6355,16 +6516,54 @@ func _open_ranks() -> void:
 	head.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 	head.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vbox.add_child(head)
-	var rows := []
-	rows.append({"name": profile.get("name", "You"), "emoji": "😎", "stars": rank_stars, "me": true})
+	# Somewhere to put rows, so the server's answer can replace the local one
+	# without disturbing the heading above it.
+	var list := VBoxContainer.new()
+	list.add_theme_constant_override("separation", 6)
+	vbox.add_child(list)
+
+	# The local pool first, drawn immediately. A board that is blank until a
+	# request comes back is a board that looks broken on a slow train.
+	var local_rows := []
+	local_rows.append({"name": profile.get("name", "You"), "emoji": "😎",
+			"stars": rank_stars, "me": true, "id": ""})
 	for n in npcs:
-		rows.append({"name": n["name"], "emoji": n["emoji"], "stars": _npc_stars(n), "me": false})
+		local_rows.append({"name": n["name"], "emoji": n["emoji"],
+				"stars": _npc_stars(n), "me": false, "id": ""})
+	_fill_ranks(list, local_rows)
+
+	# Then the world, which is a hundred and twenty islands rather than nine.
+	if not Cloud.linked():
+		return
+	var mine := str(Cloud.player().get("id", ""))
+	Cloud.leaderboard(func(board: Array) -> void:
+		if not is_instance_valid(list) or board.is_empty():
+			return
+		var rows := []
+		for e in board:
+			if typeof(e) != TYPE_DICTIONARY:
+				continue
+			rows.append({
+				"name": str(e.get("name", "Islander")),
+				"emoji": str(e.get("emoji", "🙂")),
+				"stars": int(e.get("rank_stars", 0)),
+				"me": str(e.get("id", "")) == mine and mine != "",
+				"id": str(e.get("id", "")),
+			})
+		_fill_ranks(list, rows)
+	)
+
+# One row builder for both the local board and the server's, so the two cannot
+# drift into looking like different screens.
+func _fill_ranks(list: VBoxContainer, rows: Array) -> void:
+	for c in list.get_children():
+		c.queue_free()
 	rows.sort_custom(func(a, b) -> bool: return int(a["stars"]) > int(b["stars"]))
 	for i in rows.size():
 		var r: Dictionary = rows[i]
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 12)
-		vbox.add_child(row)
+		list.add_child(row)
 		var rank := _popup_row_label("#%d" % (i + 1), UI.F_LABEL)
 		rank.custom_minimum_size = Vector2(50, 0)
 		row.add_child(rank)
@@ -6374,10 +6573,55 @@ func _open_ranks() -> void:
 		if r["me"]:
 			name_l.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
 		row.add_child(name_l)
-		var c := _popup_row_label("\u2605  %s" % _fmt_compact(int(r["stars"])))
-		c.add_theme_color_override("font_color",
+		var c2 := _popup_row_label("\u2605  %s" % _fmt_compact(int(r["stars"])))
+		c2.add_theme_color_override("font_color",
 			Color(1.0, 0.85, 0.4) if r["me"] else CV.STAR_COLORS[CV.MAX_STAR - 1])
-		row.add_child(c)
+		row.add_child(c2)
+		# Guideline 1.2: a name somebody else chose, and a way to do something
+		# about it that is not "email the developer". Reporting blocks as well,
+		# so the person who was upset stops meeting them straight away rather
+		# than after a review.
+		var id := str(r.get("id", ""))
+		if id == "" or bool(r.get("me", false)):
+			continue
+		var flag := Button.new()
+		flag.text = "⚑"
+		flag.flat = true
+		flag.tooltip_text = "Report this name"
+		flag.custom_minimum_size = Vector2(40, 0)
+		flag.add_theme_font_size_override("font_size", UI.F_CAPTION)
+		FX.press_feedback(flag)
+		flag.pressed.connect(func() -> void: _confirm_report(id, str(r["name"])))
+		row.add_child(flag)
+
+func _confirm_report(player_id: String, who: String) -> void:
+	var box := _open_popup("Report name")
+	var body := _popup_row_label("Report \"%s\" and stop meeting them? They won't be offered as a rival again." % who, UI.F_CAPTION)
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(body)
+	var go := Button.new()
+	go.text = "Report & block"
+	go.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	_candy_button(go, Color(0.78, 0.35, 0.32))
+	FX.press_feedback(go)
+	go.pressed.connect(func() -> void:
+		go.disabled = true
+		Cloud.report_player(player_id, "name", func(ok: bool) -> void:
+			_close_popup()
+			_banner("Reported. You won't be matched with them again."
+					if ok else "Couldn't send that report — try again.",
+					Color(0.5, 0.85, 0.6) if ok else Color(0.95, 0.4, 0.4))
+		)
+	)
+	box.add_child(go)
+	var no := Button.new()
+	no.text = "Cancel"
+	no.custom_minimum_size = Vector2(0, UI.TAP)
+	_candy_button(no, Color(0.45, 0.55, 0.6))
+	FX.press_feedback(no)
+	no.pressed.connect(func() -> void: _close_popup())
+	box.add_child(no)
 
 func _build_village_page() -> void:
 	village_page = Control.new()

@@ -369,13 +369,6 @@ func _push() -> void:
 	)
 
 
-func pull(then: Callable = Callable()) -> void:
-	_rpc("pull_save", {}, func(code: int, body) -> void:
-		if then.is_valid():
-			then.call(code == 200 and typeof(body) == TYPE_DICTIONARY, body)
-	)
-
-
 # =============================================================================
 #  Rivals and raids
 # =============================================================================
@@ -416,6 +409,48 @@ func ack_raids(ids: Array) -> void:
 	if not linked() or ids.is_empty():
 		return
 	_rpc("ack_raids", {"p_ids": ids}, func(_c: int, _b) -> void: pass)
+
+
+# =============================================================================
+#  Name, face, and the two things Guideline 1.2 requires
+# =============================================================================
+#
+# Every rule about a name is enforced on the server -- length, characters, the
+# word list, and whether anyone (or any bot) already holds it. This asks; it does
+# not decide. A client that decided could be edited into deciding differently.
+#
+# There is no separate "is it free" call here on purpose: set_display_name
+# answers with the reason it refused, so one round trip does the work of two and
+# there is no window in which a name is free when checked and taken when saved.
+func set_display_name(name: String, then: Callable) -> void:
+	_rpc("set_display_name", {"p_name": name}, func(code: int, body) -> void:
+		var d = body if typeof(body) == TYPE_DICTIONARY else {}
+		if code == 200 and bool(d.get("ok", false)):
+			_player["name"] = str(d.get("name", name))
+			_save_session()
+		then.call(d)
+	)
+
+
+func set_emoji(emoji: String, then: Callable) -> void:
+	_rpc("set_emoji", {"p_emoji": emoji}, func(code: int, body) -> void:
+		var d = body if typeof(body) == TYPE_DICTIONARY else {}
+		if code == 200 and bool(d.get("ok", false)):
+			_player["emoji"] = emoji
+			_save_session()
+		then.call(d)
+	)
+
+
+# Reports and blocks in one move, which is deliberate: somebody upset enough to
+# report a name wants it gone now, not after a review, and making them press two
+# buttons in sequence to get that protects the wrong person.
+func report_player(player_id: String, reason: String, then: Callable) -> void:
+	if not linked() or player_id == "":
+		then.call(false)
+		return
+	_rpc("report_player", {"p_player": player_id, "p_reason": reason},
+		func(code: int, _b) -> void: then.call(code == 200))
 
 
 func leaderboard(then: Callable) -> void:
