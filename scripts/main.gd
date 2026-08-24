@@ -485,6 +485,7 @@ func _after_boot() -> void:
 	Cloud.save_rejected.connect(_on_cloud_save_rejected)
 	Cloud.raids_arrived.connect(_on_cloud_raids)
 	Cloud.link_result.connect(_on_cloud_link_result)
+	Cloud.sign_in_failed.connect(_on_cloud_sign_in_failed)
 	# A session that survived from a previous launch still has to claim, because
 	# claiming is also how the game asks what happened while it was closed.
 	if Cloud.linked():
@@ -957,19 +958,69 @@ func _on_login(p: Dictionary) -> void:
 # was one green START PLAYING button and nothing else -- so the ordinary case is
 # a real island meeting the server for the first time. Claiming without it would
 # create an empty row and strand the island on the device.
+# Held up while the server is being asked what it has.
+#
+# Without this the player watches their island be wrong. A fresh install shows
+# island 1 with island-1 prices, and some seconds later -- once claim_player has
+# answered -- it is replaced by the island they actually own. Nothing is lost
+# from the real island, because push_save refuses a save carrying less rank than
+# the one it holds. What IS lost is whatever they earned on the fresh one while
+# waiting, and the confusing part is that they were never told any of it was
+# provisional.
+var _restoring := false
+
 func _cloud_claim() -> void:
 	if not Cloud.linked():
 		return
+	_open_restoring()
 	Cloud.claim(_save_dict(), str(profile.get("name", "Islander")), "😎",
 			rank_stars, island_level, coins, shields, buildings)
 
 # What the server had. `is_new` means it had nothing and has just been given
 # what was on this device, so there is nothing to reconcile.
 func _on_cloud_signed_in(_who: Dictionary, is_new: bool, remote: Dictionary) -> void:
+	_close_restoring()
 	if is_new or remote.is_empty():
 		_flush_save()
 		return
 	_reconcile(remote)
+
+func _on_cloud_sign_in_failed(reason: String) -> void:
+	# Was silent until now, which meant a sign-in that failed looked exactly
+	# like one that worked and did nothing.
+	_close_restoring()
+	_banner("Couldn't sign in: %s" % reason, Color(0.95, 0.4, 0.4))
+
+# A held screen rather than a spinner in a corner, because the point is that the
+# island underneath is not yet the player's own and must not be played on.
+func _open_restoring() -> void:
+	if _restoring:
+		return
+	_restoring = true
+	var box := _open_popup("One moment")
+	var e := _emoji_label("🏝️", 56)
+	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(e)
+	var body := _popup_row_label("Fetching your island…", UI.F_CAPTION)
+	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(body)
+	# A server that never answers must not cost the player the game. After this
+	# they are let through to play locally; the island still arrives whenever
+	# the request lands, and the reconcile at that point is the same one that
+	# runs on every launch.
+	get_tree().create_timer(12.0).timeout.connect(func() -> void:
+		if _restoring:
+			_close_restoring()
+			_banner("Couldn't reach your saved island — playing offline.",
+					Color(0.95, 0.55, 0.3))
+	)
+
+func _close_restoring() -> void:
+	if not _restoring:
+		return
+	_restoring = false
+	_close_popup(true)
 
 # push_save refused: the server holds an island further along than this one.
 func _on_cloud_save_rejected(_stored_rank: int, remote: Dictionary) -> void:
