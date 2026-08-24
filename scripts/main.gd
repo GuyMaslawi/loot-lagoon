@@ -59,6 +59,16 @@ var npcs: Array = []
 # machine's card is a promise rather than a decoration -- the coins you see are
 # the coins at stake, and the name you see is whose vault gets opened.
 var next_target: Dictionary = {}
+# A rival fetched from the server, waiting to be the next one on the card.
+#
+# Fetched AHEAD, never during. matchmaking.gd's own comment is the constraint:
+# the rival the search lands on is "the rival main.gd already committed to --
+# the one whose name and vault have been sitting on the card above the wheel
+# since before the reels moved". A request made when the raid starts would
+# either stall the spin or swap the card out from under a player who had
+# already read it. So one is kept warm, and if none arrived the local pool
+# answers exactly as it does today.
+var _server_rival: Dictionary = {}
 
 var slot_page: Control
 # The win read-out currently on the reels, if any. See `_show_win`.
@@ -7045,6 +7055,19 @@ func _raiding() -> bool:
 # is whose they are. It is drawn before the spin and it does not move during
 # one, so the raid can only ever land on the rival it named.
 func _pick_next_target() -> void:
+	# Whatever happens below, line up the one after this. Doing it here rather
+	# than on a timer means the game only ever asks when it has just used one.
+	_prefetch_rival()
+	# A real islander if the server had one warm. It has been shaped into
+	# exactly the dictionary the local pool produces, so nothing downstream --
+	# the card, the search, the island, the payout -- can tell the difference,
+	# and nothing downstream is allowed to.
+	if not _server_rival.is_empty():
+		next_target = _server_rival
+		_server_rival = {}
+		if slot != null:
+			slot.set_target(next_target, _economy_mult())
+		return
 	if npcs.is_empty():
 		_stock_rivals()
 	if npcs.is_empty():
@@ -7056,6 +7079,53 @@ func _pick_next_target() -> void:
 			break
 	if slot != null:
 		slot.set_target(next_target, _economy_mult())
+
+# Ask the server for somebody, and take whatever it gives -- which may be a
+# person, may be one of the seeded bots, and never says which. That silence is
+# deliberate on both sides; see the note on find_target in migration 0002.
+func _prefetch_rival() -> void:
+	if not Cloud.linked() or not _server_rival.is_empty():
+		return
+	Cloud.find_target("steal", func(row: Dictionary) -> void:
+		if row.is_empty() or not is_instance_valid(self):
+			return
+		_server_rival = _rival_from_server(row)
+	)
+
+# The server's row, in the shape the rest of the game already speaks.
+#
+# The one real conversion is the vault. Every coin figure belonging to a rival
+# is stored in island-1 units and multiplied by _economy_mult() where it is
+# shown or paid out -- so handing the raw server figure straight through would
+# have it scaled a second time and quote a vault worth hundreds of times what
+# is in it. Dividing by the same multiplier first means what the player reads on
+# the card is exactly the number the server is holding.
+func _rival_from_server(row: Dictionary) -> Dictionary:
+	var mult := maxf(0.001, _economy_mult())
+	var b := []
+	for v in row.get("buildings", []):
+		b.append(clampi(int(v), 0, CV.MAX_STAR))
+	while b.size() < 5:
+		b.append(0)
+	# The seeded bots wear BOT_DEFS faces, so their flag is already known here
+	# -- it is simply not worth a column on the server. A real player has none.
+	var flag := "🏝"
+	for d in CV.BOT_DEFS:
+		if String(d["name"]) == String(row.get("name", "")):
+			flag = String(d.get("flag", "🏝"))
+			break
+	return {
+		"name": str(row.get("name", "Islander")),
+		"emoji": str(row.get("emoji", "🙂")),
+		"flag": flag,
+		"coins": maxi(0, int(round(float(row.get("coins", 0)) / mult))),
+		"buildings": b,
+		"shield": int(row.get("shields", 0)) > 0,
+		"island": maxi(1, int(row.get("island_level", 1))),
+		# What record_raid needs afterwards. Absent on a locally drawn rival,
+		# which is exactly how the payout below knows not to report one.
+		"cloud_id": str(row.get("id", "")),
+	}
 
 # The stake exactly as the chests will hold it, so the card, the search screen
 # and the loot are three views of one number.
@@ -7162,6 +7232,32 @@ func _rival_stars(npc: Dictionary) -> int:
 		total += int(lv)
 	return total
 
+# Tell the server a raid happened, if the rival came from there.
+#
+# Only the fact and the figure. The server does not open the victim's save and
+# does not recompute the payout -- it clamps what is claimed to what the victim
+# actually holds and writes an event, which the victim's own game applies under
+# its own rules the next time it loads. That is the only place those rules
+# exist, and it is also simply how this has to work: the victim is asleep with
+# the app shut.
+#
+# A locally drawn rival has no cloud_id and nothing is reported, because there
+# is nobody on the other end to have been robbed.
+func _report_raid(npc: Dictionary, mode: String, result: Dictionary) -> void:
+	var id := str(npc.get("cloud_id", ""))
+	if id == "" or not Cloud.linked():
+		return
+	if mode == "steal":
+		Cloud.record_raid(id, "steal", int(result.get("stolen", 0)))
+		return
+	# A shield turned it away, so nothing on the other island changed and there
+	# is nothing for its owner to apply. Recording it would put an event in
+	# their inbox that resolves to no change and no message.
+	if bool(result.get("blocked", false)):
+		return
+	# island_visit calls the hut it hit "target"; the server calls it "hut".
+	Cloud.record_raid(id, "attack", 0, int(result.get("target", -1)))
+
 # The search hands back the rival it was given, and that is the island we sail
 # to -- _raid_target, not next_target, which by now is free to move on.
 func _on_match_found(matched: Dictionary, mode: String) -> void:
@@ -7222,6 +7318,7 @@ func _on_visit_finished(result: Dictionary) -> void:
 	tw.tween_property(v, "position", Vector2(-view_size().x, 0), 0.4).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
 	tw.tween_callback(v.queue_free)
 	var npc: Dictionary = result["npc"]
+	_report_raid(npc, str(result["mode"]), result)
 	_mission_add("steals" if result["mode"] == "steal" else "attacks")
 	_piggy_add(CV.PIGGY_PER_RAID)
 	_raid_target = {}
