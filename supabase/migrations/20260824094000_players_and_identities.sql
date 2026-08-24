@@ -144,15 +144,18 @@ as $$
      where auth_uid = auth.uid()
 $$;
 
+drop policy if exists players_select_own on public.players;
 create policy players_select_own on public.players
     for select to authenticated
     using (id in (select public.my_player_ids()));
 
+drop policy if exists players_update_own on public.players;
 create policy players_update_own on public.players
     for update to authenticated
     using (id in (select public.my_player_ids()))
     with check (id in (select public.my_player_ids()));
 
+drop policy if exists identities_select_own on public.player_identities;
 create policy identities_select_own on public.player_identities
     for select to authenticated
     using (auth_uid = auth.uid());
@@ -181,3 +184,29 @@ drop trigger if exists players_touch_updated_at on public.players;
 create trigger players_touch_updated_at
     before update on public.players
     for each row execute function public.touch_updated_at();
+
+-- -----------------------------------------------------------------------------
+--  Privileges
+-- -----------------------------------------------------------------------------
+--
+-- Spelled out because the project is created with "Automatically expose new
+-- tables" turned OFF. That setting hands every future table in this schema to
+-- the API the moment it is created, which is the opposite of how these two are
+-- designed -- a table nobody remembered to write a policy for would be readable
+-- by anyone holding the anon key, and the anon key ships inside the app.
+--
+-- So privileges are granted here, per table, next to the policies that bound
+-- them. Two locks rather than one: a role has to hold the privilege AND satisfy
+-- the policy. Missing either is a 403, and forgetting to write a policy fails
+-- closed instead of open.
+--
+-- Note what is NOT granted: nothing at all to `anon`. Every path into this data
+-- requires a signed-in user, and matchmaking -- the one thing that legitimately
+-- reads other people's rows -- goes through a security definer function that
+-- returns public columns only.
+grant select, update on public.players           to authenticated;
+grant select          on public.player_identities to authenticated;
+
+-- The functions in 0002 are the only way to create an island, link a provider
+-- to one, raid somebody or delete an account, so `insert` and `delete` are
+-- granted to nobody. See the note above the policies.

@@ -1,0 +1,10 @@
+# Supabase CLI project config.
+#
+# At the repo root, and named `supabase/`, because that is where both the CLI
+# and the GitHub integration look. The migrations under here are the schema:
+# nothing is applied by hand in the dashboard, so what is deployed is always
+# what is in git.
+project_id = "loot-lagoon"
+
+[db]
+major_version = 17
