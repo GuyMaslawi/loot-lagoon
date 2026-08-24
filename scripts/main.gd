@@ -1179,6 +1179,14 @@ func _goto_shop(anchor := "") -> void:
 		var to_here := _shop_anchor_y(anchor)
 		if sc_here == null or to_here < 0:
 			return
+		# Clamped before it is compared, because the bottom shelves ask to be
+		# scrolled further than the list can go: on a tall phone the coin packs
+		# sit inside the last screenful, so the raw anchor never equals the
+		# scroll position and the "nothing to do" case below would never fire.
+		to_here = mini(to_here, int(maxf(sc_here.get_v_scroll_bar().max_value - sc_here.size.y, 0.0)))
+		if absi(sc_here.scroll_vertical - to_here) <= 2:
+			_nudge_shelf(anchor)
+			return
 		var tw := create_tween()
 		tw.tween_property(sc_here, "scroll_vertical", to_here, 0.32) \
 			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
@@ -1196,6 +1204,28 @@ func _goto_shop(anchor := "") -> void:
 	var to := _shop_anchor_y(anchor)
 	if sc != null and to >= 0:
 		sc.scroll_vertical = to
+
+# What the plus does when it has nowhere to take you.
+#
+# Tapping "+" on the coin counter while already parked on the coin packs asks
+# the page for a movement of zero pixels, and a button whose whole answer is a
+# still screen reads as broken. So the shelf answers for itself: one short bob
+# of its nameplate, which says "this is the thing you asked for, and it is
+# already in front of you" without moving the list out from under a thumb.
+func _nudge_shelf(anchor: String) -> void:
+	var node = _shop_anchors.get(anchor)
+	if node == null or not is_instance_valid(node):
+		return
+	var row := node as Control
+	row.pivot_offset = row.size * 0.5
+	Sfx.play("pop", -12.0)
+	# Created on the row rather than on the page, so a player who leaves the
+	# shop mid-bob takes the tween with them -- the shop rebuilds its cards
+	# from scratch on every visit, and this one is animating a node that is
+	# about to be freed.
+	var tw := row.create_tween()
+	tw.tween_property(row, "scale", Vector2(1.06, 1.06), 0.10).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(row, "scale", Vector2.ONE, 0.24).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 
 func _shop_scroll() -> ScrollContainer:
 	var body: VBoxContainer = _page_bodies.get("shop")

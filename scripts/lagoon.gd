@@ -618,13 +618,23 @@ static func capsule(icon_kind: String, value := "0", plus_action := Callable()) 
 		plus.custom_minimum_size = Vector2(46, 46)
 		plus.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		plus.focus_mode = Control.FOCUS_NONE
+		# The pressed face has to be its own colour, not the normal one. Only
+		# "hover" was ever distinct here, and a finger never hovers -- so on a
+		# phone this button looked identical held down as it did untouched, and
+		# a tap that lands on a shelf you are already reading came back with no
+		# sign it had been received at all. Same sink as every moulded button
+		# in the game: the face darkens and travels down into its own bevel.
 		for state in ["normal", "hover", "pressed"]:
 			var psb := StyleBoxFlat.new()
-			psb.bg_color = CORAL if state != "hover" else CORAL_HI
+			match state:
+				"hover": psb.bg_color = CORAL_HI
+				"pressed": psb.bg_color = CORAL.darkened(0.14)
+				_: psb.bg_color = CORAL
 			psb.set_corner_radius_all(23)
-			psb.border_width_bottom = 4
+			psb.border_width_bottom = 1 if state == "pressed" else 4
 			psb.border_color = CORAL_LO
 			plus.add_theme_stylebox_override(state, psb)
+		FX.press_feedback(plus)
 		plus.pressed.connect(plus_action)
 		hb.add_child(plus)
 		var pg := Glyph.new()
