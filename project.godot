@@ -22,6 +22,7 @@ boot_splash/use_filter=true
 Sfx="*res://scripts/sfx.gd"
 IAP="*res://scripts/iap.gd"
 Alerts="*res://scripts/alerts.gd"
+Cloud="*res://scripts/cloud.gd"
 
 [display]
 

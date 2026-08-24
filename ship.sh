@@ -106,6 +106,32 @@ fi
 
 sed -i '' 's/CODE_SIGN_IDENTITY = "Apple Distribution";/CODE_SIGN_IDENTITY = "Apple Development";/' "$PROJ/project.pbxproj"
 
+# --- 1b. the Sign in with Apple entitlement -------------------------------
+#
+# Godot writes an entitlements file with an empty dict and gives the export
+# preset no way to add to it: `capabilities/` in export_presets.cfg covers
+# wifi, gaming tier and A12, and nothing else. So the one entitlement the
+# SignInWithApple plugin needs is added here, after the export has written the
+# file and before xcodebuild reads it.
+#
+# Without it the plugin still compiles, still links, and still shows the sheet
+# -- and then fails at the moment of authorization with an error that does not
+# mention entitlements. That is a bad afternoon, so this is checked rather than
+# assumed: if the export ever starts writing the key itself, PlistBuddy's Add
+# fails and the `||` keeps the build going.
+ENT="$OUT/LootLagoon/LootLagoon.entitlements"
+if [ -f "$ENT" ]; then
+	if ! /usr/libexec/PlistBuddy -c "Print :com.apple.developer.applesignin" "$ENT" >/dev/null 2>&1; then
+		/usr/libexec/PlistBuddy \
+			-c "Add :com.apple.developer.applesignin array" \
+			-c "Add :com.apple.developer.applesignin:0 string Default" "$ENT"
+	fi
+	echo "==> entitlements: $(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.applesignin:0' "$ENT" 2>/dev/null || echo MISSING)"
+else
+	echo "!! no entitlements file at $ENT -- Sign in with Apple will fail at runtime" >&2
+	exit 1
+fi
+
 # --- 2. archive ---
 echo "==> archiving (creates the certificate and profile on first run)"
 xcodebuild -project "$PROJ" -scheme LootLagoon -sdk iphoneos \

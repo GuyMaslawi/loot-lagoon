@@ -1,0 +1,507 @@
+# The island, off the device.
+#
+# Everything in the game still lives in user://coinvillage_save.json and always
+# will -- main.gd reads and writes that file exactly as before, and a player who
+# never signs in never touches this. What this adds is a second copy on a server
+# and a name that owns it, so that deleting the app stops meaning deleting two
+# years of play.
+#
+# That is worth stating plainly because of what the store sells. Every product
+# in iap.gd is a consumable, and its own comment says consumables are never
+# restored -- so before this existed, a player who had spent fifty dollars over
+# two years and reinstalled had no path back to any of it. Not half. None.
+#
+# THREE RULES, and they are the whole design:
+#
+#   1. The game never waits for the network. Not on launch, not on a spin, not
+#      on a purchase. Every call here is fire-and-forget with a signal on the
+#      way back, and every one of them is allowed to fail forever without the
+#      player noticing anything except that a cloud icon is grey.
+#
+#   2. Local is the working copy. The server is asked what it has at sign-in and
+#      after that it is only ever written to. A save that lost a race is not
+#      resolved by this file -- push_save on the server rejects it and hands
+#      back what it holds, and main.gd decides.
+#
+#   3. Nothing here knows the rules of the game. It moves a dictionary main.gd
+#      built and a handful of numbers main.gd computed. It has no opinion about
+#      what a star is worth.
+extends Node
+
+# Handed the player record from the server: {id, name, emoji, island_level,
+# rank_stars, coins, shields, buildings}.
+signal signed_in(player: Dictionary, is_new: bool, remote_save: Dictionary)
+signal sign_in_failed(reason: String)
+signal signed_out()
+
+# The server refused a push because it holds a further-along island. Carries
+# what it holds, so main.gd can offer to adopt it.
+signal save_rejected(stored_rank: int, remote_save: Dictionary)
+
+# Raids that happened while the player was away, for main.gd to apply under its
+# own rules and then acknowledge. See the note on record_raid in migration 0002:
+# the server records that a raid happened and never touches the victim's save.
+signal raids_arrived(raids: Array)
+
+# "off" | "syncing" | "synced" | "error" -- for a single small icon, nothing
+# more. A player who is not signed in sees "off" and no error, ever, because
+# not signing in is not a fault.
+signal sync_state_changed(state: String)
+
+const CONFIG_PATH := "res://supabase.json"
+const SESSION_PATH := "user://cloud_session.json"
+
+# The network equivalent of main.gd's SAVE_FLUSH_GAP, and much longer for the
+# same reason taken further: a disk write costs a frame hitch, a request costs
+# a radio wake-up and somebody's battery. The save on the server being half a
+# minute behind the one on disk costs nothing, because the one on disk is the
+# one being played.
+const PUSH_GAP := 30.0
+
+# Refresh this long before the token actually expires. A request that sets off
+# with sixty seconds of validity and arrives with none is a 401 for no reason.
+const REFRESH_MARGIN := 120.0
+
+const HTTP_TIMEOUT := 20.0
+
+var _url := ""
+var _key := ""
+
+var _access := ""
+var _refresh := ""
+var _expires_at := 0.0
+var _player: Dictionary = {}
+
+var _dirty := false
+var _pending: Dictionary = {}
+var _last_push := 0.0
+var _in_flight := false
+
+# Consecutive failures. Only used to back off; never shown to the player.
+var _fails := 0
+
+var _state := "off"
+
+
+func _ready() -> void:
+	process_mode = Node.PROCESS_MODE_ALWAYS
+	var cfg := _load_config()
+	_url = str(cfg.get("url", "")).rstrip("/")
+	_key = str(cfg.get("publishable_key", ""))
+	_load_session()
+
+
+static func _load_config() -> Dictionary:
+	if not FileAccess.file_exists(CONFIG_PATH):
+		return {}
+	var f := FileAccess.open(CONFIG_PATH, FileAccess.READ)
+	if f == null:
+		return {}
+	var d = JSON.parse_string(f.get_as_text())
+	return d if typeof(d) == TYPE_DICTIONARY else {}
+
+
+# Whether there is a server to talk to at all. False in a build with no
+# supabase.json, which must stay a perfectly ordinary way to run the game --
+# see the same treatment google_oauth.json gets in google_auth.gd.
+func configured() -> bool:
+	return _url != "" and _key != ""
+
+
+func linked() -> bool:
+	return configured() and _access != ""
+
+
+func player() -> Dictionary:
+	return _player.duplicate(true)
+
+
+func state() -> String:
+	return _state
+
+
+func _set_state(s: String) -> void:
+	if s == _state:
+		return
+	_state = s
+	sync_state_changed.emit(s)
+
+
+# =============================================================================
+#  Session
+# =============================================================================
+#
+# Kept in its own file rather than in the save, because it is not progress and
+# because the save is handed around: _flush_save's dictionary is what gets
+# pushed to the server, and a refresh token riding along inside it would be a
+# credential stored in a column that other code is allowed to read back.
+func _load_session() -> void:
+	if not FileAccess.file_exists(SESSION_PATH):
+		return
+	var f := FileAccess.open(SESSION_PATH, FileAccess.READ)
+	if f == null:
+		return
+	var d = JSON.parse_string(f.get_as_text())
+	if typeof(d) != TYPE_DICTIONARY:
+		return
+	_access = str(d.get("access_token", ""))
+	_refresh = str(d.get("refresh_token", ""))
+	_expires_at = float(d.get("expires_at", 0.0))
+	var p = d.get("player", {})
+	_player = p if typeof(p) == TYPE_DICTIONARY else {}
+
+
+func _save_session() -> void:
+	var f := FileAccess.open(SESSION_PATH, FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_string(JSON.stringify({
+		"access_token": _access,
+		"refresh_token": _refresh,
+		"expires_at": _expires_at,
+		"player": _player,
+	}))
+	f.close()
+
+
+func sign_out() -> void:
+	_access = ""
+	_refresh = ""
+	_expires_at = 0.0
+	_player = {}
+	_dirty = false
+	_pending = {}
+	DirAccess.remove_absolute(SESSION_PATH)
+	_set_state("off")
+	signed_out.emit()
+
+
+# =============================================================================
+#  Signing in
+# =============================================================================
+#
+# `id_token` is the identity token from Apple or Google, and `nonce` is the RAW
+# nonce that sign-in was started with. Supabase checks that one matches the
+# other, which is what stops a token captured from one session being replayed
+# into another.
+#
+# The two providers disagree about what "the nonce" means and it is the easiest
+# mistake in the whole flow: Google copies the value into the token unchanged,
+# so raw goes out and raw comes here; Apple is given a SHA-256 of it and puts
+# the hash in the token, so the hash goes out and the RAW one comes here. Both
+# callers hand this function the raw value -- see the note in google_auth.gd and
+# the parameter comment on SignInWithApple::sign_in.
+func sign_in(provider: String, id_token: String, nonce: String) -> void:
+	if not configured():
+		sign_in_failed.emit("Cloud saves are not set up in this build")
+		return
+	if id_token == "":
+		sign_in_failed.emit("No identity token from %s" % provider)
+		return
+	_set_state("syncing")
+	var done := func(code: int, body) -> void:
+		if code != 200 or typeof(body) != TYPE_DICTIONARY or not (body as Dictionary).has("access_token"):
+			_set_state("error")
+			sign_in_failed.emit(_reason(body, "Sign-in was refused"))
+			return
+		_take_session(body)
+		_set_state("synced")
+	_post("/auth/v1/token?grant_type=id_token", {
+		"provider": provider,
+		"id_token": id_token,
+		"nonce": nonce,
+	}, done, false)
+
+
+func _take_session(body: Dictionary) -> void:
+	_access = str(body.get("access_token", ""))
+	_refresh = str(body.get("refresh_token", ""))
+	_expires_at = _now() + float(body.get("expires_in", 3600.0))
+	_save_session()
+
+
+# The first call after any sign-in. `local` is the save that is on this device
+# right now -- it seeds the island if the server has never seen this identity.
+#
+# Passing it is not optional in practice. Everybody who reaches a sign-in button
+# has already been playing, because main.gd draws no sign-in at all on an Apple
+# platform until Sign in with Apple exists -- the title screen is one green
+# START PLAYING button. So the ordinary case is a real island meeting the server
+# for the first time, and sending nothing would create an empty row and strand
+# it.
+func claim(local: Dictionary, name: String, emoji: String,
+		rank: int, level: int, coins: int, shields: int, buildings: Array) -> void:
+	_rpc("claim_player", {
+		"p_save": local,
+		"p_display_name": name,
+		"p_emoji": emoji,
+		"p_rank_stars": rank,
+		"p_island_level": level,
+		"p_vault_coins": coins,
+		"p_shields": shields,
+		"p_buildings": buildings,
+	}, func(code: int, body) -> void:
+		if code != 200 or typeof(body) != TYPE_DICTIONARY:
+			_set_state("error")
+			sign_in_failed.emit(_reason(body, "Could not open your island"))
+			return
+		var p = body.get("player", {})
+		_player = p if typeof(p) == TYPE_DICTIONARY else {}
+		_save_session()
+		_set_state("synced")
+		var remote = body.get("save", null)
+		signed_in.emit(_player.duplicate(true), bool(body.get("is_new", false)),
+				remote if typeof(remote) == TYPE_DICTIONARY else {})
+		fetch_raids()
+	)
+
+
+# =============================================================================
+#  The save
+# =============================================================================
+#
+# main.gd calls this wherever it already calls _save_game(). It marks the copy
+# dirty and returns; _process sends it at most every PUSH_GAP seconds.
+func note_save(data: Dictionary, rank: int, level: int,
+		coins: int, shields: int, buildings: Array) -> void:
+	if not linked():
+		return
+	_pending = {
+		"p_save": data,
+		"p_rank_stars": rank,
+		"p_island_level": level,
+		"p_vault_coins": coins,
+		"p_shields": shields,
+		"p_buildings": buildings,
+	}
+	_dirty = true
+
+
+# For the two moments a delay is not acceptable, and they are the same two
+# main.gd flushes to disk for: money changing hands, and the app being told it
+# may be about to die.
+func flush() -> void:
+	if _dirty and not _in_flight:
+		_push()
+
+
+func _process(_delta: float) -> void:
+	if not linked() or not _dirty or _in_flight:
+		return
+	var now := _now()
+	# Back off on a run of failures rather than hammering a radio that is not
+	# going to come back this minute. Capped, because the player may walk back
+	# into signal at any moment and should not wait ten minutes for the game to
+	# notice.
+	var gap := PUSH_GAP * minf(float(1 << mini(_fails, 4)), 16.0)
+	if now - _last_push >= gap:
+		_push()
+
+
+func _push() -> void:
+	if _pending.is_empty():
+		_dirty = false
+		return
+	_in_flight = true
+	_last_push = _now()
+	_set_state("syncing")
+	_rpc("push_save", _pending, func(code: int, body) -> void:
+		_in_flight = false
+		if code != 200 or typeof(body) != TYPE_DICTIONARY:
+			# Left dirty on purpose: the next tick tries again. Nothing is lost
+			# by failing here, because the authoritative copy is the one on
+			# disk that main.gd already wrote.
+			_fails += 1
+			_set_state("error")
+			return
+		_fails = 0
+		if str(body.get("status", "")) == "stale":
+			# The server holds a further-along island than the one this device
+			# is playing. That is not an error and must not be swallowed: it is
+			# the second-phone case, and main.gd has to ask the player.
+			_dirty = false
+			_set_state("synced")
+			var remote = body.get("save", null)
+			save_rejected.emit(int(body.get("stored_rank", 0)),
+					remote if typeof(remote) == TYPE_DICTIONARY else {})
+			return
+		_dirty = false
+		_set_state("synced")
+	)
+
+
+func pull(then: Callable = Callable()) -> void:
+	_rpc("pull_save", {}, func(code: int, body) -> void:
+		if then.is_valid():
+			then.call(code == 200 and typeof(body) == TYPE_DICTIONARY, body)
+	)
+
+
+# =============================================================================
+#  Rivals and raids
+# =============================================================================
+#
+# find_target answers with a rival or with null, and never says which kind it
+# found. That is deliberate on the server side too -- see the comment on
+# find_target in migration 0002. A null means the server had nobody at all in
+# band, in which case main.gd uses its own local rivals and the spin resolves
+# exactly as it does today.
+func find_target(mode: String, then: Callable) -> void:
+	if not linked():
+		then.call({})
+		return
+	_rpc("find_target", {"p_mode": mode}, func(code: int, body) -> void:
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+
+func record_raid(victim_id: String, mode: String, coins: int, hut: int = -1) -> void:
+	if not linked() or victim_id == "":
+		return
+	var args := {"p_victim": victim_id, "p_mode": mode, "p_coins": coins}
+	if hut >= 0:
+		args["p_hut"] = hut
+	_rpc("record_raid", args, func(_c: int, _b) -> void: pass)
+
+
+func fetch_raids() -> void:
+	if not linked():
+		return
+	_rpc("unseen_raids", {}, func(code: int, body) -> void:
+		if code == 200 and typeof(body) == TYPE_ARRAY and not (body as Array).is_empty():
+			raids_arrived.emit(body)
+	)
+
+
+func ack_raids(ids: Array) -> void:
+	if not linked() or ids.is_empty():
+		return
+	_rpc("ack_raids", {"p_ids": ids}, func(_c: int, _b) -> void: pass)
+
+
+func leaderboard(then: Callable) -> void:
+	if not linked():
+		then.call([])
+		return
+	_rpc("leaderboard", {"p_limit": 50}, func(code: int, body) -> void:
+		then.call(body if code == 200 and typeof(body) == TYPE_ARRAY else [])
+	)
+
+
+# =============================================================================
+#  Linking a second sign-in
+# =============================================================================
+#
+# See the note on link_tokens in migration 0002 for why this is two steps and
+# not one: a player cannot hold two provider sessions at once, so the island
+# hands out a token before the switch and the new session redeems it after.
+func create_link_token(then: Callable) -> void:
+	_rpc("create_link_token", {}, func(code: int, body) -> void:
+		then.call(str(body) if code == 200 else "")
+	)
+
+
+func redeem_link_token(token: String, keep_player_id: String, then: Callable) -> void:
+	var args := {"p_token": token}
+	if keep_player_id != "":
+		args["p_keep"] = keep_player_id
+	_rpc("redeem_link_token", args, func(code: int, body) -> void:
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+
+# App Store guideline 5.1.1(v). Mandatory from the moment the game creates
+# accounts, and it has to be reachable from inside the game.
+func delete_account(then: Callable) -> void:
+	_rpc("delete_account", {}, func(code: int, _body) -> void:
+		if code == 200:
+			sign_out()
+		then.call(code == 200)
+	)
+
+
+# =============================================================================
+#  Transport
+# =============================================================================
+func _rpc(fn: String, args: Dictionary, then: Callable) -> void:
+	if not configured():
+		then.call(0, null)
+		return
+	_with_fresh_token(func() -> void:
+		_post("/rest/v1/rpc/" + fn, args, then, true)
+	)
+
+
+# Refreshes first if the token is close to expiry, so no caller has to think
+# about it. A refresh that fails still runs the request: it may be a token that
+# is fine and a network that is not, and the 401 that comes back is a cheaper
+# way to find out than a second state machine.
+func _with_fresh_token(then: Callable) -> void:
+	if _refresh == "" or _now() < _expires_at - REFRESH_MARGIN:
+		then.call()
+		return
+	var done := func(code: int, body) -> void:
+		if code == 200 and typeof(body) == TYPE_DICTIONARY and (body as Dictionary).has("access_token"):
+			_take_session(body)
+		elif code == 400 or code == 401:
+			# The refresh token is gone for good -- revoked in Settings,
+			# password changed, account deleted elsewhere. Signing out is
+			# honest; retrying forever is not.
+			sign_out()
+		then.call()
+	_post("/auth/v1/token?grant_type=refresh_token", {"refresh_token": _refresh}, done, false)
+
+
+func _post(path: String, body: Variant, then: Callable, authed: bool) -> void:
+	var http := HTTPRequest.new()
+	http.timeout = HTTP_TIMEOUT
+	add_child(http)
+
+	var headers := PackedStringArray([
+		"apikey: " + _key,
+		"Content-Type: application/json",
+		# PostgREST returns a bare scalar for a function that returns one, which
+		# a JSON parser will not accept as a document without this.
+		"Accept: application/json",
+	])
+	if authed and _access != "":
+		headers.append("Authorization: Bearer " + _access)
+	else:
+		# Unauthenticated calls still have to present something: GoTrue reads
+		# the publishable key from here as well as from apikey.
+		headers.append("Authorization: Bearer " + _key)
+
+	http.request_completed.connect(
+		func(result: int, code: int, _h: PackedStringArray, raw: PackedByteArray) -> void:
+			http.queue_free()
+			if result != HTTPRequest.RESULT_SUCCESS:
+				# No connection, DNS failure, timeout. Not distinguished,
+				# because there is nothing different to do about any of them.
+				then.call(0, null)
+				return
+			var text := raw.get_string_from_utf8()
+			var parsed = JSON.parse_string(text) if text != "" else null
+			then.call(code, parsed)
+	)
+
+	var err := http.request(_url + path, headers, HTTPClient.METHOD_POST, JSON.stringify(body))
+	if err != OK:
+		http.queue_free()
+		then.call(0, null)
+
+
+# Supabase reports failures in more than one shape depending on which service
+# answered. None of these strings are shown raw to a player; they exist so a
+# banner can say something truer than "something went wrong" when it has to.
+func _reason(body: Variant, fallback: String) -> String:
+	if typeof(body) != TYPE_DICTIONARY:
+		return fallback
+	for k in ["error_description", "msg", "message", "error"]:
+		var v = (body as Dictionary).get(k, "")
+		if typeof(v) == TYPE_STRING and v != "":
+			return v
+	return fallback
+
+
+func _now() -> float:
+	return Time.get_unix_time_from_system()

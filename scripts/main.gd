@@ -797,11 +797,31 @@ const SIGN_IN_PROVIDERS := [
 	 "ink": Color.WHITE, "platforms": [], "ready": false},
 ]
 
+# Whether a provider's flow actually exists on THIS device, right now.
+#
+# It used to be a constant in the table, which was right while no flow existed
+# and became a lie the moment one did: Sign in with Apple is a native plugin,
+# and the plugin is only in an iOS build. A hardcoded `true` would draw the
+# black Apple button in the editor and on desktop, where tapping it can do
+# nothing at all -- Guideline 2.1, the same rejection the old "Facebook — coming
+# soon" banner was asking for.
+#
+# Asking the plugin instead means the button appears exactly where it works, and
+# the 4.8 rule below keeps doing its job for free: on a Mac there is no plugin,
+# so Apple is absent, so the whole set is withheld and the title screen stays
+# the single green START PLAYING button it is today.
+func _provider_ready(p: Dictionary) -> bool:
+	match String(p["id"]):
+		"apple":
+			return AppleAuth.available()
+		_:
+			return bool(p["ready"])
+
 func _providers_here() -> Array:
 	var here := OS.get_name()
 	var out := []
 	for p in SIGN_IN_PROVIDERS:
-		if not bool(p["ready"]):
+		if not _provider_ready(p):
 			continue
 		var only: Array = p["platforms"]
 		if not only.is_empty() and not only.has(here):
@@ -872,10 +892,66 @@ func _start_login(id: String) -> void:
 	match id:
 		"google":
 			_login_google()
+		"apple":
+			_login_apple()
 		_:
 			# Unreachable while `ready` gates the buttons, and left in as the
 			# thing that happens if a flag is flipped before a flow exists.
 			_banner("%s sign-in is not wired up in this build yet." % id.capitalize(), Color(1.0, 0.8, 0.4))
+
+# Everything a completed sign-in has to do, for either provider.
+#
+# The profile is written to disk FIRST and unconditionally, before anything is
+# sent anywhere. Apple hands over the player's name exactly once -- on the first
+# authorization this app ever receives -- and if that write is skipped because a
+# network call failed, the name is gone for good and the account is called
+# "Islander" for the rest of its life.
+func _on_login(p: Dictionary) -> void:
+	# An empty name from Apple on a later sign-in is Apple being Apple, not a
+	# player who deleted their name. Keep what is already stored.
+	if str(p.get("name", "")) == "" and str(profile.get("name", "")) != "":
+		p["name"] = profile["name"]
+	profile = p
+	_save_profile()
+	_close_login()
+
+	# From here on nothing is required for the game to carry on. A player whose
+	# sign-in worked and whose cloud save did not is a player with a name on
+	# their island and a grey sync icon, which is exactly what they had a moment
+	# ago -- not an error worth a banner.
+	if not Cloud.configured():
+		return
+	var token := str(p.get("id_token", ""))
+	if token == "":
+		return
+	Cloud.sign_in(str(p.get("provider", "")), token, str(p.get("nonce", "")))
+
+func _login_apple() -> void:
+	if _auth != null and is_instance_valid(_auth):
+		return
+	var auth := AppleAuth.new()
+	_auth = auth
+	add_child(auth)
+	auth.login_finished.connect(func(p: Dictionary) -> void:
+		_on_login(p)
+		_auth = null
+		auth.queue_free()
+	)
+	auth.login_failed.connect(func(reason: String) -> void:
+		_banner("Login failed: %s" % reason, Color(0.95, 0.4, 0.4))
+		_auth = null
+		auth.queue_free()
+	)
+	# Backing out of the sheet is a decision, not a failure. Nothing on screen,
+	# for the same reason iap.gd keeps purchase_cancelled off the banner.
+	auth.login_cancelled.connect(func() -> void:
+		_auth = null
+		auth.queue_free()
+	)
+	if not auth.start():
+		_banner("Sign in with Apple is not available here", Color(1.0, 0.8, 0.4))
+		_auth = null
+		auth.queue_free()
 
 func _login_google() -> void:
 	if GoogleAuth.load_config().is_empty():
@@ -894,9 +970,7 @@ func _login_google() -> void:
 	add_child(auth)
 	_banner("Opening Google sign-in in your browser...", Color(0.7, 0.9, 1.0))
 	auth.login_finished.connect(func(p: Dictionary) -> void:
-		profile = p
-		_save_profile()
-		_close_login()
+		_on_login(p)
 		_auth = null
 		auth.queue_free()
 	)
@@ -7502,6 +7576,11 @@ func _flush_save() -> void:
 			_banner("Can't save right now — check your free space.", Color(0.9, 0.4, 0.4))
 	else:
 		_save_fails = 0
+		# Offered, not sent. note_save marks a copy dirty and returns; cloud.gd
+		# batches it at its own much slower cadence, because a radio wake-up per
+		# spin is somebody's battery. It does nothing at all when the player is
+		# not signed in, which is the common case and not a fault.
+		Cloud.note_save(data, rank_stars, island_level, coins, shields, buildings)
 
 # Writing the save is the one operation in the game that can lose everything,
 # so it is not allowed to be a single store_string.
