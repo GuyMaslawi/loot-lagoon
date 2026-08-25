@@ -82,6 +82,16 @@ var mouth := 0.0              # 0..1; how far the jaw is open
 var arm := Vector2.ZERO       # radians at each shoulder, left then right
 var leg := Vector2.ZERO       # radians at each hip, left then right
 var head_turn := 0.0          # radians, on top of the counter-rotation
+# -1 scowling .. 0 neutral .. +1 delighted.
+#
+# The art has fifteen pieces and not one of them is an eyebrow, which is
+# awkward, because a brow is where almost all of anger lives on a face. So it
+# is faked the way every cut-out rig fakes it: the eye itself is rotated so its
+# outer corner lifts and its inner corner drops, and narrowed from above. A
+# slanted slit reads as a brow even though no brow was drawn -- the viewer
+# supplies it. Delight is the opposite and much easier: the eyes squeeze shut
+# into arcs and the jaw comes open.
+var mood := 0.0
 
 # Set this instead of modulate:a. Modulate is inherited, so it reaches each of
 # the fifteen pieces separately, and half-faded he then arrives as a stack of
@@ -247,7 +257,9 @@ func tick(delta: float) -> void:
 		_ear_wait = randf_range(1.7, 4.8) * (1.0 - 0.35 * energy)
 		var k := randf_range(1.6, 2.9)
 		_ear_kick = Vector2(k, 0.0) if randf() < 0.5 else Vector2(0.0, -k)
-	var ear_base := -head.rotation * 0.30
+	# Pinned back and down when he is cross -- the most legible thing an animal
+	# face does, and free here because the ears are already sprung.
+	var ear_base := -head.rotation * 0.30 + 0.42 * maxf(0.0, -mood)
 	_bone["ear_l"].rotation = clampf(_spring("ear_l", ear_base - yaw * 0.04, 165.0,
 		12.0, delta, _ear_kick.x - acc.x * 0.00012), -EAR_SWING, EAR_SWING)
 	_bone["ear_r"].rotation = clampf(_spring("ear_r", ear_base - yaw * 0.04, 165.0,
@@ -270,11 +282,27 @@ func tick(delta: float) -> void:
 			blink = _blink_shape(fmod(_blink_p, 0.17) / 0.17)
 	# He screws his eyes up when he is pleased with himself, which by the time
 	# the bar is full is most of the time.
-	var shut := clampf(blink + 0.10 * energy + 0.20 * mouth, 0.0, 1.0)
+	var glee := maxf(0.0, mood)
+	var scowl := maxf(0.0, -mood)
+	var shut := clampf(blink + 0.10 * energy + 0.20 * mouth + 0.50 * glee, 0.0, 1.0)
 	for n in ["eye_l", "eye_r"]:
 		var e: Node2D = _bone[n]
-		e.scale = Vector2(1.0, 1.0 - 0.94 * shut)
-		e.position = _home[n] + Vector2(yaw * 7.0, shut * 5.0)
+		# WHY THIS IS NOT JUST A SCALE. head.png has the dark eye socket painted
+		# into it and eye_*.png sits on top, so shrinking the eye piece does not
+		# read as a narrowed eye -- it reads as a smaller iris in a socket that
+		# did not change, which is to say it reads as nothing at all. Verified
+		# by rendering it: at 44% height the scowl was invisible.
+		#
+		# So the eye is *slid down* the socket as well. The painted socket above
+		# it then does the job the missing eyelid would, and the piece's own
+		# dark rim becomes the lash line. Scale alone is still worth keeping for
+		# the squeeze; it is the travel that sells it.
+		var narrow := 0.34 * scowl
+		e.scale = Vector2(1.0, clampf(1.0 - 0.94 * shut - narrow, 0.06, 1.0))
+		# Inner corner down, outer corner up. Mirrored, or he squints sideways.
+		var inward := 1.0 if n == "eye_l" else -1.0
+		e.rotation = _spring("tilt_" + n, inward * 0.34 * scowl, 200.0, 16.0, delta)
+		e.position = _home[n] + Vector2(yaw * 7.0, shut * 5.0 + 15.0 * scowl)
 
 	# Pupils: driven where the performance is looking, and drifting on their
 	# own when it is not. Eyes that hold perfectly still are the deadest thing
@@ -284,9 +312,17 @@ func tick(delta: float) -> void:
 		_gaze_wait = randf_range(0.7, 2.5)
 		_gaze = Vector2(randf_range(-1.0, 1.0), randf_range(-0.7, 0.7)) * 0.40
 	var gaze := (look + _gaze).limit_length(1.0) * Vector2(13.0, 9.0)
+	# Held high in the socket while he scowls. With the eye slid down, a pupil
+	# that stays centred disappears behind the rim; pushing it up is both what
+	# keeps it visible and what produces the glare-from-under-the-brow the
+	# lowered eye is pretending to have.
+	gaze.y -= 7.0 * scowl
 	var pupil := _spring2("pupil", gaze, 420.0, 26.0, delta)
-	_bone["pupil_l"].position = _home["pupil_l"] + pupil
-	_bone["pupil_r"].position = _home["pupil_r"] + pupil
+	# Converged a little, which is the other half of a glare. Mirrored inward,
+	# so it is a focus rather than a drift.
+	var converge := 4.0 * scowl
+	_bone["pupil_l"].position = _home["pupil_l"] + pupil + Vector2(converge, 0.0)
+	_bone["pupil_r"].position = _home["pupil_r"] + pupil - Vector2(converge, 0.0)
 
 	# --- jaw ----------------------------------------------------------------
 	var jaw := _spring("jaw", mouth, 250.0, 19.0, delta)

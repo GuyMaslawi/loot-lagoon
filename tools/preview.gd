@@ -165,7 +165,19 @@ func _mascot_reel() -> void:
 		else:
 			art.modulate.a = f
 
+	# MOOD=-1|0|1 pins his face while the reel runs, which is the only way to
+	# look at a scowl or a laugh outside a live raid -- the expressions belong
+	# to island_visit's acts, and getting a shield to eat a hammer on demand is
+	# not a thing you can do while judging the face it produces.
+	var mood_art: Control = boot.get("_mascot_art")
+	var mood_set := OS.has_environment("MOOD")
+	var mood_val := float(OS.get_environment("MOOD")) if mood_set else 0.0
+
 	for i in frames:
+		if mood_set and mood_art is MascotRig:
+			# Written every frame: the rig springs toward it, so one write at
+			# the top would be sprung away from before the first shot lands.
+			(mood_art as MascotRig).mood = mood_val
 		if want != "auto" and acts.has(want) and int(boot.get("_act")) == 0:
 			boot.call("_begin_act", acts[want])
 			boot.set("_rest", 0.0)

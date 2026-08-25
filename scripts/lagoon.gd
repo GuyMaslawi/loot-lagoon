@@ -587,7 +587,10 @@ static func capsule(icon_kind: String, value := "0", plus_action := Callable()) 
 	sb.shadow_color = Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.28)
 	sb.shadow_offset = Vector2(0, 3)
 	sb.content_margin_left = 8.0
-	sb.content_margin_right = 8.0 if plus_action.is_null() else 4.0
+	# 7, not 4, when there is a plus. The coral disc has to clear the capsule's
+	# own corner arc, and at 4 it did so by a single pixel -- geometrically
+	# inside, visually bursting out of the pill. See the note on the button.
+	sb.content_margin_right = 8.0 if plus_action.is_null() else 7.0
 	sb.content_margin_top = 4.0
 	sb.content_margin_bottom = 4.0
 	root.add_theme_stylebox_override("panel", sb)
@@ -614,8 +617,16 @@ static func capsule(icon_kind: String, value := "0", plus_action := Callable()) 
 
 	var out := {"root": root, "value": val}
 	if not plus_action.is_null():
+		# 42 across, and the number is not free. The capsule is 70 tall with a
+		# 3px border and a 28px corner radius, so its right end is an arc whose
+		# centre sits 31px in from the edge with 25px of inner radius. A 46px
+		# disc at a 4px margin put its own centre 30px in -- one pixel proud of
+		# that arc centre -- leaving 25 - (1 + 23) = 1px of clearance. It never
+		# technically overflowed, which is why it survived review, but a disc
+		# tangent to the pill it sits in reads as broken alignment. At 42 with a
+		# 7px margin the two centres coincide and there are 4px all round.
 		var plus := Button.new()
-		plus.custom_minimum_size = Vector2(46, 46)
+		plus.custom_minimum_size = Vector2(42, 42)
 		plus.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		plus.focus_mode = Control.FOCUS_NONE
 		# The pressed face has to be its own colour, not the normal one. Only
@@ -630,7 +641,7 @@ static func capsule(icon_kind: String, value := "0", plus_action := Callable()) 
 				"hover": psb.bg_color = CORAL_HI
 				"pressed": psb.bg_color = CORAL.darkened(0.14)
 				_: psb.bg_color = CORAL
-			psb.set_corner_radius_all(23)
+			psb.set_corner_radius_all(21)
 			psb.border_width_bottom = 1 if state == "pressed" else 4
 			psb.border_color = CORAL_LO
 			plus.add_theme_stylebox_override(state, psb)
@@ -640,12 +651,26 @@ static func capsule(icon_kind: String, value := "0", plus_action := Callable()) 
 		var pg := Glyph.new()
 		pg.kind = "plus"
 		pg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		# Glyph._init gives every icon a 40x40 minimum so one dropped into a
+		# container does not collapse to nothing. Here that minimum is poison:
+		# the insets below ask for 22x22, the minimum wins, and a Control that
+		# loses to its minimum keeps its *position* and grows from it -- so the
+		# glyph sat at (10,10) at full 40x40 size, putting its centre 9px down
+		# and right of the disc it is supposed to be in the middle of. That is
+		# the crooked "+" and it long predates the disc being resized; the
+		# bigger disc merely hid it. Anchored placement only governs if the
+		# minimum gets out of the way.
+		pg.custom_minimum_size = Vector2.ZERO
 		plus.add_child(pg)
 		pg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		pg.offset_left = 11.0
-		pg.offset_right = -11.0
-		pg.offset_top = 11.0
-		pg.offset_bottom = -13.0
+		# Symmetric. The bottom used to be inset 2px more than the top, which
+		# scaled the glyph inside a box that was not square and left the "+"
+		# sitting high in its own disc -- the second half of what read as the
+		# plus being crooked.
+		pg.offset_left = 10.0
+		pg.offset_right = -10.0
+		pg.offset_top = 10.0
+		pg.offset_bottom = -10.0
 		out["plus"] = plus
 	return out
 

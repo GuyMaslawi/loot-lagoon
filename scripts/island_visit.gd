@@ -397,6 +397,7 @@ func _process(delta: float) -> void:
 			_rac.body = Vector2(5.0 * sway, 0.0)
 			_rac.squash = Vector2.ZERO
 			_rac.head_turn = 0.0
+			_rac.mood = 0.0
 		"wind":
 			# Weight goes back onto the heels and the throwing arm cocks behind
 			# his ear. Squared easing so the load builds instead of snapping.
@@ -411,6 +412,9 @@ func _process(delta: float) -> void:
 			_rac.look = Vector2(0.95, -0.3)
 			_rac.mouth = 0.3 * e
 			_rac.head_turn = -0.10 * e
+			# A trace of grit while he loads the throw. Not the full scowl --
+			# that belongs to being denied, not to trying.
+			_rac.mood = -0.35 * e
 		"throw":
 			var u := clampf(t / 0.18, 0.0, 1.0)
 			_rac.arm = Vector2(lerpf(0.55, -0.20, u), lerpf(-2.55, -0.55, u))
@@ -422,6 +426,7 @@ func _process(delta: float) -> void:
 			_rac.look = Vector2(1.0, -0.45)
 			_rac.mouth = 1.0
 			_rac.head_turn = lerpf(-0.10, 0.08, u)
+			_rac.mood = -0.35 + 0.35 * u
 		"cheer":
 			# Both fists up, bouncing on the spot, settling as the shout runs out.
 			var decay := exp(-t * 1.1)
@@ -435,6 +440,11 @@ func _process(delta: float) -> void:
 			_rac.look = Vector2(0.35, -0.5)
 			_rac.mouth = clampf(0.35 + 0.65 * hop, 0.0, 1.0)
 			_rac.head_turn = 0.0
+			# The laugh. Held at full for the first bounce or so and then let
+			# down with the same decay the hop uses, so the face runs out of
+			# glee at the same moment the legs run out of hop -- a grin that
+			# outlives the celebration is what makes a mascot look unhinged.
+			_rac.mood = clampf(0.55 + 0.45 * decay, 0.0, 1.0)
 		"boo":
 			# Shoulders drop, chin drops, the whole rig sinks a few units. He is
 			# not hurt, he is annoyed, and the difference is all in the timing.
@@ -447,6 +457,10 @@ func _process(delta: float) -> void:
 			_rac.look = Vector2(0.8, 0.45)
 			_rac.mouth = 0.18 * sag
 			_rac.head_turn = 0.14 * sag
+			# The face Guy asked for when a shield eats the hammer. It arrives
+			# on the same curve as the sag, so the scowl lands with the
+			# shoulders rather than snapping on a frame ahead of them.
+			_rac.mood = -sag
 	# `body` is only an input to the rig's springs -- it tells the tail and the
 	# ears what the body just did. Actually displacing him is the caller's job,
 	# and without this the lunge and the hop drove his fur and nothing else.
