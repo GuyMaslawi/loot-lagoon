@@ -543,6 +543,16 @@ func _after_boot() -> void:
 		var go3 := create_tween()
 		go3.tween_interval(0.4)
 		go3.tween_callback(func() -> void: _offer_out_of_spins(bet))
+	# DEMO_TOURNEY=<points> puts the board at a chosen score. Reaching a rung
+	# honestly means landing dozens of raids at a raised bet across a real
+	# seventy-two hour window, which is not a thing you can do while laying out
+	# the bar that draws it -- and the interesting states (a rung lit and
+	# claimable, the bar past the last pip) are exactly the ones you cannot
+	# reach on a fresh install.
+	if OS.has_environment("DEMO_TOURNEY"):
+		tourney_id = _tourney_now_id()
+		tourney_claimed = []
+		tourney_points = maxi(0, int(OS.get_environment("DEMO_TOURNEY")))
 	# SHOT=<page key> opens that page, lets it settle and writes a PNG, then
 	# quits. Apple will not review an in-app purchase without a screenshot of
 	# where it is sold, and there are twenty-five of them -- shooting those by
@@ -566,6 +576,26 @@ func _scrolls_in(node: Node) -> Array:
 	return out
 
 func _capture_page(key: String) -> void:
+	# SHOT=popup:ranks shoots a dialog rather than a page. Modals are where most
+	# of the game's chrome lives and none of it could be screenshotted without
+	# opening the thing by hand first.
+	if key.begins_with("popup:"):
+		# Long enough for the welcome-back banners to have come and gone. They
+		# are transient and they sit exactly where a dialog's header does, so a
+		# shot taken too early documents the banner instead of the dialog.
+		await get_tree().create_timer(5.0).timeout
+		match key.split(":")[1]:
+			"ranks":  _open_ranks()
+			"daily":  _open_daily()
+		# Long enough for FX.pop_in and the progress bar's fill tween to land;
+		# a shot taken mid-tween measures the animation, not the layout.
+		await get_tree().create_timer(1.6).timeout
+		var pimg := get_viewport().get_texture().get_image()
+		var ppath := "user://shot_%s.png" % key.replace(":", "_")
+		pimg.save_png(ppath)
+		print("SHOT written: %s (%dx%d)" % [ProjectSettings.globalize_path(ppath), pimg.get_width(), pimg.get_height()])
+		get_tree().quit()
+		return
 	# SHOT=shop:spins shoots the shop already scrolled to a named shelf, which
 	# is both how the plus buttons are checked and how a screenshot of one
 	# particular product family gets taken without counting pixels first.
@@ -582,9 +612,10 @@ func _capture_page(key: String) -> void:
 		_goto(pages[key])
 	elif key == "slot":
 		_goto(slot_page)
-	# Long enough for the page transition and the card art to finish arriving;
-	# a screenshot of a half-built shop is worse than none.
-	await get_tree().create_timer(2.0).timeout
+	# Long enough for the page transition and the card art to finish arriving,
+	# and for the welcome-back banners to have come and gone -- those sit across
+	# the top of the page and will happily photobomb whatever is underneath.
+	await get_tree().create_timer(5.0).timeout
 	# SHOT_SCROLL=<px> shoots the page wound down to that offset. The shop is
 	# four screens tall and the products Apple wants to see sold are on the
 	# third and fourth, so without this the only part of it that can be
@@ -2312,16 +2343,59 @@ void fragment() {
 # so the Alerts button sat on top of the cabinet's marquee. A centred row owns
 # a horizontal band nothing else is using and can never collide with the stage.
 func _add_side_buttons(page: Control) -> void:
-	var row := HBoxContainer.new()
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	row.add_theme_constant_override("separation", 30)
-	page.add_child(row)
-	row.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	row.offset_top = 184.0 + safe_top()
-	row.offset_bottom = 306.0 + safe_top()
-	_side_button(row, "gift", "Daily", "daily", _open_daily)
-	_side_button(row, "bell", "Alerts", "alerts", func() -> void: _goto(pages["alerts"]))
-	_side_button(row, "trophy", "Ranks", "ranks", _open_ranks)
+	# Two floating rails at the extreme edges, not a row across the middle.
+	#
+	# THE COLLISION THIS HAS TO SURVIVE, because it is why the row existed. The
+	# cabinet is 660 of 720 wide, so the gutters either side of it are 30px --
+	# nowhere near enough for a tap target. Any edge rail therefore *overlaps*
+	# the machine, which is exactly what drove these buttons into a centred row
+	# the first time: at TAP_COMFY with a caption under each, they landed on the
+	# cabinet's marquee and read as debris dropped on the artwork.
+	#
+	# What makes the overlap work now is giving up the captions and the size.
+	# 76px discs with no label sit on the cabinet's own brass frame -- the
+	# decorative border, not the marquee or the reels -- where a row of glass
+	# rivets is a thing that frame would plausibly have anyway. The captions are
+	# no loss: these are a gift, a bell and a trophy, which is about as legible
+	# as an icon gets.
+	#
+	# What this buys is the whole 122px band the row used to own, which is the
+	# difference between the machine being cramped and not.
+	var rails := {}
+	for side in ["left", "right"]:
+		var rail := VBoxContainer.new()
+		rail.add_theme_constant_override("separation", 14)
+		page.add_child(rail)
+		rail.set_anchors_and_offsets_preset(
+			Control.PRESET_TOP_LEFT if side == "left" else Control.PRESET_TOP_RIGHT)
+		rail.offset_top = SIDE_RAIL_TOP + safe_top()
+		if side == "left":
+			rail.offset_left = SIDE_RAIL_INSET
+			rail.offset_right = SIDE_RAIL_INSET + SIDE_DISC
+		else:
+			rail.offset_left = -(SIDE_RAIL_INSET + SIDE_DISC)
+			rail.offset_right = -SIDE_RAIL_INSET
+		rails[side] = rail
+
+	# Alternating, so adding a fourth and a fifth later balances itself instead
+	# of needing this list re-split by hand.
+	var specs := [
+		["gift", "Daily", "daily", _open_daily],
+		["trophy", "Ranks", "ranks", _open_ranks],
+		["bell", "Alerts", "alerts", func() -> void: _goto(pages["alerts"])],
+	]
+	for i in specs.size():
+		var spec: Array = specs[i]
+		_side_button(rails["left" if i % 2 == 0 else "right"],
+			str(spec[0]), str(spec[1]), str(spec[2]), spec[3])
+
+# How the edge rails are placed. Named rather than inline because the three
+# numbers are a set -- the disc has to be small enough to sit on the cabinet's
+# frame, and the inset has to keep it off the screen edge on a phone with
+# rounded corners.
+const SIDE_DISC := 76.0
+const SIDE_RAIL_INSET := 8.0
+const SIDE_RAIL_TOP := 176.0
 
 func _side_button(container: BoxContainer, icon_kind: String, caption: String, badge_key: String, action: Callable) -> void:
 	var box := VBoxContainer.new()
@@ -2330,13 +2404,14 @@ func _side_button(container: BoxContainer, icon_kind: String, caption: String, b
 	container.add_child(box)
 
 	var btn := Button.new()
-	btn.custom_minimum_size = Vector2(UI.TAP_COMFY, UI.TAP_COMFY)
+	btn.custom_minimum_size = Vector2(SIDE_DISC, SIDE_DISC)
+	btn.tooltip_text = caption
 	btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	btn.focus_mode = Control.FOCUS_NONE
 	for state in ["normal", "hover", "pressed"]:
 		var sb := StyleBoxFlat.new()
 		sb.bg_color = Color(1, 1, 1, 0.92) if state != "hover" else Color(1, 1, 1, 1.0)
-		sb.set_corner_radius_all(UI.TAP_COMFY / 2)
+		sb.set_corner_radius_all(int(SIDE_DISC / 2.0))
 		sb.set_border_width_all(4)
 		sb.border_color = Lagoon.BRASS
 		sb.shadow_size = 8
@@ -2346,13 +2421,18 @@ func _side_button(container: BoxContainer, icon_kind: String, caption: String, b
 	btn.pressed.connect(action)
 	FX.press_feedback(btn)
 	box.add_child(btn)
-	Lagoon.add_gloss(btn, UI.TAP_COMFY / 2)
+	Lagoon.add_gloss(btn, int(SIDE_DISC / 2.0))
 
 	var icon := Glyph.new()
 	icon.kind = icon_kind
 	btn.add_child(icon)
 	icon.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	for m in [["offset_left", 16.0], ["offset_right", -16.0], ["offset_top", 16.0], ["offset_bottom", -16.0]]:
+	# Cleared for the same reason the shop's "+" needed it: Glyph carries a
+	# 40x40 minimum, and 76 - 13 - 13 is 50, so this one clears it -- but only
+	# just, and the next person to shrink the disc would silently reproduce the
+	# crooked-plus bug.
+	icon.custom_minimum_size = Vector2.ZERO
+	for m in [["offset_left", 13.0], ["offset_right", -13.0], ["offset_top", 13.0], ["offset_bottom", -13.0]]:
 		icon.set(m[0], m[1])
 
 	var badge := Panel.new()
@@ -2363,7 +2443,7 @@ func _side_button(container: BoxContainer, icon_kind: String, caption: String, b
 	bsb.border_color = Color.WHITE
 	badge.add_theme_stylebox_override("panel", bsb)
 	badge.size = Vector2(34, 34)
-	badge.position = Vector2(UI.TAP_COMFY - 28, -6)
+	badge.position = Vector2(SIDE_DISC - 26, -8)
 	badge.visible = false
 	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	btn.add_child(badge)
@@ -2374,8 +2454,8 @@ func _side_button(container: BoxContainer, icon_kind: String, caption: String, b
 	bang.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_badges[badge_key] = badge
 
-	var cap := Lagoon.title(caption, UI.F_CAPTION, Color.WHITE, Lagoon.ABYSS)
-	box.add_child(cap)
+	# No caption. It is what pays for the discs being able to sit at the edge at
+	# all -- see _add_side_buttons.
 
 func _update_badges() -> void:
 	if _badges.is_empty():
@@ -2396,6 +2476,8 @@ func _update_badges() -> void:
 				any_col = true
 				break
 		_badges["collections"].visible = any_col
+	if _badges.has("ranks"):
+		_badges["ranks"].visible = _tourney_claimable()
 	if _badges.has("alerts"):
 		var unread := _unread_count()
 		_badges["alerts"].visible = unread > 0
@@ -6509,18 +6591,323 @@ func _npc_stars(npc: Dictionary) -> int:
 # grand-prize bonuses. Nothing in the game subtracts from it. The number in the
 # top bar is this one, so what a player watches climb all day is the same
 # number this table sorts on.
+
+# =============================================================================
+#  The three-day tournament
+# =============================================================================
+#
+# A score that resets, sitting alongside a score that never does. Keeping those
+# two apart is the whole design constraint here.
+#
+# `rank_stars` is the permanent world rank AND the cloud-save merge key -- the
+# save reconciler trusts it precisely because main.gd guarantees it only ever
+# goes up, so "the push carrying less of it is the older device". Tournament
+# points go to zero every seventy-two hours. Putting them in the same number
+# would tell the server that every device on earth had just gone backwards, and
+# conflict resolution would start overwriting live islands with stale ones.
+# So this is its own number, saved under its own key, and it must stay that way.
+#
+# WHY THE CYCLE COMES OFF THE WALL CLOCK. Every player has to be in the same
+# tournament as every other player without asking a server whose turn it is, so
+# the id is just how many 72-hour blocks have elapsed since the epoch -- the
+# same integer on every device in the world, computed offline. Deliberately not
+# _now(), which is a high-water mark that can sit hours ahead of real time after
+# somebody winds their phone forward.
+#
+# Winding the clock forward is not an exploit worth guarding: it moves you to a
+# fresh tournament, which zeroes the points and un-earns the milestones. The
+# cheat costs the cheater.
+
+const TOURNEY_SECONDS := 72.0 * 3600.0   # three days
+
+# Points are per bet level, because the bet is the risk. A x5 steal is five
+# times the stake and pays five times the standing.
+const TP_STEAL := 12
+const TP_ATTACK := 18
+# Building is not a bet, so it is flat. It is worth more than a single raid
+# because it is the slower half of the game and the board should not belong
+# exclusively to whoever spins most.
+const TP_BUILD := 60
+
+# Mostly spins, because spins are what a player actually runs out of; the top
+# two rungs add collection cards, which are the thing you cannot buy your way
+# to with coins.
+const TOURNEY_TIERS := [
+	{"at": 250,  "spins": 30,  "cards": 0},
+	{"at": 700,  "spins": 80,  "cards": 0},
+	{"at": 1400, "spins": 150, "cards": 1},
+	{"at": 2500, "spins": 300, "cards": 3},
+]
+
+var tourney_id := 0
+var tourney_points := 0
+var tourney_claimed: Array = []
+
+# Which tournament the wall clock says we are in.
+static func _tourney_now_id() -> int:
+	return int(floor(Time.get_unix_time_from_system() / TOURNEY_SECONDS))
+
+func _tourney_seconds_left() -> float:
+	var ends := float(_tourney_now_id() + 1) * TOURNEY_SECONDS
+	return maxf(0.0, ends - Time.get_unix_time_from_system())
+
+# Called before anything reads or writes the score. A tournament boundary is
+# not an event anyone can be relied upon to be online for, so it is detected
+# lazily -- the first time the game looks at the number after the clock has
+# rolled over.
+func _tourney_sync() -> void:
+	var now_id := _tourney_now_id()
+	if now_id == tourney_id:
+		return
+	tourney_id = now_id
+	tourney_points = 0
+	tourney_claimed = []
+
+func _tourney_add(kind: String, bet := 1) -> void:
+	_tourney_sync()
+	var gained := 0
+	match kind:
+		"steal":  gained = TP_STEAL * maxi(1, bet)
+		"attack": gained = TP_ATTACK * maxi(1, bet)
+		"build":  gained = TP_BUILD
+		_: return
+	if gained <= 0:
+		return
+	var before := tourney_points
+	tourney_points += gained
+	# Crossing a rung is the moment worth announcing -- the player is usually
+	# mid-raid and not looking at the leaderboard, so the board has to come to
+	# them. Only the highest rung crossed is announced; a build that vaults two
+	# at once should not stack two banners.
+	var crossed := -1
+	for i in TOURNEY_TIERS.size():
+		var at := int(TOURNEY_TIERS[i]["at"])
+		if before < at and tourney_points >= at:
+			crossed = i
+	if crossed >= 0:
+		_banner("Tournament reward %d unlocked — tap the trophy!" % (crossed + 1),
+			Color(1.0, 0.85, 0.3))
+		_update_badges()
+
+func _tourney_claimable() -> bool:
+	_tourney_sync()
+	for i in TOURNEY_TIERS.size():
+		if tourney_points >= int(TOURNEY_TIERS[i]["at"]) and not tourney_claimed.has(i):
+			return true
+	return false
+
+func _tourney_claim(tier: int) -> void:
+	_tourney_sync()
+	if tier < 0 or tier >= TOURNEY_TIERS.size():
+		return
+	if tourney_claimed.has(tier) or tourney_points < int(TOURNEY_TIERS[tier]["at"]):
+		return
+	tourney_claimed.append(tier)
+	var t: Dictionary = TOURNEY_TIERS[tier]
+	var got_spins := int(t.get("spins", 0))
+	var got_cards := int(t.get("cards", 0))
+	if got_spins > 0:
+		spins += got_spins
+	var card_names: Array = []
+	for _i in got_cards:
+		var card := _grant_chest_card(1)
+		if not card.is_empty():
+			card_names.append(str(card.get("name", "card")))
+	_save_game()
+	_refresh()
+	_update_badges()
+	var what := "%d spins" % got_spins
+	if got_cards > 0:
+		what += " + %d card%s" % [got_cards, "" if got_cards == 1 else "s"]
+	_banner("Tournament reward: %s!" % what, Color(1.0, 0.85, 0.3))
+	FX.confetti(self, 40)
+	Sfx.play("jackpot", -4.0)
+
+# "2d 04h" / "04h 12m" / "12m". Coarse on purpose -- a seconds counter on a
+# three-day clock is a nervous tic, not information.
+static func _tourney_left_text(secs: float) -> String:
+	var total := int(secs)
+	var d := total / 86400
+	var h := (total % 86400) / 3600
+	var m := (total % 3600) / 60
+	if d > 0:
+		return "%dd %02dh" % [d, h]
+	if h > 0:
+		return "%02dh %02dm" % [h, m]
+	return "%dm" % m
+
+
+# The reward track that sits above the board.
+#
+# A bar with the rungs drawn *on* it rather than a list of thresholds beside it.
+# The distance between two pips is the work between two rewards, so the player
+# reads how far off the next one is without doing arithmetic -- which is the
+# entire job of this widget and the reason it is not a table.
+func _tourney_board(vbox: VBoxContainer) -> void:
+	_tourney_sync()
+	var top: int = int(TOURNEY_TIERS[TOURNEY_TIERS.size() - 1]["at"])
+
+	var card := PanelContainer.new()
+	card.add_theme_stylebox_override("panel", Lagoon.glass(Lagoon.R_CARD, 0.55))
+	vbox.add_child(card)
+	var pad := MarginContainer.new()
+	for m in ["margin_left", "margin_right"]:
+		pad.add_theme_constant_override(m, 16)
+	for m in ["margin_top", "margin_bottom"]:
+		pad.add_theme_constant_override(m, 12)
+	card.add_child(pad)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 6)
+	pad.add_child(col)
+
+	var head := HBoxContainer.new()
+	col.add_child(head)
+	var title := Lagoon.title("TOURNAMENT", UI.F_CAPTION, Color(1.0, 0.87, 0.45), Lagoon.ABYSS)
+	head.add_child(title)
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(spacer)
+	var left := _popup_row_label("ENDS IN " + _tourney_left_text(_tourney_seconds_left()), UI.F_CAPTION)
+	left.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	head.add_child(left)
+
+	# Titled rather than labelled, so it carries the dark outline every gold
+	# number in the game wears. Plain gold on this panel's pale glass is very
+	# nearly the same value as the glass and reads as a smudge.
+	var score := Lagoon.title("%s pts" % _fmt_compact(tourney_points), UI.F_SUBHEAD,
+		Color(1.0, 0.87, 0.45), Lagoon.ABYSS)
+	col.add_child(score)
+
+	# The rungs are placed by anchor ratio rather than by pixel, so the bar is
+	# correct at any popup width without anyone recomputing positions.
+	# Inset by half a pip on each side. The rungs are anchored at their own
+	# fraction of this box and pulled back by half their width, so a rung at 0%
+	# or 100% would otherwise hang half-way off the card -- which is exactly
+	# where the last one sits, every time, because the bar is scaled to it.
+	var rail := MarginContainer.new()
+	rail.add_theme_constant_override("margin_left", 30)
+	rail.add_theme_constant_override("margin_right", 30)
+	col.add_child(rail)
+
+	var host := Control.new()
+	host.custom_minimum_size = Vector2(0, 78)
+	host.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	rail.add_child(host)
+
+	var track := Panel.new()
+	var tsb := StyleBoxFlat.new()
+	tsb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.40)
+	tsb.set_corner_radius_all(9)
+	track.add_theme_stylebox_override("panel", tsb)
+	track.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	host.add_child(track)
+	track.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	track.offset_top = 26.0
+	track.offset_bottom = 44.0
+
+	var ratio := clampf(float(tourney_points) / float(maxi(1, top)), 0.0, 1.0)
+	var fill := Panel.new()
+	var fsb := StyleBoxFlat.new()
+	fsb.bg_color = Color(1.0, 0.80, 0.32)
+	fsb.set_corner_radius_all(9)
+	fill.add_theme_stylebox_override("panel", fsb)
+	fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	track.add_child(fill)
+	fill.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	fill.anchor_right = 0.0
+	fill.offset_right = 0.0
+	# Grown rather than snapped, so opening the board after a raid shows the
+	# ground you gained instead of presenting it as though it was always there.
+	fill.create_tween().tween_property(fill, "anchor_right", ratio, 0.55) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+
+	for i in TOURNEY_TIERS.size():
+		_tourney_pip(host, i, float(int(TOURNEY_TIERS[i]["at"])) / float(maxi(1, top)))
+
+func _tourney_pip(host: Control, tier: int, at_ratio: float) -> void:
+	var t: Dictionary = TOURNEY_TIERS[tier]
+	var need := int(t["at"])
+	var claimed: bool = tourney_claimed.has(tier)
+	var ready: bool = tourney_points >= need and not claimed
+
+	var pip := Button.new()
+	pip.custom_minimum_size = Vector2(54, 54)
+	pip.focus_mode = Control.FOCUS_NONE
+	pip.disabled = not ready
+	pip.tooltip_text = "%d pts — %d spins%s" % [need, int(t["spins"]),
+		"" if int(t["cards"]) == 0 else " + %d cards" % int(t["cards"])]
+	for state in ["normal", "hover", "pressed", "disabled"]:
+		var sb := StyleBoxFlat.new()
+		if claimed:
+			sb.bg_color = Color(0.42, 0.62, 0.48)
+		elif ready:
+			sb.bg_color = Lagoon.CORAL if state != "pressed" else Lagoon.CORAL.darkened(0.14)
+		else:
+			sb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.55)
+		sb.set_corner_radius_all(27)
+		sb.set_border_width_all(3)
+		sb.border_color = Color(1.0, 0.87, 0.45) if (ready or claimed) else Color(1, 1, 1, 0.25)
+		pip.add_theme_stylebox_override(state, sb)
+	host.add_child(pip)
+	# Anchored to its own point on the track and pulled back by half its width,
+	# so the disc is centred on the threshold it marks.
+	pip.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
+	pip.anchor_left = at_ratio
+	pip.anchor_right = at_ratio
+	pip.offset_left = -27.0
+	pip.offset_right = 27.0
+	pip.offset_top = 8.0
+	pip.offset_bottom = 62.0
+
+	var g := Glyph.new()
+	g.kind = "cards" if int(t["cards"]) > 0 else "wheel"
+	g.custom_minimum_size = Vector2.ZERO
+	g.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pip.add_child(g)
+	g.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for m in [["offset_left", 12.0], ["offset_right", -12.0], ["offset_top", 12.0], ["offset_bottom", -12.0]]:
+		g.set(m[0], m[1])
+
+	if ready:
+		FX.press_feedback(pip)
+		pip.pressed.connect(func() -> void:
+			_tourney_claim(tier)
+			_close_popup()
+			_open_ranks()
+		)
+		# A rung you can take should be the only thing moving on the screen.
+		var beat := pip.create_tween().set_loops()
+		beat.tween_property(pip, "scale", Vector2(1.12, 1.12), 0.45).set_trans(Tween.TRANS_SINE)
+		beat.tween_property(pip, "scale", Vector2.ONE, 0.45).set_trans(Tween.TRANS_SINE)
+		pip.pivot_offset = Vector2(27, 27)
+
 func _open_ranks() -> void:
 	var vbox := _open_popup("Leaderboard")
+	_tourney_board(vbox)
 	var head := _popup_row_label("Ranked by \u2b50 stars — build and collect to climb", UI.F_CAPTION)
 	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	head.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 	head.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vbox.add_child(head)
 	# Somewhere to put rows, so the server's answer can replace the local one
-	# without disturbing the heading above it.
+	# without disturbing the heading above it -- inside a scroll region, because
+	# fifty islands is fifty rows and the popup has no other way to be finite.
+	# Without this the panel simply grew: a board taller than the phone, its top
+	# ranks off the top of the screen and its close button somewhere past the
+	# bottom. The height is fixed rather than proportional so the modal is the
+	# same object whether the server answered with fifty rows or nine.
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(0, RANKS_VIEW_H)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_child(scroll)
 	var list := VBoxContainer.new()
 	list.add_theme_constant_override("separation", 6)
-	vbox.add_child(list)
+	# A ScrollContainer sizes its child to its own width only if the child asks;
+	# without this every row shrinks to its text and the board loses its columns.
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(list)
 
 	# The local pool first, drawn immediately. A board that is blank until a
 	# request comes back is a board that looks broken on a slow train.
@@ -6555,14 +6942,28 @@ func _open_ranks() -> void:
 
 # One row builder for both the local board and the server's, so the two cannot
 # drift into looking like different screens.
+# How tall the scrolling board is, and how many rows it will ever hold.
+#
+# The server is already asked for fifty (`p_limit` in Cloud.leaderboard); this
+# is the other half, because the local pool is merged in on top of that answer
+# and nine NPCs plus fifty islands is fifty-nine rows. Past the top fifty nobody
+# is reading anyway -- what a leaderboard is for is the part you can climb.
+const RANKS_TOP_N := 50
+const RANKS_VIEW_H := 620.0
+
 func _fill_ranks(list: VBoxContainer, rows: Array) -> void:
 	for c in list.get_children():
 		c.queue_free()
 	rows.sort_custom(func(a, b) -> bool: return int(a["stars"]) > int(b["stars"]))
+	# Trimmed after the sort, never before -- cutting first would drop islands
+	# that belong in the top fifty just because they arrived late in the array.
+	if rows.size() > RANKS_TOP_N:
+		rows.resize(RANKS_TOP_N)
 	for i in rows.size():
 		var r: Dictionary = rows[i]
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 12)
+		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		list.add_child(row)
 		var rank := _popup_row_label("#%d" % (i + 1), UI.F_LABEL)
 		rank.custom_minimum_size = Vector2(50, 0)
@@ -7638,6 +8039,10 @@ func _on_visit_finished(result: Dictionary) -> void:
 	# front of them, so what comes back here is final. All that is left is to
 	# put it in the wallet and say whose it was.
 	if result["mode"] == "steal":
+		# Scored on the raid landing, not on the haul. Empty chests are the
+		# rival's poverty, not the player's failure, and a tournament that pays
+		# nothing for a raid you executed perfectly reads as broken.
+		_tourney_add("steal", vmult)
 		var stolen: int = int(result.get("stolen", 0))
 		coins += stolen
 		# The rival's purse is stored at its island-1 price like every other
@@ -7664,6 +8069,11 @@ func _on_visit_finished(result: Dictionary) -> void:
 		elif result.get("blocked", false):
 			_banner("%s's shield blocked your attack!" % npc["name"], Color(0.5, 0.75, 1.0), npc["emoji"])
 		else:
+			# Neither blocked nor empty: the hammer connected. A shield turning
+			# it away pays nothing on purpose -- that is what makes a shield
+			# worth having, and the player gets the raccoon pulling a face
+			# about it instead.
+			_tourney_add("attack", vmult)
 			var reward := int(result.get("reward", _scaled(600 + randi_range(0, 300)) * vmult))
 			coins += reward
 			_banner("SMASH!  +%s coins" % _fmt_compact(reward), Color(1.0, 0.85, 0.3), npc["emoji"])
@@ -7770,6 +8180,11 @@ func _on_upgrade_requested(index: int) -> void:
 	var gained: int = buildings[index]
 	_earn_stars(gained)
 	_mission_add("builds")
+	# Here rather than in the scaffold callback, for the same reason the coins
+	# and the level are here: two seconds of construction animation is long
+	# enough for iOS to kill the app, and the tournament should not be the one
+	# part of the purchase that gets lost.
+	_tourney_add("build")
 	_update_badges()
 	_save_game()
 	# start_construction before the refresh, not after: it is what marks the
@@ -8225,6 +8640,11 @@ func _save_dict() -> Dictionary:
 		"spins": spins,
 		"stars": stars,
 		"rank_stars": rank_stars,
+		# Saved next to rank_stars and deliberately never merged with it -- see
+		# the note on the tournament section.
+		"tourney_id": tourney_id,
+		"tourney_points": tourney_points,
+		"tourney_claimed": tourney_claimed,
 		"shields": shields,
 		"island_level": island_level,
 		"buildings": buildings,
@@ -8533,6 +8953,12 @@ func _load_game() -> void:
 	# maxi, because melted spares can push a balance above what rank counts.
 	stars = maxi(0, _i(data["stars"], earned)) if data.has("stars") else earned
 	rank_stars = maxi(0, _i(data["rank_stars"], earned)) if data.has("rank_stars") else maxi(earned, stars)
+	tourney_id = _i(data.get("tourney_id", 0), 0)
+	tourney_points = maxi(0, _i(data.get("tourney_points", 0), 0))
+	tourney_claimed = data.get("tourney_claimed", []) if typeof(data.get("tourney_claimed")) == TYPE_ARRAY else []
+	# A save written in a tournament that has since ended comes back to a clean
+	# board rather than to somebody else's leftover score.
+	_tourney_sync()
 
 	_sanitize_clock()
 
