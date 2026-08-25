@@ -257,6 +257,21 @@ var mission_state := {}
 var quests_tab := "daily"
 var _quests_timer_label: Label = null
 var _popup: Control
+# The close button and the glass it tracks, held on the node rather than
+# captured by the lambda that places it.
+#
+# That is not a style preference. GDScript validates every capture a lambda
+# holds BEFORE it runs the body, and a capture whose object has been freed is
+# reported as an error and then passed in as null -- so an is_instance_valid
+# guard inside the lambda prevents the crash and cannot prevent the error.
+# _open_popup starts by closing whatever was already up, so any modal that
+# hands straight over to another one inside a single frame -- a purchase
+# confirm becoming a chest result, a card box becoming its result screen --
+# freed these two before the deferred placement ran, and printed
+# "Lambda capture at index 0 was freed" twice for every one of them. Read off
+# the node and the lambda captures nothing but self, which outlives all of it.
+var _popup_close: Button = null
+var _popup_panel: Control = null
 var _journey_layer: Control
 var _badges := {}
 var profile := {}
@@ -670,12 +685,31 @@ func _load_profile() -> void:
 		"name": _s(d.get("name", "Player"), "Player"),
 		"email": _s(d.get("email", "")),
 		"provider": _s(d.get("provider", "guest"), "guest"),
+		# The chosen face. Dropped here until now, which meant it was written
+		# on every sign-in and read back on none of them -- see _open_ranks for
+		# the half of that bug the player could actually see.
+		"emoji": _s(d.get("emoji", ""), ""),
 	}
 
 func _save_profile() -> void:
 	var f := FileAccess.open("user://profile.json", FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(profile))
+
+# The face this player wears, wherever the game has to draw them.
+#
+# The leaderboard's own row used to be a hard-coded "😎", so the face picker in
+# Options changed what strangers saw and never changed the one row its owner was
+# actually looking at -- which reads as the setting not having worked. The
+# session is asked first because it is what the server confirmed; the profile is
+# the offline copy of the same answer, and the default is only ever reached by a
+# player who has not chosen.
+func _my_emoji() -> String:
+	var chosen := str(Cloud.player().get("emoji", ""))
+	if chosen == "":
+		chosen = str(profile.get("emoji", ""))
+	return chosen if chosen in AVATARS else AVATARS[0]
+
 
 func _show_login() -> void:
 	if _login_layer != null:
@@ -972,6 +1006,12 @@ func _on_login(p: Dictionary) -> void:
 	# player who deleted their name. Keep what is already stored.
 	if str(p.get("name", "")) == "" and str(profile.get("name", "")) != "":
 		p["name"] = profile["name"]
+	# Same reasoning for the face, which no provider has ever heard of: this
+	# dictionary comes from Apple or Google and is about to replace the profile
+	# wholesale, so anything the player chose here and nowhere else would be
+	# thrown away by the act of signing in.
+	if str(p.get("emoji", "")) == "" and str(profile.get("emoji", "")) != "":
+		p["emoji"] = profile["emoji"]
 	# Held here, then taken OUT of the profile before it is written.
 	#
 	# _save_profile stringifies the whole dictionary into user://profile.json,
@@ -1047,7 +1087,10 @@ func _cloud_claim() -> void:
 	if not Cloud.linked():
 		return
 	_open_restoring()
-	Cloud.claim(_save_dict(), str(profile.get("name", "Islander")), "😎",
+	# The chosen face, not the default one. claim_player only writes emoji when
+	# it is creating the row, so this is the single moment a player who picked a
+	# face before signing in would have had it replaced by the fallback.
+	Cloud.claim(_save_dict(), str(profile.get("name", "Islander")), _my_emoji(),
 			rank_stars, island_level, coins, shields, buildings)
 
 # What the server had. `is_new` means it had nothing and has just been given
@@ -2726,12 +2769,21 @@ func _open_popup(title: String) -> VBoxContainer:
 	# the popup may not last that long: _open_popup starts by closing whatever
 	# was already up, so two modals opening in the same frame -- a purchase
 	# confirm handing straight over to a chest result, most often -- free this
-	# one's panel and button before the deferred call runs. GDScript passes a
-	# freed capture as null rather than refusing to call.
+	# one's panel and button before the deferred call runs.
+	#
+	# The two nodes are reached through the fields rather than captured, and
+	# see the note on _popup_close for why that is the whole point: a captured
+	# node that has been freed is an engine error before the guard here ever
+	# runs. A later popup will have overwritten both fields by the time a
+	# stale deferred call lands, and placing that popup's button is the right
+	# answer anyway, so there is nothing to disambiguate.
+	_popup_close = x
+	_popup_panel = panel
 	var place_close := func() -> void:
-		if not is_instance_valid(x) or not is_instance_valid(panel):
+		if not is_instance_valid(_popup_close) or not is_instance_valid(_popup_panel):
 			return
-		x.position = panel.global_position + Vector2(panel.size.x - 40.0, -32.0)
+		_popup_close.position = _popup_panel.global_position \
+			+ Vector2(_popup_panel.size.x - 40.0, -32.0)
 	panel.resized.connect(place_close)
 	panel.item_rect_changed.connect(place_close)
 	place_close.call_deferred()
@@ -3747,8 +3799,8 @@ func _offer_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	# The goods, as goods. `f` is forced near the top of the ladder because a
 	# limited-time bundle is by definition one of the better things on the page
 	# -- the pile is the value proposition and it should look like it.
-	# Two-thirds scale. At full size this row came to more than 720 wide and
-	# took the rest of the shop off the right edge with it.
+	# Half scale. At full size this row came to more than 720 wide and took the
+	# rest of the shop off the right edge with it.
 	var art := _pile_art("loot", 3, 4, 0.50)
 	art.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(art)
@@ -4004,8 +4056,17 @@ func _shop_hero_offer(vb: VBoxContainer) -> void:
 		margin.add_theme_constant_override(m, 14)
 	panel.add_child(margin)
 
+	# 12 and a 118-wide pay button, which are the numbers the countdown deal
+	# beside it already uses, and they are not cosmetic. This row's minimum came
+	# to 705 in a column 688 wide: a Control that loses to a minimum keeps its
+	# position and grows, so the shop's ScrollContainer grew to 713 -- past its
+	# own anchors, past the vertical scrollbar's reservation, and nine pixels
+	# off the right edge of a 720-wide phone, taking every card on the page with
+	# it. The deal card above was narrowed for exactly this reason in the commit
+	# that redrew both, and this one was left on the old measurements.
+	# tools/qa_layout.tscn measures it rather than trusting the arithmetic here.
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 14)
+	row.add_theme_constant_override("separation", 12)
 	margin.add_child(row)
 
 	# The other offer Guy singled out. Same fix, same reason -- it is the single
@@ -4031,7 +4092,7 @@ func _shop_hero_offer(vb: VBoxContainer) -> void:
 
 	var buy := Button.new()
 	buy.text = IAP.price_for(pack)
-	buy.custom_minimum_size = Vector2(140, UI.TAP)
+	buy.custom_minimum_size = Vector2(118, UI.TAP)
 	buy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
 	_candy_button(buy, Color(0.28, 0.68, 0.34))
@@ -5651,9 +5712,24 @@ func _fill_options(vb: VBoxContainer) -> void:
 			FX.press_feedback(fb)
 			fb.pressed.connect(func() -> void:
 				Cloud.set_emoji(face, func(res: Dictionary) -> void:
-					if bool(res.get("ok", false)) and is_instance_valid(name_note):
-						name_note.text = "Face updated."
-						name_note.add_theme_color_override("font_color", Color(0.5, 0.85, 0.6))
+					var ok := bool(res.get("ok", false))
+					if ok:
+						# Written to the profile as well as to the server. The
+						# name path beside this one already did it; the face
+						# path did not, so a player picked a shark, the server
+						# stored a shark, and every screen on the device that
+						# draws their face carried on drawing the default.
+						profile["emoji"] = face
+						_save_profile()
+					if not is_instance_valid(name_note):
+						return
+					# A refusal has to be said. set_emoji answers "Pick one of
+					# the faces" for anything outside the twelve, and silence
+					# on a tap reads as a dead button rather than as a no.
+					name_note.text = "Face updated." if ok \
+						else str(res.get("reason", "Couldn't save that face"))
+					name_note.add_theme_color_override("font_color",
+						Color(0.5, 0.85, 0.6) if ok else Color(0.95, 0.55, 0.4))
 				)
 			)
 			faces.add_child(fb)
@@ -6991,7 +7067,7 @@ func _open_ranks() -> void:
 	# The local pool first, drawn immediately. A board that is blank until a
 	# request comes back is a board that looks broken on a slow train.
 	var local_rows := []
-	local_rows.append({"name": profile.get("name", "You"), "emoji": "😎",
+	local_rows.append({"name": profile.get("name", "You"), "emoji": _my_emoji(),
 			"stars": rank_stars, "me": true, "id": ""})
 	for n in npcs:
 		local_rows.append({"name": n["name"], "emoji": n["emoji"],
@@ -7034,45 +7110,72 @@ func _fill_ranks(list: VBoxContainer, rows: Array) -> void:
 	for c in list.get_children():
 		c.queue_free()
 	rows.sort_custom(func(a, b) -> bool: return int(a["stars"]) > int(b["stars"]))
+	# Where the player actually stands, read off the sorted list before the trim
+	# throws it away.
+	var my_place := -1
+	var me: Dictionary = {}
+	for i in rows.size():
+		if bool((rows[i] as Dictionary).get("me", false)):
+			my_place = i
+			me = rows[i]
+			break
 	# Trimmed after the sort, never before -- cutting first would drop islands
 	# that belong in the top fifty just because they arrived late in the array.
 	if rows.size() > RANKS_TOP_N:
 		rows.resize(RANKS_TOP_N)
 	for i in rows.size():
-		var r: Dictionary = rows[i]
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 12)
-		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		list.add_child(row)
-		var rank := _popup_row_label("#%d" % (i + 1), UI.F_LABEL)
-		rank.custom_minimum_size = Vector2(50, 0)
-		row.add_child(rank)
-		row.add_child(_emoji_label(r["emoji"], UI.F_SUBHEAD))
-		var name_l := _popup_row_label(r["name"])
-		name_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		if r["me"]:
-			name_l.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
-		row.add_child(name_l)
-		var c2 := _popup_row_label("\u2605  %s" % _fmt_compact(int(r["stars"])))
-		c2.add_theme_color_override("font_color",
-			Color(1.0, 0.85, 0.4) if r["me"] else CV.STAR_COLORS[CV.MAX_STAR - 1])
-		row.add_child(c2)
-		# Guideline 1.2: a name somebody else chose, and a way to do something
-		# about it that is not "email the developer". Reporting blocks as well,
-		# so the person who was upset stops meeting them straight away rather
-		# than after a review.
-		var id := str(r.get("id", ""))
-		if id == "" or bool(r.get("me", false)):
-			continue
-		var flag := Button.new()
-		flag.text = "⚑"
-		flag.flat = true
-		flag.tooltip_text = "Report this name"
-		flag.custom_minimum_size = Vector2(40, 0)
-		flag.add_theme_font_size_override("font_size", UI.F_CAPTION)
-		FX.press_feedback(flag)
-		flag.pressed.connect(func() -> void: _confirm_report(id, str(r["name"])))
-		row.add_child(flag)
+		list.add_child(_ranks_row(rows[i], i + 1))
+	# Kept on the board wherever they placed.
+	#
+	# The server answers with the top fifty islands in the world, and that answer
+	# REPLACES the local rows -- so a player outside the top fifty had no row on
+	# this board at all. They opened the leaderboard and could not find
+	# themselves on it, which is the one thing a leaderboard has to let you do:
+	# a board you are not on has nothing on it to climb. When the trim cuts them
+	# they come back under a divider at the bottom, carrying the place they
+	# actually hold rather than a "#51" the trim invented.
+	if my_place >= RANKS_TOP_N:
+		list.add_child(Lagoon.divider())
+		list.add_child(_ranks_row(me, my_place + 1))
+
+# One row of the board. Shared by the top fifty and by the pinned row beneath
+# them, so the player's own row cannot end up looking like a different object
+# from every other row on the screen.
+func _ranks_row(r: Dictionary, place: int) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var rank := _popup_row_label("#%d" % place, UI.F_LABEL)
+	rank.custom_minimum_size = Vector2(50, 0)
+	row.add_child(rank)
+	row.add_child(_emoji_label(r["emoji"], UI.F_SUBHEAD))
+	var name_l := _popup_row_label(r["name"])
+	name_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var mine: bool = bool(r.get("me", false))
+	if mine:
+		name_l.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	row.add_child(name_l)
+	var c2 := _popup_row_label("\u2605  %s" % _fmt_compact(int(r["stars"])))
+	c2.add_theme_color_override("font_color",
+		Color(1.0, 0.85, 0.4) if mine else CV.STAR_COLORS[CV.MAX_STAR - 1])
+	row.add_child(c2)
+	# Guideline 1.2: a name somebody else chose, and a way to do something
+	# about it that is not "email the developer". Reporting blocks as well,
+	# so the person who was upset stops meeting them straight away rather
+	# than after a review.
+	var id := str(r.get("id", ""))
+	if id == "" or mine:
+		return row
+	var flag := Button.new()
+	flag.text = "\u2691"
+	flag.flat = true
+	flag.tooltip_text = "Report this name"
+	flag.custom_minimum_size = Vector2(40, 0)
+	flag.add_theme_font_size_override("font_size", UI.F_CAPTION)
+	FX.press_feedback(flag)
+	flag.pressed.connect(func() -> void: _confirm_report(id, str(r["name"])))
+	row.add_child(flag)
+	return row
 
 func _confirm_report(player_id: String, who: String) -> void:
 	var box := _open_popup("Report name")
@@ -9034,7 +9137,27 @@ func _load_game() -> void:
 	rank_stars = maxi(0, _i(data["rank_stars"], earned)) if data.has("rank_stars") else maxi(earned, stars)
 	tourney_id = _i(data.get("tourney_id", 0), 0)
 	tourney_points = maxi(0, _i(data.get("tourney_points", 0), 0))
-	tourney_claimed = data.get("tourney_claimed", []) if typeof(data.get("tourney_claimed")) == TYPE_ARRAY else []
+	# Coerced element by element, and the reason is not tidiness -- it is the
+	# difference between a claimed rung staying claimed and every restart
+	# handing the player the whole reward track again.
+	#
+	# JSON has one number type. `[0, 1]` is written out as ints and comes back
+	# as FLOATS, and Array.has() does not compare across the two: with the
+	# loaded array holding 0.0, `tourney_claimed.has(0)` is false. So every rung
+	# ever claimed re-armed on the next launch, the trophy badge lit again, and
+	# the top rung -- 300 spins and 3 collection cards -- could be taken once
+	# per app launch, for ever. Verified in Godot 4.7: JSON.parse_string("[0]")
+	# yields TYPE_FLOAT and [0.0].has(0) returns false.
+	#
+	# Bounded as well as coerced, because this array is a save-file field and
+	# _tourney_claim indexes TOURNEY_TIERS with what comes out of it.
+	tourney_claimed = []
+	var tc = data.get("tourney_claimed", [])
+	if typeof(tc) == TYPE_ARRAY:
+		for v in tc:
+			var tier := _i(v, -1)
+			if tier >= 0 and tier < TOURNEY_TIERS.size() and not tourney_claimed.has(tier):
+				tourney_claimed.append(tier)
 	# A save written in a tournament that has since ended comes back to a clean
 	# board rather than to somebody else's leftover score.
 	_tourney_sync()

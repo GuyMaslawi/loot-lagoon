@@ -12,6 +12,7 @@ func _ready() -> void:
 	fails += await _t_deep_island()
 	fails += await _t_save_roundtrip()
 	fails += await _t_corrupt_save()
+	fails += await _t_tourney_claims_persist()
 	fails += _t_clock_rollback()
 	fails += await _t_empty_island_attack()
 	fails += await _t_spin_soak(25000)
@@ -95,6 +96,50 @@ func _t_corrupt_save() -> int:
 	m._load_game()
 	var ok: bool = m.coins >= 555000
 	return _chk("a half-written save falls back to the backup", ok, "coins=%d" % m.coins)
+
+# --- a claimed tournament rung must stay claimed ------------------------------
+#
+# The reward track is the only place in the save that stores a list of integers,
+# and JSON has one number type: [0, 1] goes out as ints and comes back as
+# floats, which Array.has(int) does not match. Every rung therefore re-armed on
+# every launch, and the top one -- 300 spins and 3 collection cards -- could be
+# taken once per app start, for ever. Written as a round trip rather than a unit
+# test of the loader because the bug lived entirely in the crossing.
+func _t_tourney_claims_persist() -> int:
+	print("tournament rungs survive a restart")
+	var bad := 0
+	m.tourney_id = m._tourney_now_id()
+	m.tourney_points = 99999          # every rung earned
+	m.tourney_claimed = []
+	for tier in range(m.TOURNEY_TIERS.size()):
+		m._tourney_claim(tier)
+	var spins_after_claiming: int = m.spins
+	bad += 0 if m.tourney_claimed.size() == m.TOURNEY_TIERS.size() else 1
+	m._flush_save()
+	m._load_game()
+	await get_tree().process_frame
+	var claimable_again: bool = m._tourney_claimable()
+	# The real test: try to take them all a second time and see if anything moves.
+	var before_spins: int = m.spins
+	for tier in range(m.TOURNEY_TIERS.size()):
+		m._tourney_claim(tier)
+	var paid_twice: int = m.spins - before_spins
+	bad += 0 if not claimable_again else 1
+	bad += 0 if paid_twice == 0 else 1
+	# And a hand-edited list must not be able to index the tier table out of range.
+	m.tourney_claimed = [-3, 99, 1, 1]
+	m._flush_save()
+	m._load_game()
+	await get_tree().process_frame
+	var sane: bool = true
+	for v in m.tourney_claimed:
+		if typeof(v) != TYPE_INT or v < 0 or v >= m.TOURNEY_TIERS.size():
+			sane = false
+	bad += 0 if sane and m.tourney_claimed.size() == 1 else 1
+	return _chk("a claimed rung stays claimed across a restart", bad == 0,
+		"claimed=%d spins=%d re-armed=%s paid twice=%d loaded=%s" % [
+			m.tourney_claimed.size(), spins_after_claiming, str(claimable_again),
+			paid_twice, str(m.tourney_claimed)])
 
 # --- a clock that went backwards must not lock the bonuses -------------------
 func _t_clock_rollback() -> int:
