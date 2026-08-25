@@ -3370,15 +3370,36 @@ func _pile_sprite(box: Control, tex: Texture2D, pos: Vector2, side: float) -> vo
 # `rung` is the tile's place on its ladder, `rungs` how long the ladder is, so
 # the same function serves a 6-tile coin shelf and a 7-tile spin shelf without
 # either needing to know the other exists.
-func _pile_art(kind: String, rung: int, rungs: int) -> Control:
+# `shrink` scales the whole heap, and it exists because setting a smaller
+# custom_minimum_size on the returned node does nothing at all.
+#
+# The pile is composed in a fixed PILE_W x PILE_H space, and it used to be
+# returned inside a CenterContainer. A CenterContainer takes its own minimum
+# size from its child, so the wrapper's minimum was always the full 200 wide
+# whatever the caller asked for -- and a card that shrank it "to 144" was in
+# fact still 200 wide. On a row of pile + text + pay button that was enough to
+# push the whole shop past 720, and because a VBoxContainer hands its widest
+# child's minimum to every sibling, one over-wide deal card carried the piggy
+# bank and the bundle shelf off the right edge with it.
+#
+# So the scale is applied to a plain Control *inside* the centred holder, where
+# it is a transform rather than a layout question, and the holder carries the
+# scaled minimum.
+func _pile_art(kind: String, rung: int, rungs: int, shrink := 1.0) -> Control:
 	var wrap := CenterContainer.new()
-	wrap.custom_minimum_size = Vector2(0, PILE_H)
+	wrap.custom_minimum_size = Vector2(0, PILE_H * shrink)
 	wrap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var holder := Control.new()
+	holder.custom_minimum_size = Vector2(PILE_W, PILE_H) * shrink
+	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	holder.clip_contents = false
+	wrap.add_child(holder)
 	var box := Control.new()
-	box.custom_minimum_size = Vector2(PILE_W, PILE_H)
+	box.size = Vector2(PILE_W, PILE_H)
+	box.scale = Vector2(shrink, shrink)
 	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	box.clip_contents = false
-	wrap.add_child(box)
+	holder.add_child(box)
 
 	var f := float(rung) / float(maxi(1, rungs - 1))
 
@@ -3407,6 +3428,48 @@ func _pile_art(kind: String, rung: int, rungs: int) -> Control:
 				PILE_W * 0.5 - span * 0.5 + float(i) * side * 0.58 - side * 0.5,
 				PILE_H - side - (side * 0.16 * absf(float(i) - float(n - 1) * 0.5)))
 			g.size = Vector2(side, side)
+		return wrap
+
+	if kind == "loot":
+		# A bundle sells three things at once, and the two piles above can each
+		# only show one. Listing them instead -- "150 · 120K · 1", which is what
+		# the deals did -- makes the player read the value rather than see it,
+		# and it is the reason the most valuable offers on the page looked
+		# cheaper than the spin packs underneath them.
+		#
+		# So: a bed of coins, wheels standing in it, and a card at the crest if
+		# the pack carries one. Composed back-to-front so nothing in front is
+		# occluded by something that should be behind it.
+		var lcoin := CV.symbol_tex("coin")
+		var cside := 40.0 + f * 14.0
+		var lcount := 4 + int(round(f * 9.0))
+		var lrows := _heap_rows(lcount)
+		var ldy := cside * 0.44
+		for i in lrows.size():
+			var per: int = lrows[i]
+			var span := float(per - 1) * cside * 0.62
+			for j in per:
+				_pile_sprite(box, lcoin,
+					Vector2(PILE_W * 0.5 - span * 0.5 + float(j) * cside * 0.62 - cside * 0.5,
+							PILE_H - cside * 0.9 - float(i) * ldy),
+					cside)
+		# Wheels planted in the heap rather than floating over it: their feet go
+		# below the coin line, so they read as standing in the pile.
+		var wn := 2 + int(round(f * 2.0))
+		var wside := 48.0 + f * 16.0
+		for i in wn:
+			var g := Glyph.new()
+			g.kind = "wheel"
+			g.custom_minimum_size = Vector2.ZERO
+			g.tint = Lagoon.LAGOON if i % 2 == 0 else Lagoon.LAGOON.lightened(0.20)
+			g.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			box.add_child(g)
+			var wspan := float(wn - 1) * wside * 0.66
+			g.position = Vector2(
+				PILE_W * 0.5 - wspan * 0.5 + float(i) * wside * 0.66 - wside * 0.5,
+				PILE_H - cside * 1.5 - wside * 0.45
+					- wside * 0.13 * absf(float(i) - float(wn - 1) * 0.5))
+			g.size = Vector2(wside, wside)
 		return wrap
 
 	# Coins, and nothing behind them.
@@ -3628,76 +3691,99 @@ void fragment() {
 # between now and later feel like a difference. The countdown is the headline,
 # the percentage is the reason, and the panel is the only red thing on a page
 # that is otherwise brass and water.
+# The limited-time deal, and the best-dressed card on the page -- which is not
+# where it started.
+#
+# It used to be a pale row: a system emoji at 56px, then "150 · 120K · 1" as a
+# line of text, then a price. Directly underneath it the spin packs got the full
+# treatment -- a dark treasure card lit from above, an illustrated pile that
+# grows with the rung, a diagonal ribbon across the corner. So the two offers
+# that carry this shop, the countdown deal and the first-timer pack, were the
+# only two drawn like a list. Guy's note was that they "do not look impressive
+# like the spins and gold packs", and he was describing a real inversion rather
+# than a preference.
+#
+# Nothing new was invented to fix it. The game already owned every piece; they
+# had simply never been pointed at the offers that most needed them.
+#
+# The emoji had to go regardless. glyph.gd opens by explaining why the chrome is
+# drawn rather than typed -- emoji arrive from three design systems at once, so
+# a row of them never looks made for one game -- and the shop was quietly the
+# largest remaining violation of the game's own rule.
 func _offer_card(vb: VBoxContainer, pack: Dictionary) -> void:
-	var panel := _tinted_card(vb, Lagoon.REEF, true)
+	var panel := _treasure_card(vb, true)
 	panel.add_child(_shine_overlay(Lagoon.CORAL_HI))
 
 	var margin := MarginContainer.new()
-	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+	for m in ["margin_left", "margin_right"]:
 		margin.add_theme_constant_override(m, 14)
+	margin.add_theme_constant_override("margin_top", 12)
+	margin.add_theme_constant_override("margin_bottom", 14)
 	panel.add_child(margin)
 
 	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 8)
+	col.add_theme_constant_override("separation", 6)
 	margin.add_child(col)
 
-	var head := HBoxContainer.new()
-	head.add_theme_constant_override("separation", 8)
-	col.add_child(head)
-	head.add_child(_tag_chip("LIMITED  TIME", Lagoon.REEF, 11))
-	head.add_child(_tag_chip("+%d%%  VALUE" % CV.bonus_pct(pack), Lagoon.URCHIN, 11))
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	head.add_child(spacer)
-
-	# Held on the node so the once-a-second tick can rewrite it in place
-	# without rebuilding the page under the player's thumb.
-	var timer := Lagoon.label("⏳  ENDS  IN  %s" % _offer_countdown_text(), UI.F_CAPTION, Lagoon.CORAL_LO, true)
-	col.add_child(timer)
+	# The countdown leads, alone on its line. It is the only reason this card is
+	# different from every other card in the shop, and it used to share a row
+	# with two chips that diluted it.
+	# Right-aligned, because the ribbon owns the top-left corner and crossed
+	# straight through "ENDS IN" when the countdown started at the margin.
+	var timer_row := HBoxContainer.new()
+	col.add_child(timer_row)
+	var ribbon_gap := Control.new()
+	ribbon_gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	timer_row.add_child(ribbon_gap)
+	var timer := Lagoon.label("\u23f3  ENDS  IN  %s" % _offer_countdown_text(), UI.F_CAPTION, Lagoon.CORAL_HI, true)
+	timer_row.add_child(timer)
 	_offer_timer_label = timer
 	FX.pulse_forever(timer, 1.05, 1.0)
 
 	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 14)
+	row.add_theme_constant_override("separation", 12)
 	col.add_child(row)
 
-	var art := Control.new()
-	art.custom_minimum_size = Vector2(96, 100)
+	# The goods, as goods. `f` is forced near the top of the ladder because a
+	# limited-time bundle is by definition one of the better things on the page
+	# -- the pile is the value proposition and it should look like it.
+	# Two-thirds scale. At full size this row came to more than 720 wide and
+	# took the rest of the shop off the right edge with it.
+	var art := _pile_art("loot", 3, 4, 0.50)
+	art.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(art)
-	art.add_child(_radial_glow(Lagoon.CORAL, 126))
-	var e := _emoji_label(pack["emoji"], 56)
-	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	e.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	art.add_child(e)
-	e.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	FX.pulse_forever(e, 1.1, 1.3)
 
 	var text := VBoxContainer.new()
 	text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	text.alignment = BoxContainer.ALIGNMENT_CENTER
 	text.add_theme_constant_override("separation", 4)
 	row.add_child(text)
-	text.add_child(Lagoon.label(pack["name"], UI.F_BODY, Lagoon.INK, true))
-	text.add_child(_reward_row(pack))
-	# In the text column, not beside the button. The pay column's minimum width
-	# is the button's; hanging "$29.36  SAVE 76%" off it instead made this the
-	# widest row on the page, and a VBoxContainer gives its widest child's
-	# minimum width to all of them -- which pushed the chest shelf and both tile
-	# grids off the right edge of a 720-wide screen.
-	var struck := _struck_price_row(pack)
+	text.add_child(Lagoon.label(pack["name"], UI.F_BODY, Lagoon.BRASS_HI, true))
+	# Light ink, because the card underneath is deep water now. The old call
+	# took the default dark INK, which on this background is invisible.
+	text.add_child(_reward_row(pack, Color(0.86, 0.93, 0.95)))
+	var struck := _struck_price_row(pack, Color(0.62, 0.77, 0.82))
 	if struck != null:
 		struck.alignment = BoxContainer.ALIGNMENT_BEGIN
 		text.add_child(struck)
 
 	var buy := Button.new()
 	buy.text = IAP.price_for(pack)
-	buy.custom_minimum_size = Vector2(140, UI.TAP)
+	buy.custom_minimum_size = Vector2(118, UI.TAP)
 	buy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
-	_candy_button(buy, Color(0.28, 0.68, 0.34))
+	# Brass, not green. The pack grid already uses brass to mean "the good end
+	# of the ladder", and a green button here made the best offer on the page
+	# look like the cheapest tile on it.
+	Lagoon.button(buy, "brass")
+	Lagoon.button_gloss(buy, 22)
 	FX.press_feedback(buy)
 	buy.pressed.connect(_confirm_purchase.bind(pack))
 	row.add_child(buy)
+
+	# Across the corner rather than inside the frame -- see _corner_ribbon for
+	# why that is the difference between metadata and an announcement.
+	_corner_ribbon(panel, "LIMITED  TIME", Lagoon.REEF, 118.0)
 
 # The piggy bank card: a fill bar, what is inside, and one price.
 #
@@ -3859,16 +3945,14 @@ func _bundle_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	row.add_theme_constant_override("separation", 12)
 	margin.add_child(row)
 
-	var art := Control.new()
-	art.custom_minimum_size = Vector2(84, 88)
+	# The goods rather than a pictogram of them -- same change as _offer_card,
+	# and for the same reason. The rung is taken from the bundle's own bonus so
+	# a richer bundle is visibly a bigger heap: the pile is doing the comparing
+	# that the player would otherwise have to do by reading three numbers.
+	var rung := clampi(int(round(CV.bonus_pct(pack) / 90.0)), 0, 3)
+	var art := _pile_art("loot", rung, 4, 0.46)
+	art.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(art)
-	art.add_child(_radial_glow(cc, 108))
-	var e := _emoji_label(pack["emoji"], 50)
-	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	e.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	art.add_child(e)
-	e.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	FX.pulse_forever(e, 1.06, 2.2)
 
 	var col := VBoxContainer.new()
 	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -3924,16 +4008,11 @@ func _shop_hero_offer(vb: VBoxContainer) -> void:
 	row.add_theme_constant_override("separation", 14)
 	margin.add_child(row)
 
-	var art := Control.new()
-	art.custom_minimum_size = Vector2(96, 104)
+	# The other offer Guy singled out. Same fix, same reason -- it is the single
+	# most bought thing in a game like this and it was drawn with a gift emoji.
+	var art := _pile_art("loot", 2, 4, 0.50)
+	art.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(art)
-	art.add_child(_radial_glow(Color(1.0, 0.8, 0.3), 126))
-	var e := _emoji_label(pack["emoji"], 56)
-	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	e.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	art.add_child(e)
-	e.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	FX.pulse_forever(e, 1.1, 1.4)
 
 	var col := VBoxContainer.new()
 	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
