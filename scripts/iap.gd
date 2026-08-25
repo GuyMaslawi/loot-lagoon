@@ -40,6 +40,14 @@ signal products_loaded()
 
 const PREFIX := "com.guymaslawi.lootlagoon."
 
+# Platforms that are expected to have a real store behind them. A build for one
+# of these with no store plugin loaded is a broken build, not a sandbox, and
+# simulated() turns on that distinction.
+const STORE_PLATFORMS := ["iOS", "Android"]
+
+func _expects_store() -> bool:
+	return OS.get_name() in STORE_PLATFORMS
+
 # How long a simulated purchase pretends to talk to Apple. Long enough that the
 # spinner is visible and the flow gets exercised, short enough not to annoy.
 const SIM_DELAY := 0.7
@@ -70,6 +78,8 @@ const PURCHASE_TIMEOUT := 180.0
 var _watchdog: SceneTreeTimer = null
 
 var _store: Object = null
+# Android's. Never both: a build has one store or none.
+var _billing: Node = null
 var _prices := {}      # product_id -> Apple's localized price string
 var _pending := ""
 # The transaction id of the purchase currently being granted. finish() commits
@@ -92,16 +102,25 @@ var _has_ledger := false
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_load_ledger()
-	if not Engine.has_singleton("IOSInAppPurchase"):
-		return
-	_store = Engine.get_singleton("IOSInAppPurchase")
-	# Connect before the first request, or a response that arrives immediately
-	# is lost. The plugin does not buffer.
-	_store.response.connect(_on_response)
-	# Picks up transactions completed outside the app -- an Ask to Buy approval
-	# coming through hours later, a purchase finished in the App Store app.
-	_store.request("startUpdateTask", {})
-	_store.request("products", {"productIDs": all_product_ids()})
+	if Engine.has_singleton("IOSInAppPurchase"):
+		_store = Engine.get_singleton("IOSInAppPurchase")
+		# Connect before the first request, or a response that arrives
+		# immediately is lost. The plugin does not buffer.
+		_store.response.connect(_on_response)
+		# Picks up transactions completed outside the app -- an Ask to Buy
+		# approval coming through hours later, a purchase finished in the App
+		# Store app.
+		_store.request("startUpdateTask", {})
+		_store.request("products", {"productIDs": all_product_ids()})
+	elif Engine.has_singleton(PLAY_SINGLETON):
+		_start_play()
+
+# Whether there is a real store of any kind behind this build. Asked instead of
+# `_store == null` everywhere that used to mean "is there a store", so that
+# adding Android did not leave a trail of Apple-shaped null checks that quietly
+# answer "no store" on a phone that has one.
+func _has_store() -> bool:
+	return _store != null or _billing != null
 
 # Every product the game can sell for money. Card boxes are deliberately absent
 # -- they are bought with stars, which are earned and never sold.
@@ -135,27 +154,53 @@ func price_for(pack: Dictionary) -> String:
 # its pack after a 0.7s pretend delay, for free, with "no real charge" printed
 # under it. Launch with the network off and the whole store was a giveaway.
 #
-# A device with the plugin present is now never simulated. Whether it can be
-# sold from is a separate question -- see sellable().
+# A device with the plugin present is never simulated. Neither is one that
+# merely *should* have had it. On iOS those were the same sentence, because iOS
+# was the only platform that shipped; Android made them different. A build whose
+# billing plugin is missing, switched off in the export preset, or broken at
+# runtime reports no store in exactly the way the editor does -- and under the
+# old line that made every Pay button in the shop grant its pack after a 0.7s
+# pretend delay, for free, with "no real charge" printed underneath. That is the
+# airplane-mode giveaway again, except permanent, and on a public store.
+#
+# So the question is not "did a plugin load" but "is this a build that is
+# supposed to have a store behind it". A phone is never simulated. Whether it
+# can be sold from is a separate question -- see sellable().
 func simulated() -> bool:
-	return _store == null
+	return not _has_store() and not _expects_store()
 
-# Whether a purchase can actually be attempted. A real device that has not
-# heard back from Apple has a store, but not one with prices, and the only
-# honest answers are to wait or to say so. Granting is not on the list.
+# Whether a purchase can actually be attempted. A real device that has not heard
+# back from the store has one, but not one with prices, and the only honest
+# answers are to wait or to say so. Granting is not on the list -- and neither
+# is it for a phone whose plugin never loaded, which will never answer at all.
 func sellable() -> bool:
-	return _store == null or live
+	return simulated() or live
+
+# What to call the shop when talking to the player. An error that names the
+# wrong company reads as a bug even when the rest of the sentence is true.
+func _store_label() -> String:
+	match OS.get_name():
+		"Android": return "Google Play"
+		"iOS", "macOS": return "the App Store"
+		_: return "the store"
 
 func purchase(pack: Dictionary) -> void:
 	if busy:
 		return
 	var pid := product_id(pack)
 	if not sellable():
-		# Real StoreKit, no product data. Ask again -- the usual cause is a
-		# launch with no network, and by now there may be one -- and tell the
-		# player to try in a moment rather than handing them the pack.
-		_store.request("products", {"productIDs": all_product_ids()})
-		_emit("fail", pid, "The App Store isn't reachable yet. Try again in a moment.")
+		if not _has_store():
+			# A platform that is supposed to have a store, with nothing behind
+			# it. Nothing will ever answer, so there is no "try again" to offer
+			# -- and refusing is the entire point, because what this replaced
+			# was handing the pack over for nothing.
+			_emit("fail", pid, "The shop is unavailable in this build.")
+			return
+		# Real store, no product data. Ask again -- the usual cause is a launch
+		# with no network, and by now there may be one -- and tell the player to
+		# try in a moment rather than handing them the pack.
+		_request_products()
+		_emit("fail", pid, "Can't reach %s yet. Try again in a moment." % _store_label())
 		return
 	busy = true
 	_pending = pid
@@ -164,8 +209,11 @@ func purchase(pack: Dictionary) -> void:
 		_simulate(pid)
 		return
 	_arm_watchdog(pid)
+	if _billing != null:
+		_launch_play_purchase(pid)
+		return
 	if int(_store.request("purchase", {"productID": pid})) != 0:
-		_fail(pid, "Could not reach the App Store.")
+		_fail(pid, "Could not reach %s." % _store_label())
 
 func _arm_watchdog(pid: String) -> void:
 	var t := get_tree().create_timer(PURCHASE_TIMEOUT, true, false, true)
@@ -174,7 +222,7 @@ func _arm_watchdog(pid: String) -> void:
 		if _watchdog != t or not busy or _pending != pid:
 			return
 		_watchdog = null
-		_fail(pid, "The App Store did not answer. If you were charged, the purchase will arrive shortly.")
+		_fail(pid, "No answer from %s. If you were charged, the purchase will arrive shortly." % _store_label())
 	)
 
 func _disarm_watchdog() -> void:
@@ -186,6 +234,11 @@ func _disarm_watchdog() -> void:
 func restore() -> void:
 	if _store != null:
 		_store.request("appStoreSync", {})
+	elif _billing != null:
+		# On Play this is not a courtesy -- it is the actual recovery path. Any
+		# purchase the player paid for and was not handed is still unconsumed,
+		# and this is the call that hands it back.
+		_billing.query_purchases(0)
 
 func _simulate(pid: String) -> void:
 	var t := get_tree().create_timer(SIM_DELAY)
@@ -218,6 +271,8 @@ func begin() -> void:
 	_queue.clear()
 	if _store != null:
 		_store.request("transactionAll", {})
+	elif _billing != null:
+		_billing.query_purchases(0)
 
 func _emit(kind: String, pid: String, message: String) -> void:
 	if not _started:
@@ -461,9 +516,17 @@ func _grant_next() -> void:
 func finish(_product_id_str: String) -> void:
 	if _pending_txn == "":
 		return
-	_granted[_pending_txn] = true
+	var txn := _pending_txn
+	_granted[txn] = true
 	_pending_txn = ""
 	_save_ledger()
+	# Play only, and the order matters. Consuming is what tells Google we have
+	# handed the pack over; until it lands the purchase stays owned, which is
+	# precisely the crash-safety net Apple does not give us. So it happens
+	# *after* the ledger is on disk and never before -- consume first and die,
+	# and the purchase is gone from both sides at once.
+	if _billing != null:
+		_billing.consume_purchase(txn)
 	# Whatever else Apple still owes this player, handed over now rather than on
 	# some future launch. Deferred, not called: this runs inside the grant it
 	# is finishing (finish() is called from _on_purchase_ok, which _grant_next
@@ -535,3 +598,229 @@ func _save_ledger() -> void:
 		d.rename(LEDGER, LEDGER_BAK)
 	if d.rename(LEDGER_TMP, LEDGER) != OK and FileAccess.file_exists(LEDGER_BAK):
 		d.rename(LEDGER_BAK, LEDGER)
+
+
+# --- Google Play -----------------------------------------------------------
+#
+# The same three jobs the StoreKit section does -- prices, one purchase, and
+# whatever the store still owes this player -- against an API that disagrees
+# with Apple's about nearly every detail.
+#
+# THE INVERSION, and it is the one thing to get right here. On Apple a
+# consumable stays in Transaction.all for ever, so the launch reconcile *must*
+# take a baseline on a fresh install or it re-gifts every purchase the Apple ID
+# ever made. On Play the opposite holds: queryPurchases returns only what has
+# not been **consumed**, and consuming is something this app does by hand, in
+# finish(), after the pack is granted and the save is written. So every row Play
+# hands back is a live debt, and the baseline branch that protects the iOS path
+# would here quietly write off real money. Nothing below reaches it. If a future
+# change makes these two paths share a reconcile, this is the comment that was
+# ignored.
+#
+# The inversion is also a gift. It hands Android the crash-safety net iOS lacks:
+# die between Google taking the money and _save_game() returning, and the
+# purchase is still unconsumed, so the next launch is simply handed it again.
+#
+# THE PLUGIN: godot-sdk-integrations/godot-google-play-billing 3.3.0, the
+# first-party one, on Billing Library 9.1.0. The version is not incidental --
+# Play rejects new apps built against Billing Library 7 or older from
+# 2026-08-31. The addon is vendored at addons/GodotGooglePlayBilling/ and needs
+# gradle_build/use_gradle_build=true, which ship_android.sh refuses to build
+# without.
+
+const PLAY_SINGLETON := "GodotGooglePlayBilling"
+const PLAY_INAPP := 0          # BillingClient.ProductType.INAPP
+
+const PLAY_OK := 0
+const PLAY_USER_CANCELED := 1
+const PLAY_ITEM_ALREADY_OWNED := 7
+
+const PLAY_STATE_PURCHASED := 1
+const PLAY_STATE_PENDING := 2
+
+# Loaded by path rather than by its class_name, deliberately. A `BillingClient`
+# written into this file is a hard compile-time dependency: iap.gd would then
+# refuse to parse anywhere the addon is absent or fails to parse itself, and
+# "anywhere" includes the iOS build, where this file is the money path. By path
+# and behind the singleton check, the worst case on any non-Android build is a
+# null that the guard below already handles.
+const PLAY_CLIENT := "res://addons/GodotGooglePlayBilling/BillingClient.gd"
+
+func _start_play() -> void:
+	var client_script := load(PLAY_CLIENT) as GDScript
+	if client_script == null:
+		push_warning("IAP: Play billing singleton is present but %s is missing." % PLAY_CLIENT)
+		return
+	_billing = client_script.new()
+	add_child(_billing)
+	_billing.connected.connect(_on_play_connected)
+	_billing.connect_error.connect(_on_play_connect_error)
+	_billing.query_product_details_response.connect(_on_play_products)
+	_billing.on_purchase_updated.connect(_on_play_purchase_updated)
+	_billing.query_purchases_response.connect(_on_play_purchases)
+	_billing.consume_purchase_response.connect(_on_play_consumed)
+	# Nothing can be asked before this lands; Play is a bound service, not a
+	# library call.
+	_billing.start_connection()
+
+# Asked of whichever backend exists. The iOS path re-requests products from
+# inside purchase() when it has none, and that line had to stop naming Apple.
+func _request_products() -> void:
+	if _store != null:
+		_store.request("products", {"productIDs": all_product_ids()})
+	elif _billing != null:
+		_billing.query_product_details(PackedStringArray(all_product_ids()), PLAY_INAPP)
+
+func _on_play_connected() -> void:
+	_request_products()
+	# Everything Play still considers owned: purchases from a previous launch
+	# that were never consumed, and anything that completed while the app was
+	# closed. This is the reconcile, and it needs no baseline -- see the note
+	# at the top of this section.
+	_billing.query_purchases(PLAY_INAPP)
+
+func _on_play_connect_error(response_code: int, debug_message: String) -> void:
+	# `live` stays false, so sellable() refuses and the shop says so. Not fatal
+	# and not silent: the usual causes are a device with no Play Store and a
+	# build Play has never seen, and both are worth finding in a device log.
+	push_warning("IAP: Play billing would not connect (%d): %s" % [response_code, debug_message])
+
+func _launch_play_purchase(pid: String) -> void:
+	var result: Dictionary = _billing.purchase(pid)
+	var code := int(result.get("response_code", PLAY_OK))
+	if code == PLAY_OK:
+		return
+	if code == PLAY_ITEM_ALREADY_OWNED:
+		# A previous purchase of this product was never consumed -- almost
+		# always one we granted and failed to close out. Play will not sell it
+		# twice, and it is right not to. Ask for what is owned instead: the
+		# query hands it back, the ledger decides whether it still needs
+		# granting, and either way it gets consumed and the product is buyable
+		# again.
+		_billing.query_purchases(PLAY_INAPP)
+		_fail(pid, "You already own that. Restoring it now -- try again in a moment.")
+		return
+	_fail(pid, "Could not reach %s." % _store_label())
+
+func _on_play_products(response: Dictionary) -> void:
+	if int(response.get("response_code", -1)) != PLAY_OK:
+		return
+	for item in response.get("product_details", []):
+		if typeof(item) != TYPE_DICTIONARY:
+			continue
+		var pid := String(item.get("product_id", ""))
+		# Billing Library 9 made this a list -- a product can carry several
+		# one-time offers. We sell exactly one price per product, so the first
+		# is the price, and an empty list means Play knows the id but has no
+		# purchasable offer attached to it yet.
+		var offers: Array = item.get("one_time_purchase_offer_details_list", [])
+		if pid == "" or offers.is_empty() or typeof(offers[0]) != TYPE_DICTIONARY:
+			continue
+		_prices[pid] = String(offers[0].get("formatted_price", ""))
+	# Deliberately the same liveness test the iOS path uses, and for the same
+	# reason: at least one price we could actually print, not merely at least
+	# one key. A dictionary of empty strings means we are reading the response
+	# wrongly, and calling that "live" puts PAY with a blank price on every
+	# button in the shop.
+	live = false
+	for v in _prices.values():
+		if String(v) != "":
+			live = true
+			break
+	if live:
+		_emit("prices", "", "")
+
+func _on_play_purchase_updated(response: Dictionary) -> void:
+	var code := int(response.get("response_code", -1))
+	if code == PLAY_USER_CANCELED:
+		# Backing out of Play's sheet. A decision, not a fault -- same handling
+		# as StoreKit's userCancelled, and for the same reason.
+		var pid := _pending
+		busy = false
+		_pending = ""
+		_pending_txn = ""
+		_disarm_watchdog()
+		_emit("cancel", pid, "")
+		return
+	if code != PLAY_OK:
+		_fail(_pending, String(response.get("debug_message", "The purchase did not go through.")))
+		return
+	for row in response.get("purchases", []):
+		if typeof(row) == TYPE_DICTIONARY:
+			_take_play_purchase(row)
+
+# The launch reconcile. Every row is a debt; there is no history here to guard
+# against, so there is no baseline.
+func _on_play_purchases(response: Dictionary) -> void:
+	if int(response.get("response_code", -1)) != PLAY_OK:
+		return
+	# A response that did not carry the list is one we misread, not an empty
+	# one. Same distinction the iOS reconcile draws.
+	if typeof(response.get("purchases")) != TYPE_ARRAY:
+		return
+	for row in response.get("purchases", []):
+		if typeof(row) == TYPE_DICTIONARY:
+			_take_play_purchase(row)
+
+# One purchase off Play, from whichever direction it arrived. Both the answer to
+# a Pay button and the launch reconcile land here, because on Play they are
+# genuinely the same object and telling them apart is this function's job.
+func _take_play_purchase(row: Dictionary) -> void:
+	var token := String(row.get("purchase_token", ""))
+	var ids: PackedStringArray = row.get("product_ids", PackedStringArray())
+	if token == "" or ids.is_empty():
+		return
+	var pid := String(ids[0])
+
+	var state := int(row.get("purchase_state", 0))
+	if state == PLAY_STATE_PENDING:
+		# Play's deferred payment -- cash at a kiosk, a parent to approve. The
+		# sale is neither made nor lost, so the store reopens and the next
+		# query delivers the verdict. It has to be said out loud or the confirm
+		# modal sits there with a disabled Pay button and no way to close it.
+		if busy and _pending == pid:
+			busy = false
+			_pending = ""
+			_disarm_watchdog()
+			_emit("defer", pid, "")
+		return
+	if state != PLAY_STATE_PURCHASED:
+		return
+
+	if _granted.has(token):
+		# Handed over already, on this launch or an earlier one, and simply
+		# never consumed -- the ledger is what remembers. Close it out rather
+		# than granting it twice; until it is consumed Play will keep offering
+		# it back and the product cannot be bought again.
+		_billing.consume_purchase(token)
+		return
+
+	# The answer to the Pay button the player is looking at right now.
+	if busy and _pending == pid:
+		busy = false
+		_pending = ""
+		_disarm_watchdog()
+		_pending_txn = token
+		_emit("ok", pid, "")
+		return
+
+	# Arrived on its own. Joins the same queue the iOS reconcile uses, and is
+	# handed over one at a time because each grant ends in a popup the player
+	# has to see.
+	for entry in _outstanding:
+		if String(entry[0]) == token:
+			return
+	_outstanding.append([token, pid])
+	if _pending_txn == "":
+		_grant_next()
+
+func _on_play_consumed(response: Dictionary) -> void:
+	var code := int(response.get("response_code", -1))
+	if code == PLAY_OK:
+		return
+	# Not a lost purchase and not something to tell the player about: the pack
+	# is granted and the ledger says so. Play will hand the purchase back on the
+	# next query, the ledger will recognise it, and it will be consumed again.
+	# Worth a device log, because the state it leaves behind -- an owned,
+	# unconsumed product -- is what makes the next buy return ITEM_ALREADY_OWNED.
+	push_warning("IAP: Play refused to consume (%d): %s" % [code, String(response.get("debug_message", ""))])

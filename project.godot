@@ -17,6 +17,13 @@ boot_splash/image="res://assets/art/symbols/coin.png"
 boot_splash/fullsize=false
 boot_splash/use_filter=true
 
+[editor_plugins]
+
+; Enabled so its EditorExportPlugin runs: that is what adds the .aar and the
+; billing-library gradle dependency to an Android build. Without this line the
+; export succeeds and silently produces a build with no billing in it.
+enabled=PackedStringArray("res://addons/GodotGooglePlayBilling/plugin.cfg")
+
 [autoload]
 
 Sfx="*res://scripts/sfx.gd"

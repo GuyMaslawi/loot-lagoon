@@ -13,6 +13,12 @@ supabase.json
 # build output — 1GB of Xcode/export artifacts, never commit
 build/
 
+# Android build template — 200MB, unpacked wholesale by the editor's
+# Project > Install Android Build Template and regenerable, exactly like build/.
+# The whole directory, not just build/: .build_version alone would tell Godot a
+# template is installed when the clone has no such thing.
+android/
+
 # python bytecode from tools/
 __pycache__/
 
