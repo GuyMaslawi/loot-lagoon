@@ -20,6 +20,29 @@ var spins := 30
 var shields := 0
 var island_level := 1
 
+# Three, and the number matters more than it looks. Every shield source pays
+# in multiples of the bet, so at bet x5 a single triple is worth five shields
+# into a bucket that holds three -- see _grant_shields for where the other two
+# go now, and what used to happen to them.
+const SHIELD_CAP := 3
+
+# How much of each counter the HUD is not showing yet.
+#
+# A reward is two things that want opposite timing. The GAME has to own it the
+# instant it is granted -- _grant_pack calls _flush_save the moment it returns,
+# and a shield still in flight when the app dies is a shield somebody paid real
+# money for and never receives. The PLAYER has to watch it arrive, or the
+# number has already changed by the time they look up and, as far as they are
+# concerned, nothing happened.
+#
+# So the truth moves at once and the *readout* is what lags. Every reward that
+# lands pays off one unit of this; _settle_hud clears whatever is left, so an
+# interrupted flight can leave the HUD briefly behind but never permanently
+# wrong. Nothing downstream -- the save, the meter arithmetic, the missions --
+# ever sees it, because it lives entirely between a number and the label that
+# prints it.
+var _hud_lag := {}
+
 # =============================================================================
 #  Stars
 # =============================================================================
@@ -333,8 +356,6 @@ var col_deadline := 0.0
 # The Cards tab is two screens behind one nav button: a shelf of six sets, and
 # the set you tapped. Empty means the shelf.
 var col_open := ""
-var _convert_btn: Button
-var _convert_badge: Panel
 # The spendable-star figure on the Card Boxes page. Melting flies stars into
 # this rather than into the top bar, which holds rank and does not move.
 var _star_bank_label: Label
@@ -536,6 +557,40 @@ func _after_boot() -> void:
 		var go := create_tween()
 		go.tween_interval(0.6)
 		go.tween_callback(_start_visit.bind(demo_raid))
+	# DEMO_REWARD=shield:5 hands out a reward without waiting for the reels to
+	# agree to it. Landing a shield triple at bet x5 with exactly two shields in
+	# hand is the one state the overflow refund can be judged in, and reaching
+	# it honestly means spinning until the machine offers it -- which is not a
+	# thing you can do while tuning the arc it flies along.
+	#   shield:<n>  n shields, cap and refund included
+	#   bolt:<n>    n spins
+	#   have:<n>    how many shields to start holding (default 2)
+	#   takeoff     the steal card's send-off on its own, with no raid behind
+	#               it -- the beat is under a second and sits right on top of
+	#               the page transition, so it cannot be judged from a capture
+	#               of the real thing
+	var demo_reward := OS.get_environment("DEMO_REWARD")
+	if demo_reward != "":
+		var parts := demo_reward.split(":")
+		var kind := parts[0]
+		var amount := int(parts[1]) if parts.size() > 1 else 5
+		if parts.size() > 2:
+			shields = clampi(int(parts[2]), 0, SHIELD_CAP)
+		elif kind == "shield":
+			shields = 2
+		_refresh()
+		_after(1.2, func() -> void:
+			var at := slot.reels_center() if slot != null else view_size() * 0.4
+			if kind == "takeoff":
+				if slot != null:
+					slot.announce("STEAL!", Lagoon.CORAL_HI)
+					slot.steal_takeoff()
+			elif kind == "bolt":
+				_grant_spins(amount, at)
+			else:
+				_show_win("+%d  SHIELD%s" % [amount, "" if amount == 1 else "S"],
+					Color(0.5, 0.75, 1.0), "shield")
+				_grant_shields(amount, at))
 	# DEMO_OFFER=coins:<shortfall> opens the build-blocked top-up on demand.
 	# Reaching it by playing means spending a village down to the exact wrong
 	# number first, which is not a thing you can do while looking at the dialog
@@ -573,8 +628,14 @@ func _after_boot() -> void:
 	# where it is sold, and there are twenty-five of them -- shooting those by
 	# hand, and again after every redesign of the shop, is not a job worth
 	# doing twice.
-	if OS.has_environment("SHOT"):
-		call_deferred("_capture_page", OS.get_environment("SHOT"))
+	# A page key, never a path. tools/preview.gd reads the same variable as the
+	# file to write, and PREVIEW=game builds this class -- so both harnesses saw
+	# it, and the loser waited five seconds, saved a PNG to a nonsense path and
+	# called quit() out from under the frame strip the other one was still
+	# shooting.
+	var shot_key := OS.get_environment("SHOT")
+	if shot_key != "" and not shot_key.contains("/"):
+		call_deferred("_capture_page", shot_key)
 		return
 	if OS.has_environment("DEMO_QUESTS"):
 		var demo_tab := OS.get_environment("DEMO_QUESTS")
@@ -2113,25 +2174,40 @@ func _build_float_options() -> void:
 	_float_options.size = Vector2(66, 66)
 	_float_options.position = Vector2(view_size().x - 14.0 - 66.0, 96.0 + safe_top())
 	_float_options.focus_mode = Control.FOCUS_NONE
+	# Built like the rail discs -- deep lagoon face, brass ring, a bevel along
+	# the bottom -- because it floats over the same page they do and a lone
+	# pale button among them reads as one that was missed rather than one that
+	# is deliberately quiet. It stays quiet the two ways that do not cost
+	# consistency: it is 66 to their 82, and the gear on it is sand rather than
+	# the brass its neighbours are drawn in.
 	for state in ["normal", "hover", "pressed"]:
 		var sb := StyleBoxFlat.new()
-		sb.bg_color = Color(1, 1, 1, 0.80) if state != "hover" else Color(1, 1, 1, 0.95)
+		match state:
+			"hover":   sb.bg_color = Lagoon.LAGOON_DEEP.lightened(0.10)
+			"pressed": sb.bg_color = Lagoon.LAGOON_DEEP.darkened(0.16)
+			_:         sb.bg_color = Lagoon.LAGOON_DEEP
 		sb.set_corner_radius_all(33)
-		sb.set_border_width_all(3)
+		sb.set_border_width_all(5)
+		sb.border_width_bottom = 4 if state == "pressed" else 7
 		sb.border_color = Lagoon.BRASS
-		sb.shadow_size = 6
-		sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.25)
-		sb.shadow_offset = Vector2(0, 3)
+		sb.shadow_size = 11
+		sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.34)
+		sb.shadow_offset = Vector2(0, 5)
 		_float_options.add_theme_stylebox_override(state, sb)
 	_float_options.pressed.connect(func() -> void: _goto(pages["options"]))
 	FX.press_feedback(_float_options)
 	layer.add_child(_float_options)
 	var gear := Glyph.new()
 	gear.kind = "gear"
-	gear.tint = Lagoon.INK_SOFT
+	gear.tint = Lagoon.SAND
 	_float_options.add_child(gear)
 	gear.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	for m in [["offset_left", 13.0], ["offset_right", -13.0], ["offset_top", 13.0], ["offset_bottom", -13.0]]:
+	# Glyph carries a 40x40 minimum and a Control that loses to its minimum
+	# keeps its position and grows out of the bottom right of the box. 66 - 8
+	# - 8 is 50 and clears it; the 13s this replaces asked for 40 exactly,
+	# which is the crooked-plus bug sitting one pixel from happening again.
+	gear.custom_minimum_size = Vector2.ZERO
+	for m in [["offset_left", 8.0], ["offset_right", -8.0], ["offset_top", 7.0], ["offset_bottom", -11.0]]:
 		gear.set(m[0], m[1])
 
 func _nav_badge(parent: Control, text := "!") -> Panel:
@@ -2206,15 +2282,27 @@ func _build_slot_page() -> void:
 	# top of the safe area; the machine gets whatever is left between that and
 	# the nav bar, which is what keeps a tall phone from opening a lake of dead
 	# background under the cabinet.
+	#
+	# The machine starts directly under the wordmark now. It used to start 120px
+	# lower to leave a clear band for the Daily/Ranks/Alerts discs, which meant
+	# three buttons were being paid for out of the reels' height on every screen
+	# in the game. They float on the cabinet's side lanes instead -- see
+	# _add_side_buttons -- and the band went back to the machine.
 	var top := safe_top()
-	var band := Rect2(Vector2(0.0, 316.0 + top),
-		Vector2(view_size().x, content_bottom() - (316.0 + top)))
+	var band := Rect2(Vector2(0.0, SLOT_BAND_TOP + top),
+		Vector2(view_size().x, content_bottom() - (SLOT_BAND_TOP + top)))
 
 	# floating decorative symbols
-	# Three, in the corners of the band beside the quick-action row. This used to
-	# be seven scattered anywhere, which put a stray gem on top of the legend and
-	# a coin behind the nav bar on a page that already has plenty to look at.
+	# Three, down the two lanes the narrowed cabinet opened either side of
+	# itself, below the last of the floating discs. Those lanes are now the only
+	# part of the page the machine does not own, and they are exactly wide
+	# enough for a small coin -- anything bigger lands on the brass and reads as
+	# debris dropped on the artwork, which is what got the previous seven
+	# scattered ones cut down to three in the first place.
 	var decor_ids := ["coin", "gem", "coin"]
+	var lane: float = SlotView.CABINET_INSET
+	var decor_top := SIDE_RAIL_TOP + 200.0 + top
+	var decor_span := maxf(160.0, content_bottom() - 150.0 - decor_top)
 	for i in decor_ids.size():
 		var t := CV.symbol_tex(decor_ids[i])
 		if t == null:
@@ -2223,14 +2311,15 @@ func _build_slot_page() -> void:
 		tr.texture = t
 		tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-		var s := randf_range(46, 86)
+		var s := randf_range(30.0, lane - 16.0)
 		tr.size = Vector2(s, s)
 		tr.rotation = randf_range(-0.3, 0.3)
-		# The page is busy enough: decor lives only in the two thin bands the
-		# wordmark and the machine leave free, and stays faint.
+		# Kept inside its lane on both edges, and spread one to a third of the
+		# drop, so two never stack up on the same piece of gutter.
+		var x := randf_range(5.0, lane - s - 5.0)
 		tr.position = Vector2(
-			randf_range(6, 62) if i % 2 == 0 else view_size().x - randf_range(56, 120),
-			randf_range(196, 292) + top)
+			x if i % 2 == 0 else view_size().x - lane + x,
+			decor_top + decor_span * (float(i) + randf_range(0.15, 0.85)) / float(decor_ids.size()))
 		tr.modulate = Color(1, 1, 1, randf_range(0.26, 0.40))
 		tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		slot_page.add_child(tr)
@@ -2378,40 +2467,45 @@ void fragment() {
 
 # --- side menu buttons ---
 
-# Daily / Alerts / Ranks as a row of brass-ringed glass discs in the band
-# between the wordmark and the machine.
+# Daily / Alerts / Ranks as brass-ringed glass discs floating in the lanes
+# either side of the cabinet.
 #
-# These used to be two vertical columns pinned to the page edges, which only
-# works if the machine is narrower than the screen -- ours is 660 of 720 wide,
-# so the Alerts button sat on top of the cabinet's marquee. A centred row owns
-# a horizontal band nothing else is using and can never collide with the stage.
+# Three arrangements have been tried and the difference between them is whose
+# height they spend. Two edge columns came first and collided with the marquee,
+# because the cabinet was 692 of 720 and there were no lanes to float in. A
+# centred row above the machine fixed the collision by pushing the machine
+# down, which is the version this replaces -- it cost the reels 120px on every
+# phone so that three buttons could have a band of their own.
+#
+# Narrowing the cabinet to 588 (SlotView.CABINET_INSET) is what makes the
+# columns work: each lane is 66px, so a 76px disc sits in the lane with 18px of
+# its inner rim on the cabinet's decorative border and nothing on the marquee,
+# the reels or SPIN. The buttons float over the machine instead of standing
+# above it, and the height goes back to the reels.
 func _add_side_buttons(page: Control) -> void:
-	# Two floating rails at the extreme edges, not a row across the middle.
-	#
-	# THE COLLISION THIS HAS TO SURVIVE, because it is why the row existed. The
-	# cabinet is 660 of 720 wide, so the gutters either side of it are 30px --
-	# nowhere near enough for a tap target. Any edge rail therefore *overlaps*
-	# the machine, which is exactly what drove these buttons into a centred row
-	# the first time: at TAP_COMFY with a caption under each, they landed on the
-	# cabinet's marquee and read as debris dropped on the artwork.
-	#
-	# What makes the overlap work now is giving up the captions and the size.
-	# 76px discs with no label sit on the cabinet's own brass frame -- the
-	# decorative border, not the marquee or the reels -- where a row of glass
-	# rivets is a thing that frame would plausibly have anyway. The captions are
-	# no loss: these are a gift, a bell and a trophy, which is about as legible
-	# as an icon gets.
-	#
-	# What this buys is the whole 122px band the row used to own, which is the
-	# difference between the machine being cramped and not.
 	var rails := {}
 	for side in ["left", "right"]:
 		var rail := VBoxContainer.new()
-		rail.add_theme_constant_override("separation", 14)
+		rail.add_theme_constant_override("separation", int(SIDE_RAIL_GAP))
 		page.add_child(rail)
 		rail.set_anchors_and_offsets_preset(
 			Control.PRESET_TOP_LEFT if side == "left" else Control.PRESET_TOP_RIGHT)
+		# BOTH LANES HANG FROM THE SAME LINE, and the next person to touch this
+		# must keep it that way. A VBox anchored to the top with no bottom
+		# offset takes its height from its children, so the run grows downward
+		# from SIDE_RAIL_TOP: adding a fourth button lengthens the lane, it
+		# never re-centres the three already there or pushes them up into the
+		# marquee. That is what the reference rails do and it is the only
+		# arrangement that survives new buttons being added one at a time.
+		#
+		# An earlier version dropped the right lane half a step to even out
+		# two-against-one. It looked better with exactly three and it broke
+		# this: the two sides no longer started from the same line, so the
+		# fourth and fifth buttons would have landed at different heights.
+		rail.alignment = BoxContainer.ALIGNMENT_BEGIN
+		rail.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 		rail.offset_top = SIDE_RAIL_TOP + safe_top()
+		rail.offset_bottom = rail.offset_top
 		if side == "left":
 			rail.offset_left = SIDE_RAIL_INSET
 			rail.offset_right = SIDE_RAIL_INSET + SIDE_DISC
@@ -2432,13 +2526,42 @@ func _add_side_buttons(page: Control) -> void:
 		_side_button(rails["left" if i % 2 == 0 else "right"],
 			str(spec[0]), str(spec[1]), str(spec[2]), spec[3])
 
-# How the edge rails are placed. Named rather than inline because the three
-# numbers are a set -- the disc has to be small enough to sit on the cabinet's
-# frame, and the inset has to keep it off the screen edge on a phone with
-# rounded corners.
-const SIDE_DISC := 76.0
+# How the edge rails are placed, and where the machine underneath them starts.
+# Named rather than inline because they are one set of numbers, not four: the
+# disc has to fit its lane, the inset has to keep it off the screen edge on a
+# phone with rounded corners, and the rail has to start far enough below the
+# band top that the discs run down the cabinet's frame rather than across the
+# steal-target card that overhangs it.
+#
+# The one placement that works is *below the marquee*. Two discs and the gap
+# between them are 166px and the clear brass above the ribbon is 76, so a rail
+# starting at the cabinet's top edge always drops its second disc across the
+# sign. Starting the run level with the reel window instead puts all three on
+# the plain frame beside the reels, where nothing is written.
+#
+#   SLOT_BAND_TOP + CARD.y   = the cabinet's own top edge
+#   ... + card overhang + ribbon + separation = the reel window
+#   SIDE_RAIL_TOP            = level with that window
+#
+# HOW MANY EACH LANE HOLDS, since the run grows downward from that line and
+# the point of anchoring it there is that it can. A disc plus its gap is 96,
+# and the reel window's own bottom edge is about 741 in the same coordinates:
+#
+#   3 per side -> ends around 678, still on the window's frame     ok
+#   4 per side -> ends around 774, across the bet row and the meter
+#
+# So there is room for two more buttons a side before anything has to move.
+# Past that the lane runs onto controls rather than frame, and the honest fix
+# is a taller cabinet or a scrolling lane -- not quietly shrinking the disc.
+# 82, not 76. The lane is 66 and the reel window's frame starts around 104, so
+# a disc at SIDE_RAIL_INSET has until 96 before it touches anything that is
+# drawn on -- the extra six go into presence, which is what the reference
+# games buy with theirs.
+const SIDE_DISC := 82.0
+const SIDE_RAIL_GAP := 14.0
 const SIDE_RAIL_INSET := 8.0
-const SIDE_RAIL_TOP := 176.0
+const SIDE_RAIL_TOP := 404.0
+const SLOT_BAND_TOP := 196.0
 
 func _side_button(container: BoxContainer, icon_kind: String, caption: String, badge_key: String, action: Callable) -> void:
 	var box := VBoxContainer.new()
@@ -2451,19 +2574,68 @@ func _side_button(container: BoxContainer, icon_kind: String, caption: String, b
 	btn.tooltip_text = caption
 	btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	btn.focus_mode = Control.FOCUS_NONE
+	# The weight, which is the whole of what the reference games have and this
+	# did not. Theirs read as objects sitting on the screen: a thick warm
+	# frame, a light face, a bevel the light pools on, and a shadow with some
+	# distance in it. Ours was a 4px ring on flat white -- a sticker. Nothing
+	# here changes what the buttons are or how many there are; it changes how
+	# much they weigh.
 	for state in ["normal", "hover", "pressed"]:
 		var sb := StyleBoxFlat.new()
-		sb.bg_color = Color(1, 1, 1, 0.92) if state != "hover" else Color(1, 1, 1, 1.0)
+		# Deep lagoon, not white -- and this is the part that actually needed
+		# fixing. A pale face put a brass ring around a brass bell and a brass
+		# trophy sitting on cream: three values of one hue, and the trophy
+		# simply dissolved. What the reference rails all have is one hard
+		# light/dark break between the frame and the face, so the icon on it
+		# reads at a glance from across the screen.
+		#
+		# The break the game already owns is brass on deep lagoon -- it is the
+		# machine's own marquee, the reel window and the meter well. Borrowing
+		# it here means the discs get their contrast from Loot Lagoon's own
+		# vocabulary rather than from anybody else's palette, and it separates
+		# them from the brass cabinet by value instead of by outline.
+		match state:
+			"hover":   sb.bg_color = Lagoon.LAGOON_DEEP.lightened(0.10)
+			"pressed": sb.bg_color = Lagoon.LAGOON_DEEP.darkened(0.16)
+			_:         sb.bg_color = Lagoon.LAGOON_DEEP
 		sb.set_corner_radius_all(int(SIDE_DISC / 2.0))
-		sb.set_border_width_all(4)
-		sb.border_color = Lagoon.BRASS
-		sb.shadow_size = 8
-		sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.30)
-		sb.shadow_offset = Vector2(0, 4)
+		sb.set_border_width_all(6)
+		# The bevel. Every moulded control in the game carries a deeper band
+		# along its bottom edge and loses it when pressed, so the face travels
+		# down into its own frame -- the shop's "+" is the same trick.
+		sb.border_width_bottom = 5 if state == "pressed" else 8
+		sb.border_color = Lagoon.BRASS if state != "pressed" else Lagoon.BRASS_MID
+		sb.shadow_size = 14
+		sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.38)
+		sb.shadow_offset = Vector2(0, 6)
 		btn.add_theme_stylebox_override(state, sb)
 	btn.pressed.connect(action)
 	FX.press_feedback(btn)
 	box.add_child(btn)
+
+	# The dark rim, and the reason the disc survives the thing it floats over.
+	# A brass ring reads on sky and disappears on brass, so each disc carries a
+	# ring of deep lagoon outside its own -- the same edge the machine's window
+	# and the meter's well are drawn with. Drawn behind the button rather than
+	# as a wider border so the brass ring keeps its full weight.
+	var rim := Panel.new()
+	var rsb := StyleBoxFlat.new()
+	# Lighter than it was, and thinner. The rim went in when the face was white
+	# and its own outline was the only thing separating a disc from the brass
+	# under it; a deep-lagoon face separates by value instead, so the rim is
+	# back to doing what it should -- seating the button on the metal rather
+	# than cutting it out of the page. At the old weight it turned the brass
+	# ring olive.
+	rsb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.34)
+	rsb.set_corner_radius_all(int(SIDE_DISC / 2.0) + 4)
+	rim.add_theme_stylebox_override("panel", rsb)
+	rim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	rim.show_behind_parent = true
+	btn.add_child(rim)
+	rim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for m in [["offset_left", -4.0], ["offset_right", 4.0], ["offset_top", -4.0], ["offset_bottom", 4.0]]:
+		rim.set(m[0], m[1])
+
 	Lagoon.add_gloss(btn, int(SIDE_DISC / 2.0))
 
 	var icon := Glyph.new()
@@ -2475,7 +2647,17 @@ func _side_button(container: BoxContainer, icon_kind: String, caption: String, b
 	# just, and the next person to shrink the disc would silently reproduce the
 	# crooked-plus bug.
 	icon.custom_minimum_size = Vector2.ZERO
-	for m in [["offset_left", 13.0], ["offset_right", -13.0], ["offset_top", 13.0], ["offset_bottom", -13.0]]:
+	# The icon nearly fills the face, which is the last thing the reference
+	# rails have that this did not. Glyph authors in a 100x100 box and the
+	# artwork inside it only uses about seven tenths of that, so an inset that
+	# looks generous in the source leaves a disc that is mostly empty colour --
+	# at 15 a side the gift was drawing at under half the button. 9 puts the
+	# glyph box at 64 of 82 and the ink at roughly the coverage theirs have.
+	#
+	# The bottom inset stays deeper than the top: it has the bevel to clear, so
+	# the icon is centred in the *face* rather than in the button's rect, and
+	# centring it in the rect leaves it sitting visibly low.
+	for m in [["offset_left", 9.0], ["offset_right", -9.0], ["offset_top", 8.0], ["offset_bottom", -14.0]]:
 		icon.set(m[0], m[1])
 
 	var badge := Panel.new()
@@ -2486,7 +2668,11 @@ func _side_button(container: BoxContainer, icon_kind: String, caption: String, b
 	bsb.border_color = Color.WHITE
 	badge.add_theme_stylebox_override("panel", bsb)
 	badge.size = Vector2(34, 34)
-	badge.position = Vector2(SIDE_DISC - 26, -8)
+	# Tucked further in than the usual corner overhang. A disc in the right
+	# lane has only SIDE_RAIL_INSET between it and the screen, so a badge that
+	# hangs 26px past the disc's edge ends up flush against the glass -- and
+	# against the rounded corner on any phone that has one.
+	badge.position = Vector2(SIDE_DISC - 34, -8)
 	badge.visible = false
 	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	btn.add_child(badge)
@@ -2529,12 +2715,6 @@ func _update_badges() -> void:
 			bl.text = str(mini(unread, 9)) if unread > 0 else "!"
 	if _badges.has("shop_free"):
 		_badges["shop_free"].visible = _shop_free_ready() or _piggy_full() or not _active_offer().is_empty()
-	if _convert_badge != null and is_instance_valid(_convert_badge):
-		var spare := _dupe_card_count()
-		_convert_badge.visible = spare > 0
-		var cl := _convert_badge.get_child(0) as Label
-		if cl != null:
-			cl.text = str(mini(spare, 99))
 
 func _daily_ready() -> bool:
 	return _now() - daily_last >= DAILY_COOLDOWN
@@ -3095,31 +3275,15 @@ func _build_menu_pages() -> void:
 			["quests", "Quests"], ["options", "Options"], ["alerts", "Alerts"]]:
 		_make_page(spec[0], spec[1])
 
-	# The way into the boxes: bottom-right of the Cards page, where the thumb
-	# already is, carrying a count of what is waiting to be melted down.
-	_convert_btn = Button.new()
-	_convert_btn.custom_minimum_size = Vector2(232, 84)
-	_convert_btn.size = Vector2(232, 84)
-	_convert_btn.focus_mode = Control.FOCUS_NONE
-	_convert_btn.text = "\u267B   BOXES"
-	_convert_btn.add_theme_font_size_override("font_size", UI.F_LABEL)
-	Lagoon.button(_convert_btn, "urchin", 34)
-	Lagoon.button_gloss(_convert_btn, 34)
-	FX.press_feedback(_convert_btn)
-	_convert_btn.pressed.connect(func() -> void: _goto(pages["boxes"]))
-	pages["collections"].add_child(_convert_btn)
-	_convert_btn.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
-	_convert_btn.offset_left = -248.0
-	_convert_btn.offset_right = -16.0
-	_convert_btn.offset_top = -(NAV_ROOT_H + 18.0 + safe_bottom() + 84.0)
-	_convert_btn.offset_bottom = -(NAV_ROOT_H + 18.0 + safe_bottom())
-	# _nav_badge anchors to its parent's top centre; nudged out to the button's
-	# top-right corner, which is where a count belongs on a wide button.
-	_convert_badge = _nav_badge(_convert_btn, "0")
-	_convert_badge.offset_left = 74.0
-	_convert_badge.offset_right = 104.0
-	_convert_badge.offset_top = -12.0
-	_convert_badge.offset_bottom = 18.0
+	# The way into the boxes used to be a floating "\u267B BOXES" button pinned
+	# to the bottom-right of the Cards page. Two things were wrong with it. It
+	# sat on top of the page rather than in it, so on the shelf it covered the
+	# sixth collection tile -- the grid is three-across precisely so all six fit
+	# above the fold, and the button was eating the one it was parked on. And it
+	# named the destination instead of the errand: a recycle glyph next to the
+	# word BOXES asks the player to already know that spare cards are the
+	# currency boxes are bought with. It is now an ordinary card at the top of
+	# the page, built by _spares_banner(), which says the whole sentence.
 
 func _make_page(key: String, title: String) -> void:
 	var page := Control.new()
@@ -5079,7 +5243,11 @@ func _grant_pack(pack: Dictionary) -> void:
 		coins += int(pack["coins_exact"])
 	else:
 		coins += _scaled(int(pack.get("coins", 0)))
-	shields = mini(3, shields + int(pack.get("shields", 0)))
+	# Through the same door as the reels, so a bundle whose shields do not fit
+	# refunds them as spins instead of eating them -- and so the player watches
+	# what they paid for arrive. _flush_save at the end of this function is safe
+	# because _grant_shields banks the total before it animates anything.
+	_grant_shields(int(pack.get("shields", 0)), Vector2(view_size().x * 0.5, view_size().y * 0.42))
 	var pre_complete := {}
 	for c in CV.COLLECTIONS:
 		pre_complete[c["id"]] = _collection_complete(c)
@@ -6117,18 +6285,94 @@ func _collection_item_card(emoji: String, iname: String, owned: bool, rarity := 
 		sr.modulate = Color(1, 1, 1, 1.0) if owned else Color(1, 1, 1, 0.4)
 		col.add_child(sr)
 	# Spares sit on the corner of the card they are spares of, in the same
-	# purple the melt buttons use, so "I have four of these" is answered where
-	# the player is already looking rather than only on the boxes screen.
+	# purple every other spare count uses, so "I have three going spare" is
+	# answered where the player is already looking rather than only on the
+	# boxes screen.
+	#
+	# The overlay is not decoration. `p` is a PanelContainer, and a container
+	# lays every child out to its own rect -- it overwrote the anchors set on
+	# the chip the moment it sorted its children, so the tag stretched to the
+	# full width of the card and landed across the card's name. A Control has
+	# no minimum size of its own and no layout opinion about what is inside it,
+	# so the container stretches the overlay instead and the chip keeps the
+	# corner it was given.
 	if spare > 0:
-		var tag := Lagoon.chip("x%d" % (spare + 1), Lagoon.URCHIN, UI.F_TINY)
+		var overlay := Control.new()
+		overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		p.add_child(overlay)
+		var tag := Lagoon.chip("+%d" % spare, Lagoon.URCHIN, UI.F_TINY)
 		tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		p.add_child(tag)
-		tag.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-		tag.offset_left = -60.0
-		tag.offset_right = -4.0
-		tag.offset_top = -8.0
-		tag.offset_bottom = 26.0
+		overlay.add_child(tag)
+		# Pinned by its corner, not by a width. A chip asked to be narrower than
+		# its own minimum size does not shrink -- it grows, and by default it
+		# grows to the right, which is how "+2" ended up hanging off the card
+		# and under the next one. Anchoring all four sides to the corner and
+		# growing left and down lets the chip be exactly as wide as its number
+		# needs, before anyone has measured anything.
+		tag.anchor_left = 1.0
+		tag.anchor_right = 1.0
+		tag.anchor_top = 0.0
+		tag.anchor_bottom = 0.0
+		tag.offset_left = -6.0
+		tag.offset_right = -6.0
+		tag.offset_top = 6.0
+		tag.offset_bottom = 6.0
+		tag.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+		tag.grow_vertical = Control.GROW_DIRECTION_END
 	return p
+
+# The one way into the Card Boxes, and the only place the spare-card rule is
+# spelled out in words. It rides at the top of both the shelf and a set page,
+# in the flow rather than floating over it, and it names all three steps of the
+# errand -- spares, stars, a box of new cards -- because "\u267B BOXES" named
+# none of them. A player who has never seen a spare still gets the card, with
+# the copy turned around to say what a spare is for, so the boxes are never
+# unreachable and the rule is learnable before the first duplicate lands.
+func _spares_banner(vb: VBoxContainer) -> void:
+	var spare := _dupe_card_count()
+	var worth := _dupe_star_value()
+	var panel := _tinted_card(vb, Lagoon.URCHIN, spare > 0)
+	var pad := MarginContainer.new()
+	for m in [["margin_left", 14], ["margin_right", 14], ["margin_top", 12], ["margin_bottom", 12]]:
+		pad.add_theme_constant_override(m[0], m[1])
+	panel.add_child(pad)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 8)
+	pad.add_child(col)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	col.add_child(row)
+	var tok := Lagoon.token("📦", 60.0, Lagoon.URCHIN)
+	tok.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(tok)
+	var text := VBoxContainer.new()
+	text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	text.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	text.add_theme_constant_override("separation", 2)
+	row.add_child(text)
+	text.add_child(Lagoon.label(
+		"%d spare cards" % spare if spare > 0 else "Card Boxes", UI.F_LABEL, Lagoon.INK, true))
+	# Both halves of the trade on one line, in the order they happen, with the
+	# numbers filled in -- a player should be able to decide whether the trip is
+	# worth taking without making it first.
+	var sub := Lagoon.label(
+		"Worth \u2605 %d \u2014 stars you spend on a box of new ones." % worth if spare > 0
+			else "Pull a card you already own and it becomes a spare, worth \u2605 stars towards a box of new cards.",
+		UI.F_CAPTION, Lagoon.INK_SOFT)
+	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	text.add_child(sub)
+
+	var go := Button.new()
+	go.text = "TRADE  IN  SPARES" if spare > 0 else "SEE  CARD  BOXES"
+	go.custom_minimum_size = Vector2(0, UI.TAP)
+	# Purple in both states. The empty-handed version is not a disabled button
+	# -- there are boxes through it either way, and a pale glass one read as
+	# something that would not do anything if pressed.
+	_candy_button(go, Lagoon.URCHIN)
+	FX.press_feedback(go)
+	go.pressed.connect(func() -> void: _goto(pages["boxes"]))
+	col.add_child(go)
 
 func _collection_by_id(id: String) -> Dictionary:
 	for c in CV.COLLECTIONS:
@@ -6202,11 +6446,12 @@ func _fill_collection_shelf(vb: VBoxContainer) -> void:
 		mega.pressed.connect(_claim_mega)
 		head.add_child(mega)
 
-	var spare_all := _dupe_card_count()
-	if spare_all > 0:
-		vb.add_child(_page_note("Every spin has a chance to drop a card.  You have %d spares — melt them into \u2605 and open boxes." % spare_all, UI.F_CAPTION))
-	else:
+	# One voice at a time. With spares in hand the banner below already says
+	# where cards come from and what the spare ones are for; the note is the
+	# teaching line for a player who has not seen a duplicate yet.
+	if _dupe_card_count() == 0:
 		vb.add_child(_page_note("Every spin has a chance to drop a card, and every new one is worth \u2605 stars!", UI.F_CAPTION))
+	_spares_banner(vb)
 
 	var grid := GridContainer.new()
 	grid.columns = 3
@@ -6216,13 +6461,6 @@ func _fill_collection_shelf(vb: VBoxContainer) -> void:
 	for c in CV.COLLECTIONS:
 		grid.add_child(_collection_tile(c))
 
-	# The BOXES button floats over the bottom-right of this page, which would
-	# otherwise park it permanently on top of the last tile in the grid. A tail
-	# of empty space lets that tile scroll out from under it.
-	var tail := Control.new()
-	tail.custom_minimum_size = Vector2(0, 110)
-	tail.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	vb.add_child(tail)
 
 func _collection_tile(c: Dictionary) -> Control:
 	var id: String = c["id"]
@@ -6298,10 +6536,31 @@ func _collection_tile(c: Dictionary) -> Control:
 	cnt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	cnt.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	foot.add_child(cnt)
+	foot.add_child(_diff_chip(c["diff"]))
+
+	# The spare count is a corner tab, not a third thing in the footer. As a
+	# footer chip it added its own width to the row's minimum, an HBoxContainer
+	# hands that minimum to the tile, a GridContainer hands the widest tile's
+	# minimum to all three columns -- and the whole shelf grew 15px wider than
+	# the phone the moment the player held their first duplicate. Nobody sees
+	# that on a fresh save, which is why it sat here until a save with spares
+	# in it was measured. Overlaid on the corner it costs the layout nothing,
+	# and it takes the left so the CLAIM flag can keep the right.
 	var spare_n := _set_dupe_total(c)
 	if spare_n > 0:
-		foot.add_child(Lagoon.chip("+%d" % spare_n, Lagoon.URCHIN, UI.F_TINY))
-	foot.add_child(_diff_chip(c["diff"]))
+		var stag := Lagoon.chip("+%d" % spare_n, Lagoon.URCHIN, UI.F_TINY)
+		stag.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		tile.add_child(stag)
+		stag.anchor_left = 0.0
+		stag.anchor_right = 0.0
+		stag.anchor_top = 0.0
+		stag.anchor_bottom = 0.0
+		stag.offset_left = 6.0
+		stag.offset_right = 6.0
+		stag.offset_top = -10.0
+		stag.offset_bottom = -10.0
+		stag.grow_horizontal = Control.GROW_DIRECTION_END
+		stag.grow_vertical = Control.GROW_DIRECTION_END
 
 	# One badge in the corner, and only when the tile has news: a reward waiting
 	# to be taken, or a set already banked.
@@ -6309,11 +6568,21 @@ func _collection_tile(c: Dictionary) -> Control:
 		var flag := Lagoon.chip("CLAIM!" if ready else "\u2713", Lagoon.CORAL if ready else Lagoon.KELP, UI.F_TINY)
 		flag.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		tile.add_child(flag)
-		flag.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
-		flag.offset_left = -78.0 if ready else -46.0
+		# Cornered and grown, not sized by hand. The two hardcoded widths this
+		# replaces were measured against a font that has since moved: "CLAIM!"
+		# needed more than 78px and lost its exclamation mark off the right of
+		# the tile, and a guessed width is going to be wrong again the next
+		# time the type changes. Growing left from the corner cannot be.
+		flag.anchor_left = 1.0
+		flag.anchor_right = 1.0
+		flag.anchor_top = 0.0
+		flag.anchor_bottom = 0.0
+		flag.offset_left = -6.0
 		flag.offset_right = -6.0
 		flag.offset_top = -10.0
-		flag.offset_bottom = 26.0
+		flag.offset_bottom = -10.0
+		flag.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+		flag.grow_vertical = Control.GROW_DIRECTION_END
 	if ready:
 		FX.pulse_forever(tile, 1.03, 1.0)
 	return tile
@@ -6358,7 +6627,11 @@ func _fill_collection_detail(vb: VBoxContainer, c: Dictionary) -> void:
 
 	var spare_n := _set_dupe_total(c)
 	if spare_n > 0:
-		meta.add_child(Lagoon.chip("%d SPARE" % spare_n, Lagoon.URCHIN, UI.F_TINY))
+		# Same word, same purple, same count as the "+N" on the shelf tile and
+		# the "+N" on each card below. Three screens used to say "+8", "8 SPARE"
+		# and "x4" about one pile, and the last of those was counting something
+		# else entirely -- copies held, not spares -- so nothing added up.
+		meta.add_child(Lagoon.chip("+%d  SPARE" % spare_n, Lagoon.URCHIN, UI.F_TINY))
 
 	var prow := HBoxContainer.new()
 	prow.add_theme_constant_override("separation", 12)
@@ -6390,6 +6663,9 @@ func _fill_collection_detail(vb: VBoxContainer, c: Dictionary) -> void:
 		left.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		left.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 		head.add_child(left)
+
+	if spare_n > 0:
+		_spares_banner(vb)
 
 	var card := _page_card(vb)
 	var grid := GridContainer.new()
@@ -6480,7 +6756,8 @@ func _fill_boxes(vb: VBoxContainer) -> void:
 	bank.add_child(bsub)
 
 	# --- the spares ---------------------------------------------------------
-	_shop_section(vb, "", "YOUR  SPARE  CARDS")
+	_shop_section(vb, "", "STEP  1  \u2014  YOUR  SPARE  CARDS")
+	vb.add_child(_page_note("Tap \u267B on a row to turn those spares into \u2605 stars. The card you already own stays in the collection.", UI.F_CAPTION))
 	if rows.is_empty():
 		var none := _page_card(vb)
 		var nl := _popup_row_label("No spares yet. Pull a card you already own — on a spin or out of a chest — and it lands here instead of going to waste.", UI.F_CAPTION)
@@ -6499,7 +6776,7 @@ func _fill_boxes(vb: VBoxContainer) -> void:
 		hrow.add_child(count_l)
 		hrow.add_child(Lagoon.chip("\u2605 %d" % pool, CV.STAR_COLORS[CV.MAX_STAR - 1], UI.F_CAPTION))
 		var melt_all := Button.new()
-		melt_all.text = "MELT  EVERYTHING   +%d \u2605" % pool
+		melt_all.text = "TRADE  IN  ALL   +%d \u2605" % pool
 		melt_all.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
 		_candy_button(melt_all, Color(0.72, 0.5, 0.95))
 		FX.press_feedback(melt_all)
@@ -6515,7 +6792,7 @@ func _fill_boxes(vb: VBoxContainer) -> void:
 			_dupe_row(vb, r)
 
 	# --- the boxes ----------------------------------------------------------
-	_shop_section(vb, "", "BOXES")
+	_shop_section(vb, "", "STEP  2  \u2014  OPEN  A  BOX")
 	vb.add_child(_page_note("Every box draws real cards — the pricier the box, the better the star odds.", UI.F_CAPTION))
 	for box in CV.CARD_BOXES:
 		_box_card(vb, box)
@@ -6554,13 +6831,20 @@ func _dupe_row(vb: VBoxContainer, r: Dictionary) -> void:
 	setl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	meta.add_child(setl)
 
-	var held := Lagoon.label("x%d" % count, UI.F_SUBHEAD, Lagoon.INK, true)
+	# "+3", the same mark the shelf tile, the set header and the card itself
+	# all use for this pile. It used to read "x3" here and "x4" on the card,
+	# for one stack of three spares.
+	var held := Lagoon.label("+%d" % count, UI.F_SUBHEAD, Lagoon.INK, true)
 	held.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	row.add_child(held)
 
 	var melt := Button.new()
-	melt.text = "+%d \u2605" % (star * count)
-	melt.custom_minimum_size = Vector2(150, UI.TAP)
+	# A bare "+12 \u2605" reads as a prize being handed out, not as a trade the
+	# player is about to make. The recycle glyph is the one mark that says a
+	# thing is going in as well as coming out, and it is the same mark the
+	# banner on the Cards page uses for the same errand.
+	melt.text = "\u267B  +%d \u2605" % (star * count)
+	melt.custom_minimum_size = Vector2(178, UI.TAP)
 	melt.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_candy_button(melt, Color(0.72, 0.5, 0.95))
 	FX.press_feedback(melt)
@@ -7310,6 +7594,11 @@ func _add_topbar(page: Control) -> void:
 		var cap := Lagoon.capsule(spec[0], "0", jump)
 		bar.add_child(cap["root"])
 		labels[spec[1]] = cap["value"]
+		# The pill as well as the number in it. _refresh only ever needed the
+		# label, but a reward that flies to a counter has to be able to thump
+		# the whole chip when it lands -- scaling the digits alone reads as the
+		# text glitching rather than as the pill taking a hit.
+		labels[spec[1] + "_chip"] = cap["root"]
 
 	var gap := Control.new()
 	gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -7565,17 +7854,20 @@ func _on_spin_finished(result: Array) -> void:
 			"steal":
 				_start_visit("steal")
 			"shield":
+				# No banner. It used to say "Shield up! (3/3)" whether the roll
+				# was worth one shield or five, which is the readout that hid
+				# the overflow bug for as long as it did. The count is in the
+				# pill, and the proof is the things landing on the counter.
 				slot.announce("SHIELD  UP!", Color(0.72, 0.88, 1.0))
-				shields = mini(3, shields + bet)
-				Sfx.play("shield", -6.0)
-				_banner("Shield up!  (%d/3)" % shields, Color(0.5, 0.75, 1.0))
-				_show_win("+SHIELD", Color(0.5, 0.75, 1.0), "shield")
+				_show_win("+%d  SHIELD%s" % [bet, "" if bet == 1 else "S"],
+					Color(0.5, 0.75, 1.0), "shield")
+				_grant_shields(bet, slot.reels_center())
 			"bolt":
 				slot.announce("+SPINS!", Color(0.72, 0.94, 1.0))
 				var bonus := 12 * bet
-				spins += bonus
 				Sfx.play("jackpot", -4.0)
 				_show_win("+%d  SPINS" % bonus, Color(0.6, 0.9, 1.0), "bolt")
+				_grant_spins(bonus, slot.reels_center())
 	else:
 		for s in result:
 			match s:
@@ -8052,8 +8344,12 @@ func _start_visit(mode: String) -> void:
 		_raid_mult = _last_bet
 		_raid_target = next_target
 		_announce_raid(mode)
+		# The card's own send-off, rather than a flat half-second wait. It is
+		# the steal's answer to the attack's search screen -- see
+		# SlotView.steal_takeoff for why the two cannot be the same beat.
+		var lift := slot.steal_takeoff() if slot != null else 0.5
 		var go := create_tween()
-		go.tween_interval(0.5)
+		go.tween_interval(lift)
 		go.tween_callback(_on_match_found.bind(next_target, mode))
 		return
 
@@ -8691,16 +8987,169 @@ func _start_island_journey(from_level: int) -> void:
 # --- shared UI ---
 
 func _refresh() -> void:
+	# Shown, not held: see _hud_lag. Everything below the two labels reads the
+	# real numbers -- only what is printed waits for the reward to land.
+	var shown_spins := _hud_shown("spins", spins)
+	var shown_shields := _hud_shown("shields", shields)
 	for labels in _hud_labels:
+		_style_shield_chip(labels.get("shields_chip"), shown_shields >= SHIELD_CAP)
 		labels["coins"].text = _fmt_compact(coins)
-		labels["spins"].text = ("%d/%d" % [spins, SPIN_CAP]) if spins <= SPIN_CAP else str(spins)
-		labels["shields"].text = str(shields)
+		labels["spins"].text = ("%d/%d" % [shown_spins, SPIN_CAP]) if shown_spins <= SPIN_CAP else str(shown_spins)
+		labels["shields"].text = str(shown_shields)
 		labels["stars"].text = _fmt_compact(rank_stars)
 		labels["island"].text = str(island_level)
 	village.refresh(buildings, coins, _star_costs())
 	if slot != null:
-		slot.set_meter(spins, SPIN_CAP, SPIN_REGEN_SECS - _regen_accum, SPIN_REGEN_AMOUNT)
+		# The meter takes the shown figure too, so the pill and the bar under
+		# the reels never disagree about how many spins you are holding.
+		slot.set_meter(shown_spins, SPIN_CAP, SPIN_REGEN_SECS - _regen_accum, SPIN_REGEN_AMOUNT)
 		slot.set_target(next_target, _economy_mult())
+
+# =============================================================================
+#  Rewards that arrive
+# =============================================================================
+
+# The shields pill, told apart when it is full.
+#
+# Both of the games Guy pointed at put the cap on the chip itself -- pips in
+# one, "5/5" in the other -- so being full is a state you can read before the
+# next reward lands on it. Ours cannot afford either spelling: the topbar's
+# widest minimum is already 694 of 720, and three pips (or two more digits)
+# cost about twenty pixels more than the single digit they replace, which is
+# the entire clearance. tools/qa_layout.tscn fails the page at 721.
+#
+# So the pill changes its own face instead, which costs nothing across: a
+# brass rim and a warm face when the bucket is full, plain glass while there is
+# still room in it. That is also what makes the overflow refund legible -- by
+# the time spare shields are turning into spins, the reason has already been
+# sitting in the corner of the screen.
+func _style_shield_chip(chip, full: bool) -> void:
+	if not (chip is Control) or not is_instance_valid(chip):
+		return
+	var want := "full" if full else "room"
+	if chip.get_meta("shield_face", "") == want:
+		return
+	chip.set_meta("shield_face", want)
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(1.0, 0.94, 0.80, 0.95) if full else Color(1, 1, 1, 0.88)
+	sb.set_corner_radius_all(28)
+	sb.set_border_width_all(4 if full else 3)
+	sb.border_color = Lagoon.BRASS_HI if full else Lagoon.BRASS
+	sb.shadow_size = 10 if full else 7
+	sb.shadow_color = Color(Lagoon.BRASS.r, Lagoon.BRASS.g, Lagoon.BRASS.b, 0.45) if full 		else Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.28)
+	sb.shadow_offset = Vector2(0, 3)
+	sb.content_margin_left = 8.0
+	sb.content_margin_right = 8.0
+	sb.content_margin_top = 4.0
+	sb.content_margin_bottom = 4.0
+	chip.add_theme_stylebox_override("panel", sb)
+
+func _hud_shown(key: String, truth: int) -> int:
+	return maxi(0, truth - int(_hud_lag.get(key, 0)))
+
+func _hud_hold(key: String, amount: int) -> void:
+	if amount > 0:
+		_hud_lag[key] = int(_hud_lag.get(key, 0)) + amount
+
+# One unit of the reward has landed: let the counter show it, and thump it.
+func _hud_land(key: String, amount: int, tint: Color) -> void:
+	_hud_lag[key] = maxi(0, int(_hud_lag.get(key, 0)) - amount)
+	_refresh()
+	FX.counter_pop(_hud_chip(key), tint)
+
+# The backstop. A flight interrupted by a page change, a raid or a quit leaves
+# its lag behind, and a counter that is permanently one short of the save is
+# worse than no animation at all.
+func _settle_hud(key: String) -> void:
+	_hud_lag.erase(key)
+	_refresh()
+
+# Where the chip a reward is flying to actually is -- the visible topbar, not
+# the first one built. Every page carries its own copy and all but one of them
+# are hidden, so a shield handed out by the shop used to have to fly to a pill
+# on the spin page that nobody was looking at.
+func _hud_chip(key: String) -> Control:
+	for labels in _hud_labels:
+		var chip = labels.get(key + "_chip")
+		if chip is Control and is_instance_valid(chip) and chip.is_visible_in_tree():
+			return chip
+	return null
+
+func _hud_at(key: String) -> Vector2:
+	var chip := _hud_chip(key)
+	if chip == null:
+		return Vector2(view_size().x * 0.5, 120.0 + safe_top())
+	return chip.global_position + chip.size * 0.5
+
+# Shields, delivered rather than announced -- and the overflow handed back
+# rather than dropped on the floor.
+#
+# THE BUG THIS EXISTS TO FIX. Every source of shields paid `mini(3, shields +
+# n)`, so everything past the third was silently binned: at bet x5 with two in
+# hand that banked one and threw four away, and the player was told "Shield up!
+# (3/3)" -- word for word the message a single shield gets. Nothing in the game
+# distinguished a five-shield reward from a one-shield reward, which made the
+# most generous roll on the machine the least rewarding one to land.
+#
+# What happens instead: the ones that fit fly up and land one at a time, and
+# the counter climbs a step per landing. The ones that do not fit turn into
+# spins at the top of their arc, one for one, and come down on the spin meter.
+# The turn is the whole point -- a refund the player cannot see is worth
+# exactly what the loss it replaced was worth, which is nothing.
+func _grant_shields(n: int, from: Vector2) -> void:
+	if n <= 0:
+		return
+	var placed := mini(maxi(0, SHIELD_CAP - shields), n)
+	var spare := n - placed
+	# Banked first, shown second. Everything below this pair of lines is
+	# presentation; the save taken a frame from now is already correct.
+	shields += placed
+	spins += spare
+	_hud_hold("shields", placed)
+	_hud_hold("spins", spare)
+	Sfx.play("shield", -6.0)
+	if placed > 0:
+		FX.deliver(self, from, _hud_at("shields"), "shield", placed, func(_i: int) -> void:
+			_hud_land("shields", 1, Color(0.55, 0.78, 1.0))
+			Sfx.play("shield", -13.0))
+	if spare <= 0:
+		_after(float(placed) * 0.17 + 1.1, func() -> void: _settle_hud("shields"))
+		return
+	# The bucket has to be seen to be full before anything can read as
+	# overflowing out of it, so the spares leave after the last one that fitted
+	# has landed.
+	_after(float(placed) * 0.17 + 0.62, func() -> void:
+		_show_win("FULL  →  +%d  SPIN%s" % [spare, "" if spare == 1 else "S"],
+			Color(0.6, 0.9, 1.0), "bolt")
+		FX.deliver(self, from, _hud_at("spins"), "shield", spare, func(_i: int) -> void:
+			_hud_land("spins", 1, Color(0.6, 0.9, 1.0))
+			Sfx.play("pop", -14.0), "bolt"))
+	_after(float(placed + spare) * 0.17 + 2.0, func() -> void:
+		_settle_hud("shields")
+		_settle_hud("spins"))
+
+# The same contract for spins. Big bonuses ride ten sprites rather than sixty:
+# past about a dozen the screen reads as noise and the individual landings stop
+# being countable, which is the only thing the flight was for. Each flight
+# carries a share of the total and the remainder rides on the first few.
+func _grant_spins(n: int, from: Vector2) -> void:
+	if n <= 0:
+		return
+	spins += n
+	_hud_hold("spins", n)
+	var flights := clampi(n, 1, 10)
+	var per := n / flights
+	var extra := n % flights
+	FX.deliver(self, from, _hud_at("spins"), "bolt", flights, func(i: int) -> void:
+		_hud_land("spins", per + (1 if i < extra else 0), Color(0.6, 0.9, 1.0))
+		Sfx.play("pop", -13.0))
+	_after(float(flights) * 0.17 + 1.6, func() -> void: _settle_hud("spins"))
+
+# A callback, later, without four lines of tween at every call site.
+func _after(secs: float, what: Callable) -> void:
+	var tw := create_tween()
+	tw.tween_interval(secs)
+	tw.tween_callback(what)
 
 func _banner(text: String, color: Color, emoji := "") -> void:
 	var box := HBoxContainer.new()
@@ -8971,7 +9420,7 @@ func _load_game() -> void:
 	clock_hw = maxf(clock_hw, _f(data.get("clock_hw", 0.0)))
 	coins = maxi(0, _i(data.get("coins", 1500), 1500))
 	spins = maxi(0, _i(data.get("spins", 30), 30))
-	shields = clampi(_i(data.get("shields", 0)), 0, 3)
+	shields = clampi(_i(data.get("shields", 0)), 0, SHIELD_CAP)
 	# Clamped against nonsense, not against progress.
 	#
 	# It was pinned to CV.ISLANDS.size() on the grounds that island_level

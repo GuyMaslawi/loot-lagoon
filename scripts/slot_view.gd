@@ -26,6 +26,20 @@ signal auto_toggled(on: bool)
 const BETS := [1, 2, 3, 5]
 const CARD := Vector2(438, 96)
 
+# How much bare page is left either side of the cabinet.
+#
+# It used to be 14, which made the machine 692 of 720 and left no gutter at
+# all -- so the page's floating buttons had nowhere to go but a band above the
+# machine, and that band was paid for out of the machine's own height. Pulling
+# the sides in to 66 gives each edge a lane wide enough to hold a 76px disc
+# with only its inner rim on the brass, and hands the height that band used to
+# occupy back to the reels. The cabinet gets narrower and considerably taller,
+# which is the proportion a slot machine wants anyway.
+#
+# Anything that floats in these lanes is read by main.gd off this constant --
+# do not widen it without looking at what lands on the brass.
+const CABINET_INSET := 66.0
+
 var spin_button: SpinButton
 var bet_button: Button
 var auto_on := false
@@ -112,8 +126,8 @@ func _build_cabinet() -> void:
 	_cabinet.add_theme_stylebox_override("panel", _cabinet_style())
 	add_child(_cabinet)
 	_cabinet.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	_cabinet.offset_left = 14.0
-	_cabinet.offset_right = -14.0
+	_cabinet.offset_left = CABINET_INSET
+	_cabinet.offset_right = -CABINET_INSET
 	_cabinet.offset_top = CARD.y * 0.5
 	var body := _cabinet_material()
 	var metal := ColorRect.new()
@@ -464,6 +478,92 @@ func set_meter(held: int, cap: int, secs_to_refill: float, refill: int) -> void:
 # them rather than at a hard-coded y, because that is where the player's eye
 # already is when the last reel stops -- and because the cabinet's height is
 # whatever the phone leaves over, so a fixed y drifts off it.
+# =============================================================================
+#  The steal, handed over by the thing that has been advertising it
+# =============================================================================
+#
+# An attack earns the search screen honestly: three hammers do not say who they
+# are going to land on, so watching the game look for somebody is the truth of
+# what is happening. A steal has had the answer pinned to the top of the
+# cabinet since before the spin -- face, name and pot -- so searching for it
+# would be theatre. That is why it never got one, and what it got instead was
+# half a second of nothing, which is not a beat either.
+#
+# So it gets the card coming off the machine. The raccoon that has been sitting
+# on the corner of it all along lunges first, the card unseats itself and rises
+# off the brass, and a ring goes out from under it. The raid arrives out of the
+# object the player was already reading -- which is the one thing the attack's
+# version cannot do, and the reason this is not just the search screen with a
+# different word on it.
+#
+# Returns how long the caller has to wait before taking the screen.
+const STEAL_TAKEOFF := 0.95
+
+var _takeoff: Tween
+var _takeoff_home := Vector2.ZERO
+var _takeoff_scale := Vector2.ONE
+
+func steal_takeoff() -> float:
+	if _card == null or not is_instance_valid(_card):
+		return 0.35
+	# Home is remembered rather than assumed, and a takeoff already in flight is
+	# undone before the new one reads it. Without that, a second send-off
+	# arriving mid-lift captures a raised, enlarged card as the rest state and
+	# parks it there for the rest of the session -- exactly the bug FX.shake
+	# carries a comment about, and naming it there while reproducing it here
+	# would be worse than not knowing.
+	if _takeoff != null and _takeoff.is_valid():
+		_takeoff.kill()
+		_card.position = _takeoff_home
+		_card.scale = _takeoff_scale
+		_card.modulate.a = 1.0
+	var home_pos := _card.position
+	var home_scale := _card.scale
+	_takeoff_home = home_pos
+	_takeoff_scale = home_scale
+	_card.pivot_offset = _card.size * 0.5
+	_card.z_index = 6
+
+	# The raccoon goes first, and he goes by squashing rather than turning.
+	# Flat art that rotates reads as a sticker being waggled, so the lunge is
+	# built out of weight: he crouches, then throws himself up and forward.
+	if _card_slot != null and is_instance_valid(_card_slot):
+		var mark := _card_slot.get_child(0) as Control
+		if mark != null:
+			mark.pivot_offset = Vector2(mark.size.x * 0.5, mark.size.y)
+			var lunge := mark.create_tween()
+			lunge.tween_property(mark, "scale", Vector2(1.18, 0.82), 0.10).set_trans(Tween.TRANS_SINE)
+			lunge.tween_property(mark, "scale", Vector2(0.92, 1.26), 0.13).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			lunge.parallel().tween_property(mark, "position:x", mark.position.x - 16.0, 0.13)
+			lunge.tween_property(mark, "scale", Vector2.ONE, 0.16).set_trans(Tween.TRANS_SINE)
+			lunge.parallel().tween_property(mark, "position:x", mark.position.x, 0.16)
+
+	Sfx.play("pop", -8.0)
+	var tw := create_tween()
+	_takeoff = tw
+	tw.tween_interval(0.12)
+	tw.tween_callback(func() -> void:
+		Sfx.play("raid", -6.0)
+		FX.ring(self, _card.position + _card.size * 0.5, Lagoon.CORAL_HI, 250.0, 0.5, 8.0, 40.0))
+	# Unseating: up and out, with the overshoot doing the work of "lifted"
+	# rather than "slid".
+	tw.parallel().tween_property(_card, "position:y", home_pos.y - 34.0, 0.34) 		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT).set_delay(0.12)
+	tw.parallel().tween_property(_card, "scale", home_scale * 1.12, 0.34) 		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT).set_delay(0.12)
+	# Held at the top of the lift for long enough to read the name and the pot
+	# one last time, because that is what the player is about to go and take.
+	tw.tween_interval(0.30)
+	tw.tween_property(_card, "scale", home_scale * 1.26, 0.19).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.parallel().tween_property(_card, "modulate:a", 0.0, 0.19)
+	# Put back under the overlay that has taken the screen by now, so the
+	# machine is whole again the moment the raid lets go of it.
+	tw.tween_callback(func() -> void:
+		_card.position = home_pos
+		_card.scale = home_scale
+		_card.modulate.a = 1.0
+		_card.z_index = 0
+		_takeoff = null)
+	return STEAL_TAKEOFF
+
 func reels_center() -> Vector2:
 	if reels == null or not reels.is_inside_tree():
 		return global_position + size * 0.5

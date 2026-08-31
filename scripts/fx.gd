@@ -250,3 +250,88 @@ static func throw_arc(node: Control, from: Vector2, to: Vector2, height := 240.0
 	, 0.0, 1.0, dur)
 	tw.parallel().tween_property(node, "rotation", spin, dur)
 	return tw
+
+# =============================================================================
+#  Delivery
+# =============================================================================
+#
+# A reward that the player watches arrive, instead of a counter that has
+# already changed by the time they look up.
+#
+# The rule these two enforce together: THE NUMBER MOVES WHEN THE THING LANDS.
+# `deliver` calls `on_land` once per item as that item reaches the counter, so
+# three shields are three separate events with three separate thumps, and a
+# player who looks away for half a second still sees the last of them arrive.
+# Adding the total up front and playing an animation of it afterwards is the
+# robotic version wearing a costume -- the counter is already right, so the
+# flight is decoration and reads as one.
+#
+# `becomes` is the other half. Handing back an overflowing reward as something
+# else is a story with a turn in it -- a shield that cannot fit BECOMES a
+# spin -- and the turn has to happen on screen or it is just a different number
+# appearing somewhere else. The swap fires at the apex of the arc, where the
+# eye is already tracking the object; done at either end it reads as two
+# objects rather than one changing.
+static func deliver(parent: Control, from: Vector2, to: Vector2, symbol: String,
+		count: int, on_land: Callable, becomes := "", arc := 190.0, gap := 0.17) -> void:
+	if count <= 0 or parent == null or not is_instance_valid(parent):
+		return
+	var tex := CV.symbol_tex(symbol)
+	var after: Texture2D = CV.symbol_tex(becomes) if becomes != "" else null
+	for i in count:
+		var tr := TextureRect.new()
+		tr.texture = tex
+		tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		tr.size = Vector2(76, 76)
+		tr.pivot_offset = tr.size * 0.5
+		tr.z_index = 101
+		tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		tr.modulate.a = 0.0
+		parent.add_child(tr)
+		var half := tr.size * 0.5
+		tr.position = from - half
+		# An Array rather than a plain local: the lambda below runs once per
+		# frame of the flight and has to remember whether it has already done
+		# the swap, and a captured bool is a copy.
+		var turned := [false]
+		var tw := parent.create_tween()
+		tw.tween_interval(float(i) * gap)
+		tw.tween_callback(func() -> void:
+			tr.modulate.a = 1.0
+			tr.scale = Vector2(0.5, 0.5))
+		tw.tween_property(tr, "scale", Vector2(1.0, 1.0), 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		tw.tween_method(func(u: float) -> void:
+			if not is_instance_valid(tr):
+				return
+			var p := from.lerp(to, u)
+			p.y -= sin(u * PI) * arc
+			tr.position = p - half
+			if u > 0.55:
+				# Shrinking only on the way down, so it reads as going away
+				# into the counter rather than as being thrown small.
+				var k: float = lerpf(1.0, 0.42, (u - 0.55) / 0.45)
+				tr.scale = Vector2(k, k)
+			if after != null and not turned[0] and u >= 0.5:
+				turned[0] = true
+				tr.texture = after
+				tr.scale = Vector2(1.35, 1.35)
+				ring(parent, p, Color(0.72, 0.94, 1.0), 62.0, 0.36, 7.0, 10.0)
+				Sfx.play("pop", -13.0)
+		, 0.0, 1.0, 0.74).set_trans(Tween.TRANS_SINE)
+		tw.tween_callback(func() -> void:
+			tr.queue_free()
+			on_land.call(i))
+
+# The thump a counter gives when something lands in it. Scaled from its own
+# centre, and the pivot is taken fresh every time -- these live in an HBox that
+# re-lays out whenever the number beside them changes width.
+static func counter_pop(node: Control, tint := Color(1, 1, 1, 0)) -> void:
+	if node == null or not is_instance_valid(node):
+		return
+	node.pivot_offset = node.size * 0.5
+	var tw := node.create_tween()
+	tw.tween_property(node, "scale", Vector2(1.24, 1.24), 0.09).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(node, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	if tint.a > 0.0:
+		burst(node.get_parent(), node.position + node.size * 0.5, tint, 7)
