@@ -578,6 +578,37 @@ end;
 $$;
 
 -- -----------------------------------------------------------------------------
+--  6. A clock the player cannot wind
+-- -----------------------------------------------------------------------------
+--
+-- Every cooldown in the game is measured against main.gd's `_now()`, which is a
+-- high-water mark: it rises with the device clock and never falls. That closes
+-- winding the clock BACK -- the trick it was built for -- and does nothing at
+-- all about winding it forward, which is the direction that pays.
+--
+-- Forward once is a full spin meter, the daily bonus, and the shop's free gift.
+-- The gift includes a card, a card earns stars, and stars are rank_stars, which
+-- is what the leaderboard sorts on. So a stock phone with no jailbreak and no
+-- edited file could climb the table by opening Settings.
+--
+-- The game cannot tell a device that slept for a day from one that was told it
+-- had. Something that is not on the device has to say so, and this is the
+-- smallest thing that can: the current time, from the same server the save
+-- already round-trips through on every launch.
+--
+-- Deliberately not `stable` and deliberately taking no arguments -- there is
+-- nothing here to cache and nothing to get wrong.
+create or replace function public.server_time()
+returns double precision
+language sql
+volatile
+security definer
+set search_path = ''
+as $$
+    select extract(epoch from now())::double precision
+$$;
+
+-- -----------------------------------------------------------------------------
 --  Privileges
 -- -----------------------------------------------------------------------------
 --
@@ -594,7 +625,7 @@ begin
          where n.nspname = 'public'
            and p.proname in ('find_target', 'record_raid', 'set_emoji',
                              'name_problem', 'fold_confusables', 'emoji_ok',
-                             'delete_account', 'claim_player')
+                             'delete_account', 'claim_player', 'server_time')
     loop
         execute format('revoke all on function %s from public, anon', fn);
         execute format('grant execute on function %s to authenticated', fn);

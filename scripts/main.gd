@@ -152,6 +152,42 @@ func _now() -> float:
 		clock_hw = t
 	return clock_hw
 
+# The clock for the two rewards that leave this device.
+#
+# `_now()` is a high-water mark, so it cannot be wound BACK -- which is the
+# trick it was built to stop, and it stops it. Forward is a different story and
+# it is the direction that pays: background the game, put the phone a day
+# ahead, come back, and the daily bonus and the shop's free gift are both ready
+# again. The gift carries a card; a card is stars; stars are `rank_stars`, which
+# is the number the global leaderboard sorts on. A stock phone, no jailbreak, no
+# edited file -- just the Settings app.
+#
+# The device cannot referee that. So when the game is signed in and has heard
+# what time it is from the server, these two cooldowns are measured against
+# that instead, carried forward on get_ticks_msec() because ticks are monotonic
+# and no setting moves them.
+#
+# When there is no anchor -- not signed in, or offline since launch -- this is
+# `_now()` and nothing changes. That is the honest shape of the problem rather
+# than a shortcut: an island that never reaches the server never reaches the
+# leaderboard either, so a player winding the clock on it is playing a
+# single-player game against themselves.
+func _trusted_now() -> float:
+	if Cloud.linked() and Cloud.time_anchored():
+		return Cloud.server_now()
+	return _now()
+
+# A stamp taken in one timebase and compared in the other reads as a cooldown
+# that never ends. That happens for real: a player who wound the clock forward
+# before signing in has `daily_last` sitting in the future, and after this change
+# the comparison is against real time.
+#
+# Clamping it down to now is both the fix and the right answer -- it costs a
+# cheater the day they stole and costs an honest player nothing, because an
+# honest stamp is never ahead of the clock it was taken from.
+func _trusted_stamp(last: float) -> float:
+	return minf(last, _trusted_now())
+
 # --- reading a save that may say anything -----------------------------------
 
 # The save is a JSON file on a device the player owns. It can be hand-edited,
@@ -1334,14 +1370,37 @@ func _ask_which_link(mine: Dictionary, theirs: Dictionary) -> void:
 # The server recorded that a raid happened and did not touch the save -- see the
 # note on record_raid in migration 0002. Applying it is this side's job, under
 # this side's rules, which is the only place those rules exist.
+# The ids of raids this island has already had applied to it.
+#
+# unseen_raids keeps returning a raid until ack_raids marks it seen, and the ack
+# is a separate request that can fail -- a flaky radio, a launch that goes
+# offline a second later, or somebody on the same wifi dropping that one POST.
+# Applying was unconditional, so every failed ack cost the player the same coins
+# and the same hut again on the next launch, and again after that.
+#
+# Kept in the save, capped, because the whole point is that it survives the
+# launch. Strings, not ints, so the JSON float trap that bit the card list does
+# not apply here -- see the note on _load_game.
+var applied_raids: Array = []
+const APPLIED_RAIDS_KEEP := 200
+
 func _on_cloud_raids(raids: Array) -> void:
 	var ids := []
+	var fresh := []
 	var taken := 0
 	var smashed := 0
 	for r in raids:
 		if typeof(r) != TYPE_DICTIONARY:
 			continue
-		ids.append(str(r.get("id", "")))
+		var rid := str(r.get("id", ""))
+		# Still acked -- the server should stop sending it either way -- but not
+		# applied twice. An id we cannot read is not one we can dedupe on, so it
+		# is acked and dropped rather than trusted.
+		if rid != "":
+			ids.append(rid)
+		if rid == "" or applied_raids.has(rid):
+			continue
+		fresh.append(rid)
 		match str(r.get("mode", "")):
 			"steal":
 				var c := int(r.get("coins", 0))
@@ -1356,6 +1415,12 @@ func _on_cloud_raids(raids: Array) -> void:
 					smashed += 1
 	if ids.is_empty():
 		return
+	# Recorded before the ack is attempted, not after it succeeds: the damage is
+	# already in `coins` and `buildings` by this line, and a crash between here
+	# and the next launch must not be able to lose the note that it happened.
+	applied_raids.append_array(fresh)
+	if applied_raids.size() > APPLIED_RAIDS_KEEP:
+		applied_raids = applied_raids.slice(applied_raids.size() - APPLIED_RAIDS_KEEP)
 	Cloud.ack_raids(ids)
 	_flush_save()
 	_refresh()
@@ -1557,6 +1622,11 @@ func _resume_from_away() -> void:
 	# deliver has been read by the act of opening the game.
 	Alerts.cancel_all()
 	Alerts.clear_delivered()
+	# Coming back from the background is exactly when the device clock may have
+	# changed while nobody was looking, so this is where the anchor is renewed.
+	# It answers a request later, not now: the cooldowns below read whichever
+	# anchor is current, and a stale one is only ever behind real time.
+	Cloud.refresh_time()
 	# Every second counts, however short the hop -- see _credit_time_away.
 	_credit_time_away(elapsed)
 	# Announcing it is a separate question. Under a minute is somebody flicking
@@ -2717,7 +2787,8 @@ func _update_badges() -> void:
 		_badges["shop_free"].visible = _shop_free_ready() or _piggy_full() or not _active_offer().is_empty()
 
 func _daily_ready() -> bool:
-	return _now() - daily_last >= DAILY_COOLDOWN
+	daily_last = _trusted_stamp(daily_last)
+	return _trusted_now() - daily_last >= DAILY_COOLDOWN
 
 func _mission_add(id: String, amount := 1) -> void:
 	_ensure_missions()
@@ -3029,7 +3100,7 @@ func _open_daily() -> void:
 			if not _daily_ready():
 				return
 			claim.disabled = true
-			daily_last = _now()
+			daily_last = _trusted_now()
 			coins += daily_coins
 			# rewards always add — the cap only limits time-based regen
 			spins += DAILY_BONUS_SPINS
@@ -3045,7 +3116,7 @@ func _open_daily() -> void:
 		)
 		vbox.add_child(claim)
 	else:
-		var left := maxi(0, int(DAILY_COOLDOWN - (_now() - daily_last)))
+		var left := maxi(0, int(DAILY_COOLDOWN - (_trusted_now() - daily_last)))
 		var info := _popup_row_label("Next bonus in  %s" % _countdown_text(left))
 		info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		vbox.add_child(info)
@@ -4648,16 +4719,17 @@ func _free_gift_card(vb: VBoxContainer) -> void:
 		row.add_child(claim)
 
 func _shop_free_ready() -> bool:
-	return _now() - shop_free_last >= CV.SHOP_FREE_COOLDOWN
+	shop_free_last = _trusted_stamp(shop_free_last)
+	return _trusted_now() - shop_free_last >= CV.SHOP_FREE_COOLDOWN
 
 func _shop_free_countdown_text() -> String:
-	var left := maxi(0, int(CV.SHOP_FREE_COOLDOWN - (_now() - shop_free_last)))
+	var left := maxi(0, int(CV.SHOP_FREE_COOLDOWN - (_trusted_now() - shop_free_last)))
 	return "%02d:%02d:%02d" % [left / 3600, (left % 3600) / 60, left % 60]
 
 func _claim_shop_gift() -> void:
 	if not _shop_free_ready():
 		return
-	shop_free_last = _now()
+	shop_free_last = _trusted_now()
 	coins += _scaled(CV.SHOP_FREE_COINS)
 	spins += CV.SHOP_FREE_SPINS
 	var pre_complete := {}
@@ -9310,6 +9382,9 @@ func _save_dict() -> Dictionary:
 		# The clock high-water mark. Without it in the save, quitting the game
 		# resets it to zero and every backward-clock exploit reopens on launch.
 		"clock_hw": clock_hw,
+		# Which raids have already been applied. See _on_cloud_raids: without
+		# this in the save, a failed ack replays the raid on every launch.
+		"applied_raids": applied_raids,
 	}
 
 func _flush_save() -> void:
@@ -9418,6 +9493,15 @@ func _load_game() -> void:
 	# whole load would run against a clock the player is free to have wound
 	# back. maxf, so a hand-edited save cannot lower it either.
 	clock_hw = maxf(clock_hw, _f(data.get("clock_hw", 0.0)))
+	# str() on every entry: these are compared with has() against ids that
+	# arrive as strings, and an array off a save is whatever the file said.
+	applied_raids = []
+	var _ar = data.get("applied_raids", [])
+	if typeof(_ar) == TYPE_ARRAY:
+		for _r in (_ar as Array):
+			applied_raids.append(str(_r))
+		if applied_raids.size() > APPLIED_RAIDS_KEEP:
+			applied_raids = applied_raids.slice(applied_raids.size() - APPLIED_RAIDS_KEEP)
 	coins = maxi(0, _i(data.get("coins", 1500), 1500))
 	spins = maxi(0, _i(data.get("spins", 30), 30))
 	shields = clampi(_i(data.get("shields", 0)), 0, SHIELD_CAP)

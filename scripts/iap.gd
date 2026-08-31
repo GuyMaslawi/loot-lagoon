@@ -465,11 +465,19 @@ func _reconcile(data: Dictionary) -> void:
 	if typeof(data.get("transactions")) != TYPE_ARRAY:
 		return
 	var rows: Array = data.get("transactions", [])
+	# A grant we cannot write down is a grant we will make again next launch.
+	if _ledger_unwritable:
+		push_warning("IAP: ledger unwritable; skipping reconcile this launch.")
+		return
 	if not _has_ledger:
+		var n := 0
 		for t in rows:
 			if typeof(t) == TYPE_DICTIONARY:
 				_granted[String(t.get("id", ""))] = true
+				n += 1
+		_granted[BASELINE_COUNT] = n
 		_has_ledger = true
+		_ledger_unverified = false
 		_save_ledger()
 		return
 	_outstanding.clear()
@@ -484,6 +492,14 @@ func _reconcile(data: Dictionary) -> void:
 			_granted[tid] = true   # refunded; record it so it stops coming back
 			continue
 		_outstanding.append([tid, pid])
+	# A ledger that says it was baselined but names nothing cannot prove which
+	# of these have been handed over already. One is the honest case -- a first
+	# purchase lost to a kill mid-grant, on a build before the baseline count
+	# existed. The rest of Apple's history is not.
+	if _ledger_unverified and _outstanding.size() > RECONCILE_UNVERIFIED_MAX:
+		push_warning("IAP: ledger records no baseline; granting %d of %d outstanding."
+				% [RECONCILE_UNVERIFIED_MAX, _outstanding.size()])
+		_outstanding = _outstanding.slice(0, RECONCILE_UNVERIFIED_MAX)
 	if not _outstanding.is_empty():
 		_save_ledger()   # the revocations recorded above
 		_grant_next()
@@ -550,6 +566,10 @@ var _ledger_unreadable := false
 const LEDGER_BAK := "user://iap_granted.json.bak"
 const LEDGER_TMP := "user://iap_granted.json.tmp"
 const BASELINE_KEY := "__baselined"
+# How many transactions Apple listed at the moment the baseline was taken. Its
+# presence is what tells a real baseline from a hand-written one -- see
+# _load_ledger. Its value is only ever read by a human reading the file.
+const BASELINE_COUNT := "__baseline_n"
 
 func _load_ledger() -> void:
 	var found := false
@@ -573,9 +593,52 @@ func _load_ledger() -> void:
 		# player kept truncating the file. Non-empty is grandfathered so that
 		# ledgers written before this key existed still read as baselined.
 		_has_ledger = _granted.has(BASELINE_KEY) or not _granted.is_empty()
+		# Truncating to `{}` was closed. Writing the sentinel and nothing else
+		# was not: `{"__baselined": true}` satisfies the line above while
+		# recording no transactions at all, so _reconcile takes the *else*
+		# branch, finds Apple's entire history outstanding, and hands it over --
+		# every pack the Apple ID ever bought, on every launch.
+		#
+		# The shape is recognisable because a real baseline now writes down how
+		# many transactions it saw. What it is NOT is proof of tampering: a
+		# genuine ledger from a build before this key, on a device whose very
+		# first purchase died between Apple charging the card and finish()
+		# returning, has exactly this shape too, and that player is owed a pack.
+		#
+		# So it is not refused, it is rationed -- see RECONCILE_UNVERIFIED_MAX.
+		# One outstanding transaction is the honest recovery case; a hundred is
+		# somebody reading this comment.
+		_ledger_unverified = (not _granted.has(BASELINE_COUNT)) and _txn_count() == 0
 		return
 	# Every copy on disk failed to parse. Say so rather than looking fresh.
 	_ledger_unreadable = found
+
+# True when the ledger on disk could not be written. Nothing that has already
+# been paid for is blocked by this -- a purchase in flight still completes and
+# still grants, because the player's money has already moved. What it blocks is
+# the *reconcile* path, which hands over history on the strength of the ledger
+# not mentioning it.
+#
+# That distinction is the whole point. A grant we cannot record is a grant we
+# will make again on the next launch, and again after that: the same file that
+# refuses to be written is the file _reconcile reads to decide what is still
+# owed. Making user://iap_granted.json.tmp a *directory* turned a one-off edit
+# into an unlimited standing order, because every _save_ledger after it returned
+# silently and nothing was ever written down.
+var _ledger_unwritable := false
+
+# Set when a ledger claims to be baselined but records nothing -- see
+# _load_ledger. Not a refusal, a ration.
+var _ledger_unverified := false
+const RECONCILE_UNVERIFIED_MAX := 1
+
+# How many real transaction ids the ledger holds, ignoring the bookkeeping keys.
+func _txn_count() -> int:
+	var n := 0
+	for k in _granted.keys():
+		if str(k) != BASELINE_KEY and str(k) != BASELINE_COUNT:
+			n += 1
+	return n
 
 func _save_ledger() -> void:
 	_granted[BASELINE_KEY] = true
@@ -583,21 +646,37 @@ func _save_ledger() -> void:
 	# ledger is indistinguishable from no ledger, and _reconcile answers "no
 	# ledger" by writing off every outstanding purchase. Scratch file first,
 	# rename over the real one only once it is closed and whole.
+	# A leftover of the wrong kind -- a directory where the scratch file goes --
+	# makes every open() below fail forever. Clearing it first turns a permanent
+	# condition into a transient one.
+	var d := DirAccess.open("user://")
+	if d != null and not FileAccess.file_exists(LEDGER_TMP):
+		d.remove(LEDGER_TMP)
 	var f := FileAccess.open(LEDGER_TMP, FileAccess.WRITE)
 	if f == null:
+		_ledger_write_failed("could not open the scratch file")
 		return
 	f.store_string(JSON.stringify(_granted))
 	f.close()
 	if FileAccess.get_open_error() != OK:
+		_ledger_write_failed("the write did not complete")
 		return
-	var d := DirAccess.open("user://")
 	if d == null:
+		_ledger_write_failed("user:// could not be opened")
 		return
 	if FileAccess.file_exists(LEDGER):
 		d.remove(LEDGER_BAK)
 		d.rename(LEDGER, LEDGER_BAK)
-	if d.rename(LEDGER_TMP, LEDGER) != OK and FileAccess.file_exists(LEDGER_BAK):
-		d.rename(LEDGER_BAK, LEDGER)
+	if d.rename(LEDGER_TMP, LEDGER) != OK:
+		if FileAccess.file_exists(LEDGER_BAK):
+			d.rename(LEDGER_BAK, LEDGER)
+		_ledger_write_failed("the rename did not land")
+		return
+	_ledger_unwritable = false
+
+func _ledger_write_failed(why: String) -> void:
+	_ledger_unwritable = true
+	push_warning("IAP: ledger not written (%s); reconcile is off this launch." % why)
 
 
 # --- Google Play -----------------------------------------------------------

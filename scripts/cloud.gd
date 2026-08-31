@@ -181,13 +181,32 @@ func _save_session() -> void:
 	f.close()
 
 
+# Signing out used to be entirely local: forget the tokens, delete the file,
+# emit. The refresh token stayed valid on GoTrue afterwards, and a refresh token
+# is not a password -- it is a bearer credential that answers to whoever holds
+# it, for as long as it lives.
+#
+# That matters because user:// on iOS is the app's Documents container, which is
+# in every iCloud and Finder backup. So a copy of cloud_session.json out of a
+# backup, a repaired phone, or a handed-down device was a working session even
+# though the player had signed out and even after they had changed their Apple
+# password -- and create_link_token needs nothing but a session, so one stolen
+# copy could be spent on a permanent identity link to that island.
+#
+# Telling GoTrue first is what makes signing out mean something. It is fired and
+# not waited on: the local half must happen whether or not the network answers,
+# and a player who signs out on a plane has still signed out on that device.
 func sign_out() -> void:
+	if _access != "" and configured():
+		_post("/auth/v1/logout?scope=global", {}, func(_c: int, _b) -> void: pass, true)
 	_access = ""
 	_refresh = ""
 	_expires_at = 0.0
 	_player = {}
 	_dirty = false
 	_pending = {}
+	_time_epoch = 0.0
+	_time_ticks = 0
 	DirAccess.remove_absolute(SESSION_PATH)
 	_clear_pending_link()
 	_set_state("off")
@@ -286,6 +305,9 @@ func claim(local: Dictionary, name: String, emoji: String,
 		signed_in.emit(_player.duplicate(true), bool(body.get("is_new", false)),
 				remote if typeof(remote) == TYPE_DICTIONARY else {})
 		fetch_raids()
+		# Before the game has had a chance to hand out a daily bonus against a
+		# clock nobody has checked.
+		refresh_time()
 	)
 
 
@@ -370,6 +392,66 @@ func _push() -> void:
 
 
 # =============================================================================
+#  A clock the player cannot wind
+# =============================================================================
+#
+# main.gd measures every cooldown against its own high-water clock, which rises
+# with the device and never falls. That stops the clock being wound BACK and
+# does nothing about forward, which is the direction that pays: one trip to
+# Settings is a full spin meter, the daily bonus, and the shop's free gift --
+# and the gift carries a card, which is stars, which is the number the
+# leaderboard sorts on.
+#
+# The device cannot referee this. So the server says what time it is, and the
+# answer is carried forward with get_ticks_msec() rather than with the wall
+# clock -- ticks are monotonic and, unlike Time.get_unix_time_from_system(),
+# there is no setting that moves them.
+#
+# What this is NOT is a replacement for the local clock. It is an anchor that
+# exists only when the game is signed in and has heard from the server at least
+# once; main.gd falls back to its own clock otherwise, because a player with no
+# account cannot reach the leaderboard and is only cheating themselves.
+var _time_epoch := 0.0     # server unix time at the moment of the anchor
+var _time_ticks := 0       # get_ticks_msec() at that same moment
+
+func time_anchored() -> bool:
+	return _time_epoch > 0.0
+
+# Seconds since the epoch, according to the server plus however long this
+# process has been running since it asked. Returns 0.0 when there is no anchor,
+# which callers must treat as "no opinion" rather than as 1970.
+func server_now() -> float:
+	if _time_epoch <= 0.0:
+		return 0.0
+	return _time_epoch + float(Time.get_ticks_msec() - _time_ticks) / 1000.0
+
+# Asked on every launch and again whenever the game comes back from the
+# background -- which is exactly when a wound clock would otherwise be believed.
+#
+# get_ticks_msec() is stamped BEFORE the request rather than after it, so the
+# round trip is counted as elapsed time. That errs by the latency, in the
+# direction of the anchor being slightly behind real time, which costs a player
+# a second on a cooldown and never pays one out early.
+func refresh_time() -> void:
+	if not linked():
+		return
+	var at := Time.get_ticks_msec()
+	_rpc("server_time", {}, func(code: int, body) -> void:
+		if code != 200:
+			return
+		var t := 0.0
+		if typeof(body) == TYPE_FLOAT or typeof(body) == TYPE_INT:
+			t = float(body)
+		if t <= 0.0:
+			return
+		_time_epoch = t
+		_time_ticks = at
+		time_anchored_changed.emit()
+	)
+
+signal time_anchored_changed
+
+# =============================================================================
 #  Rivals and raids
 # =============================================================================
 #
@@ -405,10 +487,27 @@ func fetch_raids() -> void:
 	)
 
 
-func ack_raids(ids: Array) -> void:
+# An ack that does not land is not cosmetic. unseen_raids keeps returning a raid
+# until seen_at is set, so a dropped ack means the same raid arrives again on the
+# next launch -- and main.gd applies whatever arrives. The coins come out twice.
+#
+# main.gd now refuses to apply an id it has already applied, which is the half of
+# the fix that holds even if this call never succeeds. This is the other half:
+# keep asking, rather than firing once into an ignored callback, so the server
+# stops sending it.
+const ACK_RETRIES := 3
+
+func ack_raids(ids: Array, attempt: int = 0) -> void:
 	if not linked() or ids.is_empty():
 		return
-	_rpc("ack_raids", {"p_ids": ids}, func(_c: int, _b) -> void: pass)
+	_rpc("ack_raids", {"p_ids": ids}, func(code: int, _b) -> void:
+		if code == 200 or attempt >= ACK_RETRIES:
+			return
+		# Backing off rather than hammering: the usual reason an ack fails is
+		# the radio, and the radio is not helped by being asked again at once.
+		var t := get_tree().create_timer(2.0 * float(attempt + 1))
+		t.timeout.connect(func() -> void: ack_raids(ids, attempt + 1))
+	)
 
 
 # =============================================================================
