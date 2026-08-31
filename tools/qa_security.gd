@@ -15,6 +15,7 @@ func _ready() -> void:
 	await _t_raid_applied_once()
 	_t_trusted_clock_falls_back()
 	_t_play_signature()
+	_t_play_field_substitution()
 	print("QA-SECURITY: %s" % ("ALL PASS" if fails == 0 else "%d FAILURES" % fails))
 	get_tree().quit(1 if fails > 0 else 0)
 
@@ -238,4 +239,90 @@ func _t_play_signature() -> void:
 									 "signature": Marshalls.raw_to_base64("nonsense".to_utf8_buffer())}))
 	_chk("and a purchase carrying no signature at all is refused",
 		 not IAP._play_signature_ok({"original_json": payload, "signature": ""}))
+	IAP._play_key = null
+
+# --- the signed payload said one thing and the row beside it said another ----
+#
+# The RSA check verified `original_json` and then _take_play_purchase granted
+# whatever `product_ids` held -- a field the signature does not cover and a
+# patched billing service writes itself. One real 0.99 purchase, replayed with
+# the product name swapped, bought the whole shop. These assert that the
+# verified payload is now the only thing with a vote.
+func _t_play_field_substitution() -> void:
+	print("play: the row lying about what the signature covered")
+	var crypto := Crypto.new()
+	var key := crypto.generate_rsa(2048)
+	var cheap := ('{"orderId":"GPA.1","packageName":"%s","productId":"com.guymaslawi.lootlagoon.spins_s",'
+		+ '"purchaseToken":"real-token","purchaseState":0}') % IAP.PLAY_PACKAGE
+
+	var signer := func(payload: String) -> String:
+		var ctx := HashingContext.new()
+		ctx.start(HashingContext.HASH_SHA1)
+		ctx.update(payload.to_utf8_buffer())
+		return Marshalls.raw_to_base64(crypto.sign(HashingContext.HASH_SHA1, ctx.finish(), key))
+
+	# The row a patched billing service hands over: a genuine signed receipt for
+	# the cheapest pack, with the expensive one named in the unsigned fields.
+	var forged := {
+		"original_json": cheap,
+		"signature": signer.call(cheap),
+		"product_ids": PackedStringArray(["com.guymaslawi.lootlagoon.bundle_xl"]),
+		"purchase_token": "attacker-token",
+		"purchase_state": IAP.PLAY_STATE_PURCHASED,
+	}
+
+	# No key configured: unchanged from what shipped -- the plugin is believed.
+	IAP._play_key = null
+	IAP._play_key_checked = true
+	var open_view := IAP._play_trusted(forged)
+	_chk("with no key the plugin's view is passed through",
+		 String(open_view.get("pid", "")) == "com.guymaslawi.lootlagoon.bundle_xl")
+
+	var pub := CryptoKey.new()
+	pub.load_from_string(key.save_to_string(true), true)
+	IAP._play_key = pub
+
+	var v := IAP._play_trusted(forged)
+	_chk("the granted product comes off the SIGNED payload, not the row",
+		 String(v.get("pid", "")) == "com.guymaslawi.lootlagoon.spins_s",
+		 String(v.get("pid", "")))
+	_chk("and so does the token the ledger dedupes on",
+		 String(v.get("token", "")) == "real-token", String(v.get("token", "")))
+
+	# purchaseState 0 inside the JSON is PURCHASED; the enum outside it is 1.
+	# Mapping the two is the difference between granting and silently not.
+	_chk("a signed purchased state maps to the plugin's enum",
+		 int(v.get("state", -1)) == IAP.PLAY_STATE_PURCHASED, str(v.get("state", -1)))
+
+	# A real purchase still awaiting a kiosk payment, dressed as a completed one.
+	var pending := cheap.replace('"purchaseState":0', '"purchaseState":4')
+	var p := IAP._play_trusted({
+		"original_json": pending, "signature": signer.call(pending),
+		"product_ids": PackedStringArray(["com.guymaslawi.lootlagoon.spins_s"]),
+		"purchase_token": "real-token",
+		"purchase_state": IAP.PLAY_STATE_PURCHASED,
+	})
+	_chk("a signed PENDING purchase is not granted just because the row says otherwise",
+		 int(p.get("state", -1)) == IAP.PLAY_STATE_PENDING, str(p.get("state", -1)))
+
+	# Signed by our key but naming somebody else's app.
+	var alien := cheap.replace(IAP.PLAY_PACKAGE, "com.someone.else")
+	_chk("a receipt naming another package is refused",
+		 IAP._play_trusted({"original_json": alien, "signature": signer.call(alien),
+							"product_ids": PackedStringArray(["x"]),
+							"purchase_token": "t",
+							"purchase_state": IAP.PLAY_STATE_PURCHASED}).is_empty())
+
+	_chk("a signed payload that is not JSON is refused",
+		 IAP._play_trusted({"original_json": "not json", "signature": signer.call("not json"),
+							"product_ids": PackedStringArray(["x"]),
+							"purchase_token": "t",
+							"purchase_state": IAP.PLAY_STATE_PURCHASED}).is_empty())
+
+	_chk("a forged signature is refused outright",
+		 IAP._play_trusted({"original_json": cheap,
+							"signature": Marshalls.raw_to_base64("nope".to_utf8_buffer()),
+							"product_ids": PackedStringArray(["x"]),
+							"purchase_token": "t",
+							"purchase_state": IAP.PLAY_STATE_PURCHASED}).is_empty())
 	IAP._play_key = null

@@ -4,6 +4,7 @@
 #   ./ship_android.sh              export build/android-release/LootLagoon.aab
 #   ./ship_android.sh --apk        ...an installable .apk instead, for a device
 #   ./ship_android.sh --build 41   ...overriding the version code
+#   ./ship_android.sh --unverified ...build the .aab with no licensing key
 #
 # The Android twin of ship.sh, and deliberately the same shape: derive the
 # number, check the things that fail silently, export, verify the signature,
@@ -53,9 +54,11 @@ OUT_AAB="build/android-release"
 OUT_APK="build/android-device"
 
 FORMAT_APK=0
+ALLOW_UNVERIFIED=0
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--apk) FORMAT_APK=1; shift ;;
+		--unverified) ALLOW_UNVERIFIED=1; shift ;;
 		# Checked here rather than left to the upload: Play only rejects a bad
 		# version code at the very end, after a full bundle has been built and
 		# sent. A plain positive integer, and Play's own ceiling is 2100000000.
@@ -78,15 +81,32 @@ grep -q '^\[preset.1\]' export_presets.cfg || {
 	echo "export_presets.cfg has no Android preset -- see the Android notes before building" >&2
 	exit 1
 }
-# Without gradle there is no way to link an Android plugin, so the bundle comes
-# out complete, installable, and missing whatever the plugin was for. On this
-# project that is Google Play Billing, i.e. the entire shop.
-# Not fatal, because a build that refuses to exist is worse than one whose
-# purchases are checked only by Google's own service. But it is money, so it is
-# said every time rather than once in a README nobody opens.
+# THE LICENSING KEY, and why a missing one now stops an .aab and not an .apk.
+#
+# iap.gd fails OPEN with no key: it grants without checking, because refusing
+# every purchase over a missing config file is a worse failure on a phone. That
+# is the right call at runtime and the wrong one here. Fail-open means _every_
+# guard is off -- not just "is this receipt real", but also "does the signed
+# receipt name the product we are about to hand over", which is the substitution
+# hole _play_trusted exists to close. A bundle built without the key is one
+# where a patched billing service buys the whole shop with one 0.99 receipt.
+#
+# So: the .aab, which is the artifact that goes to Play, refuses. The .apk,
+# which goes to a phone on this desk, still only warns -- that is where you
+# test, and the key is not always to hand. --unverified forces the .aab through
+# for the same reason, deliberately and out loud.
 if [ ! -f play_billing.json ] || ! grep -q '"license_key" *: *"[^"]' play_billing.json 2>/dev/null; then
-	echo "!! no play_billing.json license_key -- Play purchase signatures will NOT be checked" >&2
-	echo "   Play Console > Monetise > Monetisation setup > Licensing; see play_billing.example.json" >&2
+	if [ "$FORMAT_APK" = "1" ] || [ "$ALLOW_UNVERIFIED" = "1" ]; then
+		echo "!! no play_billing.json license_key -- Play purchase signatures will NOT be checked" >&2
+		echo "   Play Console > Monetise > Monetisation setup > Licensing; see play_billing.example.json" >&2
+	else
+		echo "!! no play_billing.json license_key -- refusing to build a bundle for Play" >&2
+		echo "   Purchases would be granted unverified, and the product a receipt names" >&2
+		echo "   would not be checked against the product handed over." >&2
+		echo "   Play Console > Monetise > Monetisation setup > Licensing; see play_billing.example.json" >&2
+		echo "   To ship anyway, knowing this: ./ship_android.sh --unverified" >&2
+		exit 1
+	fi
 fi
 
 grep -q '^gradle_build/use_gradle_build=true' export_presets.cfg || {

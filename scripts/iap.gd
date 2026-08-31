@@ -923,17 +923,105 @@ func _play_signature_ok(row: Dictionary) -> bool:
 	var digest := ctx.finish()
 	return Crypto.new().verify(HashingContext.HASH_SHA1, digest, sig, _play_key)
 
+# What the signature actually covers, and why reading `row` past it was a hole.
+#
+# The RSA check above verifies `signature` against `original_json` and NOTHING
+# ELSE. But the row the plugin hands over carries `product_ids`, `purchase_token`
+# and `purchase_state` as SIBLING fields, read off the Java `Purchase` getters --
+# and those are not signed. The threat this whole check exists for is a patched
+# billing service, which builds that Purchase object itself. So it could hand
+# back a genuine, genuinely-Google-signed `original_json` for the 0.99 spin pack
+# -- captured from one real purchase, or replayed forever -- while setting
+# `product_ids` to the 99.99 bundle. The signature verified, and the grant came
+# off the field beside it. The check was decorative.
+#
+# So once the signature has verified, the signed payload is the ONLY thing that
+# gets a vote: the product, the token the ledger dedupes on, and the state.
+#
+# THE ENCODING TRAP, which is why the state is mapped rather than compared.
+# `Purchase.getPurchaseState()` -- what `row.purchase_state` holds -- is the
+# Billing library enum: PURCHASED = 1, PENDING = 2. `purchaseState` INSIDE
+# `original_json` is the older INAPP_PURCHASE_DATA encoding, where purchased is
+# 0 and pending is 4. Comparing the two directly reads every real purchase as
+# "not purchased" and silently grants nothing.
+#
+# Fail open with no key configured, exactly as _play_signature_ok does: this
+# returns the plugin's own view unchanged, which is what shipped before.
+const PLAY_PACKAGE := "com.guymaslawi.lootlagoon"
+const PLAY_JSON_PURCHASED := 0
+const PLAY_JSON_PENDING := 4
+
+func _play_trusted(row: Dictionary) -> Dictionary:
+	var view := {
+		"token": String(row.get("purchase_token", "")),
+		"pid": "",
+		"state": int(row.get("purchase_state", 0)),
+	}
+	var ids: PackedStringArray = row.get("product_ids", PackedStringArray())
+	if not ids.is_empty():
+		view["pid"] = String(ids[0])
+
+	if not _play_key_checked:
+		_load_play_key()
+	if _play_key == null:
+		return view
+	if not _play_signature_ok(row):
+		return {}
+
+	var parsed = JSON.parse_string(String(row.get("original_json", "")))
+	if typeof(parsed) != TYPE_DICTIONARY:
+		push_warning("IAP: a signed Play purchase carried unreadable JSON; refusing it.")
+		return {}
+	var j := parsed as Dictionary
+
+	# Free to check, and what a receipt lifted from a different build would
+	# differ on. Absent in some responses, so its absence is not a refusal.
+	var pkg := String(j.get("packageName", ""))
+	if pkg != "" and pkg != PLAY_PACKAGE:
+		push_warning("IAP: a Play purchase named package '%s'; refusing it." % pkg)
+		return {}
+
+	# One-time products carry `productId`; some responses carry `productIds`.
+	var pid := String(j.get("productId", ""))
+	if pid == "":
+		var arr = j.get("productIds", [])
+		if typeof(arr) == TYPE_ARRAY and not (arr as Array).is_empty():
+			pid = String((arr as Array)[0])
+	var token := String(j.get("purchaseToken", ""))
+	if pid == "" or token == "":
+		push_warning("IAP: a signed Play purchase named no product or token; refusing it.")
+		return {}
+
+	# Only when the payload says so. Missing means fall back to the plugin --
+	# the field is optional, and a purchase is not worth losing over it.
+	var state := int(row.get("purchase_state", 0))
+	if j.has("purchaseState"):
+		match int(j["purchaseState"]):
+			PLAY_JSON_PURCHASED: state = PLAY_STATE_PURCHASED
+			PLAY_JSON_PENDING:   state = PLAY_STATE_PENDING
+			_:                   state = 0
+	return {"token": token, "pid": pid, "state": state}
+
 # One purchase off Play, from whichever direction it arrived. Both the answer to
 # a Pay button and the launch reconcile land here, because on Play they are
 # genuinely the same object and telling them apart is this function's job.
 func _take_play_purchase(row: Dictionary) -> void:
-	var token := String(row.get("purchase_token", ""))
-	var ids: PackedStringArray = row.get("product_ids", PackedStringArray())
-	if token == "" or ids.is_empty():
+	# Everything below reads the verified view, never `row`. See _play_trusted.
+	var trusted := _play_trusted(row)
+	if trusted.is_empty():
+		# A signature that did not check out. Tell whoever is watching a
+		# disabled Pay button, using the plugin's own name for the product --
+		# it is untrusted, but it only picks which modal to close.
+		var claimed: PackedStringArray = row.get("product_ids", PackedStringArray())
+		if busy and not claimed.is_empty() and _pending == String(claimed[0]):
+			_fail(_pending, "That purchase could not be verified.")
 		return
-	var pid := String(ids[0])
+	var token := String(trusted["token"])
+	var pid := String(trusted["pid"])
+	if token == "" or pid == "":
+		return
 
-	var state := int(row.get("purchase_state", 0))
+	var state := int(trusted["state"])
 	if state == PLAY_STATE_PENDING:
 		# Play's deferred payment -- cash at a kiosk, a parent to approve. The
 		# sale is neither made nor lost, so the store reopens and the next
@@ -946,12 +1034,6 @@ func _take_play_purchase(row: Dictionary) -> void:
 			_emit("defer", pid, "")
 		return
 	if state != PLAY_STATE_PURCHASED:
-		return
-
-	# Before anything is granted and before the ledger is touched.
-	if not _play_signature_ok(row):
-		if busy and _pending == pid:
-			_fail(pid, "That purchase could not be verified.")
 		return
 
 	if _granted.has(token):
