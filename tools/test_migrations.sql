@@ -132,6 +132,29 @@ begin
     perform pg_temp.ck('and they do not come back',
                        jsonb_array_length(public.unseen_raids()) = 0);
 
+    -- The fetch is bounded, and this is measured rather than read. `limit 50`
+    -- sat on an aggregate query with no GROUP BY, where it limited the one
+    -- result row the aggregate already produced and none of the rows going
+    -- into it -- so the answer was every unseen raid this victim had ever
+    -- accumulated. main.gd dedupes against a 200-entry list sized for a
+    -- 50-row answer, so past that the oldest ids fall off and a failed ack
+    -- means the coins come out twice. Sixty raids, so the bound has to bite.
+    insert into public.raids (attacker, victim, mode, coins)
+         select p_alice, p_bob, 'steal', 1 from generate_series(1, 60);
+    perform pg_temp.ck('a big backlog is handed over in bounded batches',
+                       jsonb_array_length(public.unseen_raids()) = 50,
+                       jsonb_array_length(public.unseen_raids())::text);
+    -- Nothing is dropped: what did not fit is still unseen and comes next time.
+    select public.ack_raids(array(select (x->>'id')::uuid
+                                    from jsonb_array_elements(public.unseen_raids()) x)) into n;
+    perform pg_temp.ck('and the remainder is still waiting, not lost',
+                       jsonb_array_length(public.unseen_raids()) = 10,
+                       jsonb_array_length(public.unseen_raids())::text);
+    select public.ack_raids(array(select (x->>'id')::uuid
+                                    from jsonb_array_elements(public.unseen_raids()) x)) into n;
+    perform pg_temp.ck('until the backlog is drained',
+                       jsonb_array_length(public.unseen_raids()) = 0);
+
     -- --- linking a second provider -----------------------------------------
     perform pg_temp.be(alice);
     tok := public.create_link_token();
