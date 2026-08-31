@@ -26,6 +26,7 @@ func _ready() -> void:
 	await _t_alert_plan()
 	await _t_during_boot()
 	await _t_focus_only()
+	await _t_interrupted_spin()
 	# And leave nothing behind either. This harness winds the game's clock
 	# hours forward, and the high-water mark rides in the save -- qa_soak's
 	# clock-rollback test reads it and fails on our leftovers, which looks
@@ -357,3 +358,55 @@ func _t_focus_only() -> void:
 	_chk("away cleared after the glance", m._away_since == 0.0)
 	_chk("four seconds are still banked, not binned", m._regen_accum >= 3.9,
 		"accum=%.2f" % m._regen_accum)
+
+# --- backgrounded with the reels still turning -------------------------------
+#
+# The stake comes off `spins` when the button is pressed and the outcome lands
+# a second or two later. _go_away() flushes in between -- a call, a lock screen,
+# the notification shade -- and used to write the deduction with no win beside
+# it. A player interrupted mid-spin came back one spin poorer for nothing, and
+# spins are sold for money.
+func _t_interrupted_spin() -> void:
+	print("locked the phone mid-spin")
+	_quiet()
+	m.spins = 40
+	m._flush_save()
+	_chk("the settled figure is on disk to start with", int(_read_save().get("spins", -1)) == 40,
+		 str(_read_save().get("spins", -1)))
+
+	# The stake, taken exactly as _try_spin takes it.
+	m._last_bet = 3
+	m.spins -= 3
+	m._stake_pending = 3
+	m._flush_save()
+	_chk("a spin still in the air is not written off as spent",
+		 int(_read_save().get("spins", -1)) == 40, str(_read_save().get("spins", -1)))
+	_chk("and the meter on screen still shows it taken", m.spins == 37, str(m.spins))
+
+	# The outcome lands. Now it is spent, and the save may say so.
+	m._stake_pending = 0
+	m._flush_save()
+	_chk("once the reels stop the deduction is persisted",
+		 int(_read_save().get("spins", -1)) == 37, str(_read_save().get("spins", -1)))
+
+	# A whole spin, driven through the real path, interrupted before it lands.
+	m.spins = 40
+	m._stake_pending = 0
+	m.auto_spin = false
+	m._flush_save()
+	m.slot.bet = 1
+	m._on_spin_requested()
+	_chk("the real spin path marks its stake pending", m._stake_pending == 1, str(m._stake_pending))
+	m._go_away()
+	_chk("_go_away does not bank an unsettled stake",
+		 int(_read_save().get("spins", -1)) == 40, str(_read_save().get("spins", -1)))
+	m._away_since = 0.0
+
+	# Let it finish and confirm it settles by itself, with no refund left over.
+	await get_tree().create_timer(3.0).timeout
+	_chk("the spin settles on its own", m._stake_pending == 0, str(m._stake_pending))
+	m._flush_save()
+	_chk("and then the spent spin is on disk, once",
+		 int(_read_save().get("spins", -1)) == m.spins,
+		 "%s vs %s" % [_read_save().get("spins", -1), m.spins])
+	_chk("no spin was minted by the refund", m.spins <= 39, str(m.spins))

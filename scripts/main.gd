@@ -354,6 +354,10 @@ var pages := {}
 var _page_bodies := {}
 var auto_spin := false
 var _last_bet := 1
+# The stake of a spin that has been taken but whose outcome has not landed yet.
+# Not saved as itself -- it is added back to `spins` on the way into the save.
+# See _save_dict.
+var _stake_pending := 0
 var purchased_ids := []
 var shop_free_last := 0.0
 # Coins banked behind the piggy's glass. Filled by playing, spent only by
@@ -7769,6 +7773,7 @@ func _on_spin_requested() -> void:
 		return
 	_last_bet = slot.bet
 	spins -= _last_bet
+	_stake_pending = _last_bet
 	Sfx.play("pop", -8.0)
 	_piggy_add(CV.PIGGY_PER_SPIN * _last_bet)
 	_mission_add("spins")
@@ -7911,6 +7916,10 @@ func _weighted_pick(weights: Dictionary) -> String:
 func _on_spin_finished(result: Array) -> void:
 	if result.size() < 3:
 		return
+	# The outcome exists now, so the stake is settled and the save may write
+	# the deducted figure. Cleared before anything below can reach a flush --
+	# an attack triple calls _start_visit synchronously a few lines down.
+	_stake_pending = 0
 	var bet := _last_bet
 	var gain := 0
 	var triple: bool = result[0] == result[1] and result[1] == result[2]
@@ -9351,7 +9360,21 @@ func _save_game() -> void:
 func _save_dict() -> Dictionary:
 	return {
 		"coins": coins,
-		"spins": spins,
+		# A SPIN IN FLIGHT IS NOT A SPIN SPENT. The stake comes off `spins` the
+		# instant the button is pressed and the outcome lands a second or two
+		# later, and _go_away() flushes in between -- a call, a lock screen, the
+		# notification shade. That wrote the deduction with no win beside it, so
+		# a player who was interrupted mid-spin came back one spin poorer for
+		# nothing. Spins are sold for money, so that is a refund owed.
+		#
+		# Only the serialised figure is adjusted, never `spins` itself: if the
+		# app is merely backgrounded and comes back, the spin finishes normally
+		# and the next flush writes the settled number. Self-correcting in the
+		# common case, and right in the case where the process never returns.
+		#
+		# The upgrade path is the model this copies -- it has always persisted
+		# nothing until the thing bought exists.
+		"spins": spins + _stake_pending,
 		"stars": stars,
 		"rank_stars": rank_stars,
 		# Saved next to rank_stars and deliberately never merged with it -- see
