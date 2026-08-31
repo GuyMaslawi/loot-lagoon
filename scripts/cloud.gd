@@ -60,6 +60,7 @@ signal sync_state_changed(state: String)
 
 const CONFIG_PATH := "res://supabase.json"
 const SESSION_PATH := "user://cloud_session.json"
+const SESSION_TMP := "user://cloud_session.json.tmp"
 
 # A link in progress, on disk rather than in memory, because the thing that
 # happens between handing the token out and redeeming it is a sign-in -- and a
@@ -152,24 +153,53 @@ func _set_state(s: String) -> void:
 # because the save is handed around: _flush_save's dictionary is what gets
 # pushed to the server, and a refresh token riding along inside it would be a
 # credential stored in a column that other code is allowed to read back.
+# The scratch path is tried second, and only ever second.
+#
+# _save_session removes the real file and then renames the scratch one over it,
+# because DirAccess.rename() will not replace something that exists. Those are
+# two operations and this game is killed between operations for a living, so
+# there is a window with a complete session on disk under the wrong name and
+# nothing under the right one. Reading it back closes that window; ordering it
+# second is what keeps the fix from becoming its own bug, because a scratch file
+# is ALSO what a death mid-write leaves behind, and that one is half a file.
+#
+# Which is why it is parsed before it is believed rather than merely opened. A
+# truncated file fails JSON.parse_string and is skipped exactly like an absent
+# one, so the only scratch file that is ever adopted is a whole one.
 func _load_session() -> void:
-	if not FileAccess.file_exists(SESSION_PATH):
+	for path in [SESSION_PATH, SESSION_TMP]:
+		if not FileAccess.file_exists(path):
+			continue
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f == null:
+			continue
+		var d = JSON.parse_string(f.get_as_text())
+		f.close()
+		if typeof(d) != TYPE_DICTIONARY:
+			continue
+		var access := str((d as Dictionary).get("access_token", ""))
+		# A dictionary with no token in it is not a session, and adopting it
+		# would only stop the scratch file being tried.
+		if access == "":
+			continue
+		_access = access
+		_refresh = str((d as Dictionary).get("refresh_token", ""))
+		_expires_at = float((d as Dictionary).get("expires_at", 0.0))
+		var pl = (d as Dictionary).get("player", {})
+		_player = pl if typeof(pl) == TYPE_DICTIONARY else {}
 		return
-	var f := FileAccess.open(SESSION_PATH, FileAccess.READ)
-	if f == null:
-		return
-	var d = JSON.parse_string(f.get_as_text())
-	if typeof(d) != TYPE_DICTIONARY:
-		return
-	_access = str(d.get("access_token", ""))
-	_refresh = str(d.get("refresh_token", ""))
-	_expires_at = float(d.get("expires_at", 0.0))
-	var p = d.get("player", {})
-	_player = p if typeof(p) == TYPE_DICTIONARY else {}
 
 
+# Written to one side and renamed into place, the way iap.gd writes the ledger
+# and for the same reason: opening the real path with WRITE truncates it, and
+# this is a mobile game that is killed without warning. A process that died in
+# that window left a half-written cloud_session.json, which _load_session reads
+# as "not a dictionary" and skips -- a player silently signed out, and on iOS
+# the sign-in button they need is not even drawn until Sign in with Apple
+# exists. The rename is atomic, so the file on disk is either the old session
+# or the new one and never half of either.
 func _save_session() -> void:
-	var f := FileAccess.open(SESSION_PATH, FileAccess.WRITE)
+	var f := FileAccess.open(SESSION_TMP, FileAccess.WRITE)
 	if f == null:
 		return
 	f.store_string(JSON.stringify({
@@ -179,6 +209,16 @@ func _save_session() -> void:
 		"player": _player,
 	}))
 	f.close()
+	var d := DirAccess.open("user://")
+	if d == null:
+		return
+	# rename() will not replace an existing file, so the old one goes first.
+	# The window this opens is the crash-with-no-session case, which costs a
+	# sign-in; the window it closes is the corrupt-session case, which looks
+	# identical and is reached far more often.
+	if FileAccess.file_exists(SESSION_PATH):
+		d.remove(SESSION_PATH)
+	d.rename(SESSION_TMP, SESSION_PATH)
 
 
 # Signing out used to be entirely local: forget the tokens, delete the file,
@@ -208,6 +248,7 @@ func sign_out() -> void:
 	_time_epoch = 0.0
 	_time_ticks = 0
 	DirAccess.remove_absolute(SESSION_PATH)
+	DirAccess.remove_absolute(SESSION_TMP)
 	_clear_pending_link()
 	_set_state("off")
 	signed_out.emit()
@@ -712,20 +753,60 @@ func _rpc(fn: String, args: Dictionary, then: Callable) -> void:
 # about it. A refresh that fails still runs the request: it may be a token that
 # is fine and a network that is not, and the 401 that comes back is a cheaper
 # way to find out than a second state machine.
+#
+# ONE REFRESH AT A TIME, and this is not a tidiness guard -- it is the fix for a
+# silent sign-out that fired on an ordinary resume.
+#
+# GoTrue ROTATES refresh tokens: spending one issues a new one and retires the
+# old. This used to fire a request per caller, and callers arrive together.
+# _resume_from_away calls refresh_time() and then _flush_save(), which marks the
+# copy dirty, so cloud's own _process pushes a frame or two later -- while the
+# first refresh is still on the wire and _expires_at is therefore still stale.
+# Two requests then spent the SAME refresh token. Supabase forgives that inside
+# its reuse interval (ten seconds by default) and hands both the same session,
+# which is why this survived being looked at. Outside it -- a slow radio, a
+# retry, a second request that simply took longer -- the loser gets a 400 for a
+# token that was already spent, and the branch below reads that as "revoked in
+# Settings" and signs the player out. Reuse detection can also revoke the whole
+# token family, which signs them out on every device at once.
+#
+# So the first caller sends the request and everyone who arrives while it is in
+# flight waits in line. They are all called back afterwards -- including when
+# the refresh failed -- because a caller whose `then` never runs is a request
+# that silently disappears.
+var _refreshing := false
+var _refresh_waiters: Array = []
+
 func _with_fresh_token(then: Callable) -> void:
 	if _refresh == "" or _now() < _expires_at - REFRESH_MARGIN:
 		then.call()
 		return
+	_refresh_waiters.append(then)
+	if _refreshing:
+		return
+	_refreshing = true
+	# Read once, here. sign_out() below clears _refresh, and the request must
+	# carry the token this call set out with either way.
+	var spending := _refresh
 	var done := func(code: int, body) -> void:
+		_refreshing = false
 		if code == 200 and typeof(body) == TYPE_DICTIONARY and (body as Dictionary).has("access_token"):
 			_take_session(body)
 		elif code == 400 or code == 401:
 			# The refresh token is gone for good -- revoked in Settings,
 			# password changed, account deleted elsewhere. Signing out is
-			# honest; retrying forever is not.
+			# honest; retrying forever is not. Only ever reached by the one
+			# caller that actually spent the token, never by a queued sibling
+			# that would have spent it a second time.
 			sign_out()
-		then.call()
-	_post("/auth/v1/token?grant_type=refresh_token", {"refresh_token": _refresh}, done, false)
+		# Taken and cleared before any of them run: a waiter is free to make
+		# another request, and that request must queue behind the NEXT refresh
+		# rather than land in the list being drained.
+		var waiting: Array = _refresh_waiters.duplicate()
+		_refresh_waiters.clear()
+		for w in waiting:
+			(w as Callable).call()
+	_post("/auth/v1/token?grant_type=refresh_token", {"refresh_token": spending}, done, false)
 
 
 func _post(path: String, body: Variant, then: Callable, authed: bool) -> void:
