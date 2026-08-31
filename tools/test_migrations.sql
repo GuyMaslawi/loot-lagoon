@@ -92,8 +92,30 @@ begin
     perform pg_temp.ck('and the bot it found is in band, not just any bot',
                        abs((r->>'island_level')::int - 6) <= 3, coalesce(r::text, 'NULL'));
 
+    -- --- a raid now needs an offer the server issued ------------------------
+    --
+    -- Bob was raided above, so the 24-hour rule has closed him and find_target
+    -- will not offer him again. Reaching for him anyway is exactly the attack:
+    -- his uuid is public, and before the offer table this call went through.
+    begin
+        r := public.record_raid(p_bob, 'steal', 999999999);
+        perform pg_temp.ck('a raid against an island the server never offered is refused',
+                           false, 'record_raid returned ' || coalesce(r::text, 'NULL'));
+    exception when others then
+        perform pg_temp.ck('a raid against an island the server never offered is refused',
+                           sqlerrm like '%no open raid offer%'
+                        or sqlerrm like '%already raided%', sqlerrm);
+    end;
+
     -- --- the server clamps a lying client ----------------------------------
+    -- Wind the clock back on the earlier raid so Bob is offerable again, then
+    -- take the offer honestly. What is under test here is the coin clamp, not
+    -- the cooldown that is under test just above.
+    update public.raids set created_at = now() - interval '2 days'
+     where attacker = p_alice and victim = p_bob;
     update public.players set vault_coins = 500 where id = p_bob;
+    perform pg_temp.ck('find_target offers the reopened human again',
+                       (public.find_target('steal')->>'id')::uuid = p_bob);
     r := public.record_raid(p_bob, 'steal', 999999999);
     perform pg_temp.ck('a raid cannot take more than the victim actually holds',
                        (r->>'coins')::bigint = 500, r::text);
@@ -219,6 +241,135 @@ begin
                    and (select count(*) from public.reports where reporter = p_alice) = 1);
     delete from public.blocks where blocker = p_alice;
 
+    -- --- what the 2026-08-31 red team walked through -----------------------
+    --
+    -- Every check below is a door that was open. They are grouped because they
+    -- were found together, not because they share a mechanism.
+
+    -- The table-wide UPDATE grant. The policy checked which ROW and never which
+    -- COLUMN, so one PATCH to /rest/v1/players set display_name, rank_stars and
+    -- deleted_at past every rule the RPCs enforce.
+    perform pg_temp.ck('authenticated cannot write public.players directly',
+                       not has_table_privilege('authenticated', 'public.players', 'update'));
+    perform pg_temp.ck('but it can still read back its own island',
+                       has_table_privilege('authenticated', 'public.players', 'select'));
+    perform pg_temp.ck('and it never gained insert or delete',
+                       not has_table_privilege('authenticated', 'public.players', 'insert')
+                   and not has_table_privilege('authenticated', 'public.players', 'delete'));
+    perform pg_temp.ck('the offer table is not exposed to the API at all',
+                       not has_table_privilege('authenticated', 'public.raid_offers', 'select'));
+
+    -- The name filter was a raw substring match over a charset that admits
+    -- periods and the whole Unicode alphanumeric range.
+    perform pg_temp.ck('a name spelled around the filter with periods is refused',
+                       public.name_problem('a.d.m.i.n') is not null,
+                       coalesce(public.name_problem('a.d.m.i.n'), 'ACCEPTED'));
+    perform pg_temp.ck('and one spelled with a Greek lookalike is refused',
+                       public.name_problem('supp' || U&'\03BF' || 'rt') is not null,
+                       coalesce(public.name_problem('supp' || U&'\03BF' || 'rt'), 'ACCEPTED'));
+    perform pg_temp.ck('while an ordinary name is still free',
+                       public.name_problem('Coral Reef') is null,
+                       coalesce(public.name_problem('Coral Reef'), ''));
+    perform pg_temp.ck('and a Hebrew name still is too',
+                       public.name_problem(U&'\05D2\05D9\05D0') is null,
+                       coalesce(public.name_problem(U&'\05D2\05D9\05D0'), ''));
+
+    -- set_emoji had a twelve-face allowlist; claim_player, the other create
+    -- path, stored whatever arrived -- an unfiltered second name field on every
+    -- raid card.
+    declare
+        dave uuid := gen_random_uuid();
+        p_dave uuid;
+        erin uuid := gen_random_uuid();
+        p_erin uuid;
+    begin
+        insert into auth.users (id, email) values (dave, 'dave@example.com');
+        insert into auth.identities (user_id, provider) values (dave, 'google');
+        perform pg_temp.be(dave);
+        r := public.claim_player('{"coins": 1}'::jsonb, 'Dave',
+                                 repeat('X', 400), 2000000000, 6, 800, 0, '{1,0,0,0,0}');
+        p_dave := (r->'player'->>'id')::uuid;
+        perform pg_temp.ck('claim_player refuses an emoji that is not one of the faces',
+                           (select emoji from public.players where id = p_dave) = U&'\+01F642',
+                           (select emoji from public.players where id = p_dave));
+        perform pg_temp.ck('and a fresh island cannot claim the top of the leaderboard',
+                           (select rank_stars from public.players where id = p_dave) = 1000000,
+                           (select rank_stars::text from public.players where id = p_dave));
+
+        -- A shield is bought with real money. find_target only ever tests it in
+        -- its `attack` branch, and main.gd only ever asks for `steal`, so until
+        -- now nothing tested it at all.
+        insert into auth.users (id, email) values (erin, 'erin@example.com');
+        insert into auth.identities (user_id, provider) values (erin, 'apple');
+        perform pg_temp.be(erin);
+        r := public.claim_player('{"coins": 1}'::jsonb, 'Erin', U&'\+01F419', 100, 6, 4000, 0, '{2,2,0,0,0}');
+        p_erin := (r->'player'->>'id')::uuid;
+
+        -- Whoever it picks -- Alice and Erin are both eligible humans in band,
+        -- so this is a coin toss by design -- it must have written the offer
+        -- that record_raid will look for. That is the whole contract between
+        -- the two functions.
+        perform pg_temp.be(dave);
+        r := public.find_target('steal');
+        perform pg_temp.ck('find_target records an offer for the rival it returns',
+                           exists (select 1 from public.raid_offers o
+                                    where o.attacker = p_dave
+                                      and o.victim = (r->>'id')::uuid
+                                      and o.used_at is null
+                                      and o.expires_at > now()),
+                           coalesce(r::text, 'NULL'));
+
+        -- The rest of this block needs Erin specifically, so hand Dave the
+        -- offer directly rather than searching until the draw cooperates.
+        delete from public.raid_offers where attacker = p_dave;
+        insert into public.raid_offers (attacker, victim) values (p_dave, p_erin);
+        update public.players set shields = 1 where id = p_erin;
+        begin
+            r := public.record_raid(p_erin, 'attack', 0, 1);
+            perform pg_temp.ck('a shielded island cannot be attacked', false,
+                               'record_raid returned ' || coalesce(r::text, 'NULL'));
+        exception when others then
+            perform pg_temp.ck('a shielded island cannot be attacked',
+                               sqlerrm like '%shielded%', sqlerrm);
+        end;
+
+        -- The offer survives a refused attack: nothing was spent.
+        update public.players set shields = 0 where id = p_erin;
+        r := public.record_raid(p_erin, 'attack', 0, 99);
+        perform pg_temp.ck('an out-of-range hut is stored as no hut at all',
+                           (select hut from public.raids
+                             where attacker = p_dave and victim = p_erin) is null);
+
+        -- One offer, one raid. The leaderboard hands out every uuid in the
+        -- game, and this is what stops a for-loop over it.
+        begin
+            r := public.record_raid(p_erin, 'steal', 100);
+            perform pg_temp.ck('an offer cannot be spent twice', false,
+                               'record_raid returned ' || coalesce(r::text, 'NULL'));
+        exception when others then
+            perform pg_temp.ck('an offer cannot be spent twice',
+                               sqlerrm like '%no open raid offer%'
+                            or sqlerrm like '%already raided%', sqlerrm);
+        end;
+
+        -- Blocking is the only recourse a harassed player has, and record_raid
+        -- never consulted it.
+        perform pg_temp.be(erin);
+        perform public.block_player(p_dave);
+        perform pg_temp.be(dave);
+        update public.raids set created_at = now() - interval '2 days'
+         where attacker = p_dave and victim = p_erin;
+        insert into public.raid_offers (attacker, victim) values (p_dave, p_erin);
+        begin
+            r := public.record_raid(p_erin, 'steal', 100);
+            perform pg_temp.ck('a player who blocked you cannot be raided', false,
+                               'record_raid returned ' || coalesce(r::text, 'NULL'));
+        exception when others then
+            perform pg_temp.ck('a player who blocked you cannot be raided',
+                               sqlerrm like '%blocked%', sqlerrm);
+        end;
+    end;
+
     -- --- deletion ----------------------------------------------------------
     perform pg_temp.be(bob);
     r := public.delete_account();
@@ -226,6 +377,14 @@ begin
                        (r->>'identities')::int = 1, r::text);
     perform pg_temp.ck('and the island is gone from every read path',
                        public.public_player(p_bob) is null);
+    -- A Google sign-in publishes the player's real full name as their handle,
+    -- so a soft delete that keeps display_name is not erasure.
+    perform pg_temp.ck('deletion takes the published name with it',
+                       (select display_name from public.players where id = p_bob)
+                           = 'Former islander',
+                       (select display_name from public.players where id = p_bob));
+    perform pg_temp.ck('and the thirty-day undo still has the save to restore',
+                       (select save_blob from public.players where id = p_bob) is not null);
 
     raise notice 'ALL FUNCTIONAL TESTS PASSED';
 end;
