@@ -81,6 +81,14 @@ grep -q '^\[preset.1\]' export_presets.cfg || {
 # Without gradle there is no way to link an Android plugin, so the bundle comes
 # out complete, installable, and missing whatever the plugin was for. On this
 # project that is Google Play Billing, i.e. the entire shop.
+# Not fatal, because a build that refuses to exist is worse than one whose
+# purchases are checked only by Google's own service. But it is money, so it is
+# said every time rather than once in a README nobody opens.
+if [ ! -f play_billing.json ] || ! grep -q '"license_key" *: *"[^"]' play_billing.json 2>/dev/null; then
+	echo "!! no play_billing.json license_key -- Play purchase signatures will NOT be checked" >&2
+	echo "   Play Console > Monetise > Monetisation setup > Licensing; see play_billing.example.json" >&2
+fi
+
 grep -q '^gradle_build/use_gradle_build=true' export_presets.cfg || {
 	echo "export_presets.cfg is missing gradle_build/use_gradle_build=true" >&2
 	echo "without it no Android plugin can be linked -- including billing" >&2

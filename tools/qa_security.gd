@@ -14,6 +14,7 @@ func _ready() -> void:
 	_t_ledger_real_baseline_still_works()
 	await _t_raid_applied_once()
 	_t_trusted_clock_falls_back()
+	_t_play_signature()
 	print("QA-SECURITY: %s" % ("ALL PASS" if fails == 0 else "%d FAILURES" % fails))
 	get_tree().quit(1 if fails > 0 else 0)
 
@@ -196,3 +197,45 @@ func _t_trusted_clock_falls_back() -> void:
 		 absf(m._trusted_now() - m._now()) < 1.0,
 		 "%f vs %f" % [m._trusted_now(), m._now()])
 	m.queue_free()
+
+# --- a purchase that did not come from Google -------------------------------
+#
+# _take_play_purchase read a product id and a token out of a dictionary handed
+# over by a process on the player's phone and granted the pack. Replacing that
+# process is what the patched-billing tools exist to do, and it made every pack
+# in the shop free. Google signs the real thing; this checks the signature.
+func _t_play_signature() -> void:
+	print("play: a purchase that did not come from Google")
+	var crypto := Crypto.new()
+	var key := crypto.generate_rsa(2048)
+	var payload := '{"orderId":"GPA.1","productId":"com.guymaslawi.lootlagoon.spins_s"}'
+	var ctx := HashingContext.new()
+	ctx.start(HashingContext.HASH_SHA1)
+	ctx.update(payload.to_utf8_buffer())
+	var sig := crypto.sign(HashingContext.HASH_SHA1, ctx.finish(), key)
+
+	# No key configured: the check does not run, and must not block a sale.
+	IAP._play_key = null
+	IAP._play_key_checked = true
+	_chk("with no key configured a purchase is not blocked",
+		 IAP._play_signature_ok({"original_json": payload,
+								 "signature": Marshalls.raw_to_base64(sig)}))
+
+	# The public half only -- exactly what the Play Console prints.
+	var pub := CryptoKey.new()
+	pub.load_from_string(key.save_to_string(true), true)
+	IAP._play_key = pub
+
+	_chk("a genuinely signed purchase verifies",
+		 IAP._play_signature_ok({"original_json": payload,
+								 "signature": Marshalls.raw_to_base64(sig)}))
+	_chk("the same signature over a DIFFERENT product is refused",
+		 not IAP._play_signature_ok({
+			"original_json": payload.replace("spins_s", "spins_xl"),
+			"signature": Marshalls.raw_to_base64(sig)}))
+	_chk("a forged signature is refused",
+		 not IAP._play_signature_ok({"original_json": payload,
+									 "signature": Marshalls.raw_to_base64("nonsense".to_utf8_buffer())}))
+	_chk("and a purchase carrying no signature at all is refused",
+		 not IAP._play_signature_ok({"original_json": payload, "signature": ""}))
+	IAP._play_key = null

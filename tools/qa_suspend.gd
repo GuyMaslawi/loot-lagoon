@@ -315,6 +315,13 @@ func _t_alert_plan() -> void:
 # --- locked the phone while the title screen was still up --------------------
 func _t_during_boot() -> void:
 	print("locked during boot")
+	# From nothing, not from whatever `m` has been saving for the last eight
+	# tests. This check asserts the meter comes back FULL after three hours
+	# away, and a spin count `m` had already pushed past SPIN_CAP can never
+	# equal it -- so the test failed for a state it created rather than for the
+	# behaviour it is about. It failed only when another harness ran first,
+	# which is the worst version of that: it read as a regression in the game.
+	_wipe()
 	var b: Control = load("res://scripts/main.gd").new()
 	add_child(b)
 	await get_tree().process_frame

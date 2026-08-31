@@ -1187,7 +1187,18 @@ func _cloud_claim() -> void:
 	# The chosen face, not the default one. claim_player only writes emoji when
 	# it is creating the row, so this is the single moment a player who picked a
 	# face before signing in would have had it replaced by the fallback.
-	Cloud.claim(_save_dict(), str(profile.get("name", "Islander")), _my_emoji(),
+	#
+	# The NAME is deliberately not the one the provider gave. Google's `name`
+	# claim is the account's full display name -- "John Smith", the person's real
+	# one -- and this call is what puts a name on the global leaderboard and on
+	# the raid card of every stranger the player is matched against. Publishing
+	# it the instant somebody taps Sign in with Google, before they have been
+	# shown it or asked, is not something to do on a player's behalf.
+	#
+	# So the island is created with a handle, and the provider's name is only a
+	# suggestion the player can accept in Options. unique_name('Islander') on
+	# the server turns that into Islander, Islander2, and so on.
+	Cloud.claim(_save_dict(), "Islander", _my_emoji(),
 			rank_stars, island_level, coins, shields, buildings)
 
 # What the server had. `is_new` means it had nothing and has just been given

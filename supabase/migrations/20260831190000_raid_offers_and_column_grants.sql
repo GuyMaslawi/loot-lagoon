@@ -609,6 +609,103 @@ as $$
 $$;
 
 -- -----------------------------------------------------------------------------
+--  7. The leaderboard ranked on a number the client simply asserted
+-- -----------------------------------------------------------------------------
+--
+-- push_save stored p_rank_stars with `greatest(p_rank_stars, 0)` and the
+-- leaderboard sorts on the result. That is client-declared by design and mostly
+-- has to be: the economy lives in main.gd, the server does not understand the
+-- save, and re-deriving a star count here would mean keeping a second copy of
+-- the game's rules in SQL and watching the two drift.
+--
+-- Revoking the direct UPDATE grant above already means the number can only
+-- arrive through this function. What it does not mean is that the number has to
+-- be believed. rank_stars grows once per hut level and once per first-time card
+-- -- a few an hour under heavy play -- so a push claiming a hundred thousand
+-- more than the last one, four minutes after the last one, is not a save.
+--
+-- The bound is on the INCREASE and on elapsed time, generously: 500 an hour on
+-- top of a 500 floor, so a player who left the app closed for a week comes back
+-- able to declare 84,500 at once. Nobody honest is anywhere near it, and it
+-- turns "instantly first" into "first in several months of pretending to play".
+--
+-- Clamped rather than rejected. A refusal would strand a device that cannot
+-- push, and the honest reading of an impossible number is that some of it is
+-- real -- the player did earn something since the last push.
+create or replace function public.push_save(
+    p_save          jsonb,
+    p_rank_stars    integer,
+    p_island_level  integer,
+    p_vault_coins   bigint   default 0,
+    p_shields       integer default 0,
+    p_buildings     integer[] default '{0,0,0,0,0}',
+    p_force         boolean  default false
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+    v_player  uuid := public.current_player();
+    v_stored  integer;
+    v_seen    timestamptz;
+    v_ceiling integer;
+    v_rank    integer;
+begin
+    if v_player is null then
+        raise exception 'no island for this account' using errcode = '28000';
+    end if;
+    if p_save is null then
+        raise exception 'refusing to store a null save';
+    end if;
+
+    select rank_stars, last_seen into v_stored, v_seen
+      from public.players where id = v_player for update;
+
+    -- The conflict rule, unchanged: rank_stars only ever goes up in main.gd
+    -- ("nothing in the game subtracts from it"), which makes it a monotonic
+    -- clock for free. A push carrying LESS of it than the server holds is not a
+    -- newer save, it is an older device catching up. p_force is the one
+    -- legitimate way it goes down -- the player wiping their own island.
+    if not p_force and p_rank_stars < v_stored then
+        return jsonb_build_object(
+            'status',       'stale',
+            'stored_rank',  v_stored,
+            'pushed_rank',  p_rank_stars,
+            'save',         (select save_blob from public.players where id = v_player));
+    end if;
+
+    v_ceiling := v_stored + 500
+               + least(floor(extract(epoch from (now() - coalesce(v_seen, now()))) / 7.2), 1000000)::integer;
+    v_rank := least(greatest(p_rank_stars, 0), greatest(v_ceiling, 0));
+    -- A wipe is the player asking for a lower number, and there is nothing to
+    -- bound about going down.
+    if p_force then
+        v_rank := greatest(p_rank_stars, 0);
+    end if;
+
+    update public.players
+       set save_blob    = p_save,
+           rank_stars   = least(v_rank, 1000000),
+           island_level = greatest(p_island_level, 1),
+           vault_coins  = greatest(p_vault_coins, 0),
+           shields      = greatest(p_shields, 0)::smallint,
+           buildings    = p_buildings::smallint[],
+           save_version = save_version + 1,
+           last_seen    = now()
+     where id = v_player;
+
+    return jsonb_build_object(
+        'status',       'ok',
+        'save_version', (select save_version from public.players where id = v_player),
+        -- So a client that declared more than it was given can see that it was
+        -- trimmed, rather than pushing the same rejected number for ever.
+        'rank_stars',   (select rank_stars from public.players where id = v_player));
+end;
+$$;
+
+-- -----------------------------------------------------------------------------
 --  Privileges
 -- -----------------------------------------------------------------------------
 --
@@ -625,7 +722,8 @@ begin
          where n.nspname = 'public'
            and p.proname in ('find_target', 'record_raid', 'set_emoji',
                              'name_problem', 'fold_confusables', 'emoji_ok',
-                             'delete_account', 'claim_player', 'server_time')
+                             'delete_account', 'claim_player', 'server_time',
+                             'push_save')
     loop
         execute format('revoke all on function %s from public, anon', fn);
         execute format('grant execute on function %s to authenticated', fn);

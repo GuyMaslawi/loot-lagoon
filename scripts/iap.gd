@@ -841,6 +841,88 @@ func _on_play_purchases(response: Dictionary) -> void:
 		if typeof(row) == TYPE_DICTIONARY:
 			_take_play_purchase(row)
 
+
+# --- is this purchase actually from Google? ---------------------------------
+#
+# Everything above trusts the billing service. That is not a figure of speech:
+# _take_play_purchase reads a product id and a token out of a dictionary handed
+# over by a process on the player's phone, and grants the pack. Replace that
+# process -- which is what the patched-billing tools sold for exactly this
+# purpose do -- and every pack in the shop is free.
+#
+# Google signs the real thing. Each purchase carries `original_json` and a
+# `signature` over it, made with the app's licensing key, and the public half of
+# that key is printable from the Play Console. Checking it on the device is not
+# proof against a determined attacker -- they can patch out the check as easily
+# as the store -- but it is the difference between "install this apk" and
+# "reverse engineer the game", and it costs one RSA verify per purchase.
+#
+# The real fix is a server that validates the receipt against Google's API and
+# is the thing that decides what to grant. That needs credentials this project
+# does not have yet, and this is what can be done without them.
+#
+# FAIL OPEN, deliberately, and this is the one decision here worth arguing with.
+# With no key configured the check does not run and the warning is loud. The
+# alternative -- refusing every purchase until the key is pasted in -- turns a
+# missing config file into every Android player paying and receiving nothing,
+# which is a worse failure than the one being defended against. ship_android.sh
+# says so at build time instead.
+const PLAY_KEY_PATH := "res://play_billing.json"
+var _play_key: CryptoKey = null
+var _play_key_checked := false
+
+func _load_play_key() -> void:
+	_play_key_checked = true
+	if not FileAccess.file_exists(PLAY_KEY_PATH):
+		push_warning("IAP: no %s; Play purchase signatures are NOT being checked." % PLAY_KEY_PATH)
+		return
+	var f := FileAccess.open(PLAY_KEY_PATH, FileAccess.READ)
+	if f == null:
+		return
+	var d = JSON.parse_string(f.get_as_text())
+	f.close()
+	if typeof(d) != TYPE_DICTIONARY:
+		return
+	var b64 := String((d as Dictionary).get("license_key", "")).strip_edges()
+	if b64 == "":
+		push_warning("IAP: %s has no license_key; signatures are NOT being checked." % PLAY_KEY_PATH)
+		return
+	# The console prints one unbroken base64 line of the X.509 SubjectPublicKeyInfo.
+	# CryptoKey wants it as PEM, wrapped at 64.
+	var pem := "-----BEGIN PUBLIC KEY-----\n"
+	var i := 0
+	while i < b64.length():
+		pem += b64.substr(i, 64) + "\n"
+		i += 64
+	pem += "-----END PUBLIC KEY-----"
+	var k := CryptoKey.new()
+	if k.load_from_string(pem, true) != OK:
+		push_warning("IAP: %s could not be read as a public key." % PLAY_KEY_PATH)
+		return
+	_play_key = k
+
+# True when the row is signed by the key above, or when there is no key to check
+# it with. False only for a row that carried a signature we could read and that
+# did not match -- which is a forgery, not a glitch.
+func _play_signature_ok(row: Dictionary) -> bool:
+	if not _play_key_checked:
+		_load_play_key()
+	if _play_key == null:
+		return true
+	var payload := String(row.get("original_json", ""))
+	var sig_b64 := String(row.get("signature", ""))
+	if payload == "" or sig_b64 == "":
+		push_warning("IAP: a Play purchase arrived with no signature; refusing it.")
+		return false
+	var sig := Marshalls.base64_to_raw(sig_b64)
+	if sig.is_empty():
+		return false
+	var ctx := HashingContext.new()
+	ctx.start(HashingContext.HASH_SHA1)   # SHA1withRSA is what Play signs with
+	ctx.update(payload.to_utf8_buffer())
+	var digest := ctx.finish()
+	return Crypto.new().verify(HashingContext.HASH_SHA1, digest, sig, _play_key)
+
 # One purchase off Play, from whichever direction it arrived. Both the answer to
 # a Pay button and the launch reconcile land here, because on Play they are
 # genuinely the same object and telling them apart is this function's job.
@@ -864,6 +946,12 @@ func _take_play_purchase(row: Dictionary) -> void:
 			_emit("defer", pid, "")
 		return
 	if state != PLAY_STATE_PURCHASED:
+		return
+
+	# Before anything is granted and before the ledger is touched.
+	if not _play_signature_ok(row):
+		if busy and _pending == pid:
+			_fail(pid, "That purchase could not be verified.")
 		return
 
 	if _granted.has(token):

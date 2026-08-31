@@ -1,0 +1,4 @@
+{
+  "_comment": "Play Console > Monetise > Monetisation setup > Licensing: the base64 RSA public key, as one unbroken line. Copy to play_billing.json, which is gitignored.",
+  "license_key": ""
+}

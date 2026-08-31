@@ -241,6 +241,35 @@ begin
                    and (select count(*) from public.reports where reporter = p_alice) = 1);
     delete from public.blocks where blocker = p_alice;
 
+    -- The leaderboard sorts on a number the client asserts. It still does --
+    -- the economy lives in main.gd -- but the assertion is now bounded by how
+    -- much time has passed, so "instantly first" is not one push away.
+    perform pg_temp.be(alice);
+    r := public.push_save('{"coins": 1}'::jsonb, 2000000000, 6, 100, 0, '{1,0,0,0,0}');
+    perform pg_temp.ck('a push cannot declare two billion stars',
+                       (r->>'status') = 'ok'
+                   and (r->>'rank_stars')::int < 10000,
+                       r::text);
+    perform pg_temp.ck('and the leaderboard shows the bounded number, not the claim',
+                       (select rank_stars from public.players where id = p_alice) < 10000,
+                       (select rank_stars::text from public.players where id = p_alice));
+    -- An ordinary push is untouched: a handful of stars since the last one.
+    declare
+        v_before integer;
+    begin
+        select rank_stars into v_before from public.players where id = p_alice;
+        r := public.push_save('{"coins": 2}'::jsonb, v_before + 7, 6, 100, 0, '{1,0,0,0,0}');
+        perform pg_temp.ck('an honest push is not clamped at all',
+                           (r->>'rank_stars')::int = v_before + 7, r::text);
+    end;
+    -- And a deliberate wipe still goes all the way down.
+    r := public.push_save('{"coins": 0}'::jsonb, 0, 1, 0, 0, '{0,0,0,0,0}', true);
+    perform pg_temp.ck('a forced wipe is still allowed past the bound',
+                       (select rank_stars from public.players where id = p_alice) = 0,
+                       (select rank_stars::text from public.players where id = p_alice));
+    -- Put her back for the checks that follow.
+    r := public.push_save('{"coins": 4000}'::jsonb, 130, 6, 12000, 0, '{2,2,0,0,0}', true);
+
     -- --- what the 2026-08-31 red team walked through -----------------------
     --
     -- Every check below is a door that was open. They are grouped because they
