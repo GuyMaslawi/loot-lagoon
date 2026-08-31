@@ -381,6 +381,32 @@ begin
                             or sqlerrm like '%already raided%', sqlerrm);
         end;
 
+        -- Collecting offers rather than spending them. The 24-hour rule means
+        -- each rival can only be hit once, so the ceiling here is the backstop
+        -- against one account raiding a very large number of strangers.
+        declare
+            v_flood uuid;
+        begin
+            for i in 1..205 loop
+                insert into public.players (display_name, emoji, island_level,
+                                            vault_coins, buildings)
+                values ('Flood' || i, U&'\+01F642', 6, 100, '{1,0,0,0,0}')
+                returning id into v_flood;
+                insert into public.raid_offers (attacker, victim) values (p_dave, v_flood);
+                begin
+                    perform public.record_raid(v_flood, 'steal', 10);
+                exception when others then
+                    exit;
+                end;
+            end loop;
+            perform pg_temp.ck('one account cannot raid an unbounded number of strangers',
+                               (select count(*) from public.raids
+                                 where attacker = p_dave
+                                   and created_at > now() - interval '1 hour') <= 200,
+                               (select count(*)::text from public.raids where attacker = p_dave));
+        end;
+        delete from public.raids where attacker = p_dave;
+
         -- Blocking is the only recourse a harassed player has, and record_raid
         -- never consulted it.
         perform pg_temp.be(erin);

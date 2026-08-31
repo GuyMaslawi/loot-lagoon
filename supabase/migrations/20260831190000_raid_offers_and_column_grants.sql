@@ -81,12 +81,23 @@ create table if not exists public.raid_offers (
     attacker    uuid not null references public.players (id) on delete cascade,
     victim      uuid not null references public.players (id) on delete cascade,
     created_at  timestamptz not null default now(),
-    -- A raid is the animation immediately after the search. Fifteen minutes is
-    -- far longer than that and still short enough that offers cannot be
-    -- stockpiled into a burst.
-    expires_at  timestamptz not null default now() + interval '15 minutes',
+    -- A raid is normally the animation immediately after the search, but the
+    -- rival stays on the wheel's card until it is taken, and a player can put
+    -- the phone down with it sitting there. Two hours rather than fifteen
+    -- minutes, because an offer that expires under an honest player is a raid
+    -- the server silently refuses -- and record_raid's callback in cloud.gd is
+    -- empty, so they would never be told why. Stockpiling is bounded by the
+    -- rate limit below and by find_target's own rules, not by this.
+    expires_at  timestamptz not null default now() + interval '2 hours',
     used_at     timestamptz
 );
+
+-- The hourly count record_raid now runs on every raid. raids_attacker_recent_idx
+-- leads on attacker and could serve it, but it carries victim in the middle, so
+-- the scan reads every column of every row this attacker ever touched. This one
+-- is the count's own shape.
+create index if not exists raids_attacker_rate_idx
+    on public.raids (attacker, created_at desc);
 
 -- The lookup record_raid does: the caller's live offers against one victim.
 create index if not exists raid_offers_open_idx
@@ -185,6 +196,21 @@ begin
                 where r.attacker = v_me and r.victim = p_victim
                   and r.created_at > now() - interval '24 hours') then
         raise exception 'already raided that island today' using errcode = '42501';
+    end if;
+
+    -- The backstop on collecting offers rather than spending them. One offer is
+    -- one rival the server chose, and the 24-hour rule means each of them can
+    -- only be hit once -- so the worst a stockpiler gets is one raid against
+    -- each of very many strangers, which is still griefing at scale.
+    --
+    -- Set high on purpose. A raid comes out of a spin, spins are capped at 50
+    -- and regenerate slowly, so even a player buying spin packs cannot approach
+    -- this; a script passes it in a second. A limit that a paying whale could
+    -- trip during an event would be a worse bug than the one it prevents.
+    if (select count(*) from public.raids r
+         where r.attacker = v_me
+           and r.created_at > now() - interval '1 hour') >= 200 then
+        raise exception 'too many raids in one hour' using errcode = '42501';
     end if;
 
     -- 0-4 or null. The column is a smallint and the victim's client bounds-
