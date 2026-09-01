@@ -2795,7 +2795,11 @@ func _update_badges() -> void:
 			if not col_claimed.get(c["id"], false) and _collection_complete(c):
 				any_col = true
 				break
-		_badges["collections"].visible = any_col
+		# Or a season that has turned over and not been looked at yet. A shelf
+		# that silently emptied and refilled is the one change in this game a
+		# player can miss entirely, so it gets the same dot a claimable reward
+		# does and keeps it until they open the page.
+		_badges["collections"].visible = any_col or col_season_new
 	if _badges.has("ranks"):
 		_badges["ranks"].visible = _tourney_claimable()
 	if _badges.has("alerts"):
@@ -6191,14 +6195,42 @@ func _styled_progress(fg_color: Color) -> ProgressBar:
 
 # --- collections ---
 
+# Which season the shelf currently holds, and whether the player has been shown
+# that it turned over. Both ride in the save: the badge has to survive the launch
+# that would otherwise be the one where nobody noticed.
+var col_season := -1
+var col_season_new := false
+
+# True during the lull between seasons. The shelf is wiped and waiting; spins
+# stop dropping cards, and the page counts down instead of pretending.
+func _col_break() -> bool:
+	return _now() >= CV.season_ends(CV.season_index(_now()))
+
+func _col_opens_at() -> float:
+	return CV.season_starts(CV.season_index(_now()) + 1)
+
 func _ensure_collections() -> void:
 	var now := _now()
-	if col_deadline <= 0.0 or now > col_deadline:
+	# Seasons are read off one global clock rather than tracked forward from a
+	# per-player deadline, so a save that sat in a drawer for two months lands in
+	# the right season with no catching-up to do. The wipe is keyed on the index
+	# CHANGING, which is what makes it happen exactly once however long the game
+	# was closed -- the old `now > col_deadline` test wiped and then immediately
+	# re-armed a fresh month from whenever the player happened to open the app,
+	# so no two players were ever collecting the same set.
+	var idx := CV.season_index(now)
+	if col_season != idx:
+		var had_a_season := col_season >= 0
 		col_owned = {}
 		col_dupes = {}
 		col_claimed = {}
 		col_mega_claimed = false
-		col_deadline = now + CV.COLLECTION_SEASON_DAYS * 86400.0
+		col_season = idx
+		# Not on the very first run: a player who has never seen a season roll
+		# over has nothing to be told about, and "NEW SEASON" over an empty
+		# shelf on launch one is noise.
+		col_season_new = had_a_season
+	col_deadline = CV.season_ends(idx)
 	# This is the only thing that normalizes the card tables, and everything
 	# downstream indexes col_owned[id] directly on the strength of it having
 	# run. It used to read the saved arrays with typed assignments and bool()
@@ -6293,6 +6325,13 @@ func _collection_complete(c: Dictionary) -> bool:
 	return true
 
 func _maybe_drop_card() -> void:
+	# Nothing drops during the lull between seasons. The shelf has already been
+	# wiped and the next one has not opened, so a card arriving now would be a
+	# card the player watched land on a page that says collecting is shut.
+	# Cards bought in the shop still land: that is money, and money is never
+	# made to wait on a clock.
+	if _col_break():
+		return
 	if randf() >= CV.CARD_DROP_CHANCE:
 		return
 	var chosen: Dictionary = CV.COLLECTIONS[0]
@@ -6500,7 +6539,44 @@ func _fill_collections(vb: VBoxContainer) -> void:
 # questions -- what is it, how far in am I, is there a reward waiting -- and
 # all six fit above the fold.
 
+# The one change in this game a player can miss entirely.
+#
+# A season turning over empties every set they filled and hands them a fresh
+# board, and all of that happens while the app is closed. Without something
+# saying so, the shelf just looks like it lost their month. So: a badge on the
+# Cards tab that survives launches until the shelf is opened, and this ribbon on
+# the shelf itself the once.
+func _season_ribbon(vb: VBoxContainer) -> void:
+	var panel := _tinted_card(vb, Lagoon.BRASS, true)
+	var margin := MarginContainer.new()
+	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		margin.add_theme_constant_override(m, 14)
+	panel.add_child(margin)
+	var row := VBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	margin.add_child(row)
+
+	var title := Lagoon.label("\u2728  NEW  SEASON  \u2728", UI.F_SUBHEAD, Lagoon.BRASS_HI, true)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	row.add_child(title)
+
+	var body := _popup_row_label("Every set has been reset. Six fresh collections, and the grand prize is up for grabs again.", UI.F_CAPTION)
+	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	row.add_child(body)
+
+	FX.pop_in(panel)
+	Sfx.play("levelup", -6.0)
+
 func _fill_collection_shelf(vb: VBoxContainer) -> void:
+	# Seeing the shelf IS noticing, so this is where the badge goes out -- not
+	# on the banner being shown, which fires on a page the player may never have
+	# reached, and not on the nav tap, which also lands on the card detail.
+	if col_season_new:
+		col_season_new = false
+		_update_badges()
+		_save_game()
+		_season_ribbon(vb)
 	var head := _page_card(vb)
 	var trow := HBoxContainer.new()
 	trow.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -6519,10 +6595,22 @@ func _fill_collection_shelf(vb: VBoxContainer) -> void:
 	gpb.max_value = CV.COLLECTIONS.size()
 	gpb.value = claimed_n
 	head.add_child(gpb)
-	var days_left := maxf(0.0, col_deadline - _now())
-	var season := _popup_row_label("Season ends in %dd %dh \u2014 collections reset!" % [int(days_left / 86400.0), int(fmod(days_left, 86400.0) / 3600.0)], UI.F_TINY)
+	# Three different sentences, because the shelf is in one of three states and
+	# the old line only knew about one of them. During the lull it said "Season
+	# ends in 0d 0h", which is both wrong and the least useful thing it could
+	# say to somebody looking at six empty sets.
+	var season_txt := ""
+	var season_col := Lagoon.INK_FAINT
+	if _col_break():
+		var until := maxf(0.0, _col_opens_at() - _now())
+		season_txt = "New season opens in %dh %dm" % [int(until / 3600.0), int(fmod(until, 3600.0) / 60.0)]
+		season_col = Lagoon.KELP_LO
+	else:
+		var days_left := maxf(0.0, col_deadline - _now())
+		season_txt = "Season ends in %dd %dh \u2014 collections reset!" % [int(days_left / 86400.0), int(fmod(days_left, 86400.0) / 3600.0)]
+	var season := _popup_row_label(season_txt, UI.F_TINY)
 	season.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	season.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+	season.add_theme_color_override("font_color", season_col)
 	head.add_child(season)
 	if col_mega_claimed:
 		var done := _popup_row_label("CLAIMED  \u2713", UI.F_LABEL)
@@ -9401,6 +9489,8 @@ func _save_dict() -> Dictionary:
 		"col_claimed": col_claimed,
 		"col_mega": col_mega_claimed,
 		"col_deadline": col_deadline,
+		"col_season": col_season,
+		"col_season_new": col_season_new,
 		"purchased": purchased_ids,
 		"topup_pending": topup_pending,
 		"shop_free_last": shop_free_last,
@@ -9569,6 +9659,11 @@ func _load_game() -> void:
 		col_claimed = lc
 	col_mega_claimed = _b(data.get("col_mega", false))
 	col_deadline = _f(data.get("col_deadline", 0.0))
+	# -1 means "no season on record", which is what an older save looks like and
+	# what makes _ensure_collections treat this launch as the first one -- it
+	# wipes, which it was going to do anyway, and stays quiet about it.
+	col_season = _i(data.get("col_season", -1), -1)
+	col_season_new = _b(data.get("col_season_new", false))
 	var lp = data.get("purchased", [])
 	if typeof(lp) == TYPE_ARRAY:
 		# Only the strings. Every consumer compares this against a pack id, so

@@ -831,11 +831,15 @@ func _t_collections() -> void:
 	_chk("melting a card index off the end is survivable",
 		m._melt_stack(String(CV.COLLECTIONS[0]["id"]), 9999, 1) == 0)
 
-	# The season ending.
+	# The season ending. Seasons run on a global cycle now, so winding a private
+	# deadline into the past proves nothing -- _ensure_collections reads the
+	# clock, not the field. Moving the RECORDED season back is what a player who
+	# was away for a rollover actually looks like.
 	m.rank_stars = 1234
-	m.col_deadline = m._now() - 10.0
+	m.col_season -= 1
 	m._ensure_collections()
 	_chk("an expired season clears the shelf", _owned_total() == 0)
+	_chk("and says so, so the shelf did not just look robbed", m.col_season_new)
 	_chk("and dates the next one forward", m.col_deadline > m._now())
 	_chk("and leaves the permanent rank alone", m.rank_stars == 1234, str(m.rank_stars))
 

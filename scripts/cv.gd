@@ -259,10 +259,22 @@ const CHEST_PACKS := [
 # printed on the chest tile and again, in full, in the confirm dialog. Retune
 # them freely -- just remember that whatever is written here is what the player
 # is being promised.
+# Written per mille rather than per cent, because the rates that matter here are
+# now below 1% and a whole number cannot say 0.5. odds_pct divides by the row's
+# own total, so the published table follows these automatically -- there is no
+# second copy of the odds to forget to update.
+#
+# CUT ON 2026-09-01, all three rows. The old table paid 1% / 8% / 23% at the top
+# rating and the collections finished in days: a gold card is the last card of a
+# set, so its rate alone decides how long a season lasts, and a season is meant
+# to run the better part of a month. The tiers still climb steeply -- the money
+# buys a real shortcut -- they just start from a legendary that is actually
+# legendary. The 5-star GUARANTEE on the Treasure Vault and the top bundles is
+# untouched: that is a promise somebody paid for.
 const CHEST_STAR_WEIGHTS := [
-	[50, 30, 14, 5, 1],
-	[18, 30, 28, 16, 8],
-	[5, 15, 27, 30, 23],
+	[520, 300, 145, 30, 5],
+	[200, 320, 300, 150, 30],
+	[60, 170, 300, 370, 100],
 ]
 
 # The same table as percentages, one entry per star rating.
@@ -455,6 +467,28 @@ const CARD_BOXES := [
 ]
 
 const COLLECTION_SEASON_DAYS := 30
+# The lull between one season and the next. Long enough that the shelf being
+# empty reads as deliberate rather than as the game having eaten the cards, and
+# short enough that nobody plans their evening around it.
+const COLLECTION_BREAK_HOURS := 6
+
+# Seasons run on one global clock rather than from whenever each player first
+# opened the game, the same way the tournament does. Everyone is collecting the
+# same set at the same time, which is the whole social half of a collection
+# event -- and it means a save that has been shut in a drawer for two months
+# lands in the right season on its own, with no repair logic to get wrong.
+const SEASON_CYCLE_SECS := COLLECTION_SEASON_DAYS * 86400.0 + COLLECTION_BREAK_HOURS * 3600.0
+
+static func season_index(t: float) -> int:
+	return int(floor(t / SEASON_CYCLE_SECS))
+
+# When collecting opens for that season, and when it closes. Between `ends` and
+# the next `starts` is the break: the shelf is already wiped and waiting.
+static func season_starts(i: int) -> float:
+	return float(i) * SEASON_CYCLE_SECS
+
+static func season_ends(i: int) -> float:
+	return season_starts(i) + COLLECTION_SEASON_DAYS * 86400.0
 # Collections pay in spins and nothing else. Coins are what a spin produces,
 # so paying coins for a month of collecting handed the player the output and
 # skipped the machine; spins hand back the thing that makes everything else
@@ -464,7 +498,18 @@ const CARD_DROP_CHANCE := 0.25
 
 # Relative chance a spin-dropped card has a given star rating (index star-1).
 # High-star cards must stay rare or a season is over in days, not a month.
-const DROP_STAR_WEIGHTS := [50, 28, 13, 6, 3]
+#
+# MEASURED, not guessed. At the old [50, 28, 13, 6, 3] a gold card arrived every
+# ~140 spins -- roughly three full spin meters, so a few times a day for anyone
+# playing properly, which is not what "legendary" is supposed to feel like. This
+# is one every ~365. Four-star came down with it, from 6% to 2.5%, because a set
+# ends on its two rarest cards and slowing only the last one just moves the wall.
+#
+# There is a floor and it is worth knowing before tuning this again: Royal
+# Jewels is gold all the way across and carries 7/1000 of the set weight, so
+# 0.7% of all drops are 5-star no matter what this table says -- about one every
+# 570 spins. Going below that means changing the set weights, not these.
+const DROP_STAR_WEIGHTS := [540, 300, 130, 25, 5]
 
 # weight = relative chance a dropped card comes from this collection, out of
 # 1000. The spread is the difficulty ladder and it has to be wide: every set is
