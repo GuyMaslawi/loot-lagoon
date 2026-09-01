@@ -579,9 +579,11 @@ func _after_boot() -> void:
 	if _away_since > 0.0:
 		_credit_time_away(clampf(_now() - _away_since, 0.0, MAX_AWAY_SECS))
 		_away_since = 0.0
-	if _offline_spins_gained > 0:
-		_notify("spins", "While you were away, spins refilled  +%d  (%d/%d)" % [_offline_spins_gained, spins, SPIN_CAP], "🌀")
-		_offline_spins_gained = 0
+	# The refill used to announce itself on every launch. It is the one thing in
+	# this game that happens with the player doing nothing and without them
+	# needing to be told: the meter is simply fuller than they left it, which
+	# they can see. A banner for it is a notification about time passing.
+	_offline_spins_gained = 0
 	_offline_raids()
 	# Anything iOS delivered while the app was shut has been read by the act of
 	# opening it, and the icon should stop claiming otherwise.
@@ -715,6 +717,19 @@ func _capture_page(key: String) -> void:
 	# SHOT=shop:spins shoots the shop already scrolled to a named shelf, which
 	# is both how the plus buttons are checked and how a screenshot of one
 	# particular product family gets taken without counting pixels first.
+	# SHOT=set:<id> opens one collection's card grid, which is the only way to
+	# photograph the rarity ladder -- the shelf shows sets, not cards.
+	if key.begins_with("set:"):
+		col_open = key.split(":")[1]
+		_goto(pages["collections"])
+		_fill_page("collections")
+		await get_tree().create_timer(2.5).timeout
+		var simg := get_viewport().get_texture().get_image()
+		var spath := "user://shot_%s.png" % key.replace(":", "_")
+		simg.save_png(spath)
+		print("SHOT written: %s (%dx%d)" % [ProjectSettings.globalize_path(spath), simg.get_width(), simg.get_height()])
+		get_tree().quit()
+		return
 	if key.begins_with("shop:"):
 		_goto_shop(key.split(":")[1])
 		await get_tree().create_timer(2.0).timeout
@@ -1654,8 +1669,7 @@ func _resume_from_away() -> void:
 	# to another app and back, and "while you were away" over a four-second
 	# glance is the game talking to itself.
 	if elapsed >= 60.0:
-		if _offline_spins_gained > 0:
-			_notify("spins", "While you were away, spins refilled  +%d  (%d/%d)" % [_offline_spins_gained, spins, SPIN_CAP], "🌀")
+		# Nothing said about the refill -- see the note on the cold-load path.
 		_offline_raids()
 	_offline_spins_gained = 0
 	_refresh()
@@ -6382,7 +6396,7 @@ func _maybe_drop_card() -> void:
 
 func _diff_chip(diff: String) -> Control:
 	var colors := {"Easy": Lagoon.KELP, "Medium": Lagoon.BRASS, "Hard": Lagoon.REEF}
-	return Lagoon.chip(diff, colors.get(diff, Lagoon.INK_SOFT), UI.F_CAPTION)
+	return Lagoon.chip(diff, colors.get(diff, Lagoon.INK_SOFT), UI.F_TINY)
 
 # `big` is the set's own page, where a card gets a third of the width instead
 # of a fifth and can afford to be looked at rather than counted.
@@ -6390,12 +6404,31 @@ func _collection_item_card(emoji: String, iname: String, owned: bool, rarity := 
 	# Owned cards are brass-rimmed glass; unowned ones are the same glass with
 	# the metal drained out of them, so a set reads as "partly collected" at a
 	# glance rather than as two unrelated card designs.
+	# RARITY IS THE RIM, and it climbs. Every owned card used to take the same
+	# brass edge, so a 1-star shell and a 5-star crown were the same object with
+	# different words on them -- the only thing saying otherwise was a row of
+	# small stars underneath. The ladder is CV.STAR_COLORS, the same five colours
+	# the star row already uses, so the two cannot drift apart: grey, green,
+	# blue, purple, gold. The metal gets thicker and the glow gets deeper and
+	# wider as it goes up, and a gold card gets the shine as well.
+	#
+	# An unowned card keeps a drained version of its OWN colour rather than one
+	# shared grey. The point of a silhouette is to be wanted, and a player
+	# scanning a set should be able to see which of the gaps is the gold one.
+	var tint: Color = CV.STAR_COLORS[clampi(rarity, 1, CV.MAX_STAR) - 1] if rarity > 0 else Lagoon.BRASS
+	var rank := clampi(rarity, 1, CV.MAX_STAR)
 	var p := PanelContainer.new()
 	var sb := Lagoon.glass(Lagoon.R_CHIP + 2, 0.92 if owned else 0.55)
-	sb.set_border_width_all(3 if owned else 2)
-	sb.border_color = Lagoon.BRASS if owned else Color(Lagoon.INK_FAINT.r, Lagoon.INK_FAINT.g, Lagoon.INK_FAINT.b, 0.35)
-	sb.shadow_size = 8 if owned else 3
+	sb.set_border_width_all((2 + rank / 2) if owned else 2)
+	sb.border_color = tint if owned else Color(tint.r, tint.g, tint.b, 0.30)
+	# 6, 10, 14, 20, 26 -- the jump at the top is deliberate, because the only
+	# rim a player should be able to pick out across a nine-card grid is gold.
+	sb.shadow_size = (2 + rank * 4 + (4 if rank >= CV.MAX_STAR else 0)) if owned else 3
+	sb.shadow_color = Color(tint.r, tint.g, tint.b, 0.10 + 0.09 * float(rank)) if owned \
+		else Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.18)
 	p.add_theme_stylebox_override("panel", sb)
+	if owned and rank >= CV.MAX_STAR:
+		p.add_child(_shine_overlay(tint.lightened(0.45)))
 	p.custom_minimum_size = Vector2(0, 196) if big else Vector2(120, 150)
 	if big:
 		p.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -6685,9 +6718,18 @@ func _collection_tile(c: Dictionary) -> Control:
 	pad.add_child(col)
 
 	# the set's emblem, sunk into a pool of its own water
+	# The well takes the set's difficulty colour, which is the one thing on a
+	# tile that says how long this set is going to take. Fifteen tiles in one
+	# grey was the real complaint about this page: with every well the same pale
+	# blue, the only difference between an afternoon's set and a month's was a
+	# word in the corner, and the eye had to read all fifteen to find anything.
+	# It is a wash rather than a fill -- the tile is still sea glass, and the rim
+	# is still reserved for saying whether there is a reward waiting.
+	var dcol: Color = {"Easy": Lagoon.KELP, "Medium": Lagoon.BRASS, "Hard": Lagoon.REEF}.get(
+		String(c["diff"]), Lagoon.LAGOON_DEEP)
 	var well := PanelContainer.new()
 	var wsb := Lagoon.glass_well(18)
-	wsb.bg_color = Color(Lagoon.LAGOON_DEEP.r, Lagoon.LAGOON_DEEP.g, Lagoon.LAGOON_DEEP.b, 0.16)
+	wsb.bg_color = Color(dcol.r, dcol.g, dcol.b, 0.20)
 	well.add_theme_stylebox_override("panel", wsb)
 	well.custom_minimum_size = Vector2(0, 98)
 	well.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -6716,8 +6758,35 @@ func _collection_tile(c: Dictionary) -> Control:
 	var cnt := Lagoon.label("%d/%d" % [owned_n, items.size()], UI.F_TINY, Lagoon.INK_SOFT, true)
 	cnt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	cnt.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	cnt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	foot.add_child(cnt)
-	foot.add_child(_diff_chip(c["diff"]))
+
+	# The difficulty chip used to sit in this footer next to the count, and it
+	# hung off the right rim of every Medium and Hard tile on a real phone. Same
+	# trap the spare tag's comment describes and the same fix: a chip asked to
+	# fit in less than its own minimum width does not shrink, it grows -- and a
+	# footer HBox hands its minimum up to the tile, which a GridContainer then
+	# hands to all three columns. Overlaid on a corner it costs the layout
+	# nothing and cannot widen anything. Top right, opposite the spare tag.
+	# Straight onto the tile, with no wrapper. `tile` is a Button, which is a
+	# Control and not a container, so it leaves its children's anchors alone --
+	# this is the same shape the spare tag below uses. A Control wrapper is what
+	# the CARD tiles need, because those are PanelContainers and a container
+	# does overwrite anchors; putting one here instead gave the chip a zero-size
+	# parent to anchor against.
+	var dchip := _diff_chip(c["diff"])
+	dchip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tile.add_child(dchip)
+	dchip.anchor_left = 1.0
+	dchip.anchor_right = 1.0
+	dchip.anchor_top = 0.0
+	dchip.anchor_bottom = 0.0
+	dchip.offset_left = -8.0
+	dchip.offset_right = -8.0
+	dchip.offset_top = 8.0
+	dchip.offset_bottom = 8.0
+	dchip.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	dchip.grow_vertical = Control.GROW_DIRECTION_END
 
 	# The spare count is a corner tab, not a third thing in the footer. As a
 	# footer chip it added its own width to the row's minimum, an HBoxContainer
@@ -7161,7 +7230,7 @@ func _claim_collection(c: Dictionary) -> void:
 	Sfx.play("jackpot", -2.0)
 	FX.confetti(self, 40)
 	FX.flash(self)
-	FX.fly_coins(self, Vector2(360, 640), _hud_labels[0]["spins"].global_position,
+	FX.fly_coins(self, Vector2(360, 640), _spin_counter_at(),
 		clampi(won / 120, 6, 12), "bolt", "🌀")
 	_award_stars(star_bonus, Vector2(360, 620))
 	_banner("%s:  +%s spins  and  +%d \u2605" % [c["name"], _fmt(won), star_bonus], Color(0.6, 0.9, 1.0), c["icon"])
@@ -7182,7 +7251,7 @@ func _claim_mega() -> void:
 	Sfx.play("levelup", -2.0)
 	FX.confetti(self, 80)
 	FX.flash(self)
-	FX.fly_coins(self, Vector2(360, 620), _hud_labels[0]["spins"].global_position,
+	FX.fly_coins(self, Vector2(360, 620), _spin_counter_at(),
 		18, "bolt", "🌀")
 	_banner("GRAND PRIZE!  +%s spins  and  +250 \u2605" % _fmt(CV.COLLECTION_MEGA_SPINS), Color(0.6, 0.9, 1.0), "🏆")
 	_update_badges()
@@ -7767,7 +7836,14 @@ func _add_topbar(page: Control) -> void:
 	var labels := {}
 	# Third field is the shelf the plus goes to; empty means the counter has no
 	# plus at all, which is the shield's case -- shields are not sold.
-	for spec in [["coin", "coins", "coins"], ["wheel", "spins", "spins"], ["shield", "shields", ""]]:
+	# NO SPINS PILL. The count lives on the machine, beside the button that
+	# spends it, where the meter also says how far off the cap it is and how long
+	# until the next free one -- three facts the pill could only ever give one
+	# of. Two counters for the same number thirty pixels apart is what makes a
+	# HUD feel busy without telling anyone anything new.
+	# Third field is the shelf the plus goes to; empty means no plus at all,
+	# which is the shield's case -- shields are not sold.
+	for spec in [["coin", "coins", "coins"], ["shield", "shields", ""]]:
 		var shelf: String = spec[2]
 		var jump := Callable()
 		if shelf != "":
@@ -9180,7 +9256,8 @@ func _refresh() -> void:
 	for labels in _hud_labels:
 		_style_shield_chip(labels.get("shields_chip"), shown_shields >= SHIELD_CAP)
 		labels["coins"].text = _fmt_compact(coins)
-		labels["spins"].text = ("%d/%d" % [shown_spins, SPIN_CAP]) if shown_spins <= SPIN_CAP else str(shown_spins)
+		if labels.has("spins"):
+			labels["spins"].text = ("%d/%d" % [shown_spins, SPIN_CAP]) if shown_spins <= SPIN_CAP else str(shown_spins)
 		labels["shields"].text = str(shown_shields)
 		labels["stars"].text = _fmt_compact(rank_stars)
 		labels["island"].text = str(island_level)
@@ -9364,6 +9441,15 @@ func _fmt(n: int) -> String:
 
 func _fmt_compact(n: int) -> String:
 	return UI.fmt_compact(n)
+
+# Where a spin reward should fly to, now that the pill it used to aim at is
+# gone. The meter on the machine when that is on screen, and the middle of the
+# page when it is not -- a reward aimed at a control that does not exist lands
+# at the origin, which reads as the prize falling into the corner of the phone.
+func _spin_counter_at() -> Vector2:
+	if slot != null and is_instance_valid(slot) and slot.is_visible_in_tree():
+		return slot.meter_center()
+	return Vector2(view_size().x * 0.5, view_size().y * 0.4)
 
 func _emoji_label(text: String, size: int) -> Label:
 	var l := Label.new()

@@ -249,7 +249,10 @@ func _t_steal_raid() -> void:
 # --- the season ending --------------------------------------------------------
 func _t_season_rollover() -> void:
 	print("collection season rollover")
-	m.col_deadline = m._now() - 10.0
+	# Seasons run on a global cycle, so winding a private deadline into the past
+	# proves nothing -- _ensure_collections reads the clock. Moving the RECORDED
+	# season back is what a player who was away for a rollover looks like.
+	m.col_season -= 1
 	m._ensure_collections()
 	var any := false
 	for c in CV.COLLECTIONS:

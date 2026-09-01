@@ -23,7 +23,20 @@ signal spin_requested
 signal spin_finished(result: Array)
 signal auto_toggled(on: bool)
 
-const BETS := [1, 2, 3, 5]
+# The ladder the BET button walks. It is longer than the four rungs it used to
+# have, because a player sitting on five figures of spins was still feeding them
+# in one and two at a time -- the meter grew and the machine did not.
+#
+# Rungs are GATED by what is held rather than all offered at once: bet_steps()
+# only returns the ones this balance can actually pay, so the button never
+# cycles onto a wager that fails the moment it is pressed, and a new rung
+# appearing is itself the reward for having stacked up.
+const BETS := [1, 2, 3, 5, 10, 25, 50, 100]
+
+# A rung is offered once the player could spin it ten times over. Ten is the
+# number that keeps the top rung from being a single button press that empties
+# the meter -- a bet you can afford exactly once is a dare, not a wager.
+const BET_UNLOCK_SPINS := 10
 const CARD := Vector2(438, 96)
 
 # How much bare page is left either side of the cabinet.
@@ -215,7 +228,9 @@ func _build_meter() -> Control:
 	bet_button.focus_mode = Control.FOCUS_NONE
 	bet_button.add_theme_font_size_override("font_size", UI.F_LABEL)
 	bet_button.pressed.connect(func() -> void:
-		bet = BETS[(BETS.find(bet) + 1) % BETS.size()]
+		var steps := bet_steps()
+		var at := steps.find(bet)
+		bet = int(steps[0] if at < 0 else steps[(at + 1) % steps.size()])
 		_style_bet()
 		Sfx.play("pop", -12.0)
 	)
@@ -410,7 +425,35 @@ func _pot_style() -> StyleBoxFlat:
 
 # Bet steps up through four materials rather than four arbitrary colours, so
 # the stake is legible from the button's substance: brass, kelp, urchin, coral.
-const BET_KINDS := ["brass", "kelp", "urchin", "primary"]
+# One per rung, and the ladder climbs in heat. mini() already guards the index,
+# but a list this short against eight rungs meant every bet above x5 wore the
+# same coat as x5 -- which is the exact thing the colour is there to prevent.
+const BET_KINDS := ["brass", "kelp", "urchin", "primary",
+	"primary", "primary", "primary", "primary"]
+
+# Which rungs this balance may use. Always at least x1: a player with no spins
+# left still has to see a bet on the button, and the out-of-spins offer is what
+# answers the press.
+func bet_steps() -> Array:
+	var out: Array = []
+	for b in BETS:
+		if int(b) == 1 or _held >= int(b) * BET_UNLOCK_SPINS:
+			out.append(int(b))
+	return out
+
+# Called whenever the meter moves, so a rung that has just become affordable
+# turns up without waiting for the page to be rebuilt -- and, more importantly,
+# so a bet the player can no longer pay is stepped back down instead of sitting
+# there failing.
+func _clamp_bet() -> void:
+	var steps := bet_steps()
+	if not steps.has(bet):
+		var best := 1
+		for b in steps:
+			if int(b) <= bet:
+				best = int(b)
+		bet = best
+		_style_bet()
 
 func _style_bet() -> void:
 	bet_button.text = "BET  x%d" % bet
@@ -456,7 +499,17 @@ func set_target(npc: Dictionary, coin_mult := 1.0) -> void:
 	var token := Lagoon.token(npc.get("emoji", "🏴"), 74.0, Lagoon.BRASS)
 	_card_avatar.add_child(token)
 
+var _held := 0
+
+# Where the spin count sits on screen, for rewards that fly to it.
+func meter_center() -> Vector2:
+	if _meter_label != null and is_instance_valid(_meter_label):
+		return _meter_label.global_position + _meter_label.size * 0.5
+	return global_position + size * 0.5
+
 func set_meter(held: int, cap: int, secs_to_refill: float, refill: int) -> void:
+	_held = held
+	_clamp_bet()
 	_meter.max_value = float(cap)
 	_meter.value = float(mini(held, cap))
 	# Over the cap the "/ 50" is not a limit any more, it is a smaller number
@@ -465,7 +518,11 @@ func set_meter(held: int, cap: int, secs_to_refill: float, refill: int) -> void:
 	# purpose -- the cap only ever governs the free refill -- so above it the
 	# meter says what is held and nothing else. The top bar has always done
 	# this; the machine had not.
-	_meter_label.text = ("%d / %d" % [held, cap]) if held <= cap else str(held)
+	# Compact above four figures. A spin pack or a run of bolt triples puts five
+	# and six digits in here, and the label sits in a fixed-width well next to
+	# the BET button -- the raw number ran under the timer text and then off the
+	# end of the machine. 12.5K says the same thing and always fits.
+	_meter_label.text = ("%d / %d" % [held, cap]) if held <= cap else UI.fmt_compact(held)
 	if held >= cap:
 		_timer_label.text = "Spins full"
 	else:
