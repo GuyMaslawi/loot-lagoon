@@ -728,6 +728,12 @@ func _capture_page(key: String) -> void:
 		_goto(pages[key])
 	elif key == "slot":
 		_goto(slot_page)
+	elif key == "village" or key == "island":
+		# The island is not in `pages` -- it is its own `village_page`, which is
+		# why the nav bar special-cases it too. Without this SHOT=island fell
+		# through every branch and photographed whatever was already up, which
+		# is the slot machine, and looked enough like a screenshot to be used.
+		_goto(village_page)
 	# Long enough for the page transition and the card art to finish arriving,
 	# and for the welcome-back banners to have come and gone -- those sit across
 	# the top of the page and will happily photobomb whatever is underneath.
