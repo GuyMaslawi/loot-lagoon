@@ -6572,6 +6572,44 @@ func _fill_collections(vb: VBoxContainer) -> void:
 # questions -- what is it, how far in am I, is there a reward waiting -- and
 # all six fit above the fold.
 
+# The hours between one season and the next, said out loud.
+#
+# Three things have to be on this card, because all three are questions a player
+# looking at a shelf that has stopped taking cards will ask in this order:
+# what happened, what happens to what I collected, and when does it start again.
+#
+# THE SECOND ONE IS THE IMPORTANT ONE and it is why the break exists at the end
+# of a season rather than at the start of the next. Nothing is wiped yet. The
+# cards are all still there, a set that is finished can still be claimed, and a
+# card BOUGHT in the shop still lands and can still complete one -- money never
+# waits on a clock. What stops is the free drip from spinning. The wipe happens
+# when the new season actually opens, and the ribbon says so when it does.
+func _season_break_card(vb: VBoxContainer) -> void:
+	var until := maxf(0.0, _col_opens_at() - _now())
+	var panel := _tinted_card(vb, Lagoon.LAGOON, true)
+	var pad := MarginContainer.new()
+	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		pad.add_theme_constant_override(m, 14)
+	panel.add_child(pad)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 6)
+	pad.add_child(col)
+
+	var title := Lagoon.label("\u23F8  SEASON  CLOSED", UI.F_SUBHEAD, Lagoon.LAGOON_DEEP, true)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(title)
+
+	var clock := Lagoon.label("New season opens in  %dh %02dm" % [int(until / 3600.0), int(fmod(until, 3600.0) / 60.0)],
+		UI.F_BODY, Lagoon.INK, true)
+	clock.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(clock)
+
+	var body := _popup_row_label("Spins have stopped dropping cards. Everything you have collected stays put, and a finished set can still be claimed \u2014 the shelf only resets when the new season opens.", UI.F_CAPTION)
+	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	col.add_child(body)
+
 # The one change in this game a player can miss entirely.
 #
 # A season turning over empties every set they filled and hands them a fresh
@@ -6610,6 +6648,8 @@ func _fill_collection_shelf(vb: VBoxContainer) -> void:
 		_update_badges()
 		_save_game()
 		_season_ribbon(vb)
+	if _col_break():
+		_season_break_card(vb)
 	var head := _page_card(vb)
 	var trow := HBoxContainer.new()
 	trow.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -6628,23 +6668,16 @@ func _fill_collection_shelf(vb: VBoxContainer) -> void:
 	gpb.max_value = CV.COLLECTIONS.size()
 	gpb.value = claimed_n
 	head.add_child(gpb)
-	# Three different sentences, because the shelf is in one of three states and
-	# the old line only knew about one of them. During the lull it said "Season
-	# ends in 0d 0h", which is both wrong and the least useful thing it could
-	# say to somebody looking at six empty sets.
-	var season_txt := ""
-	var season_col := Lagoon.INK_FAINT
-	if _col_break():
-		var until := maxf(0.0, _col_opens_at() - _now())
-		season_txt = "New season opens in %dh %dm" % [int(until / 3600.0), int(fmod(until, 3600.0) / 60.0)]
-		season_col = Lagoon.KELP_LO
-	else:
+	# The old line said "Season ends in 0d 0h" during the lull, which is both
+	# wrong and the least useful thing it could say to somebody staring at a
+	# shelf that has stopped taking cards.
+	if not _col_break():
 		var days_left := maxf(0.0, col_deadline - _now())
-		season_txt = "Season ends in %dd %dh \u2014 collections reset!" % [int(days_left / 86400.0), int(fmod(days_left, 86400.0) / 3600.0)]
-	var season := _popup_row_label(season_txt, UI.F_TINY)
-	season.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	season.add_theme_color_override("font_color", season_col)
-	head.add_child(season)
+		var season := _popup_row_label("Season ends in %dd %dh \u2014 collections reset!"
+			% [int(days_left / 86400.0), int(fmod(days_left, 86400.0) / 3600.0)], UI.F_TINY)
+		season.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		season.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+		head.add_child(season)
 	if col_mega_claimed:
 		var done := _popup_row_label("CLAIMED  \u2713", UI.F_LABEL)
 		done.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER

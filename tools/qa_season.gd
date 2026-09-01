@@ -105,7 +105,17 @@ func _t_break_pauses_drops() -> void:
 	_chk("and knows when the next one opens",
 		 is_equal_approx(m._col_opens_at(), CV.season_starts(idx + 1)))
 
-	# Two thousand spins' worth of rolls, and not one card may land.
+	# WHAT THE PLAYER KEEPS. The break sits at the END of a season, before the
+	# index turns over, so nothing has been wiped yet -- and that is the whole
+	# reason it is placed there. A card collected on the last day is still on
+	# the shelf during the lull.
+	var beach: Array = m.col_owned["beach"]
+	beach[0] = true
+	m._ensure_collections()
+	_chk("cards collected before the bell are still there",
+		 bool((m.col_owned["beach"] as Array)[0]))
+
+	# Two thousand spins' worth of rolls, and not one new card may land.
 	for c in CV.COLLECTIONS:
 		m.col_owned[c["id"]] = []
 		for _i in (c["items"] as Array).size():
@@ -118,6 +128,24 @@ func _t_break_pauses_drops() -> void:
 			if bool(v):
 				any = true
 	_chk("no card drops during the break", not any)
+
+	# A finished set can still be cashed in -- the lull is exactly when somebody
+	# would go and do that, and a claim button that has gone dead would read as
+	# the reward having expired with the season.
+	var first: Dictionary = CV.COLLECTIONS[0]
+	var owned: Array = m.col_owned[first["id"]]
+	for i in owned.size():
+		owned[i] = true
+	m.col_claimed[first["id"]] = false
+	var spins_before: int = m.spins
+	m._claim_collection(first)
+	_chk("a finished set can still be claimed during the break",
+		 m.spins > spins_before, "%d -> %d" % [spins_before, m.spins])
+
+	# And the page says so, in its own panel rather than one grey line.
+	m.col_open = ""
+	m._fill_page("collections")
+	_chk("the shelf shows the closed-season card", _finds_text(m, "SEASON  CLOSED"))
 
 	# A card that was PAID for still lands. Money never waits on a clock.
 	var card: Dictionary = m._grant_chest_card(2)
@@ -162,3 +190,13 @@ func _t_five_star_is_rare() -> void:
 	_chk("and the tiers still climb, so paying buys something",
 		 float(CV.star_odds(0)[4]) < float(CV.star_odds(1)[4])
 			 and float(CV.star_odds(1)[4]) < float(CV.star_odds(2)[4]))
+
+# Walks the built page looking for a piece of copy, so a check can assert what
+# is actually on screen rather than what a flag says.
+func _finds_text(node: Node, needle: String) -> bool:
+	if node is Label and String((node as Label).text).find(needle) >= 0:
+		return true
+	for c in node.get_children():
+		if _finds_text(c, needle):
+			return true
+	return false
