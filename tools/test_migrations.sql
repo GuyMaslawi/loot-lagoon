@@ -464,6 +464,86 @@ begin
     perform pg_temp.ck('and the thirty-day undo still has the save to restore',
                        (select save_blob from public.players where id = p_bob) is not null);
 
+    -- --- diagnostics -------------------------------------------------------
+    -- The table exists so that twenty-five strangers testing the game for two
+    -- weeks produce something more than a count. Every rule the migration
+    -- claims in prose is checked here.
+    perform pg_temp.be(alice);
+    n := public.report_diagnostics('inst-1', 'Android', '15', 'Pixel 8', 62, '[
+            {"kind": "crash", "detail": {"where": "slot"}},
+            {"kind": "usage", "detail": {"spins": 40}}
+        ]'::jsonb);
+    perform pg_temp.ck('report_diagnostics writes the batch it is handed', n = 2, n::text);
+    perform pg_temp.ck('and files it against the caller''s island',
+                       (select count(*) from public.diagnostics where player = p_alice) = 2);
+
+    n := public.report_diagnostics('inst-1', 'Android', '15', 'Pixel 8', 62, '[
+            {"kind": "nonsense", "detail": {}},
+            {"kind": "error",    "detail": {"at": "iap"}}
+        ]'::jsonb);
+    perform pg_temp.ck('an unknown kind is skipped without failing its batch', n = 1, n::text);
+
+    n := public.report_diagnostics('inst-1', 'Android', '15', 'Pixel 8', 62, 'null'::jsonb);
+    perform pg_temp.ck('a malformed payload is refused rather than raising', n = 0, n::text);
+
+    -- The client is told to drop what the cap refuses. If this ever returns the
+    -- batch size instead of 0, a flushing loop becomes an infinite one.
+    insert into public.diagnostics (player, install_id, kind)
+        select p_alice, 'inst-1', 'usage' from generate_series(1, 120);
+    n := public.report_diagnostics('inst-1', 'Android', '15', 'Pixel 8', 62,
+                                   '[{"kind": "crash", "detail": {}}]'::jsonb);
+    perform pg_temp.ck('over the hourly cap it accepts nothing and says so', n = 0, n::text);
+
+    delete from public.diagnostics where player = p_alice;
+
+    -- --- diagnostics: the door is the only way in ---------------------------
+    perform pg_temp.ck('authenticated cannot write the diagnostics table directly',
+                       not has_table_privilege('authenticated', 'public.diagnostics', 'insert')
+                   and not has_table_privilege('authenticated', 'public.diagnostics', 'select'));
+    perform pg_temp.ck('and anon cannot call the function that can',
+                       not has_function_privilege('anon',
+                           'public.report_diagnostics(text, text, text, text, integer, jsonb)',
+                           'execute'));
+    perform pg_temp.ck('while authenticated can',
+                       has_function_privilege('authenticated',
+                           'public.report_diagnostics(text, text, text, text, integer, jsonb)',
+                           'execute'));
+    perform pg_temp.ck('pruning is not reachable from any client at all',
+                       not has_function_privilege('authenticated',
+                           'public.prune_diagnostics(integer, integer)', 'execute')
+                   and not has_function_privilege('anon',
+                           'public.prune_diagnostics(integer, integer)', 'execute'));
+
+    -- --- diagnostics: an account with no island -----------------------------
+    declare
+        nomad uuid := gen_random_uuid();
+    begin
+        insert into auth.users (id, email) values (nomad, 'nomad@example.com');
+        perform pg_temp.be(nomad);
+        begin
+            n := public.report_diagnostics('inst-9', 'iOS', '18', 'iPhone', 62,
+                                           '[{"kind": "crash", "detail": {}}]'::jsonb);
+            perform pg_temp.ck('a session with no island cannot file diagnostics', false,
+                               'it returned ' || n::text);
+        exception when others then
+            perform pg_temp.ck('a session with no island cannot file diagnostics',
+                               sqlerrm like '%no island%', sqlerrm);
+        end;
+    end;
+
+    -- --- diagnostics: pruning keeps the rare rows ---------------------------
+    perform pg_temp.be(alice);
+    insert into public.diagnostics (player, install_id, kind, created_at) values
+        (p_alice, 'inst-1', 'usage', now() - interval '30 days'),
+        (p_alice, 'inst-1', 'crash', now() - interval '30 days'),
+        (p_alice, 'inst-1', 'usage', now());
+    n := public.prune_diagnostics();
+    perform pg_temp.ck('pruning drops stale usage rows', n = 1, n::text);
+    perform pg_temp.ck('and keeps a crash that is older than any of them',
+                       (select count(*) from public.diagnostics
+                         where player = p_alice and kind = 'crash') = 1);
+    delete from public.diagnostics where player = p_alice;
+
     raise notice 'ALL FUNCTIONAL TESTS PASSED';
 end;
 $$;

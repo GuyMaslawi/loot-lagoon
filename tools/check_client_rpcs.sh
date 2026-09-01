@@ -48,6 +48,7 @@ unseen_raids:
 ack_raids:p_ids
 set_display_name:p_name
 set_emoji:p_emoji
+report_diagnostics:p_install,p_platform,p_os,p_model,p_build,p_events
 report_player:p_player,p_reason
 leaderboard:p_limit
 create_link_token:

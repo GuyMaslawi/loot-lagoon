@@ -593,6 +593,29 @@ func report_player(player_id: String, reason: String, then: Callable) -> void:
 		func(code: int, _b) -> void: then.call(code == 200))
 
 
+# Crash reports, faults and feature counters, batched. See diag.gd for what is
+# in them and why none of it identifies anybody.
+#
+# The only call in this file that is allowed to be dropped on the floor. Every
+# other RPC here moves something a player owns; this one moves an observation
+# about the game, and a diagnostics pipeline that retries hard enough to matter
+# has become part of the problem it was installed to watch. One attempt, and
+# `then(false)` means the caller should keep them for later -- or not.
+func report_diagnostics(install: String, platform: String, os_version: String,
+		model: String, build: int, events: Array, then: Callable) -> void:
+	if not linked() or events.is_empty():
+		then.call(false)
+		return
+	_rpc("report_diagnostics", {
+		"p_install":  install,
+		"p_platform": platform,
+		"p_os":       os_version,
+		"p_model":    model,
+		"p_build":    build,
+		"p_events":   events,
+	}, func(code: int, _b) -> void: then.call(code == 200))
+
+
 func leaderboard(then: Callable) -> void:
 	if not linked():
 		then.call([])

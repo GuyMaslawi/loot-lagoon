@@ -30,6 +30,7 @@ Sfx="*res://scripts/sfx.gd"
 IAP="*res://scripts/iap.gd"
 Alerts="*res://scripts/alerts.gd"
 Cloud="*res://scripts/cloud.gd"
+Diag="*res://scripts/diag.gd"
 
 [display]
 

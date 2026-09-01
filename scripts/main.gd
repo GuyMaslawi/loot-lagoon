@@ -589,6 +589,11 @@ func _after_boot() -> void:
 	# opening it, and the icon should stop claiming otherwise.
 	Alerts.clear_delivered()
 	Alerts.set_badge(_unread_count())
+	# The game is on screen and a session is now in progress. Armed here rather
+	# than in _ready because a crash during boot is a crash in a build that
+	# never opened, and the marker for it would be written by code that has not
+	# read the previous one yet.
+	Diag.awake("boot")
 	if profile.is_empty():
 		_show_login()
 	# DEMO_RAID sails straight to a raid. An attack needs three hammers on the
@@ -1643,6 +1648,10 @@ func _go_away() -> void:
 	_flush_save()
 	Alerts.schedule(_alert_plan(_now()), _now())
 	Alerts.set_badge(_unread_count())
+	# Last, and it must stay last: this is what tells the next launch that the
+	# app shut down on purpose. Anything that crashed above it SHOULD still be
+	# reported as a crash, and would not be if this ran first.
+	Diag.asleep()
 
 # Coming back.
 func _resume_from_away() -> void:
@@ -1675,6 +1684,7 @@ func _resume_from_away() -> void:
 	_refresh()
 	_flush_save()
 	Alerts.set_badge(_unread_count())
+	Diag.awake(_page_name(_current_page))
 
 # Spins that regenerated over `elapsed` seconds. Shared by the cold load and
 # the resume so the two can never drift apart.
@@ -1732,6 +1742,22 @@ func _spins_full_at(from: float) -> float:
 # in from the same side.
 const PAGE_ORDER := ["island", "shop", "spin", "collections", "boxes", "quests", "options", "alerts"]
 
+# Which page is this, as a word. `pages` is keyed by exactly these names, so
+# there is nothing to keep in step -- the two pages that predate the dictionary
+# are the only special cases.
+func _page_name(p: Control) -> String:
+	if p == null:
+		return ""
+	for key in pages:
+		if pages[key] == p:
+			return String(key)
+	if p == village_page:
+		return "island"
+	if p == slot_page:
+		return "spin"
+	return "other"
+
+
 func _page_rank(p: Control) -> int:
 	if p == village_page:
 		return 0
@@ -1778,6 +1804,12 @@ func _goto(target: Control) -> void:
 		_schedule_auto_spin(0.8)
 	if target == village_page:
 		call_deferred("_check_island_complete")
+	# Both halves of the questionnaire's second question in one line: `at` is
+	# the breadcrumb a crash row carries, `note` is the tally that answers
+	# whether a tester ever reached this screen at all.
+	var page_name := _page_name(target)
+	Diag.at(page_name)
+	Diag.note("page:" + page_name)
 	_update_nav()
 	_refresh()
 
@@ -5281,6 +5313,7 @@ func _pack_sub(pack: Dictionary) -> String:
 # grant writes the save, so finishing before it would risk charging a player
 # for coins that never landed.
 func _on_purchase_ok(product_id: String) -> void:
+	Diag.note("purchase")
 	_close_popup()
 	var short := product_id.trim_prefix(IAP.PREFIX)
 	if short == String(CV.PIGGY_PACK["id"]):
@@ -7219,6 +7252,7 @@ func _open_card_box(box: Dictionary) -> void:
 		Sfx.play("error", -6.0)
 		return
 	stars -= cost
+	Diag.note("chest")
 
 	var pre_complete := {}
 	for c in CV.COLLECTIONS:
@@ -8123,6 +8157,7 @@ func _on_spin_finished(result: Array) -> void:
 	# the deducted figure. Cleared before anything below can reach a flush --
 	# an attack triple calls _start_visit synchronously a few lines down.
 	_stake_pending = 0
+	Diag.note("spin")
 	var bet := _last_bet
 	var gain := 0
 	var triple: bool = result[0] == result[1] and result[1] == result[2]
@@ -8734,6 +8769,7 @@ func _report_raid(npc: Dictionary, mode: String, result: Dictionary) -> void:
 		return
 	if mode == "steal":
 		Cloud.record_raid(id, "steal", int(result.get("stolen", 0)))
+		Diag.note("raid:steal")
 		return
 	# A shield turned it away, so nothing on the other island changed and there
 	# is nothing for its owner to apply. Recording it would put an event in
@@ -8742,6 +8778,7 @@ func _report_raid(npc: Dictionary, mode: String, result: Dictionary) -> void:
 		return
 	# island_visit calls the hut it hit "target"; the server calls it "hut".
 	Cloud.record_raid(id, "attack", 0, int(result.get("target", -1)))
+	Diag.note("raid:attack")
 
 # The search hands back the rival it was given, and that is the island we sail
 # to -- _raid_target, not next_target, which by now is free to move on.
