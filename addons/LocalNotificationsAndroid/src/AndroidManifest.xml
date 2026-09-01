@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.guymaslawi.lootlagoon.notifications">
+
+    <uses-sdk android:minSdkVersion="24" />
+
+    <!-- Android 13+ only. Below that, notifications are on unless the player
+         turned them off in Settings. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- A reboot clears every pending AlarmManager alarm. Without this the
+         whole plan is silently lost the first time the phone restarts, which
+         for most people is more often than they open this game. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- SCHEDULE_EXACT_ALARM is deliberately NOT requested. It is a restricted
+         permission, Play asks you to justify it, and "your spins are full" does
+         not need to land on the second. Inexact alarms cost nothing to use and
+         nothing to explain. -->
+
+    <application>
+        <meta-data
+            android:name="org.godotengine.plugin.v2.LocalNotifications"
+            android:value="com.guymaslawi.lootlagoon.notifications.LootLagoonNotifications" />
+
+        <receiver
+            android:name="com.guymaslawi.lootlagoon.notifications.AlarmReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name="com.guymaslawi.lootlagoon.notifications.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

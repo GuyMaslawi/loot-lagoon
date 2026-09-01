@@ -22,7 +22,7 @@ boot_splash/use_filter=true
 ; Enabled so its EditorExportPlugin runs: that is what adds the .aar and the
 ; billing-library gradle dependency to an Android build. Without this line the
 ; export succeeds and silently produces a build with no billing in it.
-enabled=PackedStringArray("res://addons/GodotGooglePlayBilling/plugin.cfg")
+enabled=PackedStringArray("res://addons/GodotGooglePlayBilling/plugin.cfg", "res://addons/LocalNotificationsAndroid/plugin.cfg")
 
 [autoload]
 

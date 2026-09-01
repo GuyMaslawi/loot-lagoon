@@ -1605,3 +1605,36 @@ func _t_alerts() -> void:
 	m.notif_enabled = false
 	_chk("the master switch empties the plan", m._alert_plan(m._now()).is_empty())
 	m.notif_enabled = true
+
+	# --- the shape Android reads -------------------------------------------
+	#
+	# iOS gets this plan as an Array across a native binding that would fail
+	# loudly if it were wrong. Android gets it as JSON, parsed by hand in
+	# LootLagoonNotifications.java, which reads exactly four keys and silently
+	# ignores anything else -- so renaming one here does not break a build, it
+	# just stops every Android notification from ever arriving, with no error on
+	# either side. That is the failure this checks for, and it is why the four
+	# names are spelled out rather than derived.
+	var due := []
+	for row in m._alert_plan(m._now()):
+		var delay: float = float(row.get("at", 0.0)) - m._now()
+		if delay >= Alerts.MIN_LEAD:
+			due.append({"id": String(row.get("id", "")), "in": delay,
+				"title": String(row.get("title", "")), "body": String(row.get("body", ""))})
+	_chk("there is a plan to hand Android at all", due.size() > 0, "%d entries" % due.size())
+	var round_trip = JSON.parse_string(JSON.stringify(due))
+	_chk("the plan survives being made JSON", typeof(round_trip) == TYPE_ARRAY)
+	var shaped := true
+	var positive := true
+	for e in (round_trip if typeof(round_trip) == TYPE_ARRAY else []):
+		for key in ["id", "in", "title", "body"]:
+			if not (e as Dictionary).has(key):
+				shaped = false
+		# `in` is a delay in seconds, and the Java multiplies it by 1000 and
+		# adds it to the wall clock. A negative would schedule into the past,
+		# where AlarmManager fires it immediately -- every message at once, the
+		# moment the player backgrounds the game.
+		if float((e as Dictionary).get("in", -1.0)) < Alerts.MIN_LEAD:
+			positive = false
+	_chk("every entry carries the four keys the Java reads", shaped)
+	_chk("and `in` is a forward delay, never a past one", positive)

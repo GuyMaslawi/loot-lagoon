@@ -2,9 +2,11 @@ extends Node
 
 # Notifications that arrive while the game is closed.
 #
-# The whole feature rests on one constraint: a backgrounded iOS app does not
-# run. There is no timer ticking in the background, no code that can notice
-# the spins came back and post a message about it. Everything the player will
+# The whole feature rests on one constraint: a backgrounded app does not run --
+# true on both platforms and for different reasons, iOS suspending it outright
+# and Android putting it where Doze can. There is no timer ticking in the
+# background, no code that can notice the spins came back and post a message
+# about it. Everything the player will
 # see over the next hours has to be handed to iOS *before* the app goes to
 # sleep, complete with its text and its due time.
 #
@@ -22,28 +24,37 @@ extends Node
 signal permission_result(granted: bool)
 
 # iOS will hold 64 pending local notifications per app and silently drops the
-# rest. Nothing here comes close, but the trim is real code rather than a
-# comment because "nothing comes close" is exactly the sort of thing an event
-# system added later stops being true.
+# rest; Android's AlarmManager cap is higher, so the tighter number governs.
+# Nothing here comes close, but the trim is real code rather than a comment
+# because "nothing comes close" is exactly the sort of thing an event system
+# added later stops being true.
 const MAX_PENDING := 64
 
 # Below this there is no point waking anybody: they are still holding the phone.
 const MIN_LEAD := 60.0
 
 var _plugin: Object = null
+# The Android plugin takes the plan as JSON rather than as an Array -- see the
+# note on schedule() below. Read once here rather than per call.
+var _android := false
 # Whether iOS has been asked. Not the answer -- see status(); the player can
 # revoke us in Settings between one launch and the next.
 var _asked := false
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	_android = OS.get_name() == "Android"
 	if Engine.has_singleton("LocalNotifications"):
 		_plugin = Engine.get_singleton("LocalNotifications")
 		_plugin.permission_result.connect(_on_permission_result)
 
-# Whether there is an iOS underneath at all. The editor, the desktop build and
-# the simulator have no plugin, and every call below is a no-op there -- the
+# Whether there is a platform underneath at all. The editor, the desktop build
+# and the simulator have no plugin, and every call below is a no-op there -- the
 # game must not gate any of its own logic on notifications having happened.
+#
+# This was ALSO false on Android until 2026-09-01, silently: the singleton was
+# an iOS plugin, so the entire retention plan below was computed every time the
+# game was backgrounded and thrown away. See addons/LocalNotificationsAndroid.
 func available() -> bool:
 	return _plugin != null
 
@@ -103,9 +114,18 @@ func schedule(entries: Array, now: float) -> void:
 	# that gets dropped and not tonight.
 	due.sort_custom(func(a, b) -> bool: return float(a["in"]) < float(b["in"]))
 	if due.size() > MAX_PENDING:
-		push_warning("Alerts: %d planned, iOS holds %d -- dropping the furthest out." % [due.size(), MAX_PENDING])
+		push_warning("Alerts: %d planned, the cap is %d -- dropping the furthest out." % [due.size(), MAX_PENDING])
 		due.resize(MAX_PENDING)
-	_plugin.schedule(due)
+	# The one place the two platforms differ. The Android plugin takes JSON
+	# because an Array of Dictionaries has to cross JNI, where every number
+	# arrives as a boxed type nobody chose, and the failure mode for getting
+	# that wrong is not an error -- it is a tester who never gets a
+	# notification. A String crosses exactly one way. See the comment on
+	# schedule() in LootLagoonNotifications.java.
+	if _android:
+		_plugin.schedule(JSON.stringify(due))
+	else:
+		_plugin.schedule(due)
 
 func cancel_all() -> void:
 	if _plugin != null:
