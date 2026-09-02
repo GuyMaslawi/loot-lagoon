@@ -63,6 +63,17 @@ func _ready() -> void:
 		_check_page("popup " + opener, m._popup)
 		m._close_popup(true)
 		await get_tree().process_frame
+	# The end-of-tournament dialog, in both its shapes: a podium finish carrying
+	# three reward cells, and a placing with none. The first is the widest thing
+	# this modal ever draws.
+	for spec in [[1, 12000, 250, 3], [11, 0, 0, 0]]:
+		m.call("_tourney_result_dialog", int(spec[0]), 24, 1840,
+			int(spec[1]), int(spec[2]), int(spec[3]))
+		await get_tree().process_frame
+		await get_tree().process_frame
+		_check_page("popup tourney result #%d" % int(spec[0]), m._popup)
+		m._close_popup(true)
+		await get_tree().process_frame
 	print("QA-LAYOUT: %s" % ("ALL PASS" if fails == 0 else "%d FAILURES" % fails))
 	get_tree().quit(1 if fails > 0 else 0)
 

@@ -700,6 +700,18 @@ func _after_boot() -> void:
 		for _l in tourney_lap:
 			tourney_lap_base += _tourney_tier_at(TOURNEY_TIERS.size() - 1, _l)
 		tourney_points = tourney_lap_base + maxi(0, int(demo_t[0]))
+	# DEMO_TOURNEY_END=<place> puts the end-of-tournament dialog on the screen.
+	# Reaching it honestly means playing a full seventy-two hour cycle and then
+	# waiting for the clock to turn, which is not a thing you can do while
+	# laying the dialog out -- and the two states worth looking at (a podium
+	# with a prize, and a placing without one) are three days apart.
+	if OS.has_environment("DEMO_TOURNEY_END"):
+		var demo_place := maxi(1, int(OS.get_environment("DEMO_TOURNEY_END")))
+		var demo_prize: Dictionary = TOURNEY_PRIZES[demo_place - 1] if demo_place <= TOURNEY_PRIZES.size() \
+			else {"coins": 0, "spins": 0, "cards": 0}
+		_after(1.2, func() -> void:
+			_tourney_result_dialog(demo_place, 24, 1840 + 260 * (6 - mini(demo_place, 6)),
+				_scaled(int(demo_prize["coins"])), int(demo_prize["spins"]), int(demo_prize["cards"])))
 	# SHOT=<page key> opens that page, lets it settle and writes a PNG, then
 	# quits. Apple will not review an in-app purchase without a screenshot of
 	# where it is sold, and there are twenty-five of them -- shooting those by
@@ -7484,6 +7496,14 @@ const TOURNEY_TIERS := [
 const TOURNEY_LAP_WORK := 1.8
 const TOURNEY_LAP_PAY := 1.4
 
+# There is no design ceiling on how many tracks a cycle can hold -- the
+# escalation is the ceiling, and it bites long before this. Track 3 already
+# wants 6,900 spins inside seventy-two hours and track 6 wants 47,000, which is
+# seven times what the meter can regenerate in that window. This exists only so
+# a hand-edited save cannot hand `pow()` an exponent that overflows the rung
+# back to a negative number.
+const TOURNEY_MAX_LAP := 20
+
 # What the top of the league is worth when the 72 hours run out.
 #
 # The rungs above are the reason to keep playing; this is the reason to keep
@@ -7661,7 +7681,7 @@ func _tourney_claim(tier: int) -> void:
 	# The base moves to the THRESHOLD rather than to the current score, so
 	# points earned past the top while the reward sat unclaimed carry into the
 	# new track instead of being forgiven.
-	if tier == TOURNEY_TIERS.size() - 1:
+	if tier == TOURNEY_TIERS.size() - 1 and tourney_lap < TOURNEY_MAX_LAP:
 		tourney_lap_base += _tourney_tier_at(tier)
 		tourney_lap += 1
 		tourney_claimed = []
@@ -7872,19 +7892,33 @@ func _tourney_pip(host: Control, tier: int, at_ratio: float) -> void:
 # honest answer to a different question: those ARE the islands a signed-out
 # player raids, so it is the same field either way.
 
-# A local rival's score for a cycle. Stable for the whole 72 hours, different
-# for every rival, reshuffled when the clock turns -- the same shape as
-# public.tourney_bot_points(), so the two fields feel like one game.
-func _local_tourney_points(who: String, cycle: int) -> int:
+# A local rival's score. Two halves, the same two as public.tourney_bot_points():
+# a finishing total that is stable for the whole 72 hours and different for
+# every rival, times where that rival is on its own curve right now.
+#
+# THE SECOND HALF IS THE POINT. Without it the field sits on its final totals
+# from the first minute of a cycle, so a player who opens the board on the
+# morning of day one -- which is the ordinary case, because the cycle turns
+# while the game is shut -- is looking at a race that has already been run. The
+# exponent is per rival and stable, so some are out fast and others finish
+# strong rather than the whole field moving in lockstep.
+func _local_tourney_points(who: String, cycle: int, progress := 1.0) -> int:
 	var span := 700 + 60 * clampi(island_level, 1, 30)
-	return absi(hash("%s:%d" % [who, cycle])) % span
+	var finish := absi(hash("%s:%d" % [who, cycle])) % span
+	var pace := 0.55 + 1.2 * float(absi(hash(who + ":pace")) % 1000) / 1000.0
+	return int(round(float(finish) * pow(clampf(progress, 0.0, 1.0), pace)))
 
-func _local_tourney_rows(cycle: int, my_points: int) -> Array:
+# How much of the current cycle has gone. 1.0 for a cycle that has ended, which
+# is what the placing prize is scored against.
+func _tourney_progress() -> float:
+	return clampf(1.0 - _tourney_seconds_left() / TOURNEY_SECONDS, 0.0, 1.0)
+
+func _local_tourney_rows(cycle: int, my_points: int, progress := 1.0) -> Array:
 	var rows := [{"name": profile.get("name", "You"), "emoji": _my_emoji(),
 			"points": my_points, "me": true, "id": ""}]
 	for n in npcs:
 		rows.append({"name": n["name"], "emoji": n["emoji"],
-				"points": _local_tourney_points(str(n["name"]), cycle),
+				"points": _local_tourney_points(str(n["name"]), cycle, progress),
 				"me": false, "id": ""})
 	return rows
 
@@ -7920,7 +7954,7 @@ func _tourney_settle() -> void:
 		_tourney_pay(int(r.get("place", 999)), int(r.get("field", 0)))
 	)
 
-func _tourney_pay(place: int, _field: int) -> void:
+func _tourney_pay(place: int, field: int) -> void:
 	# Cleared first, and before any of the granting below. Whatever happens next,
 	# this cycle has been answered; leaving it owed would pay it again on the
 	# next launch, and paying a prize twice is worse than paying it late.
@@ -7929,11 +7963,12 @@ func _tourney_pay(place: int, _field: int) -> void:
 	tourney_owed_points = 0
 	_save_game()
 	if place < 1 or place > TOURNEY_PRIZES.size():
-		# Off the podium. Said out loud anyway: a competition that ends in
-		# silence reads as a competition that was never running.
+		# Off the podium. Shown anyway, and in the same dialog: a competition
+		# that ends in silence reads as a competition that was never running,
+		# and "you came eleventh" is the thing that makes twelfth place matter
+		# next time.
 		if scored > 0:
-			_banner("Tournament over — you finished #%d with %s pts" % [place, _fmt_compact(scored)],
-				Color(0.72, 0.82, 0.9))
+			_tourney_result_dialog(place, field, scored, 0, 0, 0)
 		return
 	var prize: Dictionary = TOURNEY_PRIZES[place - 1]
 	var got_coins := _scaled(int(prize["coins"]))
@@ -7944,12 +7979,117 @@ func _tourney_pay(place: int, _field: int) -> void:
 		_grant_chest_card(1)
 	_save_game()
 	_refresh()
-	var what := "+%s coins, +%d spins" % [_fmt_compact(got_coins), got_spins]
-	if int(prize["cards"]) > 0:
-		what += ", +%d cards" % int(prize["cards"])
-	_banner("%s in the tournament! %s" % [_place_word(place), what], Color(1.0, 0.85, 0.3))
-	FX.confetti(self, 60)
-	Sfx.play("jackpot", -3.0)
+	_tourney_result_dialog(place, field, scored, got_coins, got_spins, int(prize["cards"]))
+
+# The end of a tournament, as a thing that happens TO the player.
+#
+# A toast was not enough and it was the wrong shape. The cycle turns while the
+# game is shut -- the ordinary case is somebody opening the app half a day after
+# the buzzer -- so the result is not news arriving during play, it is the first
+# thing that happened while they were away. A banner slides in and leaves in
+# four seconds, on a screen the player has not finished looking at yet, and the
+# only record that they came second in a three-day competition is gone.
+#
+# So it takes the screen, once, and the button off it goes to the new board --
+# which is the actual next thing to do.
+func _tourney_result_dialog(place: int, field: int, scored: int,
+		got_coins: int, got_spins: int, got_cards: int) -> void:
+	# Never over a raid or another modal. The settle runs on a deferred call at
+	# boot and again whenever the trophy opens, so there is always a later
+	# moment; taking the screen out from under an island visit is not worth the
+	# promptness.
+	if _raiding() or _popup != null or _journey_layer != null or _boot != null:
+		_after(2.0, func() -> void:
+			_tourney_result_dialog(place, field, scored, got_coins, got_spins, got_cards))
+		return
+
+	var won: bool = got_coins > 0 or got_spins > 0 or got_cards > 0
+	var vbox := _open_popup("Tournament over")
+
+	var medal := ["🥇", "🥈", "🥉"]
+	var crest := _emoji_label(medal[place - 1] if place <= medal.size() else "🏁", 92)
+	crest.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(crest)
+	FX.pulse_forever(crest, 1.1, 1.0)
+
+	var head := Lagoon.title(_place_word(place).to_upper(), UI.F_TITLE, Lagoon.SAND, Lagoon.BRASS_LO)
+	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(head)
+
+	# Two lines rather than one, because the one-line version wrapped and left
+	# "pts" stranded under it. The league is the context; the place and the
+	# score are the result, and a place on its own does not say whether it was
+	# close -- "#2 of 24" is a result, "#2" is a number.
+	var league_l := _popup_row_label(_tourney_league_name(), UI.F_CAPTION)
+	league_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	league_l.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	vbox.add_child(league_l)
+
+	var line := _popup_row_label("#%d of %d  ·  %s pts"
+		% [place, maxi(field, place), _fmt_compact(scored)], UI.F_LABEL)
+	line.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	line.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	line.add_theme_color_override("font_color", Color(0.85, 0.6, 0.1))
+	vbox.add_child(line)
+
+	if won:
+		vbox.add_child(Lagoon.divider())
+		var caption := _popup_row_label("Your prize", UI.F_CAPTION)
+		caption.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		caption.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		vbox.add_child(caption)
+
+		# The three rewards as objects rather than a sentence, so the biggest
+		# one is the biggest thing on the row.
+		var prizes := HBoxContainer.new()
+		prizes.alignment = BoxContainer.ALIGNMENT_CENTER
+		prizes.add_theme_constant_override("separation", 22)
+		vbox.add_child(prizes)
+		for spec in [["coin", got_coins, _fmt_compact(got_coins)],
+				["wheel", got_spins, str(got_spins)], ["cards", got_cards, str(got_cards)]]:
+			if int(spec[1]) <= 0:
+				continue
+			var cell := VBoxContainer.new()
+			cell.add_theme_constant_override("separation", 2)
+			prizes.add_child(cell)
+			var g := Glyph.new()
+			g.kind = str(spec[0])
+			g.custom_minimum_size = Vector2(58, 58)
+			g.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+			cell.add_child(g)
+			# A flat deep gold rather than the cabinet's gold-on-dark-outline.
+			# That treatment is for brass and dark glass; on this panel's pale
+			# glass the outline swamps the fill and the number comes out green.
+			var amt := Lagoon.label("+%s" % str(spec[2]), UI.F_SUBHEAD, Color(0.78, 0.55, 0.08), true)
+			amt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			cell.add_child(amt)
+	else:
+		var miss := _popup_row_label("The top five take the prizes — a new tournament has already started.", UI.F_CAPTION)
+		miss.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		miss.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		miss.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		vbox.add_child(miss)
+
+	var go := Button.new()
+	go.text = "SEE THE NEW BOARD"
+	go.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	go.add_theme_font_size_override("font_size", UI.F_BODY)
+	_candy_button(go, Lagoon.CORAL if won else Color(0.25, 0.6, 0.9))
+	FX.press_feedback(go)
+	# Straight into the tournament that is already running, because the reason
+	# to care about the result is the next one.
+	go.pressed.connect(func() -> void:
+		_close_popup(true)
+		_open_tourney()
+	)
+	vbox.add_child(go)
+
+	if won:
+		FX.confetti(self, 70)
+		FX.flash(self)
+		Sfx.play("jackpot", -3.0)
+	else:
+		Sfx.play("pop", -8.0)
 
 static func _place_word(place: int) -> String:
 	match place:
@@ -8060,7 +8200,8 @@ func _open_tourney() -> void:
 
 	# Drawn from the phone first, so the board is never a blank rectangle on a
 	# slow train, then replaced by the league when it answers.
-	_fill_tourney(list, standing, cycle_line, _local_tourney_rows(tourney_id, tourney_points))
+	_fill_tourney(list, standing, cycle_line,
+		_local_tourney_rows(tourney_id, tourney_points, _tourney_progress()))
 	if not Cloud.linked():
 		return
 	# Sent before it is read: the score moves on raids and the report is
@@ -10632,7 +10773,12 @@ func _load_game() -> void:
 	# made tourney_claimed lie about which rungs had been taken.
 	tourney_owed_id = _i(data.get("tourney_owed_id", -1), -1)
 	tourney_owed_points = maxi(0, _i(data.get("tourney_owed_points", 0), 0))
-	tourney_lap = maxi(0, _i(data.get("tourney_lap", 0), 0))
+	# Clamped at both ends. The thresholds are 2500 x 1.8^lap, and a hand-edited
+	# save carrying a four-figure lap overflows that to a negative int -- a bar
+	# whose next rung is below zero is permanently claimable. Twenty is already
+	# far past anything reachable: track six needs 47,000 spins inside a
+	# seventy-two hour cycle.
+	tourney_lap = clampi(_i(data.get("tourney_lap", 0), 0), 0, TOURNEY_MAX_LAP)
 	# Clamped to the score it is a base for. A save carrying a base above the
 	# points it came from would draw an empty bar for ever and a claim that
 	# never becomes available; an older save has neither key and starts at zero,

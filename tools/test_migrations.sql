@@ -610,14 +610,44 @@ begin
 
         -- --- a bot is never sitting on nothing ------------------------------
         perform pg_temp.ck('a bot carries a score for the cycle, so the board is not half zeroes',
-                           public.tourney_bot_points(p_bot, cyc, 6) > 0,
-                           public.tourney_bot_points(p_bot, cyc, 6)::text);
-        perform pg_temp.ck('the same bot has the same score all cycle',
-                           public.tourney_bot_points(p_bot, cyc, 6)
-                             = public.tourney_bot_points(p_bot, cyc, 6));
+                           public.tourney_bot_points(p_bot, cyc, 6, 1.0) > 0,
+                           public.tourney_bot_points(p_bot, cyc, 6, 1.0)::text);
+        perform pg_temp.ck('the same bot has the same finish all cycle',
+                           public.tourney_bot_points(p_bot, cyc, 6, 1.0)
+                             = public.tourney_bot_points(p_bot, cyc, 6, 1.0));
         perform pg_temp.ck('and a different one when the cycle turns',
-                           public.tourney_bot_points(p_bot, cyc, 6)
-                            <> public.tourney_bot_points(p_bot, cyc + 1, 6));
+                           public.tourney_bot_points(p_bot, cyc, 6, 1.0)
+                            <> public.tourney_bot_points(p_bot, cyc + 1, 6, 1.0));
+
+        -- --- and the bot ARRIVES over the three days ------------------------
+        -- The board is opened mid-cycle far more often than at the buzzer, and
+        -- a field already sitting on its final totals is a race that has been
+        -- run rather than one to join.
+        perform pg_temp.ck('a bot has nothing at the start of a cycle',
+                           public.tourney_bot_points(p_bot, cyc, 6, 0.0) = 0,
+                           public.tourney_bot_points(p_bot, cyc, 6, 0.0)::text);
+        perform pg_temp.ck('and climbs as the cycle runs',
+                           public.tourney_bot_points(p_bot, cyc, 6, 0.2)
+                             < public.tourney_bot_points(p_bot, cyc, 6, 0.6)
+                       and public.tourney_bot_points(p_bot, cyc, 6, 0.6)
+                             < public.tourney_bot_points(p_bot, cyc, 6, 1.0));
+        perform pg_temp.ck('a third of the way in it is well short of its finish',
+                           public.tourney_bot_points(p_bot, cyc, 6, 0.33)
+                             < public.tourney_bot_points(p_bot, cyc, 6, 1.0) * 0.8);
+        perform pg_temp.ck('progress outside 0..1 cannot push a bot past its finish',
+                           public.tourney_bot_points(p_bot, cyc, 6, 9.0)
+                             = public.tourney_bot_points(p_bot, cyc, 6, 1.0));
+        -- Not every bot on the same curve: a field that moves in lockstep is
+        -- one bot drawn nine times.
+        perform pg_temp.ck('bots run at different paces',
+                           (select count(distinct round(
+                               public.tourney_bot_points(p.id, cyc, 6, 0.3)::numeric
+                             / greatest(public.tourney_bot_points(p.id, cyc, 6, 1.0), 1), 2))
+                              from public.players p where p.is_bot) > 3);
+        perform pg_temp.ck('the live progress fraction is inside its own cycle',
+                           public.tourney_progress() >= 0.0
+                       and public.tourney_progress() <= 1.0,
+                           public.tourney_progress()::text);
 
         -- --- grants ---------------------------------------------------------
         perform pg_temp.ck('anon cannot report a tournament score',
