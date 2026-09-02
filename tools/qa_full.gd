@@ -1211,6 +1211,41 @@ func _t_tourney() -> void:
 		m._tourney_tier_spins(3, 1) * m._tourney_tier_at(3, 0)
 			< m._tourney_tier_spins(3, 0) * m._tourney_tier_at(3, 1))
 
+	# --- the bar STOPS, and stays stopped for the rest of the cycle ----------
+	# Four tracks, then a finished bar. Without a stop it escalates for ever
+	# into rungs nobody can reach, and the widget spends the back half of every
+	# whale's cycle showing a target that is arithmetically out of reach.
+	_reset_track()
+	m.tourney_points = 99_999_999
+	m.spins = 0
+	for _lap in m.TOURNEY_TRACKS + 2:
+		for i in m.TOURNEY_TIERS.size():
+			m._tourney_claim(i)
+			await get_tree().process_frame
+	_chk("the track count is capped", m.tourney_lap == m.TOURNEY_TRACKS,
+		"lap %d of %d" % [m.tourney_lap, m.TOURNEY_TRACKS])
+	_chk("and the bar reports itself finished", m._tourney_done())
+	_chk("a finished bar has nothing left to claim", not m._tourney_claimable())
+	var banked: int = m.spins
+	for i in m.TOURNEY_TIERS.size():
+		m._tourney_claim(i)
+	_chk("and cannot be claimed again for a fifth track's worth",
+		m.spins == banked, "+%d" % (m.spins - banked))
+	_chk("it paid exactly what the four tracks advertise",
+		m.spins == int(m._tourney_haul()[0]), "%d vs %d" % [m.spins, int(m._tourney_haul()[0])])
+	# The league still runs after the bar is done -- there is a placing prize to
+	# play for, so the score must keep moving.
+	var before_pts: int = m.tourney_points
+	m._tourney_add("build")
+	_chk("the score still climbs once the bar is finished",
+		m.tourney_points == before_pts + m.TP_BUILD, str(m.tourney_points - before_pts))
+	# A save that has been edited past the cap must not compute a negative rung.
+	m.tourney_lap = 9999
+	_chk("a rung is never negative, whatever the save says",
+		m._tourney_tier_at(0) > 0 and m._tourney_tier_spins(3) > 0,
+		"%d / %d" % [m._tourney_tier_at(0), m._tourney_tier_spins(3)])
+	_reset_track()
+
 	# A rung you have not reached is not a rung.
 	_reset_track()
 	m.tourney_points = 0

@@ -695,7 +695,7 @@ func _after_boot() -> void:
 		var demo_t := OS.get_environment("DEMO_TOURNEY").split(":")
 		tourney_id = _tourney_now_id()
 		tourney_claimed = []
-		tourney_lap = maxi(0, int(demo_t[1])) if demo_t.size() > 1 else 0
+		tourney_lap = clampi(int(demo_t[1]), 0, TOURNEY_TRACKS) if demo_t.size() > 1 else 0
 		tourney_lap_base = 0
 		for _l in tourney_lap:
 			tourney_lap_base += _tourney_tier_at(TOURNEY_TIERS.size() - 1, _l)
@@ -7496,13 +7496,49 @@ const TOURNEY_TIERS := [
 const TOURNEY_LAP_WORK := 1.8
 const TOURNEY_LAP_PAY := 1.4
 
-# There is no design ceiling on how many tracks a cycle can hold -- the
-# escalation is the ceiling, and it bites long before this. Track 3 already
-# wants 6,900 spins inside seventy-two hours and track 6 wants 47,000, which is
-# seven times what the meter can regenerate in that window. This exists only so
-# a hand-edited save cannot hand `pow()` an exponent that overflows the rung
-# back to a negative number.
-const TOURNEY_MAX_LAP := 20
+# FOUR TRACKS, AND THEN THE BAR IS FINISHED FOR THE REST OF THE CYCLE.
+#
+# Where to stop is the whole question and it is answerable, because the free
+# spin supply in a seventy-two hour cycle is a known number: the meter makes
+# 6,480, and the tracks themselves pay back more on top of that. Measured
+# against 2.20 points a spin:
+#
+#   stop at   cycle total   spins to fill   free spins available   reachable free?
+#      1          2,500         1,136              7,040                yes
+#      2          7,000         3,182              7,824                yes
+#      3         15,100         6,864              8,922                yes
+#      4         29,680        13,491             10,459                NO
+#
+# Three is the wrong place to stop: a dedicated free player clears it around
+# hour sixty and spends the last half day looking at a finished bar, which is
+# the exact hole the repeating track was built to close. Four cannot be reached
+# without buying spins, so the bar never runs dry on a player who is not paying,
+# and clearing it is a real thing rather than a matter of turning up.
+#
+# For whoever does get there: 3,979 spins and 28 cards across the four, for
+# about 13,500 spins spent -- 29% back, so it is still nothing like a way to
+# farm the thing the shop sells.
+#
+# This is also the clamp a hostile save needs. The rungs are 2500 x 1.8^lap and
+# a hand-edited four-figure lap overflows that to a negative number, which is a
+# rung claimable for ever.
+const TOURNEY_TRACKS := 4
+
+# The bar is done and stays done until the cycle turns. `tourney_lap` is allowed
+# to reach TOURNEY_TRACKS -- one past the last track it can draw -- and that is
+# what this reads.
+func _tourney_done() -> bool:
+	return tourney_lap >= TOURNEY_TRACKS
+
+# Everything the four tracks hand over, for the line the cleared bar shows.
+func _tourney_haul() -> Array:
+	var sp := 0
+	var cd := 0
+	for lap in TOURNEY_TRACKS:
+		for i in TOURNEY_TIERS.size():
+			sp += _tourney_tier_spins(i, lap)
+			cd += _tourney_tier_cards(i, lap)
+	return [sp, cd]
 
 # What the top of the league is worth when the 72 hours run out.
 #
@@ -7549,15 +7585,15 @@ var tourney_lap_base := 0
 
 # The rungs and the rewards of whichever track is running.
 func _tourney_tier_at(i: int, lap := -1) -> int:
-	var l := tourney_lap if lap < 0 else lap
+	var l := clampi(tourney_lap if lap < 0 else lap, 0, TOURNEY_TRACKS - 1)
 	return int(round(float(TOURNEY_TIERS[i]["at"]) * pow(TOURNEY_LAP_WORK, float(l))))
 
 func _tourney_tier_spins(i: int, lap := -1) -> int:
-	var l := tourney_lap if lap < 0 else lap
+	var l := clampi(tourney_lap if lap < 0 else lap, 0, TOURNEY_TRACKS - 1)
 	return int(round(float(TOURNEY_TIERS[i]["spins"]) * pow(TOURNEY_LAP_PAY, float(l))))
 
 func _tourney_tier_cards(i: int, lap := -1) -> int:
-	var l := tourney_lap if lap < 0 else lap
+	var l := clampi(tourney_lap if lap < 0 else lap, 0, TOURNEY_TRACKS - 1)
 	var base := int(TOURNEY_TIERS[i]["cards"])
 	if base <= 0:
 		return 0
@@ -7625,7 +7661,7 @@ func _tourney_add(kind: String, bet := 1) -> void:
 	# them. Only the highest rung crossed is announced; a build that vaults two
 	# at once should not stack two banners.
 	var crossed := -1
-	for i in TOURNEY_TIERS.size():
+	for i in (0 if _tourney_done() else TOURNEY_TIERS.size()):
 		var at := tourney_lap_base + _tourney_tier_at(i)
 		if before < at and tourney_points >= at:
 			crossed = i
@@ -7641,6 +7677,8 @@ func _tourney_add(kind: String, bet := 1) -> void:
 
 func _tourney_claimable() -> bool:
 	_tourney_sync()
+	if _tourney_done():
+		return false
 	for i in TOURNEY_TIERS.size():
 		if _tourney_lap_points() >= _tourney_tier_at(i) and not tourney_claimed.has(i):
 			return true
@@ -7650,7 +7688,9 @@ func _tourney_claim(tier: int) -> void:
 	_tourney_sync()
 	if tier < 0 or tier >= TOURNEY_TIERS.size():
 		return
-	if tourney_claimed.has(tier) or _tourney_lap_points() < _tourney_tier_at(tier):
+	if _tourney_done() or tourney_claimed.has(tier):
+		return
+	if _tourney_lap_points() < _tourney_tier_at(tier):
 		return
 	tourney_claimed.append(tier)
 	var got_spins := _tourney_tier_spins(tier)
@@ -7681,22 +7721,31 @@ func _tourney_claim(tier: int) -> void:
 	# The base moves to the THRESHOLD rather than to the current score, so
 	# points earned past the top while the reward sat unclaimed carry into the
 	# new track instead of being forgiven.
-	if tier == TOURNEY_TIERS.size() - 1 and tourney_lap < TOURNEY_MAX_LAP:
+	if tier == TOURNEY_TIERS.size() - 1:
 		tourney_lap_base += _tourney_tier_at(tier)
 		tourney_lap += 1
 		tourney_claimed = []
 		_save_game()
 		# Badges again: the reward that was waiting has just been taken and the
-		# first rung of the new track is a long way off, so the dot on the
-		# trophy has to go out. _update_badges ran above, before any of this.
+		# first rung of the new track is a long way off -- or there is no next
+		# track at all -- so the dot on the trophy has to go out.
+		# _update_badges ran above, before any of this.
 		_update_badges()
 		# Held back, because the line above it is still on screen. Two banners
 		# fired in the same frame means the second replaces the first, and the
 		# first is the one that says what was just won.
+		var cleared := _tourney_done()
 		_after(1.5, func() -> void:
-			_banner("Track %d open — tougher rungs, bigger rewards" % (tourney_lap + 1),
-				Color(0.55, 0.85, 1.0))
-			FX.confetti(self, 50)
+			if cleared:
+				_banner("Every track cleared — you have taken the lot!",
+					Color(1.0, 0.85, 0.3))
+				FX.confetti(self, 90)
+				FX.flash(self)
+				Sfx.play("jackpot", -2.0)
+			else:
+				_banner("Track %d open — tougher rungs, bigger rewards" % (tourney_lap + 1),
+					Color(0.55, 0.85, 1.0))
+				FX.confetti(self, 50)
 		)
 
 # "2d 04h" / "04h 12m" / "12m". Coarse on purpose -- a seconds counter on a
@@ -7739,9 +7788,15 @@ func _tourney_board(vbox: VBoxContainer) -> void:
 	var head := HBoxContainer.new()
 	col.add_child(head)
 	# The track number is on the heading, so a bar that has just gone back to
-	# empty is obviously a NEW one rather than a score that has been taken away.
-	var title := Lagoon.title("TOURNAMENT" if tourney_lap == 0 else "TRACK %d" % (tourney_lap + 1),
-		UI.F_CAPTION, Color(1.0, 0.87, 0.45), Lagoon.ABYSS)
+	# empty is obviously a NEW one rather than a score that has been taken away
+	# -- and once the fourth is cleared the heading says so instead of counting
+	# on to a fifth that does not exist.
+	var head_text := "TOURNAMENT"
+	if _tourney_done():
+		head_text = "ALL TRACKS CLEARED"
+	elif tourney_lap > 0:
+		head_text = "TRACK %d OF %d" % [tourney_lap + 1, TOURNEY_TRACKS]
+	var title := Lagoon.title(head_text, UI.F_CAPTION, Color(1.0, 0.87, 0.45), Lagoon.ABYSS)
 	head.add_child(title)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -7759,7 +7814,15 @@ func _tourney_board(vbox: VBoxContainer) -> void:
 	# ranks is a different number and it is on the standing line underneath.
 	# Printing the cycle total over a track-relative bar was the first version
 	# and the bar looked broken -- full at a number well under the last pip.
-	var score := Lagoon.title("%s / %s pts" % [_fmt_compact(_tourney_lap_points()), _fmt_compact(top)],
+	# Finished, the bar stops being a meter and becomes a receipt. The cycle
+	# total keeps climbing behind it -- the league still ranks on it, and there
+	# is still a placing prize to play for -- but there is nothing left on this
+	# widget to earn, and pretending otherwise with a bar stuck at 100% would
+	# read as a reward that had failed to pay.
+	var haul: Array = _tourney_haul()
+	var score := Lagoon.title(
+		("%s spins + %d cards taken" % [_fmt_compact(int(haul[0])), int(haul[1])]) if _tourney_done()
+			else ("%s / %s pts" % [_fmt_compact(_tourney_lap_points()), _fmt_compact(top)]),
 		UI.F_SUBHEAD, Color(1.0, 0.87, 0.45), Lagoon.ABYSS)
 	col.add_child(score)
 
@@ -7790,7 +7853,7 @@ func _tourney_board(vbox: VBoxContainer) -> void:
 	track.offset_top = 26.0
 	track.offset_bottom = 44.0
 
-	var ratio := clampf(float(_tourney_lap_points()) / float(maxi(1, top)), 0.0, 1.0)
+	var ratio := 1.0 if _tourney_done() else clampf(float(_tourney_lap_points()) / float(maxi(1, top)), 0.0, 1.0)
 	var fill := Panel.new()
 	var fsb := StyleBoxFlat.new()
 	fsb.bg_color = Color(1.0, 0.80, 0.32)
@@ -7809,12 +7872,25 @@ func _tourney_board(vbox: VBoxContainer) -> void:
 	for i in TOURNEY_TIERS.size():
 		_tourney_pip(host, i, float(_tourney_tier_at(i)) / float(maxi(1, top)))
 
+	if not _tourney_done():
+		return
+	var done_l := _popup_row_label(
+		"Nothing left to claim — keep scoring for your place on the board.",
+		UI.F_CAPTION)
+	done_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	done_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	done_l.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	col.add_child(done_l)
+
 func _tourney_pip(host: Control, tier: int, at_ratio: float) -> void:
 	var need := _tourney_tier_at(tier)
 	var pip_spins := _tourney_tier_spins(tier)
 	var pip_cards := _tourney_tier_cards(tier)
-	var claimed: bool = tourney_claimed.has(tier)
-	var ready: bool = _tourney_lap_points() >= need and not claimed
+	# Claimed rather than empty in the finished state: `tourney_claimed` was
+	# cleared by the roll-over that ended the last track, so without this the
+	# cleared bar would draw four unearned rungs under a full fill.
+	var claimed: bool = _tourney_done() or tourney_claimed.has(tier)
+	var ready: bool = not _tourney_done() and _tourney_lap_points() >= need and not claimed
 
 	var pip := Button.new()
 	pip.custom_minimum_size = Vector2(54, 54)
@@ -10778,7 +10854,7 @@ func _load_game() -> void:
 	# whose next rung is below zero is permanently claimable. Twenty is already
 	# far past anything reachable: track six needs 47,000 spins inside a
 	# seventy-two hour cycle.
-	tourney_lap = clampi(_i(data.get("tourney_lap", 0), 0), 0, TOURNEY_MAX_LAP)
+	tourney_lap = clampi(_i(data.get("tourney_lap", 0), 0), 0, TOURNEY_TRACKS)
 	# Clamped to the score it is a base for. A save carrying a base above the
 	# points it came from would draw an empty bar for ever and a claim that
 	# never becomes available; an older save has neither key and starts at zero,
