@@ -64,6 +64,23 @@ const QUEUE_MAX := 40
 # usage counters from it say nothing.
 const MIN_SESSION := 10.0
 
+# How often the counters are rolled into a row WHILE the game is being played.
+#
+# They used to be rolled only in asleep(), which meant the row was written on
+# the way out and could not go anywhere until the next launch -- so a tester who
+# installed, played once and never came back reported NOTHING, and that is
+# precisely the person a fourteen-day engagement test most needs to see. Rolling
+# mid-session means the row exists in time for the flush below to carry it while
+# the player is still holding the phone.
+const ROLL_GAP := 180.0
+
+# How soon after launch a BACKLOG goes out. A queue that survived the last run
+# survived because the last run ended without sending it, so making it serve
+# another full FLUSH_GAP is punishing exactly the short, rare session that
+# produced it. Not zero: Cloud has to restore its session first, and a flush
+# before that is refused by linked() and simply wasted.
+const BACKLOG_LEAD := 20.0
+
 var _install := ""
 var _queue: Array = []
 
@@ -85,6 +102,8 @@ func _ready() -> void:
 	_load_state()
 	_recover_crash()
 	_last_flush = _now()
+	if not _queue.is_empty():
+		_last_flush = _now() - FLUSH_GAP + BACKLOG_LEAD
 	_session_start = _now()
 
 
@@ -240,6 +259,10 @@ func _close_session() -> void:
 
 
 func _process(_delta: float) -> void:
+	# Roll first, so a row that has just become due is carried by this same
+	# tick's flush rather than waiting a whole gap for the next one.
+	if not _counts.is_empty() and _now() - _session_start >= ROLL_GAP:
+		_close_session()
 	if _queue.is_empty() or _in_flight:
 		return
 	if _now() - _last_flush < FLUSH_GAP:

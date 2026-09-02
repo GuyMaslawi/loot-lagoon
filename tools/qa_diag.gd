@@ -28,6 +28,8 @@ func _ready() -> void:
 	_t_counters_close_with_the_session()
 	_t_a_glance_files_nothing()
 	_t_the_queue_is_bounded_and_keeps_the_rare_rows()
+	_t_a_backlog_does_not_wait_a_full_gap()
+	_t_a_player_who_never_returns_still_reports()
 	_wipe()
 	print("QA-DIAG: %s" % ("ALL PASS" if fails == 0 else "%d FAILURES" % fails))
 	get_tree().quit(1 if fails > 0 else 0)
@@ -198,6 +200,73 @@ func _t_a_glance_files_nothing() -> void:
 	d._session_start = d._now() - 2.0      # two seconds
 	d.asleep()
 	_chk("a two-second session is not a data point", _kinds(d).count("usage") == 0,
+		 str(_kinds(d)))
+	_shut(d)
+
+
+# --- getting it off the phone ------------------------------------------------
+#
+# These two are the difference between a pipeline that collects and one that
+# only looks like it does. Both failures were silent: nothing errored, rows were
+# written correctly, and they simply never left the device.
+
+func _t_a_backlog_does_not_wait_a_full_gap() -> void:
+	print("a queue left over from the last run")
+	_wipe()
+	# A launch with nothing pending waits the full gap before its first send.
+	var fresh := _launch()
+	_chk("a fresh launch is in no hurry",
+		 fresh._now() - fresh._last_flush < 1.0,
+		 "%.0fs of the gap already spent" % (fresh._now() - fresh._last_flush))
+	_shut(fresh)
+
+	# A launch that finds a backlog must not: the reason it is a backlog is that
+	# the previous run ended without sending it.
+	var d := _launch()
+	d.fault("iap", "left over from last time")
+	d._save_state()
+	_shut(d)
+
+	var b := _launch()
+	_chk("but one that finds a backlog leaves only a short lead",
+		 b._now() - b._last_flush >= b.FLUSH_GAP - b.BACKLOG_LEAD - 1.0,
+		 "%.0fs of %.0f already spent" % [b._now() - b._last_flush, b.FLUSH_GAP])
+	_chk("and it is a lead, not zero -- Cloud has to sign in first",
+		 b.BACKLOG_LEAD > 0.0)
+	_shut(b)
+
+
+func _t_a_player_who_never_returns_still_reports() -> void:
+	print("a tester who installs, plays once and never opens it again")
+	_wipe()
+	var d := _launch()
+	d.awake("boot")
+	d.note("spin", 5)
+	d.note("page:shop")
+
+	# Not long enough yet: rolling every few seconds would be one row per
+	# handful of spins.
+	d._process(0.0)
+	_chk("a minute in, nothing has been rolled yet", _kinds(d).count("usage") == 0,
+		 str(_kinds(d)))
+
+	# Past the roll gap, and the row exists WITHOUT the player ever backgrounding
+	# the game -- which is the whole point. Before this fix the counters were
+	# rolled only in asleep() and the row could not leave until the next launch,
+	# so a player who never came back reported nothing at all.
+	d._session_start = d._now() - d.ROLL_GAP - 1.0
+	d._process(0.0)
+	_chk("past the roll gap the row exists mid-session", _kinds(d).count("usage") == 1,
+		 str(_kinds(d)))
+	var counters: Dictionary = (d._queue[0]["detail"] as Dictionary)["counters"]
+	_chk("and it carries what was played", int(counters.get("spin", 0)) == 5, str(counters))
+	_chk("the counters reset, so the next roll is not a running total",
+		 d._counts.is_empty())
+
+	# And it does not keep rolling empty rows for a player who has stopped.
+	d._session_start = d._now() - d.ROLL_GAP - 1.0
+	d._process(0.0)
+	_chk("an idle stretch adds no second row", _kinds(d).count("usage") == 1,
 		 str(_kinds(d)))
 	_shut(d)
 
