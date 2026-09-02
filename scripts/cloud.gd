@@ -388,7 +388,15 @@ func flush() -> void:
 
 
 func _process(_delta: float) -> void:
-	if not linked() or not _dirty or _in_flight:
+	if not linked():
+		return
+	# Ahead of the save's own early-out on purpose. The score moves on raids
+	# that do not always dirty the save in the same tick, and a tournament
+	# report that only went out when a save happened to be pending would leave
+	# the board stale for whole minutes at a time.
+	if _t_dirty and not _t_in_flight and _now() - _t_last >= TOURNEY_GAP:
+		_push_tourney()
+	if not _dirty or _in_flight:
 		return
 	var now := _now()
 	# Back off on a run of failures rather than hammering a radio that is not
@@ -622,6 +630,77 @@ func leaderboard(then: Callable) -> void:
 		return
 	_rpc("leaderboard", {"p_limit": 50}, func(code: int, body) -> void:
 		then.call(body if code == 200 and typeof(body) == TYPE_ARRAY else [])
+	)
+
+
+# =============================================================================
+#  The tournament
+# =============================================================================
+#
+# A separate call from push_save rather than four more parameters on it, and
+# that is worth a paragraph because the obvious thing is to add them.
+#
+# push_save carries the whole island and is REJECTED when it arrives out of
+# order -- that is the second-phone rule, and it is the right rule for a save.
+# A tournament score is neither: it is one small integer that changes on every
+# raid, and a device holding a fresher score than the server's has nothing to
+# argue about. Riding it on push_save would mean a player whose save is in
+# conflict (a real state, which the game asks them to resolve) silently stops
+# scoring in the tournament while they think about it.
+#
+# So it has its own debounce and its own cadence. Failure is ignored: the score
+# on the phone is the authoritative copy, the next tick re-sends it, and a
+# player in a tunnel who is never asked about the board loses nothing.
+const TOURNEY_GAP := 25.0
+
+var _t_pending: Dictionary = {}
+var _t_dirty := false
+var _t_last := 0.0
+var _t_in_flight := false
+
+
+# main.gd calls this wherever the score moves. Only the newest value is kept --
+# a run of raids inside one window sends one number, not five.
+func note_tourney(id: int, points: int) -> void:
+	if not linked():
+		return
+	_t_pending = {"p_tourney_id": id, "p_points": maxi(0, points)}
+	_t_dirty = true
+
+
+# The league board: everyone at this player's stage, this cycle, by points.
+# Each row is a public_player with a `points` field set on it.
+func tourney_board(then: Callable, limit := 40) -> void:
+	if not linked():
+		then.call([])
+		return
+	_rpc("tourney_board", {"p_limit": limit}, func(code: int, body) -> void:
+		then.call(body if code == 200 and typeof(body) == TYPE_ARRAY else [])
+	)
+
+
+# Where this island finished in a cycle that has ended: {place, field, points}.
+# An empty dictionary means the question could not be answered -- no signal, or
+# a build that is ahead of the migration -- and main.gd treats that as "ask
+# again later" rather than as "you won nothing".
+func tourney_result(cycle: int, then: Callable) -> void:
+	if not linked():
+		then.call({})
+		return
+	_rpc("tourney_result", {"p_tourney_id": cycle}, func(code: int, body) -> void:
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+
+func _push_tourney() -> void:
+	if _t_pending.is_empty():
+		_t_dirty = false
+		return
+	_t_in_flight = true
+	_t_last = _now()
+	_rpc("tourney_report", _t_pending, func(_code: int, _body) -> void:
+		_t_in_flight = false
+		_t_dirty = false
 	)
 
 

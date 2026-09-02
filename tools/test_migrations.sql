@@ -544,6 +544,90 @@ begin
                          where player = p_alice and kind = 'crash') = 1);
     delete from public.diagnostics where player = p_alice;
 
+    -- --- the tournament -----------------------------------------------------
+    --
+    -- The board is a league of islands at a similar stage scored on one cycle,
+    -- so the three things worth proving are that the league really is a filter,
+    -- that a rollover does not eat the score the prize is owed on, and that an
+    -- offline device cannot push its stale total over a fresher one.
+    declare
+        cyc    integer := public.tourney_now_id();
+        far    uuid := gen_random_uuid();   -- an island ten leagues away
+        p_far  uuid;
+    begin
+        perform pg_temp.ck('a league is three islands wide',
+                           public.tourney_league(1) = 1 and public.tourney_league(3) = 1
+                       and public.tourney_league(4) = 2, public.tourney_league(4)::text);
+        perform pg_temp.ck('and everything past the economy curve shares the top one',
+                           public.tourney_league(30) = 10 and public.tourney_league(97) = 10);
+
+        insert into auth.users (id, email) values (far, 'far@example.com');
+        insert into auth.identities (user_id, provider) values (far, 'google');
+        perform pg_temp.be(far);
+        r := public.claim_player('{}'::jsonb, 'Far', '😎', 4000, 28, 0, 0, '{0,0,0,0,0}');
+        p_far := (r->'player'->>'id')::uuid;
+        r := public.tourney_report(cyc, 9000);
+        perform pg_temp.ck('tourney_report accepts a score for the current cycle',
+                           r->>'status' = 'ok', r::text);
+
+        perform pg_temp.be(alice);
+        r := public.tourney_report(cyc, 400);
+        perform pg_temp.ck('and again for a second island', r->>'status' = 'ok', r::text);
+        r := public.tourney_report(cyc, 120);
+        perform pg_temp.ck('a stale device cannot push its lower total over a fresher one',
+                           (select tourney_points from public.players where id = p_alice) = 400,
+                           (select tourney_points::text from public.players where id = p_alice));
+        r := public.tourney_report(cyc - 4, 999999);
+        perform pg_temp.ck('nor can a phone with a wound-forward clock post into another cycle',
+                           r->>'status' = 'stale_cycle', r::text);
+
+        -- Alice is on island 6 (league 2) after the push_save above; Far is on
+        -- 28 (league 10). Neither may appear on the other's board.
+        r := public.tourney_board(100);
+        perform pg_temp.ck('the board is one league, not the world',
+                           not (r::text like '%' || p_far::text || '%'), r::text);
+        perform pg_temp.ck('and the caller is on their own board',
+                           r::text like '%' || p_alice::text || '%', r::text);
+        perform pg_temp.ck('every row carries the points it is ranked on',
+                           (select count(*) from jsonb_array_elements(r) e
+                             where e ? 'points') = jsonb_array_length(r), r::text);
+
+        -- --- the rollover, which is what makes the prize payable ------------
+        r := public.tourney_report(cyc, 500);
+        update public.players set tourney_id = tourney_id - 1 where id = p_alice;
+        r := public.tourney_report(cyc, 10);
+        perform pg_temp.ck('a new cycle starts from the score it was given',
+                           (select tourney_points from public.players where id = p_alice) = 10);
+        perform pg_temp.ck('and the finished cycle is kept rather than dropped',
+                           (select tourney_prev_points from public.players where id = p_alice) = 500);
+
+        r := public.tourney_result(cyc - 1);
+        perform pg_temp.ck('tourney_result reads the cycle that has ended',
+                           (r->>'points')::integer = 500, r::text);
+        perform pg_temp.ck('and answers with a place inside a field of at least one',
+                           (r->>'place')::integer >= 1
+                       and (r->>'field')::integer >= (r->>'place')::integer, r::text);
+
+        -- --- a bot is never sitting on nothing ------------------------------
+        perform pg_temp.ck('a bot carries a score for the cycle, so the board is not half zeroes',
+                           public.tourney_bot_points(p_bot, cyc, 6) > 0,
+                           public.tourney_bot_points(p_bot, cyc, 6)::text);
+        perform pg_temp.ck('the same bot has the same score all cycle',
+                           public.tourney_bot_points(p_bot, cyc, 6)
+                             = public.tourney_bot_points(p_bot, cyc, 6));
+        perform pg_temp.ck('and a different one when the cycle turns',
+                           public.tourney_bot_points(p_bot, cyc, 6)
+                            <> public.tourney_bot_points(p_bot, cyc + 1, 6));
+
+        -- --- grants ---------------------------------------------------------
+        perform pg_temp.ck('anon cannot report a tournament score',
+                           not has_function_privilege('anon',
+                               'public.tourney_report(integer, integer)', 'execute'));
+        perform pg_temp.ck('while a signed-in player can',
+                           has_function_privilege('authenticated',
+                               'public.tourney_report(integer, integer)', 'execute'));
+    end;
+
     raise notice 'ALL FUNCTIONAL TESTS PASSED';
 end;
 $$;

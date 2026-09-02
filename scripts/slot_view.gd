@@ -256,13 +256,28 @@ func _build_meter() -> Control:
 	stack.add_child(_meter)
 
 	var readout := HBoxContainer.new()
-	readout.add_theme_constant_override("separation", 8)
+	readout.add_theme_constant_override("separation", 6)
 	stack.add_child(readout)
-	_meter_label = Lagoon.title("0 / 50", UI.F_TINY, Lagoon.SAND, Lagoon.ABYSS)
+	# The wheel, next to the number it counts.
+	#
+	# The row said "308" and "Spins full" and never said what either was about.
+	# Every other counter in the game arrives with its own icon -- coins, stars,
+	# shields, the island -- so the one place the player looks BEFORE pressing
+	# SPIN was the only place that made them infer which resource it meant, and
+	# it read as an empty strip rather than as a gauge. Sized to the cap height
+	# of the digits beside it so the pair reads as one object.
+	var spin_mark := Glyph.new()
+	spin_mark.kind = "wheel"
+	spin_mark.custom_minimum_size = Vector2(30, 30)
+	spin_mark.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	readout.add_child(spin_mark)
+	_meter_label = Lagoon.title("0 / 50", UI.F_CAPTION, Lagoon.SAND, Lagoon.ABYSS)
 	_meter_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_meter_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	readout.add_child(_meter_label)
 	_timer_label = Lagoon.label("", UI.F_TINY, Lagoon.SAND)
 	_timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_timer_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_timer_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	readout.add_child(_timer_label)
 	return row

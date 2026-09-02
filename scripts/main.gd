@@ -573,6 +573,11 @@ func _after_boot() -> void:
 	_check_apple_revoked()
 	if Cloud.linked():
 		_cloud_claim()
+	# A tournament that ended while the game was shut. The session is already
+	# restored by now -- Cloud reads it in its own _ready -- so this asks the
+	# league where the player finished rather than guessing from the phone.
+	# Deferred so the banner and confetti it may fire land on built pages.
+	call_deferred("_tourney_settle")
 	call_deferred("_check_island_complete")
 	# A lock during the title screen. _notification stamped it and left the
 	# credit to here, where there are pages to repaint and a toast to land on.
@@ -604,6 +609,23 @@ func _after_boot() -> void:
 		var go := create_tween()
 		go.tween_interval(0.6)
 		go.tween_callback(_start_visit.bind(demo_raid))
+	# DEMO_JOURNEY=<island> plays the voyage from that island to the next one.
+	# Reaching it honestly means finishing all five buildings at five stars,
+	# which is a week of play per look at a three-second animation -- and the
+	# whole point of the rewrite was that it had to be judged as MOTION, one
+	# island leaving while the next arrives, rather than as a still.
+	#
+	#   PREVIEW=game DEMO_JOURNEY=9 SHOT=/tmp/j.png SHOTS=8 SHOT_GAP=0.45 \
+	#     SHOT_DELAY=6 godot --path . tools/preview.tscn
+	if OS.has_environment("DEMO_JOURNEY"):
+		var demo_from := clampi(int(OS.get_environment("DEMO_JOURNEY")), 1, MAX_ISLAND - 1)
+		island_level = demo_from
+		_apply_island_theme()
+		var sail := create_tween()
+		sail.tween_interval(0.8)
+		sail.tween_callback(func() -> void:
+			island_level = demo_from + 1
+			_start_island_journey(demo_from))
 	# DEMO_REWARD=shield:5 hands out a reward without waiting for the reels to
 	# agree to it. Landing a shield triple at bet x5 with exactly two shields in
 	# hand is the one state the overflow refund can be judged in, and reaching
@@ -666,10 +688,18 @@ func _after_boot() -> void:
 	# the bar that draws it -- and the interesting states (a rung lit and
 	# claimable, the bar past the last pip) are exactly the ones you cannot
 	# reach on a fresh install.
+	# DEMO_TOURNEY=<points>[:<lap>] -- the second field opens a later track,
+	# which is otherwise reachable only by claiming every rung of every track
+	# before it.
 	if OS.has_environment("DEMO_TOURNEY"):
+		var demo_t := OS.get_environment("DEMO_TOURNEY").split(":")
 		tourney_id = _tourney_now_id()
 		tourney_claimed = []
-		tourney_points = maxi(0, int(OS.get_environment("DEMO_TOURNEY")))
+		tourney_lap = maxi(0, int(demo_t[1])) if demo_t.size() > 1 else 0
+		tourney_lap_base = 0
+		for _l in tourney_lap:
+			tourney_lap_base += _tourney_tier_at(TOURNEY_TIERS.size() - 1, _l)
+		tourney_points = tourney_lap_base + maxi(0, int(demo_t[0]))
 	# SHOT=<page key> opens that page, lets it settle and writes a PNG, then
 	# quits. Apple will not review an in-app purchase without a screenshot of
 	# where it is sold, and there are twenty-five of them -- shooting those by
@@ -708,8 +738,9 @@ func _capture_page(key: String) -> void:
 		# shot taken too early documents the banner instead of the dialog.
 		await get_tree().create_timer(5.0).timeout
 		match key.split(":")[1]:
-			"ranks":  _open_ranks()
-			"daily":  _open_daily()
+			"ranks":   _open_world_ranks()
+			"tourney": _open_tourney()
+			"daily":   _open_daily()
 		# Long enough for FX.pop_in and the progress bar's fill tween to land;
 		# a shot taken mid-tween measures the animation, not the layout.
 		await get_tree().create_timer(1.6).timeout
@@ -813,7 +844,7 @@ func _load_profile() -> void:
 		"email": _s(d.get("email", "")),
 		"provider": _s(d.get("provider", "guest"), "guest"),
 		# The chosen face. Dropped here until now, which meant it was written
-		# on every sign-in and read back on none of them -- see _open_ranks for
+		# on every sign-in and read back on none of them -- see _open_world_ranks for
 		# the half of that bug the player could actually see.
 		"emoji": _s(d.get("emoji", ""), ""),
 	}
@@ -2098,6 +2129,33 @@ func view_size() -> Vector2:
 func safe_top() -> float:
 	return UI.safe_top(view_size())
 
+# Where the HUD capsules hang, and it is deliberately ABOVE the safe inset.
+#
+# `safe_top()` is the whole notch band: on an iPhone 15 it is 59pt, which is
+# the 48pt the Dynamic Island actually occupies plus a system pad. Hanging the
+# capsules under all of it and then adding 16 more units of our own put them a
+# finger's width below the hardware, with nothing in the gap -- which is what
+# Guy saw on his phone and called "the icons still are not attached to the top".
+#
+# So they tuck straight under the cutout instead. 16 units is 8.7pt at this
+# viewport, and it clears both families with room over: an iPhone 15's island
+# ends at 48pt and this lands at 50.3, an iPhone 13's notch ends at 30pt and
+# this lands at 38.3.
+#
+# THEY DO NOT GO HIGHER THAN THIS, and the reason is horizontal rather than
+# vertical. The old-style notch is more than half the screen wide; the two
+# capsule groups reach about 190 and 484 of 720 and both would sit under it.
+# Riding all the way up beside the cutout is what the reference games do, and
+# it only works because their corners are narrower than ours. Level with its
+# bottom edge is the whole of what is available here.
+const HUD_NOTCH_TUCK := 16.0
+
+func hud_top() -> float:
+	var top := safe_top()
+	# Desktop and the harnesses report no inset at all, where there is no
+	# cutout to tuck under and the old 16 was simply the top margin.
+	return 16.0 if top <= 0.0 else maxf(8.0, top - HUD_NOTCH_TUCK)
+
 func safe_bottom() -> float:
 	return UI.safe_bottom(view_size())
 
@@ -2655,7 +2713,7 @@ func _add_side_buttons(page: Control) -> void:
 	# of needing this list re-split by hand.
 	var specs := [
 		["gift", "Daily", "daily", _open_daily],
-		["trophy", "Ranks", "ranks", _open_ranks],
+		["trophy", "Cup", "ranks", _open_tourney],
 		["bell", "Alerts", "alerts", func() -> void: _goto(pages["alerts"])],
 	]
 	for i in specs.size():
@@ -7387,7 +7445,23 @@ const TP_BUILD := 60
 
 # Mostly spins, because spins are what a player actually runs out of; the top
 # two rungs add collection cards, which are the thing you cannot buy your way
-# to with coins.
+# to with coins. Deliberately NOT coins: the track is there to send somebody
+# back to the machine, and coins are spent on the island.
+#
+# THIS IS THE FIRST TRACK, NOT THE ONLY ONE. Claiming the last rung opens a
+# fresh one, and that is the whole reason for the two multipliers below.
+# Measured against the real reel odds, a spin is worth 2.20 points however the
+# bet is set (a x5 pull scores five times as much and costs five spins), so
+# 2,500 points is about 1,100 spins:
+#
+#   casual  ~150 spins/day  ->  ~990 pts   -- rung 2, rung 3 with builds
+#   regular ~350 spins/day  ->  ~2,300 pts -- finishes it, near the buzzer
+#   heavy   ~800 spins/day  ->  ~5,300 pts -- finishes it inside 36 hours
+#
+# That last row was the hole. The heaviest players -- the ones the board is
+# for -- ran out of track half way through the cycle and spent the rest of it
+# looking at a full bar with nothing left on it, which is the opposite of what
+# a reward track is for.
 const TOURNEY_TIERS := [
 	{"at": 250,  "spins": 30,  "cards": 0},
 	{"at": 700,  "spins": 80,  "cards": 0},
@@ -7395,9 +7469,90 @@ const TOURNEY_TIERS := [
 	{"at": 2500, "spins": 300, "cards": 3},
 ]
 
+# How much harder, and how much richer, each track is than the one before it.
+#
+# THE WORK GROWS FASTER THAN THE PAY, and it has to. Spins are sold in the shop,
+# so a track that handed out more per point every lap would be a way to farm the
+# product -- and the players who reach lap three are exactly the ones who would
+# find that. At 1.8 against 1.4 the rate falls about 22% a lap: 0.22 spins per
+# point on the first track, 0.17 on the second, 0.14 on the third.
+#
+# It can never be a net source of spins at any lap, which is the property that
+# actually matters. A point costs 1/2.20 of a spin to earn and the first track
+# pays 0.22 of one back -- under half the stake, before the escalation even
+# starts.
+const TOURNEY_LAP_WORK := 1.8
+const TOURNEY_LAP_PAY := 1.4
+
+# What the top of the league is worth when the 72 hours run out.
+#
+# The rungs above are the reason to keep playing; this is the reason to keep
+# playing HARDER than the person above you, and it is a different feeling. A
+# reward track pays everybody who turns up, so on its own it makes the board
+# decorative -- you would read your placing, note it, and go back to spinning
+# for the next pip. Paying five places makes the row above you worth passing.
+#
+# Coins are written at their island-1 value and go through _scaled(), like
+# every other price in the game: a 12,000-coin first prize is a fortune on
+# Green Meadows and a rounding error on Golden Capital, and a prize that has
+# stopped mattering is worse than no prize, because the player still had to
+# earn it. Spins and cards are flat -- a spin is a spin at every island.
+const TOURNEY_PRIZES := [
+	{"coins": 12000, "spins": 250, "cards": 3},
+	{"coins": 7000,  "spins": 150, "cards": 2},
+	{"coins": 4000,  "spins": 100, "cards": 1},
+	{"coins": 2500,  "spins": 60,  "cards": 0},
+	{"coins": 1500,  "spins": 40,  "cards": 0},
+]
+
+# Ten leagues, three islands each, matching public.tourney_league() in
+# 20260902120000_tournament.sql -- the same arithmetic on both sides so the
+# client can name the league it is in without asking. Everything past island 30
+# shares the top one, which is also where the economy curve flattens.
+const LEAGUE_NAMES := ["Driftwood", "Shell", "Coral", "Lagoon", "Anchor",
+	"Compass", "Cutlass", "Kraken", "Leviathan", "Golden"]
+
 var tourney_id := 0
 var tourney_points := 0
 var tourney_claimed: Array = []
+# The cycle that has ended and not yet been paid out, held across launches
+# because the answer comes from the server and the player may not be online at
+# the moment the clock turns. -1 is "nothing owed".
+var tourney_owed_id := -1
+var tourney_owed_points := 0
+# Which reward track is running and the score it started from. Both reset with
+# the cycle. The base is what keeps the LEAGUE honest while the track repeats:
+# `tourney_points` stays the cycle total that the board ranks on, and the bar
+# draws `tourney_points - tourney_lap_base`. One number, two readers.
+var tourney_lap := 0
+var tourney_lap_base := 0
+
+# The rungs and the rewards of whichever track is running.
+func _tourney_tier_at(i: int, lap := -1) -> int:
+	var l := tourney_lap if lap < 0 else lap
+	return int(round(float(TOURNEY_TIERS[i]["at"]) * pow(TOURNEY_LAP_WORK, float(l))))
+
+func _tourney_tier_spins(i: int, lap := -1) -> int:
+	var l := tourney_lap if lap < 0 else lap
+	return int(round(float(TOURNEY_TIERS[i]["spins"]) * pow(TOURNEY_LAP_PAY, float(l))))
+
+func _tourney_tier_cards(i: int, lap := -1) -> int:
+	var l := tourney_lap if lap < 0 else lap
+	var base := int(TOURNEY_TIERS[i]["cards"])
+	if base <= 0:
+		return 0
+	return int(round(float(base) * pow(TOURNEY_LAP_PAY, float(l))))
+
+# What the bar is measuring. Never negative: a lap base is only ever set to a
+# threshold the player has already passed.
+func _tourney_lap_points() -> int:
+	return maxi(0, tourney_points - tourney_lap_base)
+
+func _tourney_league() -> int:
+	return clampi((island_level - 1) / 3 + 1, 1, LEAGUE_NAMES.size())
+
+func _tourney_league_name() -> String:
+	return LEAGUE_NAMES[_tourney_league() - 1] + " League"
 
 # Which tournament the wall clock says we are in.
 static func _tourney_now_id() -> int:
@@ -7415,9 +7570,23 @@ func _tourney_sync() -> void:
 	var now_id := _tourney_now_id()
 	if now_id == tourney_id:
 		return
+	# The score does not simply go to zero any more: the cycle that has just
+	# ended is owed a placing prize, and the only device that knows it ended is
+	# whichever one happened to be opened first. Held in the save rather than
+	# settled here, because settling needs the server and this runs on every
+	# read of the number -- including the ones that happen mid-raid, offline,
+	# with no session at all.
+	#
+	# A first run (tourney_id 0) is not a rollover, it is an install. Paying it
+	# would hand a placing prize to somebody who has not played a tournament.
+	if tourney_id > 0 and tourney_points > 0 and tourney_owed_id < 0:
+		tourney_owed_id = tourney_id
+		tourney_owed_points = tourney_points
 	tourney_id = now_id
 	tourney_points = 0
 	tourney_claimed = []
+	tourney_lap = 0
+	tourney_lap_base = 0
 
 func _tourney_add(kind: String, bet := 1) -> void:
 	_tourney_sync()
@@ -7437,18 +7606,23 @@ func _tourney_add(kind: String, bet := 1) -> void:
 	# at once should not stack two banners.
 	var crossed := -1
 	for i in TOURNEY_TIERS.size():
-		var at := int(TOURNEY_TIERS[i]["at"])
+		var at := tourney_lap_base + _tourney_tier_at(i)
 		if before < at and tourney_points >= at:
 			crossed = i
 	if crossed >= 0:
 		_banner("Tournament reward %d unlocked — tap the trophy!" % (crossed + 1),
 			Color(1.0, 0.85, 0.3))
 		_update_badges()
+	# Debounced inside Cloud, so a run of raids sends one number rather than
+	# one per hammer. Ignored entirely when nobody is signed in -- the board
+	# falls back to the islands on this phone, which is also what a player
+	# without an account is raiding.
+	Cloud.note_tourney(tourney_id, tourney_points)
 
 func _tourney_claimable() -> bool:
 	_tourney_sync()
 	for i in TOURNEY_TIERS.size():
-		if tourney_points >= int(TOURNEY_TIERS[i]["at"]) and not tourney_claimed.has(i):
+		if _tourney_lap_points() >= _tourney_tier_at(i) and not tourney_claimed.has(i):
 			return true
 	return false
 
@@ -7456,12 +7630,11 @@ func _tourney_claim(tier: int) -> void:
 	_tourney_sync()
 	if tier < 0 or tier >= TOURNEY_TIERS.size():
 		return
-	if tourney_claimed.has(tier) or tourney_points < int(TOURNEY_TIERS[tier]["at"]):
+	if tourney_claimed.has(tier) or _tourney_lap_points() < _tourney_tier_at(tier):
 		return
 	tourney_claimed.append(tier)
-	var t: Dictionary = TOURNEY_TIERS[tier]
-	var got_spins := int(t.get("spins", 0))
-	var got_cards := int(t.get("cards", 0))
+	var got_spins := _tourney_tier_spins(tier)
+	var got_cards := _tourney_tier_cards(tier)
 	if got_spins > 0:
 		spins += got_spins
 	var card_names: Array = []
@@ -7478,6 +7651,33 @@ func _tourney_claim(tier: int) -> void:
 	_banner("Tournament reward: %s!" % what, Color(1.0, 0.85, 0.3))
 	FX.confetti(self, 40)
 	Sfx.play("jackpot", -4.0)
+	# The last rung opens the next track.
+	#
+	# ON THE CLAIM, NOT ON REACHING THE THRESHOLD, and the difference is a rung
+	# somebody paid three days for. Rolling the track over the moment the score
+	# passes the top would move the bar out from under a reward that had not
+	# been taken yet -- and it is the last one, so it is the biggest.
+	#
+	# The base moves to the THRESHOLD rather than to the current score, so
+	# points earned past the top while the reward sat unclaimed carry into the
+	# new track instead of being forgiven.
+	if tier == TOURNEY_TIERS.size() - 1:
+		tourney_lap_base += _tourney_tier_at(tier)
+		tourney_lap += 1
+		tourney_claimed = []
+		_save_game()
+		# Badges again: the reward that was waiting has just been taken and the
+		# first rung of the new track is a long way off, so the dot on the
+		# trophy has to go out. _update_badges ran above, before any of this.
+		_update_badges()
+		# Held back, because the line above it is still on screen. Two banners
+		# fired in the same frame means the second replaces the first, and the
+		# first is the one that says what was just won.
+		_after(1.5, func() -> void:
+			_banner("Track %d open — tougher rungs, bigger rewards" % (tourney_lap + 1),
+				Color(0.55, 0.85, 1.0))
+			FX.confetti(self, 50)
+		)
 
 # "2d 04h" / "04h 12m" / "12m". Coarse on purpose -- a seconds counter on a
 # three-day clock is a nervous tic, not information.
@@ -7501,7 +7701,7 @@ static func _tourney_left_text(secs: float) -> String:
 # entire job of this widget and the reason it is not a table.
 func _tourney_board(vbox: VBoxContainer) -> void:
 	_tourney_sync()
-	var top: int = int(TOURNEY_TIERS[TOURNEY_TIERS.size() - 1]["at"])
+	var top := _tourney_tier_at(TOURNEY_TIERS.size() - 1)
 
 	var card := PanelContainer.new()
 	card.add_theme_stylebox_override("panel", Lagoon.glass(Lagoon.R_CARD, 0.55))
@@ -7518,7 +7718,10 @@ func _tourney_board(vbox: VBoxContainer) -> void:
 
 	var head := HBoxContainer.new()
 	col.add_child(head)
-	var title := Lagoon.title("TOURNAMENT", UI.F_CAPTION, Color(1.0, 0.87, 0.45), Lagoon.ABYSS)
+	# The track number is on the heading, so a bar that has just gone back to
+	# empty is obviously a NEW one rather than a score that has been taken away.
+	var title := Lagoon.title("TOURNAMENT" if tourney_lap == 0 else "TRACK %d" % (tourney_lap + 1),
+		UI.F_CAPTION, Color(1.0, 0.87, 0.45), Lagoon.ABYSS)
 	head.add_child(title)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -7530,8 +7733,14 @@ func _tourney_board(vbox: VBoxContainer) -> void:
 	# Titled rather than labelled, so it carries the dark outline every gold
 	# number in the game wears. Plain gold on this panel's pale glass is very
 	# nearly the same value as the glass and reads as a smudge.
-	var score := Lagoon.title("%s pts" % _fmt_compact(tourney_points), UI.F_SUBHEAD,
-		Color(1.0, 0.87, 0.45), Lagoon.ABYSS)
+	#
+	# THE BAR SAYS THE TRACK, NOT THE CYCLE. On track two "1,240 / 4,500" is
+	# progress along the thing the pips are on; the cycle total that the league
+	# ranks is a different number and it is on the standing line underneath.
+	# Printing the cycle total over a track-relative bar was the first version
+	# and the bar looked broken -- full at a number well under the last pip.
+	var score := Lagoon.title("%s / %s pts" % [_fmt_compact(_tourney_lap_points()), _fmt_compact(top)],
+		UI.F_SUBHEAD, Color(1.0, 0.87, 0.45), Lagoon.ABYSS)
 	col.add_child(score)
 
 	# The rungs are placed by anchor ratio rather than by pixel, so the bar is
@@ -7561,7 +7770,7 @@ func _tourney_board(vbox: VBoxContainer) -> void:
 	track.offset_top = 26.0
 	track.offset_bottom = 44.0
 
-	var ratio := clampf(float(tourney_points) / float(maxi(1, top)), 0.0, 1.0)
+	var ratio := clampf(float(_tourney_lap_points()) / float(maxi(1, top)), 0.0, 1.0)
 	var fill := Panel.new()
 	var fsb := StyleBoxFlat.new()
 	fsb.bg_color = Color(1.0, 0.80, 0.32)
@@ -7578,20 +7787,21 @@ func _tourney_board(vbox: VBoxContainer) -> void:
 		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 
 	for i in TOURNEY_TIERS.size():
-		_tourney_pip(host, i, float(int(TOURNEY_TIERS[i]["at"])) / float(maxi(1, top)))
+		_tourney_pip(host, i, float(_tourney_tier_at(i)) / float(maxi(1, top)))
 
 func _tourney_pip(host: Control, tier: int, at_ratio: float) -> void:
-	var t: Dictionary = TOURNEY_TIERS[tier]
-	var need := int(t["at"])
+	var need := _tourney_tier_at(tier)
+	var pip_spins := _tourney_tier_spins(tier)
+	var pip_cards := _tourney_tier_cards(tier)
 	var claimed: bool = tourney_claimed.has(tier)
-	var ready: bool = tourney_points >= need and not claimed
+	var ready: bool = _tourney_lap_points() >= need and not claimed
 
 	var pip := Button.new()
 	pip.custom_minimum_size = Vector2(54, 54)
 	pip.focus_mode = Control.FOCUS_NONE
 	pip.disabled = not ready
-	pip.tooltip_text = "%d pts — %d spins%s" % [need, int(t["spins"]),
-		"" if int(t["cards"]) == 0 else " + %d cards" % int(t["cards"])]
+	pip.tooltip_text = "%d pts — %d spins%s" % [need, pip_spins,
+		"" if pip_cards == 0 else " + %d cards" % pip_cards]
 	for state in ["normal", "hover", "pressed", "disabled"]:
 		var sb := StyleBoxFlat.new()
 		if claimed:
@@ -7616,7 +7826,7 @@ func _tourney_pip(host: Control, tier: int, at_ratio: float) -> void:
 	pip.offset_bottom = 62.0
 
 	var g := Glyph.new()
-	g.kind = "cards" if int(t["cards"]) > 0 else "wheel"
+	g.kind = "cards" if pip_cards > 0 else "wheel"
 	g.custom_minimum_size = Vector2.ZERO
 	g.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pip.add_child(g)
@@ -7629,7 +7839,7 @@ func _tourney_pip(host: Control, tier: int, at_ratio: float) -> void:
 		pip.pressed.connect(func() -> void:
 			_tourney_claim(tier)
 			_close_popup()
-			_open_ranks()
+			_open_tourney()
 		)
 		# A rung you can take should be the only thing moving on the screen.
 		var beat := pip.create_tween().set_loops()
@@ -7637,9 +7847,366 @@ func _tourney_pip(host: Control, tier: int, at_ratio: float) -> void:
 		beat.tween_property(pip, "scale", Vector2.ONE, 0.45).set_trans(Tween.TRANS_SINE)
 		pip.pivot_offset = Vector2(27, 27)
 
-func _open_ranks() -> void:
-	var vbox := _open_popup("Leaderboard")
+# =============================================================================
+#  Where the tournament stands
+# =============================================================================
+#
+# WHAT THIS SCREEN IS FOR, since the trophy used to open something else.
+#
+# It opened `leaderboard`, which is every island in the world ordered by
+# `rank_stars` -- a lifetime total. That board is real and it is worth having,
+# but it is not a competition: a two-week-old island cannot pass a two-month-old
+# one this weekend however hard it plays, so the only thing it tells most
+# players is how far away everybody else is. It has moved to the star capsule in
+# the HUD, which is the number it ranks -- tap the stars, see the star table.
+#
+# The trophy is now the thing the trophy looks like. Seventy-two hours, a few
+# dozen islands at the same stage of the game, scored on what you did during the
+# cycle, with a reward track on the way up and a placing prize at the end. Every
+# one of those is a reason to come back before the clock runs out, which the
+# lifetime table -- by construction -- can never be.
+#
+# THE FIELD IS NOT ALWAYS THE SERVER'S. Signed in, it is the league; offline or
+# signed out, it is the islands already on the phone, scored deterministically
+# off the cycle id. That is not a stand-in for the real thing so much as an
+# honest answer to a different question: those ARE the islands a signed-out
+# player raids, so it is the same field either way.
+
+# A local rival's score for a cycle. Stable for the whole 72 hours, different
+# for every rival, reshuffled when the clock turns -- the same shape as
+# public.tourney_bot_points(), so the two fields feel like one game.
+func _local_tourney_points(who: String, cycle: int) -> int:
+	var span := 700 + 60 * clampi(island_level, 1, 30)
+	return absi(hash("%s:%d" % [who, cycle])) % span
+
+func _local_tourney_rows(cycle: int, my_points: int) -> Array:
+	var rows := [{"name": profile.get("name", "You"), "emoji": _my_emoji(),
+			"points": my_points, "me": true, "id": ""}]
+	for n in npcs:
+		rows.append({"name": n["name"], "emoji": n["emoji"],
+				"points": _local_tourney_points(str(n["name"]), cycle),
+				"me": false, "id": ""})
+	return rows
+
+# Sorts, finds the player, numbers the rows. Shared by the board and by the
+# offline placing, so a prize can never be paid for a position the board would
+# not have shown.
+static func _tourney_rank(rows: Array) -> int:
+	rows.sort_custom(func(a, b) -> bool: return int(a["points"]) > int(b["points"]))
+	for i in rows.size():
+		if bool((rows[i] as Dictionary).get("me", false)):
+			return i + 1
+	return rows.size() + 1
+
+# --- the placing prize ------------------------------------------------------
+
+# Called at boot and whenever the trophy is opened. Does nothing at all unless
+# a cycle ended while this save was not looking.
+func _tourney_settle() -> void:
+	if tourney_owed_id < 0:
+		return
+	var cycle := tourney_owed_id
+	var scored := tourney_owed_points
+	if not Cloud.linked():
+		_tourney_pay(_tourney_rank(_local_tourney_rows(cycle, scored)), npcs.size() + 1)
+		return
+	Cloud.tourney_result(cycle, func(r: Dictionary) -> void:
+		# Left owed on purpose. An empty answer is no signal or a build that is
+		# ahead of the migration, and both of those are "ask again next launch"
+		# -- paying nothing and clearing the debt would quietly lose a prize
+		# somebody spent three days on.
+		if r.is_empty():
+			return
+		_tourney_pay(int(r.get("place", 999)), int(r.get("field", 0)))
+	)
+
+func _tourney_pay(place: int, _field: int) -> void:
+	# Cleared first, and before any of the granting below. Whatever happens next,
+	# this cycle has been answered; leaving it owed would pay it again on the
+	# next launch, and paying a prize twice is worse than paying it late.
+	var scored := tourney_owed_points
+	tourney_owed_id = -1
+	tourney_owed_points = 0
+	_save_game()
+	if place < 1 or place > TOURNEY_PRIZES.size():
+		# Off the podium. Said out loud anyway: a competition that ends in
+		# silence reads as a competition that was never running.
+		if scored > 0:
+			_banner("Tournament over — you finished #%d with %s pts" % [place, _fmt_compact(scored)],
+				Color(0.72, 0.82, 0.9))
+		return
+	var prize: Dictionary = TOURNEY_PRIZES[place - 1]
+	var got_coins := _scaled(int(prize["coins"]))
+	var got_spins := int(prize["spins"])
+	coins += got_coins
+	spins += got_spins
+	for _i in int(prize["cards"]):
+		_grant_chest_card(1)
+	_save_game()
+	_refresh()
+	var what := "+%s coins, +%d spins" % [_fmt_compact(got_coins), got_spins]
+	if int(prize["cards"]) > 0:
+		what += ", +%d cards" % int(prize["cards"])
+	_banner("%s in the tournament! %s" % [_place_word(place), what], Color(1.0, 0.85, 0.3))
+	FX.confetti(self, 60)
+	Sfx.play("jackpot", -3.0)
+
+static func _place_word(place: int) -> String:
+	match place:
+		1: return "1st place"
+		2: return "2nd place"
+		3: return "3rd place"
+		_: return "#%d" % place
+
+# The one-line version of a placing prize, for the chip beside a name on the
+# board. Compact because it sits inside a row that also carries a rank, a face,
+# a name and a score, on a 720-wide phone.
+func _tourney_prize_text(place: int) -> String:
+	if place < 1 or place > TOURNEY_PRIZES.size():
+		return ""
+	var p: Dictionary = TOURNEY_PRIZES[place - 1]
+	var bits := ["💰 %s" % _fmt_compact(_scaled(int(p["coins"]))), "🌀 %d" % int(p["spins"])]
+	if int(p["cards"]) > 0:
+		bits.append("🃏 %d" % int(p["cards"]))
+	return " · ".join(bits)
+
+# --- the dialog -------------------------------------------------------------
+
+func _open_tourney() -> void:
+	_tourney_sync()
+	_tourney_settle()
+	var vbox := _open_popup("Tournament")
 	_tourney_board(vbox)
+
+	# Where you stand, on its own line above the table, because it is the one
+	# fact the player opened this for and it should not have to be found by
+	# scrolling to the gold row.
+	var standing := _popup_row_label("", UI.F_LABEL)
+	standing.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	standing.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	# Wrapped, which is what stops it from setting the width of the dialog.
+	# A Label with autowrap off hands its whole string up as a minimum width;
+	# this one grows with the league name, the field size and (on a later
+	# track) the cycle total, and at its longest it pushed the panel two pixels
+	# wider than the phone -- carrying the close button, which is anchored to
+	# the panel's corner, off the right-hand edge. qa_layout caught it.
+	standing.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(standing)
+
+	# Shown only once a second track has opened, because until then the bar's
+	# own "1,500 / 2,500" is this same number.
+	var cycle_line := _popup_row_label("", UI.F_CAPTION)
+	cycle_line.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	cycle_line.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	cycle_line.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	cycle_line.visible = false
+	vbox.add_child(cycle_line)
+
+	# What earns a point, and that the bet multiplies it. Guy asked for this
+	# specifically and he is right to: the numbers are the whole strategy of the
+	# screen -- a build is worth five steals at x1 and is worth less than one at
+	# x5 -- and until it is written down the player is guessing.
+	var key := _popup_row_label(
+		"Steal %d × bet   ·   Attack %d × bet   ·   Build %d"
+		% [TP_STEAL, TP_ATTACK, TP_BUILD], UI.F_CAPTION)
+	key.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	key.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	key.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(key)
+
+	var note := _popup_row_label("A blocked attack scores nothing — top 5 win a prize when the clock runs out", UI.F_CAPTION)
+	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	note.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(note)
+
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(0, TOURNEY_VIEW_H)
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_child(scroll)
+	# The scrollbar is drawn INSIDE the scroll region, over the right-hand end
+	# of every row, and the points column is the right-hand end of every row.
+	# Forty rows of score with a grey bar down the middle of the digits is not
+	# a thing anyone would draw on purpose.
+	var pad := MarginContainer.new()
+	pad.add_theme_constant_override("margin_right", 14)
+	pad.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(pad)
+	var list := VBoxContainer.new()
+	list.add_theme_constant_override("separation", 6)
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pad.add_child(list)
+
+	# The way back to the lifetime table. It moved to the star capsule in the
+	# HUD, which is the right home for it, but nobody who has been opening the
+	# trophy for a fortnight to look at star totals is going to guess that on
+	# their own -- so the screen that took it away says where it went.
+	var world_link := Button.new()
+	world_link.text = "World ranking  ›"
+	world_link.flat = true
+	world_link.focus_mode = Control.FOCUS_NONE
+	world_link.add_theme_font_size_override("font_size", UI.F_CAPTION)
+	world_link.add_theme_font_override("font", Lagoon.display_font())
+	for c in ["font_color", "font_hover_color", "font_pressed_color"]:
+		world_link.add_theme_color_override(c, Lagoon.INK_SOFT)
+	FX.press_feedback(world_link)
+	world_link.pressed.connect(func() -> void:
+		_close_popup(true)
+		_open_world_ranks()
+	)
+	vbox.add_child(world_link)
+
+	# Drawn from the phone first, so the board is never a blank rectangle on a
+	# slow train, then replaced by the league when it answers.
+	_fill_tourney(list, standing, cycle_line, _local_tourney_rows(tourney_id, tourney_points))
+	if not Cloud.linked():
+		return
+	# Sent before it is read: the score moves on raids and the report is
+	# debounced, so without this the board can answer with a number the player
+	# beat ten minutes ago.
+	Cloud.note_tourney(tourney_id, tourney_points)
+	var mine := str(Cloud.player().get("id", ""))
+	Cloud.tourney_board(func(board: Array) -> void:
+		if not is_instance_valid(list) or board.is_empty():
+			return
+		var rows := []
+		for e in board:
+			if typeof(e) != TYPE_DICTIONARY:
+				continue
+			var is_me: bool = str(e.get("id", "")) == mine and mine != ""
+			rows.append({
+				"name": str(e.get("name", "Islander")),
+				"emoji": str(e.get("emoji", "🙂")),
+				# The device's own number wins for the device's own row. The
+				# server has whatever was last reported, which is up to a
+				# debounce window behind the raid the player just watched land.
+				"points": tourney_points if is_me else int(e.get("points", 0)),
+				"me": is_me,
+				"id": str(e.get("id", "")),
+			})
+		_fill_tourney(list, standing, cycle_line, rows)
+	)
+
+# How tall the league table is. Shorter than the star board's, because this
+# dialog carries the reward track, the standing line and the scoring key above
+# it and the whole thing still has to fit a phone.
+const TOURNEY_VIEW_H := 430.0
+const TOURNEY_TOP_N := 40
+
+func _fill_tourney(list: VBoxContainer, standing: Label, cycle_line: Label, rows: Array) -> void:
+	for c in list.get_children():
+		c.queue_free()
+	var field := rows.size()
+	var place := _tourney_rank(rows)
+	if is_instance_valid(standing):
+		# The cycle total is spelled out ONLY once a second track has opened.
+		# Until then the bar's own "1,500 / 2,500" is the same number and
+		# printing it twice thirty pixels apart is noise -- afterwards the two
+		# genuinely differ, because the bar measures the track and the league
+		# ranks the cycle.
+		standing.text = "#%d of %d  ·  %s" % [place, field, _tourney_league_name()]
+	if is_instance_valid(cycle_line):
+		# Its own line rather than a third clause on the one above, which was
+		# long enough to wrap and left "pts this cycle" stranded on a line of
+		# its own. A deliberate second line beats an accidental one.
+		cycle_line.text = "%s pts this cycle" % _fmt_compact(tourney_points)
+		cycle_line.visible = tourney_lap > 0
+	var me: Dictionary = {}
+	if place >= 1 and place <= rows.size():
+		me = rows[place - 1]
+	if rows.size() > TOURNEY_TOP_N:
+		rows.resize(TOURNEY_TOP_N)
+	for i in rows.size():
+		list.add_child(_tourney_row(rows[i], i + 1))
+	# Same rule as the star board: a player who fell outside the trim comes
+	# back under a divider carrying the place they actually hold. A board you
+	# cannot find yourself on has nothing on it to climb.
+	if place > TOURNEY_TOP_N and not me.is_empty():
+		list.add_child(Lagoon.divider())
+		list.add_child(_tourney_row(me, place))
+
+func _tourney_row(r: Dictionary, place: int) -> Control:
+	var mine: bool = bool(r.get("me", false))
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	# A medal for the three places that get one, the number for everybody else.
+	# The medal is the same width as the digits it replaces so the names below
+	# it still line up.
+	var rank_cell := Control.new()
+	rank_cell.custom_minimum_size = Vector2(52, 0)
+	row.add_child(rank_cell)
+	var medal := ["🥇", "🥈", "🥉"]
+	var rank_l: Label
+	if place <= medal.size():
+		rank_l = _emoji_label(medal[place - 1], UI.F_SUBHEAD)
+	else:
+		rank_l = _popup_row_label("#%d" % place, UI.F_LABEL)
+	rank_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	rank_cell.add_child(rank_l)
+	rank_l.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	row.add_child(_emoji_label(r["emoji"], UI.F_SUBHEAD))
+
+	# Name over prize. Two lines rather than a fifth column, because the prize
+	# is only on five of the rows and a column that is empty for the other
+	# thirty-five reads as a layout that has gone wrong.
+	var text := VBoxContainer.new()
+	text.add_theme_constant_override("separation", -2)
+	text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	text.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	# BOTH LABELS BELOW ARE CLIPPED, and this is load-bearing rather than
+	# defensive. A Label hands its full text width up as a minimum, a VBox hands
+	# up its widest child's, and a VBox of rows hands that to every sibling --
+	# so one long prize line ("💰 12,000 · 🌀 250 · 🃏 3" on the first island,
+	# where the coin prize has not compacted yet) widened the whole table and
+	# pushed the points column off the right-hand edge of the dialog. Every row
+	# lost its score to a prize chip that only five of them carry. Same trap as
+	# the shop's deal row and the collection tiles' difficulty chip; the fix is
+	# the same one -- let the flexible column actually be flexible.
+	text.custom_minimum_size = Vector2(140, 0)
+	row.add_child(text)
+	var name_l := _popup_row_label(str(r["name"]))
+	name_l.clip_text = true
+	if mine:
+		name_l.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	text.add_child(name_l)
+	var prize := _tourney_prize_text(place)
+	if prize != "":
+		var pl := _popup_row_label(prize, UI.F_TINY)
+		pl.clip_text = true
+		pl.add_theme_color_override("font_color", Lagoon.KELP_LO if not mine else Color(1.0, 0.8, 0.45))
+		text.add_child(pl)
+
+	var pts := _popup_row_label(_fmt_compact(int(r["points"])), UI.F_LABEL)
+	# INK, not SAND. Sand is the colour these numbers wear on the cabinet, which
+	# is dark brass; this dialog is pale glass, and on it a sand number is the
+	# same value as the panel behind it -- every row but the player's own read
+	# as having no score at all.
+	if mine:
+		pts.add_theme_color_override("font_color", Color(0.85, 0.6, 0.1))
+	pts.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	pts.custom_minimum_size = Vector2(96, 0)
+	row.add_child(pts)
+	return row
+
+
+# The lifetime table, and it is deliberately no longer behind the trophy.
+#
+# It ranks `rank_stars`, which is every star this island has ever earned and
+# never spends -- so it is a standing rather than a contest, and the thing to
+# do with a standing is put it next to the number it is a standing IN. That is
+# the star capsule in the HUD, which is where this now opens from.
+#
+# The reward track came off it with the move. A three-day track sitting above a
+# lifetime table was the clearest evidence that two different screens had been
+# folded into one: the bar counted down to a deadline the rows underneath it
+# knew nothing about.
+func _open_world_ranks() -> void:
+	var vbox := _open_popup("World ranking")
 	var head := _popup_row_label("Ranked by \u2b50 stars — build and collect to climb", UI.F_CAPTION)
 	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	head.add_theme_color_override("font_color", Lagoon.INK_SOFT)
@@ -7897,8 +8464,8 @@ func _add_topbar(page: Control) -> void:
 	bar.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
 	bar.offset_left = 14.0
 	bar.offset_right = -14.0
-	bar.offset_top = 16.0 + safe_top()
-	bar.offset_bottom = 16.0 + 70.0 + safe_top()
+	bar.offset_top = hud_top()
+	bar.offset_bottom = hud_top() + 70.0
 
 	var labels := {}
 	# Third field is the shelf the plus goes to; empty means the counter has no
@@ -7945,7 +8512,7 @@ func _add_topbar(page: Control) -> void:
 	var st_tap := Button.new()
 	st_tap.flat = true
 	st_tap.focus_mode = Control.FOCUS_NONE
-	st_tap.pressed.connect(_open_ranks)
+	st_tap.pressed.connect(_open_world_ranks)
 	st_root.add_child(st_tap)
 	st_tap.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	# FX.press_feedback squashes the button it is given; here the button is the
@@ -9113,41 +9680,101 @@ func _show_island_complete_popup() -> void:
 	FX.confetti(self, 60)
 	FX.flash(self)
 
-# Framed snapshot of an island used on the journey map.
-func _journey_island_card(world: Control, level: int, pos: Vector2, side: float) -> Control:
-	var root := Control.new()
-	root.position = pos
-	world.add_child(root)
+# The voyage between two islands.
+#
+# WHAT THIS REPLACES, because the difference is the whole point. The first
+# version was a MAP: two framed thumbnails of the islands pinned to a scrolling
+# board, dotted lines between them, and four waypoint markers -- a moai, a palm,
+# an anchor -- that the boat stopped at one by one. Guy's note was that the
+# islands "behave the same", and that it was a transition between one picture
+# and another rather than between one place and the next. He is right: nothing
+# on that board was the island, it was a postcard OF the island, and stopping
+# four times on the way turned a two-second move into a board-game turn.
+#
+# So there is no map. The island you finished fills the screen, at the size and
+# the art the village page draws it at, and the camera simply sails off the
+# right-hand side of it, across open water, and onto the next one -- which is
+# already in frame while the old one is still leaving, so the player sees where
+# they are going rather than being told about it afterwards. One move, no stops.
+#
+# The seam is the only part that needs care. Two full-bleed island paintings
+# butted against a gradient sea would meet it at a hard vertical edge, so each
+# island's water-facing side is dissolved into the sea by a horizontal fade --
+# which is also why the sea band is drawn across the WHOLE world rather than
+# only the gap between them: the fade has to reveal water, not background.
+const JOURNEY_GAP := 560.0      # open water between the two islands
+const JOURNEY_FADE := 150.0     # how much of each island's edge dissolves into it
+const JOURNEY_SAIL := 2.1       # seconds of actual travel
 
-	var frame := PanelContainer.new()
-	var sb := Lagoon.glass(26, 0.95)
-	sb.set_border_width_all(6)
-	sb.border_color = Lagoon.BRASS
-	sb.set_content_margin_all(10)
-	frame.add_theme_stylebox_override("panel", sb)
-	frame.custom_minimum_size = Vector2(side, side)
-	root.add_child(frame)
+# The alpha ramp that dissolves an island's water-facing edge into the sea.
+#
+# UV rather than pixels, and the two edges are handed in already converted,
+# because the art is CROPPED to cover the phone (a 9:16 painting on a 20:9
+# screen) -- so the control's edge and the texture's edge are not the same x,
+# and a fade measured in texture space would drift wider on a taller phone.
+# `a` is where the island has gone completely, `b` where it is still solid;
+# passing b < a is what turns a left-hand fade into a right-hand one.
+const JOURNEY_FADE_SHADER := """
+shader_type canvas_item;
+uniform float edge_a = 0.0;
+uniform float edge_b = 0.2;
+void fragment() {
+	vec4 c = texture(TEXTURE, UV);
+	c.a *= clamp((UV.x - edge_a) / (edge_b - edge_a), 0.0, 1.0);
+	COLOR = c;
+}
+"""
 
-	var clip := Control.new()
-	clip.clip_contents = true
-	frame.add_child(clip)
-	var tr := TextureRect.new()
-	tr.texture = CV.island_bg_tex(level)
-	tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-	clip.add_child(tr)
-	tr.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+# One island, painted at full screen size at its place in the world strip.
+# `fade_side` is -1 to dissolve the left edge, +1 the right, 0 for neither.
+func _journey_island(world: Control, level: int, at_x: float, span: Vector2, fade_side: int) -> void:
+	var holder := Control.new()
+	holder.position = Vector2(at_x, 0.0)
+	holder.size = span
+	holder.clip_contents = true
+	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	world.add_child(holder)
 
-	var nm := Lagoon.title(CV.island_theme(level)["name"], UI.F_BODY, Color.WHITE, Lagoon.ABYSS)
-	nm.custom_minimum_size = Vector2(side, 0)
-	nm.position = Vector2(0, side + 8)
-	root.add_child(nm)
-	return root
+	# Covered by hand rather than by STRETCH_KEEP_ASPECT_COVERED, because the
+	# shader below needs to know where the art sits inside the window it is
+	# being cropped to, and the stretch modes do that arithmetic privately.
+	var tex := CV.island_bg_tex(level)
+	var art_size := span
+	if tex != null and tex.get_width() > 0 and tex.get_height() > 0:
+		var k := maxf(span.x / float(tex.get_width()), span.y / float(tex.get_height()))
+		art_size = Vector2(float(tex.get_width()) * k, float(tex.get_height()) * k)
+	var art_x := (span.x - art_size.x) * 0.5
 
-# Sea-voyage transition: the boat hops between waypoints while the
-# camera pans from the finished island to the next one.
+	var art := TextureRect.new()
+	art.texture = tex
+	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	art.stretch_mode = TextureRect.STRETCH_SCALE
+	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	art.position = Vector2(art_x, (span.y - art_size.y) * 0.5)
+	art.size = art_size
+	holder.add_child(art)
+
+	if fade_side == 0 or art_size.x <= 0.0:
+		return
+	var gone := (span.x - art_x) / art_size.x if fade_side > 0 else -art_x / art_size.x
+	var solid := (span.x - JOURNEY_FADE - art_x) / art_size.x if fade_side > 0 \
+		else (JOURNEY_FADE - art_x) / art_size.x
+	var shader := Shader.new()
+	shader.code = JOURNEY_FADE_SHADER
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	mat.set_shader_parameter("edge_a", gone)
+	mat.set_shader_parameter("edge_b", solid)
+	art.material = mat
+
+# Sea-voyage transition: the camera leaves the island that was just finished,
+# crosses open water, and arrives at the next one.
 func _start_island_journey(from_level: int) -> void:
 	var to_level := from_level + 1
+	var view := view_size()
+	var span := Vector2(view.x, view.y)
+	var trip := view.x + JOURNEY_GAP
+
 	var layer := Control.new()
 	layer.mouse_filter = Control.MOUSE_FILTER_STOP
 	layer.z_index = 130
@@ -9156,9 +9783,19 @@ func _start_island_journey(from_level: int) -> void:
 	layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_journey_layer = layer
 
+	var world := Control.new()
+	world.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(world)
+
+	# Sky and sea run the entire strip, behind both islands, because the fade at
+	# each island's edge subtracts the art and whatever is underneath is what the
+	# player sees the boat sailing on.
+	var strip := Vector2(view.x * 2.0 + JOURNEY_GAP, view.y)
+	var horizon := view.y * 0.56
+
 	var sky := TextureRect.new()
 	var sky_grad := Gradient.new()
-	sky_grad.colors = PackedColorArray([Color(0.35, 0.65, 0.95), Color(0.82, 0.93, 1.0)])
+	sky_grad.colors = PackedColorArray([Color(0.33, 0.63, 0.94), Color(0.85, 0.94, 1.0)])
 	sky_grad.offsets = PackedFloat32Array([0.0, 1.0])
 	var sky_tex := GradientTexture2D.new()
 	sky_tex.gradient = sky_grad
@@ -9167,13 +9804,18 @@ func _start_island_journey(from_level: int) -> void:
 	sky.texture = sky_tex
 	sky.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	sky.stretch_mode = TextureRect.STRETCH_SCALE
-	layer.add_child(sky)
-	sky.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	sky.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	sky.size = strip
+	world.add_child(sky)
 
+	# The horizon is a ramp, not a line. A flat-topped sea band met the sky at a
+	# hard edge running the whole width of the strip, and where that edge
+	# crossed an island's dissolving side it was the one thing on screen saying
+	# "two rectangles". Three stops: haze, then water, then depth.
 	var sea := TextureRect.new()
 	var sea_grad := Gradient.new()
-	sea_grad.colors = PackedColorArray([Color(0.16, 0.52, 0.76), Color(0.05, 0.28, 0.52)])
-	sea_grad.offsets = PackedFloat32Array([0.0, 1.0])
+	sea_grad.colors = PackedColorArray([Color(0.55, 0.79, 0.92), Color(0.19, 0.57, 0.79), Color(0.04, 0.24, 0.47)])
+	sea_grad.offsets = PackedFloat32Array([0.0, 0.09, 1.0])
 	var sea_tex := GradientTexture2D.new()
 	sea_tex.gradient = sea_grad
 	sea_tex.fill_from = Vector2(0, 0)
@@ -9181,135 +9823,155 @@ func _start_island_journey(from_level: int) -> void:
 	sea.texture = sea_tex
 	sea.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	sea.stretch_mode = TextureRect.STRETCH_SCALE
-	layer.add_child(sea)
-	sea.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	sea.offset_top = 560.0
+	sea.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	sea.position = Vector2(0.0, horizon)
+	sea.size = Vector2(strip.x, view.y - horizon)
+	world.add_child(sea)
 
-	var sun := _emoji_label("☀️", 58)
-	sun.position = Vector2(590, 80)
-	layer.add_child(sun)
-	FX.pulse_forever(sun, 1.08, 1.6)
-
-	for i in 3:
-		var cloud := _emoji_label("☁️", randi_range(42, 64))
-		cloud.position = Vector2(randf_range(0, 640), randf_range(70, 320))
-		cloud.modulate.a = 0.85
-		layer.add_child(cloud)
-		var ct := cloud.create_tween().set_loops()
-		ct.tween_property(cloud, "position:x", -140.0, randf_range(16, 26)).from(780.0)
-
-	var world := Control.new()
-	world.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(world)
-
-	for i in 5:
-		var far := _emoji_label("🏝️", randi_range(20, 30))
-		far.position = Vector2(randf_range(400, 2200), randf_range(520, 555))
-		far.modulate.a = 0.55
+	# Two specks on the horizon, so the crossing has a distance to it. Small and
+	# faint: they are depth cues, not places, and anything bigger invites the
+	# player to wonder why they cannot sail to one.
+	for i in 2:
+		var far := _emoji_label("🏝️", randi_range(22, 30))
+		far.modulate.a = 0.45
+		far.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		far.position = Vector2(view.x * (0.95 + 0.5 * float(i)) + randf_range(0.0, 180.0),
+			horizon - 26.0)
 		world.add_child(far)
 
-	var start := Vector2(210, 750)
-	var steps := [Vector2(720, 705), Vector2(1160, 785), Vector2(1610, 715), Vector2(2070, 745)]
-	var cam_min := -(2400.0 - 720.0)
+	# Over the gap only. A cloud dropped anywhere on the strip lands on top of a
+	# painted island as often as not, and a sticker of a cloud over somebody
+	# else's sky is exactly the "picture rather than place" effect this is for.
+	for i in 3:
+		var cloud := _emoji_label("☁️", randi_range(46, 70))
+		cloud.position = Vector2(randf_range(view.x * 0.86, trip + view.x * 0.14),
+			randf_range(60.0, horizon - 220.0))
+		cloud.modulate.a = 0.8
+		cloud.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		world.add_child(cloud)
+		var ct := cloud.create_tween().set_loops()
+		ct.tween_property(cloud, "position:x", cloud.position.x - 260.0, randf_range(9.0, 15.0))
+		ct.tween_property(cloud, "position:x", cloud.position.x, 0.0)
 
-	var anchors := [start] + steps
-	for s in anchors.size() - 1:
-		var a: Vector2 = anchors[s]
-		var b: Vector2 = anchors[s + 1]
-		for f in [0.25, 0.5, 0.75]:
-			var dot := Panel.new()
-			var dsb := StyleBoxFlat.new()
-			dsb.bg_color = Color(1, 1, 1, 0.5)
-			dsb.set_corner_radius_all(20)
-			dot.add_theme_stylebox_override("panel", dsb)
-			dot.size = Vector2(12, 12)
-			dot.position = a.lerp(b, f) - Vector2(6, 6) + Vector2(0, -26.0 * sin(f * PI))
-			world.add_child(dot)
-
-	var stop_icons := ["🗿", "🌴", "⚓"]
-	var stop_nodes: Array[Control] = []
-	for s in stop_icons.size():
-		var marker := _emoji_label(stop_icons[s], 44)
-		marker.position = steps[s] + Vector2(-22, -112)
-		marker.resized.connect(func() -> void: marker.pivot_offset = marker.size * 0.5)
-		world.add_child(marker)
-		FX.float_bob(marker, 7.0, randf_range(1.6, 2.4))
-		stop_nodes.append(marker)
-
-	_journey_island_card(world, from_level, Vector2(70, 250), 290.0)
-	var dest := _journey_island_card(world, to_level, Vector2(1950, 210), 330.0)
-	FX.float_bob(dest, 8.0, 2.2)
+	# The boat rides at screen centre and the world moves under it, which is what
+	# makes this read as travel rather than as a picture sliding past.
+	#
+	# IT IS ADDED BEFORE THE ISLANDS ON PURPOSE. Drawn last it sailed over the
+	# volcano on the way out and over the mushrooms on the way in, because
+	# screen centre is over land for the first and last thirds of the trip.
+	# Every fix by timing -- fading it, stopping it short, moving it faster than
+	# the camera -- needs a number that is right for one phone and one gap
+	# width. Putting it UNDER the islands is right for all of them, and it comes
+	# with the effect for free: the islands' water-facing edges are alpha ramps,
+	# so the boat does not pop, it emerges out of the haze and is swallowed by
+	# it again.
+	var wake_layer := Control.new()
+	wake_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	world.add_child(wake_layer)
 
 	var boat_root := Control.new()
-	boat_root.position = start
+	boat_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	boat_root.position = Vector2(view.x * 0.5, horizon + (view.y - horizon) * 0.34)
 	world.add_child(boat_root)
-	var boat_icon := _emoji_label("⛵", 76)
-	boat_icon.position = Vector2(-38, -92)
+	var boat_icon := _emoji_label("⛵", 92)
+	boat_icon.position = Vector2(-46, -56)
+	boat_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	boat_icon.resized.connect(func() -> void: boat_icon.pivot_offset = boat_icon.size * 0.5)
 	boat_root.add_child(boat_icon)
 	var bob := boat_icon.create_tween().set_loops()
-	bob.tween_property(boat_icon, "position:y", -100.0, 0.8).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-	bob.tween_property(boat_icon, "position:y", -92.0, 0.8).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	bob.tween_property(boat_icon, "position:y", -66.0, 0.7).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	bob.parallel().tween_property(boat_icon, "rotation", 0.06, 0.7).set_trans(Tween.TRANS_SINE)
+	bob.tween_property(boat_icon, "position:y", -56.0, 0.7).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	bob.parallel().tween_property(boat_icon, "rotation", -0.06, 0.7).set_trans(Tween.TRANS_SINE)
 
 	var wake := Timer.new()
-	wake.wait_time = 0.12
+	wake.wait_time = 0.1
 	wake.autostart = true
 	layer.add_child(wake)
 	wake.timeout.connect(func() -> void:
 		var bubble := Panel.new()
 		var bsb := StyleBoxFlat.new()
-		bsb.bg_color = Color(1, 1, 1, 0.55)
+		bsb.bg_color = Color(1, 1, 1, 0.5)
 		bsb.set_corner_radius_all(16)
 		bubble.add_theme_stylebox_override("panel", bsb)
-		var bs := randf_range(6, 13)
+		var bs := randf_range(7, 15)
 		bubble.size = Vector2(bs, bs)
-		bubble.position = boat_root.position + Vector2(randf_range(-34, -12), randf_range(-14, 4))
-		world.add_child(bubble)
+		bubble.position = boat_root.position + Vector2(randf_range(-46, -18), randf_range(-6, 12))
+		bubble.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		# Into the wake layer, not into `world`: a child appended to world now
+		# would land on top of the islands and leave a trail of white dots
+		# across the destination.
+		wake_layer.add_child(bubble)
 		var bt := bubble.create_tween()
-		bt.tween_property(bubble, "modulate:a", 0.0, 0.7)
+		bt.tween_property(bubble, "modulate:a", 0.0, 0.8)
+		bt.parallel().tween_property(bubble, "position:x", bubble.position.x - 46.0, 0.8)
 		bt.tween_callback(bubble.queue_free)
 	)
 
-	var welcome := Lagoon.wordmark("Welcome to %s!" % CV.island_theme(to_level)["name"], 46)
-	welcome.visible = false
-	layer.add_child(welcome)
-	welcome.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	welcome.offset_top = 190.0 + safe_top()
-	welcome.offset_bottom = 250.0 + safe_top()
+	# Last into the world, so they cover the boat, its wake and the clouds
+	# wherever they are actually land. The island being left keeps its left
+	# edge; the one being arrived at keeps its right. Only the water-facing
+	# sides dissolve.
+	_journey_island(world, from_level, 0.0, span, 1)
+	_journey_island(world, to_level, trip, span, -1)
+
+	# The sign says where you are, not where you have been: it turns over as the
+	# new island comes into frame rather than once the boat has moored.
+	#
+	# On brass plaques rather than bare outlined text. Both islands are busy,
+	# high-contrast paintings, and a wordmark laid straight over one of them is
+	# legible in about half the places the camera puts it.
+	#
+	# TWO of them, crossfaded, rather than one whose text is swapped: a plaque
+	# casts its plate to fit the string it was built with, so "Volcano Isle" and
+	# "Fairy Forest" are not one object at two labels, they are two plates.
+	var signs := Control.new()
+	signs.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(signs)
+	signs.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	signs.offset_top = 92.0 + safe_top()
+	signs.offset_bottom = 172.0 + safe_top()
+	var sign_from := CenterContainer.new()
+	var sign_to := CenterContainer.new()
+	for pair in [[sign_from, from_level], [sign_to, to_level]]:
+		var host := pair[0] as CenterContainer
+		host.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		signs.add_child(host)
+		host.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		host.add_child(Lagoon.plaque(CV.island_theme(int(pair[1]))["name"], 0.0, 74.0, UI.F_SUBHEAD))
+	sign_to.modulate.a = 0.0
 
 	var tw := layer.create_tween()
-	tw.tween_property(layer, "modulate:a", 1.0, 0.35)
-	tw.tween_interval(0.4)
-	for i in steps.size():
-		var p: Vector2 = steps[i]
-		tw.tween_callback(func() -> void: Sfx.play("pop", -12.0))
-		tw.tween_property(boat_root, "position", p, 0.85).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-		tw.parallel().tween_property(world, "position:x", clampf(320.0 - p.x, cam_min, 0.0), 0.85).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-		tw.parallel().tween_property(boat_icon, "rotation", 0.09 if i % 2 == 0 else -0.09, 0.42)
-		if i < stop_nodes.size():
-			var sn := stop_nodes[i]
-			tw.tween_callback(func() -> void:
-				Sfx.play("tick", -6.0)
-				var st := sn.create_tween()
-				st.tween_property(sn, "scale", Vector2(1.45, 1.45), 0.16).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-				st.tween_property(sn, "scale", Vector2.ONE, 0.2)
-			)
-			tw.tween_interval(0.28)
+	tw.tween_property(layer, "modulate:a", 1.0, 0.28)
+	tw.tween_interval(0.25)
+	tw.tween_callback(func() -> void: Sfx.play("pop", -10.0))
+	# One move. Eased at both ends so the camera pulls away and settles rather
+	# than starting and stopping at speed.
+	tw.tween_property(world, "position:x", -trip, JOURNEY_SAIL) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+	tw.parallel().tween_property(boat_root, "position:x", view.x * 0.5 + trip, JOURNEY_SAIL) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+	# Halfway across, when the destination is the bigger thing on screen.
+	tw.parallel().tween_callback(func() -> void:
+		if not is_instance_valid(sign_from) or not is_instance_valid(sign_to):
+			return
+		sign_from.create_tween().tween_property(sign_from, "modulate:a", 0.0, 0.35)
+		sign_to.create_tween().tween_property(sign_to, "modulate:a", 1.0, 0.35)
+	).set_delay(JOURNEY_SAIL * 0.5)
+
 	tw.tween_callback(func() -> void:
 		wake.stop()
 		Sfx.play("levelup", -2.0)
 		Sfx.play("jackpot", -4.0)
 		FX.flash(layer)
-		FX.confetti(layer, 70)
-		welcome.visible = true
-		FX.pop_in(welcome, 0.4)
-		var ht := boat_icon.create_tween()
-		ht.tween_property(boat_icon, "rotation", 0.0, 0.2)
+		FX.confetti(layer, 60)
+		var moor := boat_icon.create_tween()
+		moor.tween_property(boat_icon, "rotation", 0.0, 0.25)
 		_apply_island_theme()
 		_refresh()
 	)
-	tw.tween_interval(1.25)
-	tw.tween_property(layer, "modulate:a", 0.0, 0.45)
+	tw.tween_interval(0.85)
+	tw.tween_property(layer, "modulate:a", 0.0, 0.4)
 	tw.tween_callback(func() -> void:
 		layer.queue_free()
 		_journey_layer = null
@@ -9632,6 +10294,10 @@ func _save_dict() -> Dictionary:
 		"tourney_id": tourney_id,
 		"tourney_points": tourney_points,
 		"tourney_claimed": tourney_claimed,
+		"tourney_owed_id": tourney_owed_id,
+		"tourney_owed_points": tourney_owed_points,
+		"tourney_lap": tourney_lap,
+		"tourney_lap_base": tourney_lap_base,
 		"shields": shields,
 		"island_level": island_level,
 		"buildings": buildings,
@@ -9961,6 +10627,17 @@ func _load_game() -> void:
 	rank_stars = maxi(0, _i(data["rank_stars"], earned)) if data.has("rank_stars") else maxi(earned, stars)
 	tourney_id = _i(data.get("tourney_id", 0), 0)
 	tourney_points = maxi(0, _i(data.get("tourney_points", 0), 0))
+	# Through _i() like every other number off the save: JSON has one numeric
+	# type and an int written out comes back a float, which is the trap that
+	# made tourney_claimed lie about which rungs had been taken.
+	tourney_owed_id = _i(data.get("tourney_owed_id", -1), -1)
+	tourney_owed_points = maxi(0, _i(data.get("tourney_owed_points", 0), 0))
+	tourney_lap = maxi(0, _i(data.get("tourney_lap", 0), 0))
+	# Clamped to the score it is a base for. A save carrying a base above the
+	# points it came from would draw an empty bar for ever and a claim that
+	# never becomes available; an older save has neither key and starts at zero,
+	# which is track one, which is where it was.
+	tourney_lap_base = clampi(_i(data.get("tourney_lap_base", 0), 0), 0, tourney_points)
 	# Coerced element by element, and the reason is not tidiness -- it is the
 	# difference between a claimed rung staying claimed and every restart
 	# handing the player the whole reward track again.

@@ -51,6 +51,9 @@ set_emoji:p_emoji
 report_diagnostics:p_install,p_platform,p_os,p_model,p_build,p_events
 report_player:p_player,p_reason
 leaderboard:p_limit
+tourney_report:p_tourney_id,p_points
+tourney_board:p_limit
+tourney_result:p_tourney_id
 create_link_token:
 my_identities:
 redeem_link_token:p_token

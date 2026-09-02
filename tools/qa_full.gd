@@ -1137,6 +1137,15 @@ func _t_shields() -> void:
 #  17. the tournament
 # =============================================================================
 
+# Back to track one with nothing claimed. Every case below sets a score and
+# reads the rungs off it, and a track left open by the case before shifts every
+# threshold by 1.8x -- which reads as the game refusing a rung that is plainly
+# earned.
+func _reset_track() -> void:
+	m.tourney_claimed = []
+	m.tourney_lap = 0
+	m.tourney_lap_base = 0
+
 func _t_tourney() -> void:
 	m.tourney_id = m._tourney_now_id()
 	m.tourney_points = 0
@@ -1156,26 +1165,55 @@ func _t_tourney() -> void:
 	m._tourney_add("nonsense", 5)
 	_chk("an action that is not scored scores nothing", m.tourney_points == 0)
 
-	# Claims.
+	# Claims. The last rung of a track opens the next one, so the first three
+	# are taken on their own and the fourth is a case of its own below.
+	_reset_track()
 	m.tourney_points = 999999
-	m.tourney_claimed = []
 	m.spins = 0
 	var want_spins := 0
-	for t in m.TOURNEY_TIERS:
-		want_spins += int(t["spins"])
-	for i in m.TOURNEY_TIERS.size():
+	for i in m.TOURNEY_TIERS.size() - 1:
+		want_spins += m._tourney_tier_spins(i)
 		m._tourney_claim(i)
 		await get_tree().process_frame
 	_chk("every rung pays the spins it advertises", m.spins == want_spins,
 		"%d vs %d" % [m.spins, want_spins])
 	var after: int = m.spins
-	for i in m.TOURNEY_TIERS.size():
+	for i in m.TOURNEY_TIERS.size() - 1:
 		m._tourney_claim(i)
 	_chk("a claimed rung stays claimed", m.spins == after, "+%d" % (m.spins - after))
 
+	# The track rolls over, which is the thing that stops a heavy player running
+	# out of bar half way through the cycle.
+	var last: int = m.TOURNEY_TIERS.size() - 1
+	m._tourney_claim(last)
+	await get_tree().process_frame
+	_chk("claiming the last rung opens the next track", m.tourney_lap == 1, str(m.tourney_lap))
+	_chk("and the new track starts at the old one's top, so nothing is forgiven",
+		m.tourney_lap_base == int(m.TOURNEY_TIERS[last]["at"]), str(m.tourney_lap_base))
+	_chk("its rungs are harder", m._tourney_tier_at(0) > int(m.TOURNEY_TIERS[0]["at"]),
+		"%d vs %d" % [m._tourney_tier_at(0), int(m.TOURNEY_TIERS[0]["at"])])
+	_chk("and its rewards are bigger", m._tourney_tier_spins(0) > int(m.TOURNEY_TIERS[0]["spins"]),
+		"%d vs %d" % [m._tourney_tier_spins(0), int(m.TOURNEY_TIERS[0]["spins"])])
+	# The property that stops the track being a way to farm the thing the shop
+	# sells. A spin is worth 2.20 points at the real reel odds whatever the bet
+	# is (a x5 pull scores five times as much and costs five spins), so a point
+	# costs 1/2.20 of a spin to earn. No track may pay that much back.
+	const SPINS_PER_POINT := 1.0 / 2.20
+	for lap in 4:
+		var pay := 0
+		for i in m.TOURNEY_TIERS.size():
+			pay += m._tourney_tier_spins(i, lap)
+		var work: int = m._tourney_tier_at(m.TOURNEY_TIERS.size() - 1, lap)
+		_chk("track %d pays back less than the spins it costs to fill" % (lap + 1),
+			float(pay) / float(work) < SPINS_PER_POINT,
+			"%.3f paid vs %.3f spent, per point" % [float(pay) / float(work), SPINS_PER_POINT])
+	_chk("and every track pays less per point than the one before it",
+		m._tourney_tier_spins(3, 1) * m._tourney_tier_at(3, 0)
+			< m._tourney_tier_spins(3, 0) * m._tourney_tier_at(3, 1))
+
 	# A rung you have not reached is not a rung.
+	_reset_track()
 	m.tourney_points = 0
-	m.tourney_claimed = []
 	m.spins = 0
 	for i in m.TOURNEY_TIERS.size():
 		m._tourney_claim(i)
@@ -1185,21 +1223,27 @@ func _t_tourney() -> void:
 	_chk("the first rung arms exactly at its threshold", m._tourney_claimable())
 
 	# An index off the end of the table.
+	_reset_track()
 	m.tourney_points = 999999
-	m.tourney_claimed = []
 	m.spins = 0
 	m._tourney_claim(-1)
 	m._tourney_claim(99)
 	_chk("a rung index off the table is survivable", m.spins == 0 and m.tourney_claimed.is_empty())
 
 	# The rollover, and the invariant that must never break.
+	_reset_track()
 	m.rank_stars = 4242
 	m.tourney_points = 5000
 	m.tourney_claimed = [0, 1]
+	m.tourney_lap = 2
+	m.tourney_lap_base = 1000
 	m.tourney_id = m._tourney_now_id() - 1
 	m._tourney_sync()
 	_chk("a new tournament zeroes the score", m.tourney_points == 0, str(m.tourney_points))
 	_chk("and un-earns the rungs", m.tourney_claimed.is_empty())
+	_chk("and puts the reward track back to the first one",
+		m.tourney_lap == 0 and m.tourney_lap_base == 0,
+		"lap %d base %d" % [m.tourney_lap, m.tourney_lap_base])
 	_chk("and never touches the permanent rank", m.rank_stars == 4242, str(m.rank_stars))
 	_chk("the cycle id is the same integer on every device",
 		m._tourney_now_id() == int(floor(Time.get_unix_time_from_system() / m.TOURNEY_SECONDS)))

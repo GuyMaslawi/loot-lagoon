@@ -52,8 +52,11 @@ func _ready() -> void:
 		page.visible = was
 	# The modals, laid out by the same containers and just as able to grow past
 	# the glass they sit in.
+	# A score that lights two of the four rungs and puts a prize chip beside the
+	# top five names -- which is the state the table is widest in, because the
+	# chip is the longest string any row ever carries.
 	m.tourney_points = 1500
-	for opener in ["_open_ranks", "_open_daily"]:
+	for opener in ["_open_tourney", "_open_world_ranks", "_open_daily"]:
 		m.call(opener)
 		await get_tree().process_frame
 		await get_tree().process_frame
