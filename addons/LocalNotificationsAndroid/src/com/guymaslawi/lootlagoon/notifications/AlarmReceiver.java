@@ -65,11 +65,14 @@ public class AlarmReceiver extends BroadcastReceiver {
 		}
 		b.setContentTitle(title == null ? "" : title)
 		 .setContentText(body == null ? "" : body)
-		 // The app's own icon. Android silhouettes this in the status bar, so
-		 // it can read as a plain white shape on some launchers -- the
-		 // alternative is shipping a drawable inside the .aar, which means
-		 // resource merging, which means aapt2 in the plugin build. Not worth
-		 // it for a shape a player sees at 18dp.
+		 // The app's own icon. Measured on an Android 16 emulator on
+		 // 2026-09-02 rather than assumed: it renders in FULL COLOUR in the
+		 // notification shade -- the raccoon, not the white blob this comment
+		 // used to warn about. Android still silhouettes small icons in the
+		 // status bar itself, which was not checked. The alternative is
+		 // shipping a drawable inside the .aar, which means resource merging,
+		 // which means aapt2 in the plugin build; the shade is where a player
+		 // actually reads this, so it is not worth it.
 		 .setSmallIcon(context.getApplicationInfo().icon)
 		 .setAutoCancel(true);
 		if (body != null && body.length() > 40) {
