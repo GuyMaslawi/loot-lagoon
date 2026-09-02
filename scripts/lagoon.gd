@@ -586,11 +586,17 @@ static func capsule(icon_kind: String, value := "0", plus_action := Callable()) 
 	sb.shadow_size = 7
 	sb.shadow_color = Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.28)
 	sb.shadow_offset = Vector2(0, 3)
-	sb.content_margin_left = 8.0
+	# 7 rather than 8 a side, and the icon below is 38 rather than 44. Both came
+	# down on 2026-09-02 when the HUD moved up level with the cutout: a Dynamic
+	# Island covers 245..475 of 720, and every unit the capsules give back is a
+	# unit of counter that is not under the hardware. It buys 14 on each side --
+	# enough to take the star capsule fully clear of the island's right edge,
+	# and to pull the shield's right-hand end most of the way out of its left.
+	sb.content_margin_left = 7.0
 	# 7, not 4, when there is a plus. The coral disc has to clear the capsule's
 	# own corner arc, and at 4 it did so by a single pixel -- geometrically
 	# inside, visually bursting out of the pill. See the note on the button.
-	sb.content_margin_right = 8.0 if plus_action.is_null() else 7.0
+	sb.content_margin_right = 7.0 if plus_action.is_null() else 6.0
 	sb.content_margin_top = 4.0
 	sb.content_margin_bottom = 4.0
 	root.add_theme_stylebox_override("panel", sb)
@@ -602,7 +608,7 @@ static func capsule(icon_kind: String, value := "0", plus_action := Callable()) 
 
 	var icon := Glyph.new()
 	icon.kind = icon_kind
-	icon.custom_minimum_size = Vector2(44, 44)
+	icon.custom_minimum_size = Vector2(38, 38)
 	icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	hb.add_child(icon)
 

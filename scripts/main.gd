@@ -345,7 +345,6 @@ var _slot_bg_mat: ShaderMaterial
 var _slot_rays_mat: ShaderMaterial
 var _slot_floor_mat: ShaderMaterial
 var _slot_glow_mat: ShaderMaterial
-var _slot_logo: Label
 var _slot_decor: Array = []
 # Menu-page water, repainted with the island's palette by _apply_island_theme().
 var _page_backdrops: Array = []
@@ -753,6 +752,12 @@ func _capture_page(key: String) -> void:
 			"ranks":   _open_world_ranks()
 			"tourney": _open_tourney()
 			"daily":   _open_daily()
+		# DEMO_VIEW_TRACK pages the reward card without a finger. The arrows are
+		# the only way there in the game, so every track but the live one was
+		# unreachable from a harness.
+		if OS.has_environment("DEMO_VIEW_TRACK") and _tourney_card_holder != null:
+			_tourney_view_lap = clampi(int(OS.get_environment("DEMO_VIEW_TRACK")), 0, TOURNEY_TRACKS - 1)
+			_tourney_track_card(_tourney_card_holder)
 		# Long enough for FX.pop_in and the progress bar's fill tween to land;
 		# a shot taken mid-tween measures the animation, not the layout.
 		await get_tree().create_timer(1.6).timeout
@@ -2138,35 +2143,73 @@ const NAV_CAP_H     := 34.0
 func view_size() -> Vector2:
 	return get_viewport_rect().size
 
+# DEMO_SAFE_TOP=<units> pretends the phone has a cutout. Desktop reports no safe
+# area at all, so every layout that hangs off one -- the HUD most of all, which
+# has now been wrong twice -- was unrenderable anywhere but a device. 108 is a
+# Dynamic Island, 87 a notch; see the table above hud_top().
 func safe_top() -> float:
+	if OS.has_environment("DEMO_SAFE_TOP"):
+		return maxf(0.0, float(OS.get_environment("DEMO_SAFE_TOP")))
 	return UI.safe_top(view_size())
 
-# Where the HUD capsules hang, and it is deliberately ABOVE the safe inset.
+# Where the HUD capsules hang. Third attempt, and this one measures instead of
+# guessing -- Guy has now reported "the icons still are not attached to the top"
+# on three separate builds.
 #
-# `safe_top()` is the whole notch band: on an iPhone 15 it is 59pt, which is
-# the 48pt the Dynamic Island actually occupies plus a system pad. Hanging the
-# capsules under all of it and then adding 16 more units of our own put them a
-# finger's width below the hardware, with nothing in the gap -- which is what
-# Guy saw on his phone and called "the icons still are not attached to the top".
+# WHAT THE FIRST TWO ATTEMPTS GOT WRONG. Hanging them under the whole safe inset
+# left a finger's width of empty background above them. Tucking them 16 units
+# into it helped and was still not what he meant: he wants them level with the
+# hardware, in the corners, the way the reference games have them. The reason I
+# would not go there was that an old-style notch is more than half the screen
+# wide and both capsule groups would disappear under it.
 #
-# So they tuck straight under the cutout instead. 16 units is 8.7pt at this
-# viewport, and it clears both families with room over: an iPhone 15's island
-# ends at 48pt and this lands at 50.3, an iPhone 13's notch ends at 30pt and
-# this lands at 38.3.
+# But the two cutouts are TELLABLE APART, and by the very number this function
+# already has. In 720-wide viewport units:
 #
-# THEY DO NOT GO HIGHER THAN THIS, and the reason is horizontal rather than
-# vertical. The old-style notch is more than half the screen wide; the two
-# capsule groups reach about 190 and 484 of 720 and both would sit under it.
-# Riding all the way up beside the cutout is what the reference games do, and
-# it only works because their corners are narrower than ours. Level with its
-# bottom edge is the whole of what is available here.
-const HUD_NOTCH_TUCK := 16.0
+#   Dynamic Island (15, 14 Pro)   inset 108   cutout 32% of the width, 245..475
+#   notch (13, 14)                inset  87   cutout 42%,               210..510
+#   wide notch (X, XR, 11)        inset  84   cutout 56%,               160..560
+#   no cutout (SE)                inset  38   --
+#
+# The Dynamic Island reports a BIGGER inset than any notch and covers far less
+# width. So an inset at or over 100 units means the corners are free, and the
+# capsules can ride up beside the cutout rather than below it. Anything less is
+# a notch wide enough to swallow them, and they stay under it.
+#
+# That is the rule; `_place_hud` is the guard on it, because "the corners are
+# free" depends on how wide the capsules have grown, which depends on the
+# numbers the player happens to be holding.
+const HUD_ISLAND_INSET := 100.0   # at or above this, the cutout is a Dynamic Island
+const HUD_TOP_MARGIN := 12.0      # riding level with a Dynamic Island, or with nothing
+const HUD_NOTCH_TUCK := 16.0      # tucked under a notch wide enough to swallow them
 
 func hud_top() -> float:
 	var top := safe_top()
-	# Desktop and the harnesses report no inset at all, where there is no
-	# cutout to tuck under and the old 16 was simply the top margin.
-	return 16.0 if top <= 0.0 else maxf(8.0, top - HUD_NOTCH_TUCK)
+	# A notch, and it is 42% to 56% of the width -- both capsule groups would go
+	# under it and the numbers would be gone rather than merely crowded. These
+	# phones keep the tuck.
+	if top > 0.0 and top < HUD_ISLAND_INSET:
+		return maxf(8.0, top - HUD_NOTCH_TUCK)
+	# A Dynamic Island, or no cutout at all: up to the top edge.
+	return HUD_TOP_MARGIN
+
+# Run after the bar has laid out, and again whenever a counter changes width.
+#
+# It no longer MOVES the bar -- Guy's call on 2026-09-02, after being shown the
+# measurement, was "just raise the icons, it is not that complicated", and that
+# is the decision. What it still does is report, because the thing being traded
+# away is real and the next person to read this should not have to rediscover
+# it: a Dynamic Island covers 245..475 of 720, the left group ends past 245 and
+# so the shield capsule's right-hand end sits under the hardware.
+#
+# tools/measure_hud.tscn prints the same numbers on demand. Re-run it after
+# touching anything that sets capsule width.
+func _place_hud(bar: Control, left_grp: Control, right_grp: Control) -> void:
+	if not (is_instance_valid(bar) and is_instance_valid(left_grp) and is_instance_valid(right_grp)):
+		return
+	var top := hud_top()
+	bar.offset_top = top
+	bar.offset_bottom = top + 70.0
 
 func safe_bottom() -> float:
 	return UI.safe_bottom(view_size())
@@ -2375,11 +2418,15 @@ func _build_float_options() -> void:
 	add_child(layer)
 	layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
-	# Small, quiet and out of the wordmark's way: settings is the one control on
+	# Small, quiet and off to one side: settings is the one control on
 	# the page nobody is meant to be drawn to.
 	_float_options = Button.new()
 	_float_options.size = Vector2(66, 66)
-	_float_options.position = Vector2(view_size().x - 14.0 - 66.0, 96.0 + safe_top())
+	# Hung off the HUD rather than off the safe inset. With the bar riding at the
+	# top of the screen a fixed "96 below the notch" put the gear on the
+	# cabinet's marquee; ten below whatever the bar's own bottom edge is keeps
+	# it in the clear air between them on every phone.
+	_float_options.position = Vector2(view_size().x - 14.0 - 66.0, hud_top() + 80.0)
 	_float_options.focus_mode = Control.FOCUS_NONE
 	# Built like the rail discs -- deep lagoon face, brass ring, a bevel along
 	# the bottom -- because it floats over the same page they do and a lone
@@ -2496,8 +2543,9 @@ func _build_slot_page() -> void:
 	# in the game. They float on the cabinet's side lanes instead -- see
 	# _add_side_buttons -- and the band went back to the machine.
 	var top := safe_top()
-	var band := Rect2(Vector2(0.0, SLOT_BAND_TOP + top),
-		Vector2(view_size().x, content_bottom() - (SLOT_BAND_TOP + top)))
+	var band_top := slot_band_top()
+	var band := Rect2(Vector2(0.0, band_top),
+		Vector2(view_size().x, content_bottom() - band_top))
 
 	# floating decorative symbols
 	# Three, down the two lanes the narrowed cabinet opened either side of
@@ -2508,7 +2556,7 @@ func _build_slot_page() -> void:
 	# scattered ones cut down to three in the first place.
 	var decor_ids := ["coin", "gem", "coin"]
 	var lane: float = SlotView.CABINET_INSET
-	var decor_top := SIDE_RAIL_TOP + 200.0 + top
+	var decor_top := side_rail_top() + 200.0
 	var decor_span := maxf(160.0, content_bottom() - 150.0 - decor_top)
 	for i in decor_ids.size():
 		var t := CV.symbol_tex(decor_ids[i])
@@ -2554,17 +2602,15 @@ void fragment() {
 	slot_page.add_child(glow)
 	FX.pulse_forever(glow, 1.05, 1.6)
 
-	# The wordmark: sand-coloured display type cut with a deep brass outline, so
-	# it reads as a carved sign rather than coloured text. Unlike the rest of
-	# the SPIN page it does *not* change per island -- the one thing that must
-	# look identical on all thirty is the game's own name.
-	var logo := Lagoon.wordmark("LOOT  LAGOON", 62)
-	slot_page.add_child(logo)
-	logo.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
-	logo.offset_top = 92.0 + top
-	logo.offset_bottom = 172.0 + top
-	FX.pulse_forever(logo, 1.03, 2.4)
-	_slot_logo = logo
+	# NO WORDMARK HERE ANY MORE. It sat between the HUD and the machine and Guy
+	# cut it on 2026-09-02: the title screen already says the game's name, and a
+	# player who has reached the reels knows what they are playing. It was
+	# costing 84 units of the machine's height on every screen in the game to
+	# repeat something nobody was reading -- which is the same trade the three
+	# floating discs lost when they moved onto the cabinet's side lanes.
+	#
+	# slot_band_top() hangs off the HUD now rather than off a constant, so the
+	# reels get the height rather than the background.
 
 	slot = SlotView.new()
 	slot_page.add_child(slot)
@@ -2700,7 +2746,7 @@ func _add_side_buttons(page: Control) -> void:
 		# BOTH LANES HANG FROM THE SAME LINE, and the next person to touch this
 		# must keep it that way. A VBox anchored to the top with no bottom
 		# offset takes its height from its children, so the run grows downward
-		# from SIDE_RAIL_TOP: adding a fourth button lengthens the lane, it
+		# from side_rail_top(): adding a fourth button lengthens the lane, it
 		# never re-centres the three already there or pushes them up into the
 		# marquee. That is what the reference rails do and it is the only
 		# arrangement that survives new buttons being added one at a time.
@@ -2711,7 +2757,7 @@ func _add_side_buttons(page: Control) -> void:
 		# fourth and fifth buttons would have landed at different heights.
 		rail.alignment = BoxContainer.ALIGNMENT_BEGIN
 		rail.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-		rail.offset_top = SIDE_RAIL_TOP + safe_top()
+		rail.offset_top = side_rail_top()
 		rail.offset_bottom = rail.offset_top
 		if side == "left":
 			rail.offset_left = SIDE_RAIL_INSET
@@ -2746,9 +2792,9 @@ func _add_side_buttons(page: Control) -> void:
 # sign. Starting the run level with the reel window instead puts all three on
 # the plain frame beside the reels, where nothing is written.
 #
-#   SLOT_BAND_TOP + CARD.y   = the cabinet's own top edge
+#   slot_band_top() + CARD.y  = the cabinet's own top edge
 #   ... + card overhang + ribbon + separation = the reel window
-#   SIDE_RAIL_TOP            = level with that window
+#   side_rail_top()           = level with that window
 #
 # HOW MANY EACH LANE HOLDS, since the run grows downward from that line and
 # the point of anchoring it there is that it can. A disc plus its gap is 96,
@@ -2767,8 +2813,31 @@ func _add_side_buttons(page: Control) -> void:
 const SIDE_DISC := 82.0
 const SIDE_RAIL_GAP := 14.0
 const SIDE_RAIL_INSET := 8.0
-const SIDE_RAIL_TOP := 404.0
-const SLOT_BAND_TOP := 196.0
+# WHERE THE MACHINE STARTS, and it is a function now rather than a constant.
+#
+# It used to be "196 below the safe inset", which was right while the HUD hung
+# below the inset too. It stopped being right the moment the HUD moved up level
+# with a Dynamic Island: the bar was then at the top of the screen and the
+# cabinet was still 196 below a 108-unit inset, so a hand's width of background
+# opened between them -- the same dead band the wordmark had been filling, now
+# filling with nothing.
+#
+# So the machine hangs off whichever actually ends lower, the HUD or the safe
+# area, plus a gap. On a Dynamic Island phone that is the inset; on a notch,
+# where the bar is tucked under and hangs 54 below it, that is the bar.
+const SLOT_BAND_GAP := 18.0        # clear air under whichever comes last
+const SLOT_BAND_INSET_GAP := 12.0  # ...and under the cutout, if that is lower
+
+func slot_band_top() -> float:
+	return maxf(hud_top() + 70.0 + SLOT_BAND_GAP, safe_top() + SLOT_BAND_INSET_GAP)
+
+# The side rail has to land level with the reel window rather than the marquee,
+# so it is measured from the band and not from the screen. 208 is the cabinet's
+# card overhang plus its ribbon plus the separation -- see the note above.
+const SIDE_RAIL_DROP := 208.0
+
+func side_rail_top() -> float:
+	return slot_band_top() + SIDE_RAIL_DROP
 
 func _side_button(container: BoxContainer, icon_kind: String, caption: String, badge_key: String, action: Callable) -> void:
 	var box := VBoxContainer.new()
@@ -7768,13 +7837,42 @@ static func _tourney_left_text(secs: float) -> String:
 # The distance between two pips is the work between two rewards, so the player
 # reads how far off the next one is without doing arithmetic -- which is the
 # entire job of this widget and the reason it is not a table.
+#
+# IT PAGES. Guy's note on build 71 was that the bar was "odd" because it only
+# ever showed the track he was standing on: a track he had already cleared left
+# no trace, and the one coming next was a rumour. Four tracks with nothing to
+# compare against is not a ladder, it is a bar that keeps resetting. The arrows
+# walk all four; it opens on the live one, and a track that is not the live one
+# is drawn in the state it is actually in -- full and claimed behind, empty and
+# locked ahead.
+var _tourney_view_lap := 0
+var _tourney_card_holder: VBoxContainer = null
+
 func _tourney_board(vbox: VBoxContainer) -> void:
 	_tourney_sync()
-	var top := _tourney_tier_at(TOURNEY_TIERS.size() - 1)
+	_tourney_view_lap = mini(tourney_lap, TOURNEY_TRACKS - 1)
+	var holder := VBoxContainer.new()
+	holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_child(holder)
+	_tourney_card_holder = holder
+	_tourney_track_card(holder)
+
+func _tourney_track_card(holder: VBoxContainer) -> void:
+	# Detached before it is freed. queue_free() runs at the end of the frame, so
+	# adding the replacement first leaves two cards stacked in the VBox for one
+	# layout pass -- which the popup then sizes itself against.
+	for c in holder.get_children():
+		holder.remove_child(c)
+		c.queue_free()
+
+	var lap := _tourney_view_lap
+	var live: bool = lap == tourney_lap and not _tourney_done()
+	var behind: bool = lap < tourney_lap or _tourney_done()
+	var top := _tourney_tier_at(TOURNEY_TIERS.size() - 1, lap)
 
 	var card := PanelContainer.new()
 	card.add_theme_stylebox_override("panel", Lagoon.glass(Lagoon.R_CARD, 0.55))
-	vbox.add_child(card)
+	holder.add_child(card)
 	var pad := MarginContainer.new()
 	for m in ["margin_left", "margin_right"]:
 		pad.add_theme_constant_override(m, 16)
@@ -7786,18 +7884,21 @@ func _tourney_board(vbox: VBoxContainer) -> void:
 	pad.add_child(col)
 
 	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 4)
 	col.add_child(head)
-	# The track number is on the heading, so a bar that has just gone back to
-	# empty is obviously a NEW one rather than a score that has been taken away
-	# -- and once the fourth is cleared the heading says so instead of counting
-	# on to a fifth that does not exist.
+
+	# The arrows sit either side of the heading rather than under the bar, so
+	# "which track am I looking at" and "how do I look at another one" are one
+	# object instead of two.
+	head.add_child(_tourney_step_button(holder, -1, lap > 0))
 	var head_text := "TOURNAMENT"
-	if _tourney_done():
+	if _tourney_done() and lap == TOURNEY_TRACKS - 1:
 		head_text = "ALL TRACKS CLEARED"
-	elif tourney_lap > 0:
-		head_text = "TRACK %d OF %d" % [tourney_lap + 1, TOURNEY_TRACKS]
+	else:
+		head_text = "TRACK %d OF %d" % [lap + 1, TOURNEY_TRACKS]
 	var title := Lagoon.title(head_text, UI.F_CAPTION, Color(1.0, 0.87, 0.45), Lagoon.ABYSS)
 	head.add_child(title)
+	head.add_child(_tourney_step_button(holder, 1, lap < TOURNEY_TRACKS - 1))
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(spacer)
@@ -7812,26 +7913,29 @@ func _tourney_board(vbox: VBoxContainer) -> void:
 	# THE BAR SAYS THE TRACK, NOT THE CYCLE. On track two "1,240 / 4,500" is
 	# progress along the thing the pips are on; the cycle total that the league
 	# ranks is a different number and it is on the standing line underneath.
-	# Printing the cycle total over a track-relative bar was the first version
-	# and the bar looked broken -- full at a number well under the last pip.
-	# Finished, the bar stops being a meter and becomes a receipt. The cycle
-	# total keeps climbing behind it -- the league still ranks on it, and there
-	# is still a placing prize to play for -- but there is nothing left on this
-	# widget to earn, and pretending otherwise with a bar stuck at 100% would
-	# read as a reward that had failed to pay.
 	var haul: Array = _tourney_haul()
-	var score := Lagoon.title(
-		("%s spins + %d cards taken" % [_fmt_compact(int(haul[0])), int(haul[1])]) if _tourney_done()
-			else ("%s / %s pts" % [_fmt_compact(_tourney_lap_points()), _fmt_compact(top)]),
-		UI.F_SUBHEAD, Color(1.0, 0.87, 0.45), Lagoon.ABYSS)
+	var score_text := "%s / %s pts" % [_fmt_compact(_tourney_lap_points()), _fmt_compact(top)]
+	if _tourney_done() and lap == TOURNEY_TRACKS - 1:
+		score_text = "%s spins + %d cards taken" % [_fmt_compact(int(haul[0])), int(haul[1])]
+	elif behind:
+		score_text = "Cleared  ·  %s pts" % _fmt_compact(top)
+	elif not live:
+		# The CUMULATIVE score that opens this track, not the track's own top
+		# rung. They are different numbers and the wrong one was on screen:
+		# track 3's rungs run to 8,100, but you get to it by clearing tracks 1
+		# and 2 first, which is 7,000 points of work before its first pip.
+		var opens := 0
+		for l in lap:
+			opens += _tourney_tier_at(TOURNEY_TIERS.size() - 1, l)
+		score_text = "Opens at %s pts this cycle" % _fmt_compact(opens)
+	var score := Lagoon.title(score_text, UI.F_SUBHEAD, Color(1.0, 0.87, 0.45), Lagoon.ABYSS)
 	col.add_child(score)
 
 	# The rungs are placed by anchor ratio rather than by pixel, so the bar is
 	# correct at any popup width without anyone recomputing positions.
-	# Inset by half a pip on each side. The rungs are anchored at their own
-	# fraction of this box and pulled back by half their width, so a rung at 0%
-	# or 100% would otherwise hang half-way off the card -- which is exactly
-	# where the last one sits, every time, because the bar is scaled to it.
+	# Inset by half a pip on each side: a rung at 0% or 100% would otherwise
+	# hang half-way off the card -- which is exactly where the last one sits,
+	# every time, because the bar is scaled to it.
 	var rail := MarginContainer.new()
 	rail.add_theme_constant_override("margin_left", 30)
 	rail.add_theme_constant_override("margin_right", 30)
@@ -7853,7 +7957,11 @@ func _tourney_board(vbox: VBoxContainer) -> void:
 	track.offset_top = 26.0
 	track.offset_bottom = 44.0
 
-	var ratio := 1.0 if _tourney_done() else clampf(float(_tourney_lap_points()) / float(maxi(1, top)), 0.0, 1.0)
+	var ratio := 0.0
+	if behind:
+		ratio = 1.0
+	elif live:
+		ratio = clampf(float(_tourney_lap_points()) / float(maxi(1, top)), 0.0, 1.0)
 	var fill := Panel.new()
 	var fsb := StyleBoxFlat.new()
 	fsb.bg_color = Color(1.0, 0.80, 0.32)
@@ -7864,38 +7972,83 @@ func _tourney_board(vbox: VBoxContainer) -> void:
 	fill.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	fill.anchor_right = 0.0
 	fill.offset_right = 0.0
-	# Grown rather than snapped, so opening the board after a raid shows the
-	# ground you gained instead of presenting it as though it was always there.
-	fill.create_tween().tween_property(fill, "anchor_right", ratio, 0.55) \
-		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	# Grown rather than snapped on the live track, so opening the board after a
+	# raid shows the ground you gained instead of presenting it as though it was
+	# always there. A track you are only inspecting is drawn at rest.
+	if live:
+		fill.create_tween().tween_property(fill, "anchor_right", ratio, 0.55) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	else:
+		fill.anchor_right = ratio
 
 	for i in TOURNEY_TIERS.size():
-		_tourney_pip(host, i, float(_tourney_tier_at(i)) / float(maxi(1, top)))
+		_tourney_pip(host, i, float(_tourney_tier_at(i, lap)) / float(maxi(1, top)), lap)
 
-	if not _tourney_done():
-		return
-	var done_l := _popup_row_label(
-		"Nothing left to claim — keep scoring for your place on the board.",
-		UI.F_CAPTION)
-	done_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	done_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	done_l.add_theme_color_override("font_color", Lagoon.INK_SOFT)
-	col.add_child(done_l)
+	if _tourney_done() and lap == TOURNEY_TRACKS - 1:
+		var done_l := _popup_row_label(
+			"Nothing left to claim — keep scoring for your place on the board.",
+			UI.F_CAPTION)
+		done_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		done_l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		done_l.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		col.add_child(done_l)
 
-func _tourney_pip(host: Control, tier: int, at_ratio: float) -> void:
-	var need := _tourney_tier_at(tier)
-	var pip_spins := _tourney_tier_spins(tier)
-	var pip_cards := _tourney_tier_cards(tier)
-	# Claimed rather than empty in the finished state: `tourney_claimed` was
-	# cleared by the roll-over that ended the last track, so without this the
-	# cleared bar would draw four unearned rungs under a full fill.
-	var claimed: bool = _tourney_done() or tourney_claimed.has(tier)
-	var ready: bool = not _tourney_done() and _tourney_lap_points() >= need and not claimed
+# One of the two arrows. Kept in the layout when there is nowhere to go rather
+# than hidden, so the heading does not shuffle sideways as the player pages.
+func _tourney_step_button(holder: VBoxContainer, step: int, usable: bool) -> Button:
+	var b := Button.new()
+	b.text = "\u2039" if step < 0 else "\u203a"
+	b.focus_mode = Control.FOCUS_NONE
+	b.custom_minimum_size = Vector2(40, 40)
+	b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	b.add_theme_font_override("font", Lagoon.display_font())
+	b.add_theme_font_size_override("font_size", UI.F_SUBHEAD)
+	# A disc, not a bare chevron. Flat, a single "\u203a" in the display face over pale
+	# glass is a hairline -- it reads as a rendering artefact rather than as
+	# something to press, which on a screen Guy had already called "odd" is the
+	# last thing it should look like. The unusable one keeps its footprint so
+	# the heading does not shuffle sideways as the player pages.
+	for state in ["normal", "hover", "pressed", "disabled"]:
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b,
+			0.06 if not usable else (0.42 if state == "pressed" else 0.28))
+		sb.set_corner_radius_all(20)
+		sb.set_border_width_all(2)
+		sb.border_color = Color(1.0, 0.87, 0.45, 0.75) if usable else Color(1, 1, 1, 0.10)
+		b.add_theme_stylebox_override(state, sb)
+	for c in ["font_color", "font_hover_color", "font_pressed_color"]:
+		b.add_theme_color_override(c, Color(1.0, 0.9, 0.55) if usable else Color(1, 1, 1, 0.15))
+	if not usable:
+		b.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		return b
+	FX.press_feedback(b)
+	b.pressed.connect(func() -> void:
+		_tourney_view_lap = clampi(_tourney_view_lap + step, 0, TOURNEY_TRACKS - 1)
+		Sfx.play("pop", -12.0)
+		_tourney_track_card(holder)
+	)
+	return b
+
+func _tourney_pip(host: Control, tier: int, at_ratio: float, lap: int) -> void:
+	var need := _tourney_tier_at(tier, lap)
+	var pip_spins := _tourney_tier_spins(tier, lap)
+	var pip_cards := _tourney_tier_cards(tier, lap)
+	var live: bool = lap == tourney_lap and not _tourney_done()
+	# Claimed rather than empty behind the live track: `tourney_claimed` is
+	# emptied by the roll-over that ends a track, so without this every track
+	# already cleared would draw four unearned rungs under a full fill.
+	var claimed: bool = (lap < tourney_lap or _tourney_done()) or (live and tourney_claimed.has(tier))
+	var ready: bool = live and not claimed and _tourney_lap_points() >= need
 
 	var pip := Button.new()
 	pip.custom_minimum_size = Vector2(54, 54)
 	pip.focus_mode = Control.FOCUS_NONE
-	pip.disabled = not ready
+	# NEVER DISABLED, and that is the fix rather than a preference. A disabled
+	# Button takes no input at all, and `tooltip_text` needs a pointer to hover
+	# -- so on the phone, which has neither, tapping a rung that was not yet
+	# claimable did nothing whatsoever. Guy tapped them and the game ignored
+	# him. Every rung answers now: the claimable one pays out, the rest say what
+	# they are worth and what it takes.
 	pip.tooltip_text = "%d pts — %d spins%s" % [need, pip_spins,
 		"" if pip_cards == 0 else " + %d cards" % pip_cards]
 	for state in ["normal", "hover", "pressed", "disabled"]:
@@ -7930,18 +8083,82 @@ func _tourney_pip(host: Control, tier: int, at_ratio: float) -> void:
 	for m in [["offset_left", 12.0], ["offset_right", -12.0], ["offset_top", 12.0], ["offset_bottom", -12.0]]:
 		g.set(m[0], m[1])
 
-	if ready:
-		FX.press_feedback(pip)
-		pip.pressed.connect(func() -> void:
+	FX.press_feedback(pip)
+	var reward := "%d spins" % pip_spins
+	if pip_cards > 0:
+		reward += " + %d card%s" % [pip_cards, "" if pip_cards == 1 else "s"]
+	pip.pressed.connect(func() -> void:
+		if ready:
 			_tourney_claim(tier)
 			_close_popup()
 			_open_tourney()
-		)
+			return
+		var note := "%s pts  →  %s" % [_fmt_compact(need), reward]
+		if claimed:
+			note = "Taken  ·  " + reward
+		Sfx.play("pop", -12.0)
+		_tourney_tip(host, at_ratio, note, claimed)
+	)
+
+	if ready:
 		# A rung you can take should be the only thing moving on the screen.
 		var beat := pip.create_tween().set_loops()
 		beat.tween_property(pip, "scale", Vector2(1.12, 1.12), 0.45).set_trans(Tween.TRANS_SINE)
 		beat.tween_property(pip, "scale", Vector2.ONE, 0.45).set_trans(Tween.TRANS_SINE)
 		pip.pivot_offset = Vector2(27, 27)
+
+# The little label a tapped rung puts up. One at a time, above the bar, gone on
+# its own -- a phone has no hover, so this is the whole of what `tooltip_text`
+# was supposed to be doing.
+func _tourney_tip(host: Control, at_ratio: float, text: String, taken: bool) -> void:
+	for c in host.get_children():
+		if c.has_meta("tourney_tip"):
+			host.remove_child(c)
+			c.queue_free()
+
+	var tip := PanelContainer.new()
+	tip.set_meta("tourney_tip", true)
+	tip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.94)
+	sb.set_corner_radius_all(12)
+	sb.set_border_width_all(2)
+	sb.border_color = Color(1.0, 0.87, 0.45, 0.85)
+	sb.content_margin_left = 12.0
+	sb.content_margin_right = 12.0
+	sb.content_margin_top = 5.0
+	sb.content_margin_bottom = 5.0
+	tip.add_theme_stylebox_override("panel", sb)
+	host.add_child(tip)
+
+	var l := Lagoon.label(text, UI.F_CAPTION,
+		Color(0.62, 0.85, 0.7) if taken else Lagoon.SAND)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	tip.add_child(l)
+
+	# Centred on the rung, then pulled back inside the bar: the first and last
+	# rungs sit at the ends of the rail, and a bubble centred on either of them
+	# hangs off the card.
+	tip.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
+	tip.anchor_left = at_ratio
+	tip.anchor_top = 0.0
+	tip.resized.connect(func() -> void:
+		if not is_instance_valid(tip):
+			return
+		var half := tip.size.x * 0.5
+		var span := host.size.x
+		var centre := clampf(at_ratio * span, half - 30.0, span - half + 30.0)
+		tip.position = Vector2(centre - half - at_ratio * span, -tip.size.y - 2.0)
+	)
+	tip.offset_top = -34.0
+
+	FX.pop_in(tip, 0.18)
+	var away := tip.create_tween()
+	away.tween_interval(2.4)
+	away.tween_property(tip, "modulate:a", 0.0, 0.3)
+	away.tween_callback(func() -> void:
+		if is_instance_valid(tip):
+			tip.queue_free())
 
 # =============================================================================
 #  Where the tournament stands
@@ -8683,6 +8900,7 @@ func _add_topbar(page: Control) -> void:
 	bar.offset_right = -14.0
 	bar.offset_top = hud_top()
 	bar.offset_bottom = hud_top() + 70.0
+	# ...and then _place_hud has the last word, once the capsules have a width.
 
 	var labels := {}
 	# Third field is the shelf the plus goes to; empty means the counter has no
@@ -8694,13 +8912,19 @@ func _add_topbar(page: Control) -> void:
 	# HUD feel busy without telling anyone anything new.
 	# Third field is the shelf the plus goes to; empty means no plus at all,
 	# which is the shield's case -- shields are not sold.
+	# Two groups with the expanding gap between them, so _place_hud has an
+	# object to measure on each side rather than four loose capsules.
+	var left_grp := HBoxContainer.new()
+	left_grp.add_theme_constant_override("separation", 8)
+	bar.add_child(left_grp)
+
 	for spec in [["coin", "coins", "coins"], ["shield", "shields", ""]]:
 		var shelf: String = spec[2]
 		var jump := Callable()
 		if shelf != "":
 			jump = func() -> void: _goto_shop(shelf)
 		var cap := Lagoon.capsule(spec[0], "0", jump)
-		bar.add_child(cap["root"])
+		left_grp.add_child(cap["root"])
 		labels[spec[1]] = cap["value"]
 		# The pill as well as the number in it. _refresh only ever needed the
 		# label, but a reward that flies to a counter has to be able to thump
@@ -8712,13 +8936,17 @@ func _add_topbar(page: Control) -> void:
 	gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	bar.add_child(gap)
 
+	var right_grp := HBoxContainer.new()
+	right_grp.add_theme_constant_override("separation", 8)
+	bar.add_child(right_grp)
+
 	# Stars ride on the right, next to the island number rather than in with the
 	# spendables on the left. That grouping is the whole point: the left of this
 	# bar is what you play with, the right is where you have got to.
 	var st := Lagoon.capsule("star", "0")
 	var st_root := st["root"] as Control
 	st_root.tooltip_text = "Stars — your world rank. Earned by building and by every new card; never spent."
-	bar.add_child(st_root)
+	right_grp.add_child(st_root)
 	labels["stars"] = st["value"]
 	# The number and the table it decides are the same fact, so the capsule is
 	# the way to the leaderboard from every page. The Ranks button only ever
@@ -8744,8 +8972,16 @@ func _add_topbar(page: Control) -> void:
 	)
 
 	var isl := Lagoon.capsule("island", "1")
-	bar.add_child(isl["root"])
+	right_grp.add_child(isl["root"])
 	labels["island"] = isl["value"]
+
+	# The bar places itself once it knows how wide its two groups have come out,
+	# and again every time a counter changes width. `sort_children` fires on
+	# exactly that, which is the signal a manual call after _refresh would be
+	# trying to approximate.
+	var place := func() -> void: _place_hud(bar, left_grp, right_grp)
+	bar.sort_children.connect(place)
+	place.call_deferred()
 
 	_hud_labels.append(labels)
 
