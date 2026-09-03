@@ -16,6 +16,27 @@ const REDIRECT_PORT := 42815
 var _server: TCPServer
 var _verifier := ""
 var _state := ""
+# The loopback listener runs on its own thread, and that is not a performance
+# decision -- it is the only way this flow can finish on Android.
+#
+# OS.shell_open hands the foreground to Chrome, and Android then sends the
+# activity OnPause and OnStop: Godot's main loop is SUSPENDED, so a Timer
+# polling the socket never ticks. The port stays bound, so the kernel completes
+# the handshake and Google's redirect sits unread in the accept backlog while
+# the browser shows a blank page that loads forever. Measured on an emulator:
+# a request sent while the app is backgrounded never gets a reply; the same
+# request with the app in front is answered instantly.
+#
+# The tester is then stranded in a browser tab with nothing telling them the
+# game is waiting for them to come back. A plain Thread is not stopped by
+# Android -- the ACTIVITY stops, the process and its threads do not -- so the
+# callback is accepted and answered from here, and the browser gets a real page
+# telling the player to return. The main thread only picks the result up
+# afterwards, whenever the game is on screen again.
+var _thread: Thread
+var _mutex: Mutex
+var _stop := false
+var _result := {}
 # A browser request line and headers, and nothing like this much of one. The
 # read used to be however many bytes the peer felt like sending.
 const MAX_REQUEST_BYTES := 8192
@@ -82,13 +103,20 @@ func start() -> bool:
 	var url := "https://accounts.google.com/o/oauth2/v2/auth?client_id=%s&redirect_uri=%s&response_type=code&scope=%s&state=%s&nonce=%s&code_challenge=%s&code_challenge_method=S256" % [
 		_client_id.uri_encode(), redirect.uri_encode(), "openid profile email".uri_encode(),
 		_state.uri_encode(), _nonce.uri_encode(), challenge]
+	# Set BEFORE the thread starts -- it is the thread's own stop condition.
+	_deadline = Time.get_ticks_msec() + int(LOGIN_TIMEOUT * 1000.0)
+	_mutex = Mutex.new()
+	_thread = Thread.new()
+	_thread.start(_serve)
 	OS.shell_open(url)
+	# The main thread's only job now is to notice that the thread finished. It
+	# is allowed to miss ticks -- on Android it certainly will -- because the
+	# answer is already in _result by then.
 	_poll_timer = Timer.new()
 	_poll_timer.wait_time = 0.4
 	_poll_timer.timeout.connect(_poll)
 	add_child(_poll_timer)
 	_poll_timer.start()
-	_deadline = Time.get_ticks_msec() + int(LOGIN_TIMEOUT * 1000.0)
 	return true
 
 # Most sign-ins that do not succeed do not fail either: the browser opens, the
@@ -104,76 +132,112 @@ var _deadline := 0
 func _shutdown() -> void:
 	if _poll_timer != null:
 		_poll_timer.stop()
+	if _thread != null:
+		_mutex.lock()
+		_stop = true
+		_mutex.unlock()
+		if _thread.is_started():
+			_thread.wait_to_finish()
+		_thread = null
 	if _server != null:
 		_server.stop()
 		_server = null
 
+# main.gd frees this node as soon as a login ends either way, and a Thread that
+# is still running when its object goes is a hard error rather than a warning.
+func _exit_tree() -> void:
+	_shutdown()
+
 static func _b64url(bytes: PackedByteArray) -> String:
 	return Marshalls.raw_to_base64(bytes).replace("+", "-").replace("/", "_").replace("=", "")
 
+# The main thread, and it does nothing but collect. Everything that had to
+# happen while the browser held the foreground has already happened on _serve.
 func _poll() -> void:
-	if _server == null:
+	_mutex.lock()
+	var got: Dictionary = _result.duplicate()
+	_mutex.unlock()
+	if got.is_empty():
 		return
-	if not _server.is_connection_available():
+	_shutdown()
+	var err := str(got.get("error", ""))
+	if err != "":
+		login_failed.emit(err)
+		return
+	_exchange(str(got.get("code", "")))
+
+# The listener, on its own thread. Runs until it has served the sign-in this
+# object started, the deadline passes, or _shutdown asks it to stop.
+func _serve() -> void:
+	while true:
+		_mutex.lock()
+		var stop := _stop
+		_mutex.unlock()
+		if stop:
+			return
 		if _deadline > 0 and Time.get_ticks_msec() > _deadline:
-			_shutdown()
-			login_failed.emit("Sign-in timed out")
-		return
-	# Paused, not stopped: if this turns out to be somebody else's request the
-	# real callback is still coming and we have to be here for it.
-	_poll_timer.stop()
-	var conn := _server.take_connection()
-	await get_tree().create_timer(0.3).timeout
-	# Freed across the await -- the login sheet was closed, the scene reloaded
-	# -- and everything below would be touching a dead node and a null tree.
-	if not is_instance_valid(self) or not is_inside_tree():
-		return
-	if conn == null:
-		_resume()
-		return
+			_finish({"error": "Sign-in timed out"})
+			return
+		if _server != null and _server.is_connection_available():
+			var conn := _server.take_connection()
+			if conn != null and _handle(conn):
+				return
+		OS.delay_msec(80)
+
+# One connection. True when it was the callback we are waiting for.
+#
+# The listener answers anything that can open a socket to localhost -- another
+# app, or any web page the player has open, via an <img src="http://127.0.0.1:
+# 42815/..."> the browser fetches unasked. Without checking `state` the first
+# such request was taken as the callback, the listener shut down, and the real
+# redirect a second later found nothing. PKCE already stopped an injected code
+# from being exchanged, so the prize was never the account -- but sign-in could
+# be broken on demand from a browser tab, and the player was told Google failed.
+func _handle(conn: StreamPeerTCP) -> bool:
 	var request_text := ""
-	var n := mini(conn.get_available_bytes(), MAX_REQUEST_BYTES)
-	if n > 0:
-		request_text = conn.get_utf8_string(n)
+	# The request follows the connection by a hair. Half a second of small
+	# waits, rather than one fixed sleep that is either too short or wasted.
+	for _i in 25:
+		conn.poll()
+		var n := mini(conn.get_available_bytes(), MAX_REQUEST_BYTES)
+		if n > 0:
+			request_text = conn.get_utf8_string(n)
+			break
+		OS.delay_msec(20)
 	var params := _query_params(request_text)
 	# Constant-time is not the concern here; being the right sign-in is. An
 	# empty stored state would match an absent one, so require both.
 	var mine := _state != "" and String(params.get("state", "")) == _state
-	var body := "<h2>Login complete!</h2>You can close this window and return to Loot Lagoon."
+	# This page is the ONLY thing that tells an Android player the game is done
+	# with the browser and wants them back, so it says so in as many words.
+	var body := "<h2>You're signed in!</h2>Close this tab and go back to Loot Lagoon to keep playing."
 	if not mine:
 		body = "<h2>Not expecting this</h2>This request did not come from a sign-in Loot Lagoon started."
 	var html := "<html><body style='font-family:sans-serif;text-align:center;padding-top:80px'>" + body + "</body></html>"
 	conn.put_data(("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n" + html).to_utf8_buffer())
-	await get_tree().create_timer(0.2).timeout
-	if not is_instance_valid(self) or not is_inside_tree():
-		return
+	conn.poll()
+	OS.delay_msec(120)
 	conn.disconnect_from_host()
 	if not mine:
-		# Somebody else knocking. Go back to waiting for the real redirect.
-		_resume()
-		return
-	_shutdown()
+		# Somebody else knocking. Stay up for the real redirect.
+		return false
 	# Google reports a refusal on the redirect too, and it is not a missing
 	# code -- saying so beats "No authorization code received".
 	var err := String(params.get("error", ""))
 	if err != "":
-		login_failed.emit("Google refused the sign-in (%s)" % err)
-		return
+		_finish({"error": "Google refused the sign-in (%s)" % err})
+		return true
 	var code := String(params.get("code", ""))
 	if code == "":
-		login_failed.emit("No authorization code received")
-		return
-	_exchange(code)
+		_finish({"error": "No authorization code received"})
+		return true
+	_finish({"code": code})
+	return true
 
-# Back to listening, unless the clock has run out on this attempt.
-func _resume() -> void:
-	if _server == null or _poll_timer == null:
-		return
-	if _deadline > 0 and Time.get_ticks_msec() > _deadline:
-		_shutdown()
-		login_failed.emit("Sign-in timed out")
-		return
-	_poll_timer.start()
+func _finish(d: Dictionary) -> void:
+	_mutex.lock()
+	_result = d
+	_mutex.unlock()
 
 # The query string off the request line, decoded. Anything malformed is simply
 # absent rather than an error -- this parses whatever a stranger sent.

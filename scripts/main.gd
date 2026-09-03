@@ -1593,12 +1593,14 @@ func _login_google() -> void:
 	_auth = auth
 	add_child(auth)
 	_banner("Opening Google sign-in in your browser...", Color(0.7, 0.9, 1.0))
+	_show_browser_hint()
 	auth.login_finished.connect(func(p: Dictionary) -> void:
 		_on_login(p)
 		_auth = null
 		auth.queue_free()
 	)
 	auth.login_failed.connect(func(reason: String) -> void:
+		_clear_browser_hint()
 		_banner("Login failed: %s" % reason, Color(0.95, 0.4, 0.4))
 		_auth = null
 		auth.queue_free()
@@ -1607,6 +1609,38 @@ func _login_google() -> void:
 		_banner("Could not start Google login", Color(0.95, 0.4, 0.4))
 		_auth = null
 		auth.queue_free()
+
+# Sign-in leaves the game for the browser, and on Android that is a one-way
+# door as far as the player can tell: the callback is served, but the tab it is
+# served into is one Chrome opened over the top of us, and nothing on that
+# screen says the game is waiting. A banner is the wrong shape for this -- it
+# fades after a few seconds, and the moment it matters is minutes later when
+# they are looking at a browser wondering whether anything happened.
+#
+# So it is a line on the login screen itself, which is what they come back to.
+var _browser_hint: Label
+
+func _show_browser_hint() -> void:
+	_clear_browser_hint()
+	if _login_layer == null:
+		return
+	var hint := Lagoon.title("Finish signing in, then come back here — we'll do the rest.",
+			UI.F_CAPTION, Color(1.0, 0.92, 0.6), Lagoon.ABYSS)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_login_layer.add_child(hint)
+	hint.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	hint.offset_left = 90.0
+	hint.offset_right = -90.0
+	hint.offset_top = -220.0 - safe_bottom()
+	hint.offset_bottom = -100.0 - safe_bottom()
+	FX.pulse_forever(hint, 1.03, 1.6)
+	_browser_hint = hint
+
+func _clear_browser_hint() -> void:
+	if _browser_hint != null and is_instance_valid(_browser_hint):
+		_browser_hint.queue_free()
+	_browser_hint = null
 
 func _close_login() -> void:
 	if _login_layer == null:
