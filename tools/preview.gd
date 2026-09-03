@@ -23,6 +23,12 @@ func _ready() -> void:
 				_open_page.call_deferred(game, OS.get_environment("PAGE"))
 			if OS.has_environment("SPIN"):
 				_spin.call_deferred(game)
+			# GRANT=shields:5 hands the game a reward on demand. The shield
+			# overflow is three beats over about 1.7s and the only way to it in
+			# play is a lucky roll on a full bucket, so SHOTS/SHOT_GAP over
+			# this is how the sequence gets judged at all.
+			if OS.has_environment("GRANT"):
+				_grant.call_deferred(game, OS.get_environment("GRANT"))
 			# RAID=steal|attack drops straight into the raid flow -- the search
 			# screen and the island behind it -- without waiting on a triple.
 			if OS.has_environment("RAID"):
@@ -50,7 +56,10 @@ func _ready() -> void:
 			_art_sheet()
 		_:
 			_glyph_sheet()
-	if OS.has_environment("SHOT"):
+	# GRANT owns the capture when it is set: the reward fires a fixed moment
+	# after a boot whose length is not fixed, so a SHOT_DELAY measured from
+	# start-up lands wherever it likes. _grant shoots from the grant instead.
+	if OS.has_environment("SHOT") and not OS.has_environment("GRANT"):
 		_shoot.call_deferred()
 
 func _land(m: Control) -> void:
@@ -62,6 +71,46 @@ func _raid(game: Control, mode: String) -> void:
 		await get_tree().process_frame
 	await get_tree().create_timer(0.4).timeout
 	game.call("_start_visit", "attack" if mode == "attack" else "steal")
+
+func _grant(game: Control, spec: String) -> void:
+	while game.get("_boot") != null:
+		await get_tree().process_frame
+	# Long enough for the boot's fade to finish. At 0.5 the reward flew across
+	# a title card that was still on screen, which makes the strip unreadable.
+	await get_tree().create_timer(1.6).timeout
+	var parts := spec.split(":")
+	var n := int(parts[1]) if parts.size() > 1 else 5
+	match parts[0]:
+		"shields":
+			# get() reads properties, not constants -- `game.get("SHIELD_CAP")`
+			# comes back null and takes the whole harness down with it. The
+			# constant map is where a const actually lives.
+			var caps: Dictionary = game.get_script().get_script_constant_map()
+			game.set("shields", int(caps.get("SHIELD_CAP", 3)))
+			game.call("_refresh")
+			await get_tree().process_frame
+			game.call("_grant_shields", n, Vector2(360, 760))
+		"shields_room":
+			game.set("shields", 0)
+			game.call("_refresh")
+			await get_tree().process_frame
+			game.call("_grant_shields", n, Vector2(360, 760))
+		"spins":
+			game.call("_grant_spins", n, Vector2(360, 760))
+	if OS.has_environment("SHOT"):
+		await _reel(OS.get_environment("SHOT"),
+			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 9,
+			float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.22)
+
+# A strip of frames from right now, so a sequence can be judged as motion.
+func _reel(path: String, shots: int, gap: float) -> void:
+	for i in shots:
+		if i > 0:
+			await get_tree().create_timer(gap).timeout
+		await RenderingServer.frame_post_draw
+		get_viewport().get_texture().get_image().save_png(path.replace(".png", "_%02d.png" % i))
+	print("  reel: %d frames" % shots)
+	get_tree().quit()
 
 func _spin(game: Control) -> void:
 	await get_tree().create_timer(0.3).timeout

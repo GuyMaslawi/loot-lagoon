@@ -1684,7 +1684,14 @@ func _process(delta: float) -> void:
 		if not pending_raids.is_empty():
 			_offline_raids()
 		if slot != null:
-			slot.set_meter(spins, SPIN_CAP, SPIN_REGEN_SECS - _regen_accum, SPIN_REGEN_AMOUNT)
+			# The SHOWN figure, not the truth. This tick runs once a second and
+			# wrote the raw count straight over whatever _refresh had put
+			# there, so any reward still in flight arrived at the meter up to a
+			# second before the thing carrying it did -- which is the entire
+			# animation contract, broken by the one line that did not know
+			# about it.
+			slot.set_meter(_hud_shown("spins", spins), SPIN_CAP,
+				SPIN_REGEN_SECS - _regen_accum, SPIN_REGEN_AMOUNT)
 		if _shop_free_ready() or _piggy_full() or not _active_offer().is_empty():
 			# the gift, the piggy or an offer may have come due while playing
 			if _badges.has("shop_free") and not _badges["shop_free"].visible:
@@ -2793,9 +2800,11 @@ void fragment() {
 # clear of the island's nameplate, which is 420 wide and centred.
 func _add_side_rail(page: Control, top: float) -> void:
 	# Left: the chrome. Right: the three that light up.
+	# Settings left this lane for the top bar on 2026-09-03; alerts holds the
+	# left on its own rather than being shuffled across, because which side a
+	# player last found the bell on is worth more than a tidy count.
 	_side_rail_lane(page, top, false, [
-			["bell",   "Alerts",     "alerts", func() -> void: _goto(pages["alerts"])],
-			["gear",   "Settings",   "",       func() -> void: _goto(pages["options"])]])
+			["bell",   "Alerts",     "alerts", func() -> void: _goto(pages["alerts"])]])
 	_side_rail_lane(page, top, true, [
 			["gift",   "Daily",      "daily",  _open_daily],
 			["trophy", "Tournament", "ranks",  _open_tourney],
@@ -9503,26 +9512,25 @@ func _add_topbar(page: Control) -> void:
 		st_root.create_tween().tween_property(st_root, "scale", Vector2.ONE, 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	)
 
-	var isl := Lagoon.capsule("island", "1")
-	right_grp.add_child(isl["root"])
-	labels["island"] = isl["value"]
-
-	# SETTINGS AND ALERTS ARE NOT IN THIS BAR, AND THE REASON IS MEASURED.
+	# SETTINGS SITS WHERE THE ISLAND NUMBER USED TO.
 	#
-	# Guy asked for six things up here -- money, shields, settings, alerts,
-	# island, stars. Six does not fit beside a Dynamic Island and no amount of
-	# arranging changes that: the cutout owns 245..475 of 720, which leaves 462
-	# units of bar split between the two ends, and the four counters already
-	# spend 293 of the left-hand share on their own. Building it his way and
-	# running tools/measure_hud.tscn put the right-hand group's start at 351 --
-	# 124 units inside the cutout, with the alerts button entirely under the
-	# camera housing.
+	# The island capsule is gone, not moved. It printed the island you are on,
+	# which is a number the island page states in full and the slot page prints
+	# on its own marquee -- Guy, 2026-09-03: "the island is redundant
+	# information". A counter that repeats what the page under it already says
+	# is chrome charging rent on the one row that has none to spare.
 	#
-	# So they went to the top of the right-hand rail instead, which is the top
-	# right of the screen and is clear of the hardware. If the six-in-a-bar
-	# version is wanted anyway, the thing that has to leave is the island
-	# capsule -- dropping it puts the right group's start at 479 and clears the
-	# cutout by four units.
+	# The trade is what makes settings fit at all. The old note here recorded
+	# that six things do not fit beside a Dynamic Island -- the cutout owns
+	# 245..475 of 720 -- and that the one thing which could leave was the island
+	# capsule. That is what happened: settings takes its slot and comes out
+	# narrower than it, because it carries no digits. Verified with
+	# tools/measure_hud.tscn, not assumed.
+	#
+	# It leaves the left-hand rail at the same time. Two doors to the same page
+	# forty pixels apart is the same redundancy in a different place.
+	right_grp.add_child(Lagoon.icon_capsule("gear",
+		func() -> void: _goto(pages["options"]), "Settings"))
 
 	# The bar places itself once it knows how wide its two groups have come out,
 	# and again every time a counter changes width. `sort_children` fires on
@@ -10996,7 +11004,6 @@ func _refresh() -> void:
 			labels["spins"].text = ("%d/%d" % [shown_spins, SPIN_CAP]) if shown_spins <= SPIN_CAP else str(shown_spins)
 		labels["shields"].text = str(shown_shields)
 		labels["stars"].text = _fmt_compact(rank_stars)
-		labels["island"].text = str(island_level)
 	village.refresh(buildings, coins, _star_costs())
 	if slot != null:
 		# The meter takes the shown figure too, so the pill and the bar under
@@ -11082,9 +11089,17 @@ func _hud_chip(key: String) -> Control:
 
 func _hud_at(key: String) -> Vector2:
 	var chip := _hud_chip(key)
-	if chip == null:
-		return Vector2(view_size().x * 0.5, 120.0 + safe_top())
-	return chip.global_position + chip.size * 0.5
+	if chip != null:
+		return chip.global_position + chip.size * 0.5
+	# Spins have no pill -- the count lives on the machine, beside the button
+	# that spends it -- so anything flying to "spins" flies to the meter. It
+	# used to fall through to the middle of the top of the screen, which is
+	# where nothing is: a spare shield turned into a spin and then delivered
+	# that spin to a patch of sky.
+	if key == "spins" and slot != null and is_instance_valid(slot) \
+			and slot.is_visible_in_tree():
+		return slot.meter_center()
+	return Vector2(view_size().x * 0.5, 120.0 + safe_top())
 
 # Shields, delivered rather than announced -- and the overflow handed back
 # rather than dropped on the floor.
@@ -11096,11 +11111,18 @@ func _hud_at(key: String) -> Vector2:
 # distinguished a five-shield reward from a one-shield reward, which made the
 # most generous roll on the machine the least rewarding one to land.
 #
-# What happens instead: the ones that fit fly up and land one at a time, and
-# the counter climbs a step per landing. The ones that do not fit turn into
-# spins at the top of their arc, one for one, and come down on the spin meter.
-# The turn is the whole point -- a refund the player cannot see is worth
-# exactly what the loss it replaced was worth, which is nothing.
+# ONE HIT, NOT ONE PER SHIELD. The first version of the fix flew a sprite per
+# shield and turned each spare into a spin at the top of its own arc, so five
+# shields on a full bucket cost three and a half seconds of watching things
+# arrive one at a time -- Guy, 2026-09-03: "the spares shouldn't be an
+# animation that takes ages until all the shields become spins ... one hit for
+# everything, not one at a time".
+#
+# So the whole reward is one flight. It goes up, the counter takes the lot in a
+# single step, and if any of it did not fit the shield SHATTERS beside the full
+# pill -- which is the sentence "you are full" said as a picture -- and one
+# bolt carries the remainder down to the spin meter with the number it is worth
+# popping beside it. Three beats instead of n, and about 1.7s instead of 3.5.
 func _grant_shields(n: int, from: Vector2) -> void:
 	if n <= 0:
 		return
@@ -11113,25 +11135,78 @@ func _grant_shields(n: int, from: Vector2) -> void:
 	_hud_hold("shields", placed)
 	_hud_hold("spins", spare)
 	Sfx.play("shield", -6.0)
-	if placed > 0:
-		FX.deliver(self, from, _hud_at("shields"), "shield", placed, func(_i: int) -> void:
-			_hud_land("shields", 1, Color(0.55, 0.78, 1.0))
-			Sfx.play("shield", -13.0))
-	if spare <= 0:
-		_after(float(placed) * 0.17 + 1.1, func() -> void: _settle_hud("shields"))
-		return
-	# The bucket has to be seen to be full before anything can read as
-	# overflowing out of it, so the spares leave after the last one that fitted
-	# has landed.
-	_after(float(placed) * 0.17 + 0.62, func() -> void:
-		_show_win("FULL  →  +%d  SPIN%s" % [spare, "" if spare == 1 else "S"],
-			Color(0.6, 0.9, 1.0), "bolt")
-		FX.deliver(self, from, _hud_at("spins"), "shield", spare, func(_i: int) -> void:
-			_hud_land("spins", 1, Color(0.6, 0.9, 1.0))
-			Sfx.play("pop", -14.0), "bolt"))
-	_after(float(placed + spare) * 0.17 + 2.0, func() -> void:
+
+	var at := _hud_at("shields")
+	FX.deliver(self, from, at, "shield", 1, func(_i: int) -> void:
+		if placed > 0:
+			_hud_land("shields", placed, Color(0.55, 0.78, 1.0))
+			Sfx.play("shield", -11.0)
+			if placed > 1:
+				FX.rise_label(self, at + Vector2(30, -16), "+%d" % placed,
+					Color(0.72, 0.90, 1.0), 34)
+		if spare > 0:
+			_shield_overflow(spare, at))
+	_after(2.6, func() -> void:
 		_settle_hud("shields")
 		_settle_hud("spins"))
+
+# What a shield does when it arrives at a bucket that is already full: it
+# breaks, and what is left of it goes to the spin meter as spins.
+#
+# The break is two halves of the real shield sprite, cut down the middle with
+# an AtlasTexture and thrown apart. A generic puff would have done the job of
+# saying "something happened here"; only a shield coming apart says which thing
+# happened, and this is the one moment in the game where the reward the player
+# just earned is being converted into a different one.
+func _shield_overflow(spare: int, at: Vector2) -> void:
+	var tex := CV.symbol_tex("shield")
+	# Beside the pill, not under it. Directly below lands on the steal-target
+	# card, and a shield coming apart on top of somebody's portrait reads as
+	# something having gone wrong with the portrait.
+	var break_at := at + Vector2(64, 6)
+	if tex != null:
+		var full := Rect2(Vector2.ZERO, tex.get_size())
+		for side in [-1.0, 1.0]:
+			var half := AtlasTexture.new()
+			half.atlas = tex
+			half.region = Rect2(
+				full.position + Vector2(0.0 if side < 0.0 else full.size.x * 0.5, 0.0),
+				Vector2(full.size.x * 0.5, full.size.y))
+			var tr := TextureRect.new()
+			tr.texture = half
+			tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+			tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+			tr.size = Vector2(38, 76)
+			tr.pivot_offset = tr.size * 0.5
+			tr.position = break_at - Vector2(38.0, 38.0) + Vector2(19.0 + side * 19.0, 0.0)
+			tr.z_index = 101
+			tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			add_child(tr)
+			var tw := tr.create_tween()
+			tw.set_parallel(true)
+			tw.tween_property(tr, "position:x", tr.position.x + side * 46.0, 0.42) \
+				.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+			tw.tween_property(tr, "position:y", tr.position.y + 34.0, 0.42) \
+				.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+			tw.tween_property(tr, "rotation", side * 0.9, 0.42)
+			tw.tween_property(tr, "modulate:a", 0.0, 0.42).set_delay(0.14)
+			tw.chain().tween_callback(tr.queue_free)
+	FX.ring(self, break_at, Color(0.72, 0.94, 1.0), 74.0, 0.34, 8.0, 12.0)
+	FX.burst(self, break_at, Color(0.72, 0.94, 1.0), 9)
+	Sfx.play("shield", -3.0)
+	_show_win("FULL  \u2192  +%d  SPIN%s" % [spare, "" if spare == 1 else "S"],
+		Color(0.6, 0.9, 1.0), "bolt")
+
+	# The remainder, as one bolt, leaving the break rather than the original
+	# source -- the hand-off has to be seen starting where the shield died or
+	# the spins read as having come from somewhere else entirely.
+	_after(0.26, func() -> void:
+		var to := _hud_at("spins")
+		FX.deliver(self, break_at, to, "bolt", 1, func(_i: int) -> void:
+			_hud_land("spins", spare, Color(0.6, 0.9, 1.0))
+			FX.rise_label(self, to + Vector2(34, -14), "+%d" % spare,
+				Color(0.72, 0.94, 1.0), 34)
+			Sfx.play("pop", -10.0), "", 150.0))
 
 # The same contract for spins. Big bonuses ride ten sprites rather than sixty:
 # past about a dozen the screen reads as noise and the individual landings stop

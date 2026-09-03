@@ -275,15 +275,30 @@ func _trophy() -> void:
 	_shape(_star_pts(Vector2(50, 36), 13, 5.5), Lagoon.SAND, 3.5, Lagoon.BRASS_LO)
 
 func _gear() -> void:
+	# SIX SQUARE TEETH, NOT EIGHT ROUNDED ONES.
+	#
+	# This drew 26x15 rounded capsules radiating off a disc at r=39, and Guy,
+	# 2026-09-03, on device: "the settings icon looks like a sun". He is right,
+	# and it is not a styling problem -- a ring of rounded spokes standing clear
+	# of a bright circle, with light between them, is the drawing of a sun. What
+	# makes a gear a gear is that the teeth are cut *from* the rim: flat tips,
+	# square shoulders, and barely any stand-off.
 	var body := _hue(Lagoon.SHELL)
-	# Teeth that barely clear the body: pushed further out they read as petals,
-	# and a flower is not what "settings" is supposed to look like.
-	for i in 8:
-		var a := TAU * float(i) / 8.0
-		var dir := Vector2(cos(a), sin(a))
-		_shape(_round_rect(Vector2(50, 50) + dir * 39.0, Vector2(26, 15), 4.0, a), body, 5.0, Lagoon.INK_SOFT)
-	_disc(Vector2(50, 50), 35, body, 6.0, Lagoon.INK_SOFT)
-	_disc(Vector2(50, 50), 12, Lagoon.LAGOON_DEEP, 4.0, Lagoon.ABYSS)
+	var dark := Lagoon.INK_SOFT
+	var c := Vector2(50, 50)
+	for i in 6:
+		var a := TAU * float(i) / 6.0
+		var pts := PackedVector2Array()
+		for spec in [[-0.26, 28.0], [-0.17, 47.0], [0.17, 47.0], [0.26, 28.0]]:
+			var da: float = spec[0]
+			var rr: float = spec[1]
+			pts.append(c + Vector2(cos(a + da), sin(a + da)) * rr)
+		_shape(pts, body, 6.0, dark)
+	# Drawn after the teeth, so every tooth's inner outline is covered and the
+	# rim comes out as one unbroken ring.
+	_disc(c, 34, body, 6.0, dark)
+	# The hub is a hole. A filled centre on a toothed disc is a flower.
+	_disc(c, 14, Lagoon.LAGOON_DEEP, 5.0, Lagoon.ABYSS)
 
 # --- marks -------------------------------------------------------------------
 

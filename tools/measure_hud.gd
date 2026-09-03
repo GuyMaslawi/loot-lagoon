@@ -71,13 +71,14 @@ func _ready() -> void:
 	print("  (informational) Dynamic Island covers %.0f..%.0f of %d" % [ISLAND_FROM, ISLAND_TO, DESIGN.x])
 	var worst_left := 0.0
 	var worst_right := DESIGN.x as float
-	# The widest each side ever gets: a coin count that has not compacted yet,
-	# a five-figure star total, and a two-digit island number.
+	# The widest each side ever gets: a coin count that has not compacted yet
+	# and a five-figure star total. There is no island number any more -- the
+	# right-hand group is the star capsule and the settings pill, and the pill
+	# has no digits to grow.
 	for coins in ["1,500", "2.48M", "125.6M"]:
 		for labels in m._hud_labels:
 			labels["coins"].text = coins
 			labels["stars"].text = "12.5K"
-			labels["island"].text = "30"
 		await get_tree().process_frame
 		await get_tree().process_frame
 		var lg: Control = bar.get_child(0)

@@ -978,8 +978,8 @@ static func _v3(c: Color) -> Vector3:
 # The HUD currency capsule: a brass-rimmed glass pill holding an icon and a
 # number, optionally with a coral "+" that opens the shop. Coin, spins and
 # shields all use it, so the three read as one row of held resources.
-static func capsule(icon_kind: String, value := "0", plus_action := Callable()) -> Dictionary:
-	var root := PanelContainer.new()
+# The counter pill's face, shared by every capsule in the bar.
+static func _capsule_style() -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
 	# DEEP, NOT WHITE.
 	#
@@ -1009,12 +1009,47 @@ static func capsule(icon_kind: String, value := "0", plus_action := Callable()) 
 	# enough to take the star capsule fully clear of the island's right edge,
 	# and to pull the shield's right-hand end most of the way out of its left.
 	sb.content_margin_left = 7.0
-	# 7, not 4, when there is a plus. The coral disc has to clear the capsule's
-	# own corner arc, and at 4 it did so by a single pixel -- geometrically
-	# inside, visually bursting out of the pill. See the note on the button.
-	sb.content_margin_right = 7.0 if plus_action.is_null() else 6.0
+	sb.content_margin_right = 7.0
 	sb.content_margin_top = 4.0
 	sb.content_margin_bottom = 4.0
+	return sb
+
+# The same pill with an icon in it and nothing else -- a control that lives in
+# the counter row without pretending to be a counter.
+#
+# It exists because the top bar now carries settings where the island number
+# used to be. A capsule with an empty value label is not the same object: the
+# label still claims its separation and the glyph ends up sitting off-centre in
+# a pill that is wider than it needs to be.
+static func icon_capsule(icon_kind: String, action: Callable, tip := "") -> Button:
+	var btn := Button.new()
+	btn.flat = true
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.custom_minimum_size = Vector2(70, 0)
+	btn.tooltip_text = tip
+	# Same face as the counters, and the pressed state sinks like every other
+	# moulded control -- a chrome button that looks identical held down reads
+	# as not having received the tap.
+	for state in ["normal", "hover", "pressed"]:
+		var sb := _capsule_style()
+		if state == "pressed":
+			sb.bg_color = sb.bg_color.lightened(0.10)
+			sb.shadow_size = 3
+		btn.add_theme_stylebox_override(state, sb)
+	if not action.is_null():
+		btn.pressed.connect(action)
+	FX.press_feedback(btn)
+	Glyph.fill(btn, icon_kind, 15.0)
+	return btn
+
+static func capsule(icon_kind: String, value := "0", plus_action := Callable()) -> Dictionary:
+	var root := PanelContainer.new()
+	var sb := _capsule_style()
+	if not plus_action.is_null():
+		# 7, not 4, when there is a plus. The coral disc has to clear the
+		# capsule's own corner arc, and at 4 it did so by a single pixel --
+		# geometrically inside, visually bursting out of the pill.
+		sb.content_margin_right = 6.0
 	root.add_theme_stylebox_override("panel", sb)
 
 	var hb := HBoxContainer.new()
