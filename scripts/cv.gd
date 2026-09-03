@@ -238,17 +238,18 @@ const STARTER_PACK := {"id": "starter", "name": "First Timer Pack", "sub": "60 S
 
 # Chest tiers: pricier chests hold more cards and shift the star odds
 # upward. The Magical Chest always contains at least one 5-star card.
-# art_tint modulates the shared treasure-chest sprite per tier.
+#
+# There is no art field here any more. Every tier used to carry an `art_tint`
+# that modulated one shared chest sprite, which meant the three chests on the
+# shelf differed by a colour wash and nothing else. `tier` now picks the
+# drawing itself -- see ChestArt -- so the tier is the only art key there is.
 const CHEST_PACKS := [
 	{"id": "chest_w", "name": "Wooden Chest", "sub": "2 Cards", "emoji": "📦", "price": "$0.99", "cards": 2, "tier": 0,
-	 "color": Color(0.72, 0.5, 0.3), "tag": "BASIC", "tag_color": Color(0.45, 0.42, 0.5),
-	 "art_tint": Color(0.74, 0.62, 0.52)},
+	 "color": Color(0.72, 0.5, 0.3), "tag": "BASIC", "tag_color": Color(0.45, 0.42, 0.5)},
 	{"id": "chest_g", "name": "Golden Chest", "sub": "4 Cards — better star odds", "emoji": "🧰", "price": "$2.99", "cards": 4, "tier": 1,
-	 "color": Color(1.0, 0.78, 0.25), "tag": "POPULAR", "tag_color": Color(0.88, 0.28, 0.38),
-	 "art_tint": Color(1.0, 1.0, 1.0)},
+	 "color": Color(1.0, 0.78, 0.25), "tag": "POPULAR", "tag_color": Color(0.88, 0.28, 0.38)},
 	{"id": "chest_m", "name": "Magical Chest", "sub": "6 Cards — 5★ guaranteed", "emoji": "🔮", "price": "$6.99", "cards": 6, "tier": 2,
-	 "color": Color(0.72, 0.45, 1.0), "tag": "BEST VALUE", "tag_color": Color(0.55, 0.3, 0.85), "guarantee5": true,
-	 "art_tint": Color(0.82, 0.64, 1.0)},
+	 "color": Color(0.72, 0.45, 1.0), "tag": "BEST VALUE", "tag_color": Color(0.55, 0.3, 0.85), "guarantee5": true},
 ]
 
 # Chance weights for a drawn card's star rating (1..5), per chest tier.
@@ -459,11 +460,11 @@ const STAR_COLORS := [
 # money buys the shortcut, not the ceiling.
 const CARD_BOXES := [
 	{"id": "box_s", "name": "Driftwood Box", "sub": "2 cards", "emoji": "\U0001F4E6", "stars": 12, "cards": 2, "tier": 0,
-	 "color": Color(0.72, 0.5, 0.3), "art_tint": Color(0.74, 0.62, 0.52)},
+	 "color": Color(0.72, 0.5, 0.3)},
 	{"id": "box_m", "name": "Brass Coffer", "sub": "4 cards \u2014 better odds", "emoji": "\U0001F9F0", "stars": 40, "cards": 4, "tier": 1,
-	 "color": Color(1.0, 0.78, 0.25), "art_tint": Color(1.0, 1.0, 1.0)},
+	 "color": Color(1.0, 0.78, 0.25)},
 	{"id": "box_l", "name": "Treasure Vault", "sub": "6 cards \u2014 5\u2605 guaranteed", "emoji": "\U0001F52E", "stars": 110, "cards": 6, "tier": 2,
-	 "color": Color(0.72, 0.45, 1.0), "guarantee5": true, "art_tint": Color(0.82, 0.64, 1.0)},
+	 "color": Color(0.72, 0.45, 1.0), "guarantee5": true},
 ]
 
 const COLLECTION_SEASON_DAYS := 30

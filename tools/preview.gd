@@ -42,6 +42,12 @@ func _ready() -> void:
 		"mascot":
 			_mascot_reel.call_deferred()
 			return
+		"art":
+			# The two drawn objects the shop is built on, side by side and at
+			# the size they ship at: three fills of the piggy and three tiers
+			# of chest. Judged here rather than on the live page, where each
+			# one is four screens apart from the next.
+			_art_sheet()
 		_:
 			_glyph_sheet()
 	if OS.has_environment("SHOT"):
@@ -68,12 +74,24 @@ func _open_page(game: Control, key: String) -> void:
 		await get_tree().process_frame
 	await get_tree().process_frame
 	if key.begins_with("popup:"):
+		# PIGGY=full|empty|<n> pins the bank before the screen opens. The three
+		# faces are the point of that drawing and two of them are otherwise
+		# only reachable by playing to them.
+		if OS.has_environment("PIGGY"):
+			var want := OS.get_environment("PIGGY")
+			var cap := int(CV.PIGGY_CAP)
+			game.set("piggy_coins", cap if want == "full" else (0 if want == "empty" else int(want)))
 		game.call("_open_" + key.substr(6))
 		return
 	if key.begins_with("collections:"):
 		# jump straight into one set's own page
 		game.set("col_open", key.substr(12))
 		game.call("_goto", game.get("pages")["collections"])
+		return
+	# PAGE=shop:chests parks the shop on one of its shelves, so a row that
+	# lives four screens down can be judged without a scroll gesture.
+	if key.begins_with("shop:"):
+		game.call("_goto_shop", key.substr(5))
 		return
 	if key == "island":
 		game.call("_goto", game.get("village_page"))
@@ -209,3 +227,52 @@ func _shoot() -> void:
 		var img := get_viewport().get_texture().get_image()
 		img.save_png(path if shots == 1 else path.replace(".png", "_%02d.png" % i))
 	get_tree().quit()
+
+
+func _art_sheet() -> void:
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 10)
+	add_child(col)
+	col.position = Vector2(10, 30)
+	col.size = Vector2(700, 0)
+
+	var pigs := HBoxContainer.new()
+	pigs.add_theme_constant_override("separation", 4)
+	col.add_child(pigs)
+	for f in [0.0, 0.55, 1.0]:
+		var cell := PanelContainer.new()
+		cell.add_theme_stylebox_override("panel", Lagoon.sheet())
+		cell.custom_minimum_size = Vector2(230, 260)
+		pigs.add_child(cell)
+		var p := PiggyArt.new()
+		p.fill = f
+		p.custom_minimum_size = Vector2(220, 240)
+		cell.add_child(p)
+
+	var chests := HBoxContainer.new()
+	chests.add_theme_constant_override("separation", 4)
+	col.add_child(chests)
+	for t in 3:
+		var cell := PanelContainer.new()
+		cell.add_theme_stylebox_override("panel", Lagoon.sheet())
+		cell.custom_minimum_size = Vector2(230, 220)
+		chests.add_child(cell)
+		var c := ChestArt.new()
+		c.tier = t
+		c.custom_minimum_size = Vector2(200, 200)
+		cell.add_child(c)
+
+	var small := HBoxContainer.new()
+	small.add_theme_constant_override("separation", 8)
+	col.add_child(small)
+	# The sizes they are actually asked to work at on the page.
+	for t in 3:
+		var c := ChestArt.new()
+		c.tier = t
+		c.custom_minimum_size = Vector2(120, 110)
+		small.add_child(c)
+	for f in [0.0, 1.0]:
+		var p := PiggyArt.new()
+		p.fill = f
+		p.custom_minimum_size = Vector2(120, 110)
+		small.add_child(p)

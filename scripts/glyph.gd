@@ -79,6 +79,7 @@ func _draw() -> void:
 		"moon":    _moon()
 		"calendar": _calendar()
 		"warn":    _warn()
+		"hammer":  _hammer()
 
 # --- drawing primitives ------------------------------------------------------
 
@@ -406,6 +407,23 @@ func _spark() -> void:
 	var c := _hue(Lagoon.BRASS_HI)
 	_shape(_star_pts(Vector2(50, 48), 44, 12, 4), c, 5.0, Lagoon.BRASS_MID)
 	_shape(_star_pts(Vector2(80, 78), 17, 5, 4), c, 3.0, Lagoon.BRASS_MID)
+
+# The mallet on the piggy bank's button. A price with a verb next to it is a
+# choice; a price with the tool that does the deed next to it is an invitation,
+# and this screen's whole job is the second one.
+func _hammer() -> void:
+	# Big head, short handle. The first pass was drawn at the icon set's
+	# standard 6-unit outline and at 52px the outline was most of the tool.
+	var wood := _hue(Lagoon.BRASS)
+	_bar(Vector2(36, 92), Vector2(62, 46), 15.0, wood, 5.0)
+	_shape(_round_rect(Vector2(66, 34), Vector2(74, 36), 9.0, -0.38),
+		Lagoon.SILVER_HI, 4.0, Lagoon.SILVER_MID)
+	# the striking face, darker, so the head has a front and a back
+	_shape(_round_rect(Vector2(90, 24), Vector2(20, 34), 6.0, -0.38),
+		Lagoon.SILVER_MID, 3.0, Lagoon.SILVER)
+	# the collar where the handle enters the head
+	_shape(_round_rect(Vector2(56, 44), Vector2(24, 18), 5.0, -0.38),
+		Lagoon.SILVER_MID, 3.0, Lagoon.SILVER)
 
 func _crown() -> void:
 	var c := _hue(Lagoon.BRASS)

@@ -3824,11 +3824,8 @@ func _fill_shop(vb: VBoxContainer) -> void:
 	vb.add_child(_page_note("Bundles cost less than the same spins, coins and cards bought apart", UI.F_TINY))
 
 	_shop_section(vb, "chests", "TREASURE  CHESTS")
-	var chest_row := HBoxContainer.new()
-	chest_row.add_theme_constant_override("separation", 10)
-	vb.add_child(chest_row)
 	for pack in CV.CHEST_PACKS:
-		_chest_card(chest_row, pack)
+		_chest_card(vb, pack)
 	vb.add_child(_page_note("Pricier chests hold more cards and better odds — every chest shows its full odds table before you pay", UI.F_TINY))
 
 	_shop_section(vb, "spins", "SPIN  PACKS")
@@ -4435,25 +4432,33 @@ func _open_piggy() -> void:
 	var vbox := _open_popup("Piggy Bank")
 
 	var stage := Control.new()
-	stage.custom_minimum_size = Vector2(0, 250)
+	stage.custom_minimum_size = Vector2(0, 340)
 	stage.clip_contents = true
 	vbox.add_child(stage)
 
 	# A pool of warm light for it to stand in, so the pig is lit rather than
 	# pasted onto the paper.
-	stage.add_child(_radial_glow(Glyph.PIG if not full else Color(1.0, 0.84, 0.55), 300))
+	stage.add_child(_radial_glow(
+		Color(1.0, 0.84, 0.45) if full else PiggyArt.PINK, 400))
 
-	var pig := Glyph.new()
-	pig.kind = "piggy"
-	pig.custom_minimum_size = Vector2(220, 220)
-	pig.size = Vector2(220, 220)
-	pig.pivot_offset = Vector2(110, 200)   # stands on its trotters, not its middle
+	var pig := PiggyArt.new()
+	pig.custom_minimum_size = Vector2(380, 340)
+	pig.size = Vector2(380, 340)
+	pig.pivot_offset = Vector2(190, 310)   # stands on its trotters, not its middle
 	stage.add_child(pig)
 	pig.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	pig.offset_left = -110.0
-	pig.offset_right = 110.0
-	pig.offset_top = -110.0
-	pig.offset_bottom = 110.0
+	pig.offset_left = -190.0
+	pig.offset_right = 190.0
+	pig.offset_top = -170.0
+	pig.offset_bottom = 170.0
+
+	# The level rises rather than being set. Opening the screen after a run of
+	# spins should show the ground you gained arriving, not present it as if it
+	# had always been there -- and the face changes on the way, which is the
+	# cheapest possible way to say "this went up".
+	pig.fill = 0.0
+	pig.create_tween().tween_property(pig, "fill", frac, 1.05) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 
 	# Breathing, and a lean. Two tweens rather than one so the two motions drift
 	# out of phase with each other -- a single tween doing both reads as a
@@ -4475,32 +4480,32 @@ func _open_piggy() -> void:
 		lean.tween_property(pig, "rotation", 0.035, 1.7).set_trans(Tween.TRANS_SINE)
 		lean.tween_property(pig, "rotation", -0.035, 1.7).set_trans(Tween.TRANS_SINE)
 
-	# Coins into the slot, on a loop. The slot in the pig's back is at roughly
-	# (0.54, 0.31) of the glyph's own box, so the drop is aimed there rather
-	# than at the middle of the stage.
+	# Coins into the slot, on a loop -- aimed at the slot the pig itself
+	# reports rather than at an offset measured off a screenshot, so the drop
+	# stays on target the next time the drawing moves.
 	if not full:
 		for i in 3:
-			_piggy_coin(stage, float(i) * 1.1)
+			_piggy_coin(stage, pig, float(i) * 1.1)
 	else:
 		for i in 5:
 			_piggy_spark(stage, float(i) * 0.42)
 
-	var amount := Lagoon.gold_value("%s coins inside" % _fmt_compact(piggy_coins), UI.F_TITLE)
+	var amount := Lagoon.gold_value("%s coins inside" % _fmt_compact(piggy_coins), UI.F_HEAD)
 	amount.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(amount)
 
-	var bar := Lagoon.progress(Glyph.PIG_MID)
+	var bar := Lagoon.progress(PiggyArt.MID)
 	bar.max_value = 1.0
 	bar.value = 0.0
 	vbox.add_child(bar)
 	Lagoon.progress_value(bar, "FULL" if full else "%d%% full" % int(frac * 100.0))
-	# Filled rather than set, so opening the screen after a run of spins shows
-	# the ground you gained instead of presenting it as if it was always there.
-	bar.create_tween().tween_property(bar, "value", frac, 0.7) \
+	# Filled rather than set, on the same clock as the pig, so the bar and the
+	# level inside it are one movement instead of two.
+	bar.create_tween().tween_property(bar, "value", frac, 1.05) \
 		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 
 	var note := _popup_row_label(
-		"It is full — smash it and the coins are yours." if full
+		"It is full \u2014 smash it and the coins are yours." if full
 			else "It fills as you spin and raid. The price never changes, so there is nothing lost by waiting.",
 		UI.F_CAPTION)
 	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -4510,14 +4515,34 @@ func _open_piggy() -> void:
 
 	var buy := Button.new()
 	buy.text = "SMASH  \u2014  %s" % IAP.price_for(CV.PIGGY_PACK)
-	buy.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
-	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
-	Lagoon.button(buy, "kelp")
-	Lagoon.button_gloss(buy, 22)
+	buy.custom_minimum_size = Vector2(0, UI.TAP_HERO)
+	buy.add_theme_font_size_override("font_size", UI.F_SUBHEAD)
+	_candy_button(buy, Color(0.28, 0.68, 0.34))
 	FX.press_feedback(buy)
 	# An empty bank is not for sale -- charging for nothing is the one way this
 	# mechanic can leave a player feeling cheated.
 	buy.disabled = piggy_coins <= 0
+	if not buy.disabled:
+		# The mallet, on the left of the label rather than in it. A button that
+		# carries the tool reads as an action; a button carrying only a price
+		# reads as a shelf tag, and this is the one control on the screen.
+		var mallet := Glyph.new()
+		mallet.kind = "hammer"
+		mallet.custom_minimum_size = Vector2(62, 62)
+		mallet.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		buy.add_child(mallet)
+		var place := func() -> void:
+			mallet.position = Vector2(26.0, (buy.size.y - 62.0) * 0.5)
+		place.call()
+		buy.resized.connect(place)
+		# It cocks back and strikes on a loop. Small, slow and a long way apart,
+		# so it is an invitation rather than a thing twitching at you.
+		mallet.pivot_offset = Vector2(17, 52)
+		var swing := mallet.create_tween().set_loops()
+		swing.tween_interval(1.8)
+		swing.tween_property(mallet, "rotation", -0.5, 0.26).set_trans(Tween.TRANS_SINE)
+		swing.tween_property(mallet, "rotation", 0.22, 0.10).set_trans(Tween.TRANS_QUAD)
+		swing.tween_property(mallet, "rotation", 0.0, 0.3).set_trans(Tween.TRANS_ELASTIC)
 	if full:
 		FX.pulse_forever(buy, 1.035, 1.0)
 	buy.pressed.connect(func() -> void:
@@ -4526,28 +4551,31 @@ func _open_piggy() -> void:
 	vbox.add_child(buy)
 
 # One coin, falling into the slot in the pig's back and disappearing into it.
-func _piggy_coin(stage: Control, delay: float) -> void:
+func _piggy_coin(stage: Control, pig: PiggyArt, delay: float) -> void:
 	var c := Glyph.new()
 	c.kind = "coin"
-	c.custom_minimum_size = Vector2(38, 38)
-	c.size = Vector2(38, 38)
-	c.pivot_offset = Vector2(19, 19)
+	c.custom_minimum_size = Vector2(42, 42)
+	c.size = Vector2(42, 42)
+	c.pivot_offset = Vector2(21, 21)
 	c.modulate.a = 0.0
 	stage.add_child(c)
-	var land := Vector2(0.0, -46.0)   # the slot, relative to the stage centre
+	# The pig is anchored to the middle of the stage, so its slot is wherever
+	# the pig says it is plus wherever the pig is.
+	var land := func() -> Vector2:
+		return pig.position + pig.slot_point() - Vector2(21, 21)
 	var place := func() -> void:
-		c.position = stage.size * 0.5 - Vector2(19, 19) + land
+		c.position = land.call()
 	place.call()
 	stage.resized.connect(place)
 	var tw := c.create_tween().set_loops()
 	tw.tween_interval(delay)
 	tw.tween_callback(func() -> void:
-		c.position = stage.size * 0.5 - Vector2(19, 19) + land + Vector2(0, -120)
+		c.position = land.call() + Vector2(0, -150)
 		c.rotation = -0.5
 		c.modulate.a = 0.0)
 	tw.tween_property(c, "modulate:a", 1.0, 0.16)
-	tw.parallel().tween_property(c, "position",
-		stage.size * 0.5 - Vector2(19, 19) + land, 0.46).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.parallel().tween_property(c, "position", land.call(), 0.46) \
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	tw.parallel().tween_property(c, "rotation", 0.4, 0.46)
 	# Into the slot: it shrinks to nothing at the moment it arrives rather than
 	# fading on top of the pig, so it reads as going *in*.
@@ -4567,7 +4595,7 @@ func _piggy_spark(stage: Control, delay: float) -> void:
 	stage.add_child(g)
 	var seed_x := fmod(delay * 97.0, 1.0) * 2.0 - 1.0
 	var place := func() -> void:
-		g.position = stage.size * 0.5 - Vector2(15, 15) + Vector2(seed_x * 110.0, -30.0)
+		g.position = stage.size * 0.5 - Vector2(15, 15) + Vector2(seed_x * 130.0, -40.0)
 	place.call()
 	stage.resized.connect(place)
 	var tw := g.create_tween().set_loops()
@@ -4580,8 +4608,13 @@ func _piggy_spark(stage: Control, delay: float) -> void:
 
 func _confirm_piggy() -> void:
 	var vbox := _open_popup("Smash the Piggy?")
-	var e := _emoji_label("🐷", 68)
-	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	# Held at the full face whatever the number says: the decision has been
+	# made by the time this dialog is up, and a worried pig is not what to send
+	# somebody off to the payment sheet with.
+	var e := PiggyArt.new()
+	e.fill = 1.0
+	e.face = "full"
+	e.custom_minimum_size = Vector2(0, 190)
 	vbox.add_child(e)
 	var amount := _popup_row_label("%s coins inside" % _fmt_compact(piggy_coins), UI.F_BODY)
 	amount.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -4756,21 +4789,18 @@ func _shop_hero_offer(vb: VBoxContainer) -> void:
 	buy.pressed.connect(_confirm_purchase.bind(pack))
 	row.add_child(buy)
 
-# the real treasure-chest sprite, tinted per tier; falls back to the pack emoji
-func _chest_art(pack: Dictionary, emoji_size := 54) -> Control:
-	var t := CV.prop_tex("chest")
-	if t == null:
-		var e := _emoji_label(pack["emoji"], emoji_size)
-		e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		e.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		return e
-	var tr := TextureRect.new()
-	tr.texture = t
-	tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	tr.modulate = pack.get("art_tint", Color.WHITE)
-	tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	return tr
+# The chest for a pack, drawn rather than sampled.
+#
+# This used to be one PNG modulated by the pack's `art_tint`, which is three of
+# the same chest under three lighting gels -- on the shelf the tier ladder was
+# carried entirely by the tag and the price, and the picture, which is the
+# biggest thing on the card, said nothing. ChestArt draws a different object
+# per tier. Anything that grants cards has a tier, so the free box shelf and
+# the confirm dialog get the same ladder for free.
+func _chest_art(pack: Dictionary, _size := 54) -> Control:
+	var art := ChestArt.new()
+	art.tier = int(pack.get("tier", 0))
+	return art
 
 # --- odds disclosure -------------------------------------------------------
 #
@@ -4851,89 +4881,115 @@ func _odds_table(vbox: VBoxContainer, pack: Dictionary) -> void:
 	foot.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 	vbox.add_child(foot)
 
-func _chest_card(row: HBoxContainer, pack: Dictionary) -> void:
+# THE CHEST SHELF IS A COLUMN NOW, NOT THREE TILES ACROSS.
+#
+# Three tiles side by side on a phone give each chest about 220 units of width,
+# and 220 units is the whole reason this shelf could not be read: the name ran
+# at caption size, the tag chip ran at 11, and the odds line -- the one number
+# a player is actually buying -- was the smallest type on the page. No amount
+# of styling fixes a column that narrow; the width has to come from somewhere.
+#
+# So each chest takes a full-width row, which is the shape the free box shelf
+# has always used and the shape the bundles above it use. That buys a name at
+# title size, a tag that can be read at arm's length, the card count and the
+# odds on their own lines, and a price button big enough to be the obvious
+# thing to press. The tier ladder is carried three ways at once -- a different
+# object in the art, a different rim on the card, and a taller row at the top.
+func _chest_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	var cc: Color = pack["color"]
 	var guaranteed: bool = pack.get("guarantee5", false)
-	var panel := _tinted_card(row, cc, guaranteed)
-	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var panel := _tinted_card(vb, cc, guaranteed)
 	if guaranteed:
 		panel.add_child(_shine_overlay(Lagoon.URCHIN.lightened(0.5)))
+	elif int(pack.get("tier", 0)) == 1:
+		panel.add_child(_shine_overlay(Lagoon.BRASS_HI))
 
 	var margin := MarginContainer.new()
-	margin.add_theme_constant_override("margin_left", 8)
-	margin.add_theme_constant_override("margin_right", 8)
-	margin.add_theme_constant_override("margin_top", 10)
-	margin.add_theme_constant_override("margin_bottom", 10)
+	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		margin.add_theme_constant_override(m, 14)
 	panel.add_child(margin)
 
-	var col := VBoxContainer.new()
-	col.alignment = BoxContainer.ALIGNMENT_CENTER
-	col.add_theme_constant_override("separation", 6)
-	margin.add_child(col)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 14)
+	margin.add_child(row)
 
-	var tag_wrap := CenterContainer.new()
-	tag_wrap.custom_minimum_size = Vector2(0, 36)
-	col.add_child(tag_wrap)
-	tag_wrap.add_child(_tag_chip(pack["tag"], pack["tag_color"], 11))
+	# The art, in a well of its own rarity colour. A sunk panel rather than a
+	# bare glow: it gives the drawing a floor to stand on, which is what stops
+	# a chest at the top of the ladder looking like it is floating over the
+	# card it is being sold on.
+	var well := PanelContainer.new()
+	var wsb := Lagoon.glass_well(18)
+	wsb.bg_color = Color(cc.r, cc.g, cc.b, 0.16)
+	well.add_theme_stylebox_override("panel", wsb)
+	# 150, not 168. The row's minimum width is the sum of these two boxes, the
+	# widest name, and the margins -- and at 168 apiece that sum came to 699 on
+	# a 720 canvas whose scroller has its own inset. Three pixels over is still
+	# over: see qa_layout, which is the only reason this is a measured number
+	# rather than a round one.
+	well.custom_minimum_size = Vector2(150, 156 if guaranteed else 142)
+	well.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(well)
+	var stage := Control.new()
+	well.add_child(stage)
+	stage.add_child(_radial_glow(cc, 190))
+	var art := _chest_art(pack)
+	stage.add_child(art)
+	art.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	FX.pulse_forever(art, 1.04, 1.8 if guaranteed else 2.6)
 
-	# chest art on a rarity-colored glow
-	var art := Control.new()
-	art.custom_minimum_size = Vector2(0, 100)
-	col.add_child(art)
-	art.add_child(_radial_glow(cc, 122))
-	var e := _chest_art(pack)
-	art.add_child(e)
-	e.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	FX.pulse_forever(e, 1.04, 1.8 if guaranteed else 2.6)
-	if guaranteed:
-		var spark := _emoji_label("✨", UI.F_LABEL)
-		art.add_child(spark)
-		spark.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-		spark.offset_left = 22.0
-		spark.offset_right = 52.0
-		spark.offset_top = -46.0
-		spark.offset_bottom = -16.0
-		FX.pulse_forever(spark, 1.25, 1.1)
+	var info := VBoxContainer.new()
+	info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	info.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	info.add_theme_constant_override("separation", 6)
+	row.add_child(info)
 
-	var nm := Lagoon.label(pack["name"], UI.F_CAPTION, Lagoon.INK, true)
-	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	col.add_child(nm)
+	var tag_row := HBoxContainer.new()
+	tag_row.alignment = BoxContainer.ALIGNMENT_BEGIN
+	info.add_child(tag_row)
+	tag_row.add_child(_tag_chip(pack["tag"], pack["tag_color"], UI.F_CAPTION))
+
+	var nm := Lagoon.label(pack["name"], UI.F_TITLE, Lagoon.INK, true)
+	info.add_child(nm)
 
 	var cards_row := HBoxContainer.new()
-	cards_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	cards_row.add_theme_constant_override("separation", 5)
-	col.add_child(cards_row)
-	cards_row.add_child(_emoji_label("🃏", UI.F_CAPTION))
-	cards_row.add_child(Lagoon.label("x%d CARDS" % int(pack["cards"]), UI.F_TINY, Lagoon.INK_SOFT))
+	cards_row.alignment = BoxContainer.ALIGNMENT_BEGIN
+	cards_row.add_theme_constant_override("separation", 8)
+	info.add_child(cards_row)
+	var deck := Glyph.new()
+	deck.kind = "cards"
+	deck.custom_minimum_size = Vector2(34, 34)
+	cards_row.add_child(deck)
+	cards_row.add_child(Lagoon.label("%d CARDS" % int(pack["cards"]), UI.F_LABEL, Lagoon.INK_SOFT, true))
 
 	# No star row here any more. It was drawn from `star_cap`, which reads as a
 	# ceiling -- the Wooden Chest rendered ★★☆☆☆ -- and sat directly above that
-	# same chest's true line, "5★ CHANCE 1%". Two claims on one tile, disagreeing,
-	# on the surface that exists to publish the odds. `star_cap` never capped
-	# anything: _grant_chest_card rolls from CHEST_STAR_WEIGHTS and has never
-	# looked at it.
+	# same chest's true line, "5★ CHANCE 1%". Two claims on one tile,
+	# disagreeing, on the surface that exists to publish the odds. `star_cap`
+	# never capped anything: _grant_chest_card rolls from CHEST_STAR_WEIGHTS and
+	# has never looked at it.
 	#
 	# The odds line below is the honest half and is a better ladder anyway --
-	# 1% -> 8% -> GUARANTEED orders the three chests with real numbers, and the
-	# tag, the colour and the card count already carry the tier visually.
-
-	var odds := Label.new()
-	odds.text = _odds_line(pack)
-	odds.add_theme_font_size_override("font_size", UI.F_TINY)
-	odds.add_theme_color_override("font_color", Lagoon.BRASS_LO if guaranteed else Lagoon.INK_FAINT)
-	odds.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	col.add_child(odds)
+	# 0.5% -> 3% -> GUARANTEED orders the three chests with real numbers, and
+	# the tag, the colour and the art already carry the tier visually.
+	# At label size rather than caption. This is the number the shelf exists to
+	# publish and it was the smallest type on the card -- which is exactly the
+	# arrangement Guideline 3.1.1 is written against, whatever the letter of it
+	# says about disclosure.
+	var odds := Lagoon.label(_odds_line(pack), UI.F_LABEL,
+		Lagoon.BRASS_LO if guaranteed else Lagoon.INK_SOFT, guaranteed)
+	info.add_child(odds)
 	if guaranteed:
-		FX.pulse_forever(odds, 1.08, 1.2)
+		FX.pulse_forever(odds, 1.06, 1.2)
 
 	var buy := Button.new()
 	buy.text = IAP.price_for(pack)
-	buy.custom_minimum_size = Vector2(0, UI.TAP)
-	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
+	buy.custom_minimum_size = Vector2(150, UI.TAP_COMFY)
+	buy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	buy.add_theme_font_size_override("font_size", UI.F_SUBHEAD)
 	_candy_button(buy, Color(0.28, 0.68, 0.34))
 	FX.press_feedback(buy)
 	buy.pressed.connect(_confirm_purchase.bind(pack))
-	col.add_child(buy)
+	row.add_child(buy)
 
 # square tile used for spin & coin packs (2-column grid)
 # The treasure card: deep water in a brass frame, with light coming off the
@@ -5639,7 +5695,7 @@ func _confirm_purchase(pack: Dictionary) -> void:
 	var vbox := _open_popup("Confirm Purchase")
 	if String(pack.get("id", "")).begins_with("chest_"):
 		var art := _chest_art(pack, 64)
-		art.custom_minimum_size = Vector2(0, 96)
+		art.custom_minimum_size = Vector2(0, 132)
 		vbox.add_child(art)
 	else:
 		var e := _emoji_label(pack["emoji"], 64)
