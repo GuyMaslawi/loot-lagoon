@@ -1,24 +1,29 @@
 extends Node
-# Dev-only harness: can the HUD capsules clear the cutout?
+# Dev-only harness: does the HUD bar clear the cutout?
 #
 #   godot --headless --path . tools/measure_hud.tscn
+#   DEMO_SAFE_TOP=108 godot --headless --path . tools/measure_hud.tscn
 #
-# THIS EXISTS BECAUSE THE ANSWER HAS BEEN GUESSED WRONG TWICE. "The icons are
-# still not attached to the top" came back on three separate builds, and each
-# time the reasoning was done on estimated capsule widths -- which are not
+# THIS EXISTS BECAUSE THE ANSWER HAS BEEN GUESSED WRONG THREE TIMES. "The icons
+# are still not attached to the top" came back on three separate builds, and
+# each time the reasoning was done on estimated capsule widths -- which are not
 # estimable, because they are set by the player's own numbers in a proportional
 # display font.
 #
-# The question the HUD placement turns on is exactly this: on a phone whose
-# cutout is a Dynamic Island (245..475 of 720, see the table above hud_top()),
-# do the two capsule groups stay out of that band? If they do, they can ride up
-# beside it, which is where the reference games put theirs. If they do not, they
-# have to stay under it and no amount of tuning the offset will help.
+# IT NOW CHECKS TWO THINGS, and the first is the one that matters.
 #
-# The answer, measured 2026-09-02: they do NOT. The left group ends at 288 with
-# a four-figure coin count and 307 with a nine-figure one, against a band that
-# starts at 245; the right group starts at 467 against a band that ends at 475.
-# Both overlap. Moving them up is a HUD narrowing job, not a placement tweak.
+# 1. THE BAR SITS BELOW THE INSET. This is the rule as of 2026-09-03: the bar
+#    is one object with a gap down its middle, and riding level with a Dynamic
+#    Island put the black housing in that gap -- which reads as a broken strip
+#    of chrome, whatever the corners are doing. Guy called it off a photo of
+#    his own phone. Run with DEMO_SAFE_TOP or the desktop reports no inset and
+#    this check has nothing to prove.
+#
+# 2. COULD THE CAPSULES RIDE BESIDE A DYNAMIC ISLAND? Informational, and kept
+#    because it is the measurement that decides the question if anyone ever
+#    wants the bar back up there. The answer measured 2026-09-02: they cannot.
+#    The left group ends at 288 with a four-figure coin count and 307 with a
+#    nine-figure one, against a band that starts at 245.
 #
 # Re-run this after changing anything about capsule width -- the icon size, the
 # content margins, the "+" disc, or which counters live in the bar.
@@ -52,7 +57,18 @@ func _ready() -> void:
 		get_tree().quit(1)
 		return
 
-	print("  Dynamic Island covers %.0f..%.0f of %d" % [ISLAND_FROM, ISLAND_TO, DESIGN.x])
+	# 1. The bar's own rect against the inset the system reports.
+	var inset: float = m.safe_top()
+	var bar_top: float = m.hud_top()
+	var clears: bool = inset <= 0.0 or bar_top >= inset
+	print("  safe inset %.0f   bar top %.0f   bar bottom %.0f" % [inset, bar_top, bar_top + 70.0])
+	if inset <= 0.0:
+		print("  [skip] no inset reported -- re-run with DEMO_SAFE_TOP=108 (island) or 87 (notch)")
+	else:
+		print("  bar must start at or below %.0f  -> %s" % [
+			inset, "ok" if clears else "OVER by %.0f" % (inset - bar_top)])
+	print("")
+	print("  (informational) Dynamic Island covers %.0f..%.0f of %d" % [ISLAND_FROM, ISLAND_TO, DESIGN.x])
 	var worst_left := 0.0
 	var worst_right := DESIGN.x as float
 	# The widest each side ever gets: a coin count that has not compacted yet,
@@ -81,8 +97,10 @@ func _ready() -> void:
 		ISLAND_TO, worst_right, "ok" if worst_right >= ISLAND_TO else
 		"UNDER by %.0f" % (ISLAND_TO - worst_right)])
 	print("")
-	print("MEASURE-HUD: capsules %s ride beside a Dynamic Island" % ["CANNOT", "can"][int(clear)])
-	get_tree().quit()
+	print("  (informational) capsules %s ride beside a Dynamic Island" % ["CANNOT", "can"][int(clear)])
+	print("")
+	print("MEASURE-HUD: %s" % ["BAR IS UNDER THE CUTOUT", "bar clears the cutout"][int(clears)])
+	get_tree().quit(0 if clears else 1)
 
 # The bar is the HBoxContainer holding [left group][gap][right group].
 func _find_bar(m: Control) -> Control:

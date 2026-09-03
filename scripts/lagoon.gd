@@ -78,8 +78,45 @@ const KELP_HI     := Color(0.353, 0.831, 0.573)
 const KELP_LO     := Color(0.043, 0.353, 0.216)
 const URCHIN      := Color(0.502, 0.337, 0.804)  # rare / premium
 const URCHIN_LO   := Color(0.286, 0.176, 0.494)
-const REEF        := Color(0.882, 0.196, 0.298)  # alert / danger
+# REEF carries a white numeral on every alert badge in the game -- the "!" on a
+# side-rail disc, the unread count on the Shop tab -- and at #e1324c that was
+# 4.41 : 1 against white, i.e. ten separate failures of the same three percent.
+# Taken down to 4.71 without moving the hue anybody can see.
+const REEF        := Color(0.855, 0.180, 0.278)  # alert / danger
 const REEF_LO     := Color(0.545, 0.086, 0.145)
+
+# --- the shop's metals -------------------------------------------------------
+# The spin ladder and the coin ladder were struck on the same brass card with
+# different art on it, and on a phone they are indistinguishable -- Guy,
+# 2026-09-03: "in the shop there has to be a difference between the money pack
+# and the spins, they are very similar; the spins toward blue and the money
+# toward more of a silver colour." So the two shelves are two metals.
+#
+# BOTH STAY DARK, and that is the part worth writing down. The shop stands on a
+# deep board and the tile's typography is built for a dark hold -- white
+# numerals, a sand pack name, a metal unit label. A pale silver plate would
+# have meant re-inking every line on the tile to buy nothing: silver reads as
+# silver from its *rim*, not from its stock, which is why a chromed object
+# photographs dark with bright edges. So silver here is graphite under bright
+# chrome, and steel is deep water under a lit cyan edge.
+const STEEL       := Color(0.055, 0.161, 0.243)  # spin packs: blue steel
+const STEEL_MID   := Color(0.078, 0.224, 0.325)
+const STEEL_HI    := Color(0.435, 0.749, 0.918)  # the lit edge
+const SILVER      := Color(0.141, 0.165, 0.184)  # coin packs: graphite
+const SILVER_MID  := Color(0.192, 0.224, 0.247)
+const SILVER_HI   := Color(0.847, 0.886, 0.914)  # the chromed edge
+
+# --- the podium --------------------------------------------------------------
+# Gold, silver and bronze, and they are one list because they were three copies
+# of the same literal in three places -- the tournament board, the world board
+# and the end-of-tournament dialog. Bronze used to be #c67e4a, four percent off
+# brass, which at the 52px the leaderboard draws a medal is not a different
+# metal at all; it is copper now and reads as one.
+const PODIUM := [
+	Color(0.820, 0.604, 0.278),  # gold -- BRASS
+	Color(0.741, 0.784, 0.804),  # silver
+	Color(0.694, 0.376, 0.204),  # bronze
+]
 
 # --- the keyline -------------------------------------------------------------
 # Deep water, used as an edge rather than a fill. It is the same family as ABYSS
@@ -105,10 +142,27 @@ const HULL        := Color(0.031, 0.180, 0.235)  # the rim on every object
 # note and the star cost of every box -- so the rule "quieter means paler" had
 # quietly taken a fifth of the copy in the game below legible. Tertiary is now
 # expressed by size and weight; every ink in the ladder clears AA.
+#
+# AND THEN THERE WERE THREE. INK_FAINT was raised to 5.0 against SHELL once and
+# that was still measuring it against the wrong thing: almost nothing in this
+# game lands on bare SHELL. On a tinted card -- the sand of the all-clear bonus,
+# the pale glass of an inactive quests tab, the mint of a finished set -- the
+# same token came back at 3.7 to 4.2 on the season timer, the tab captions, the
+# card odds and the "World ranking" link. A fourth step down the ladder cannot
+# be made to clear on every surface it is used on, because the step below
+# INK_MUTE is where paleness stops working at all. So the ladder is three inks
+# now and INK_FAINT is the same value as INK_MUTE; the distinction that used to
+# be carried by tone is carried by size and weight, which is the rule this
+# palette already claimed to follow.
 const INK         := Color(0.043, 0.227, 0.286)  # primary text on glass
-const INK_SOFT    := Color(0.259, 0.427, 0.478)  # secondary text on glass
+# INK_SOFT came down too, and for the same reason INK_FAINT did: it was 5.3
+# against bare SHELL and 4.06 to 4.24 on the surfaces it is actually printed
+# on -- a sand bonus card, the pale glass of an inactive tab, the mint of a
+# finished set. Every ink in this palette is now measured against tinted stock,
+# because a card in this game is never bare paper.
+const INK_SOFT    := Color(0.212, 0.388, 0.443)  # secondary text on glass
 const INK_MUTE    := Color(0.167, 0.351, 0.408)  # secondary text at caption size
-const INK_FAINT   := Color(0.267, 0.451, 0.510)  # tertiary -- still readable
+const INK_FAINT   := INK_MUTE                    # tertiary -- size and weight, not tone
 
 # Corner radii. Sea glass is tumbled smooth, so nothing in this game has a
 # tight corner; the smallest radius is still generous.
@@ -202,7 +256,11 @@ static func wordmark(text: String, size := 64) -> Label:
 # heavy rim and a cast shadow, the way a sign painted on a wall is. title()'s
 # default rim is tuned for type on chrome and is about half what this needs:
 # the island's building names were drawn with it and could not be read at all.
-static func art_label(text: String, size := UI.F_CAPTION, ink := SAND) -> Label:
+# White, not sand. The difference is invisible as a colour and it is a fifth of
+# a contrast step: this type lands on painted art -- the cabinet's brass frame,
+# a green hillside -- and against a warm mid tone sand gives up more than it
+# looks like it should. The outline is what does most of the work either way.
+static func art_label(text: String, size := UI.F_CAPTION, ink := Color.WHITE) -> Label:
 	var l := title(text, size, ink, ABYSS)
 	l.add_theme_constant_override("outline_size", maxi(9, int(size * 0.36)))
 	l.add_theme_constant_override("shadow_offset_x", 0)
@@ -1017,30 +1075,12 @@ static func capsule(icon_kind: String, value := "0", plus_action := Callable()) 
 		FX.press_feedback(plus)
 		plus.pressed.connect(plus_action)
 		hb.add_child(plus)
-		var pg := Glyph.new()
-		pg.kind = "plus"
-		pg.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		# Glyph._init gives every icon a 40x40 minimum so one dropped into a
-		# container does not collapse to nothing. Here that minimum is poison:
-		# the insets below ask for 22x22, the minimum wins, and a Control that
-		# loses to its minimum keeps its *position* and grows from it -- so the
-		# glyph sat at (10,10) at full 40x40 size, putting its centre 9px down
-		# and right of the disc it is supposed to be in the middle of. That is
-		# the crooked "+" and it long predates the disc being resized; the
-		# bigger disc merely hid it. Anchored placement only governs if the
-		# minimum gets out of the way.
-		pg.custom_minimum_size = Vector2.ZERO
-		plus.add_child(pg)
-		pg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		# Symmetric. The bottom used to be inset 2px more than the top, which
-		# scaled the glyph inside a box that was not square and left the "+"
-		# sitting high in its own disc -- the second half of what read as the
-		# plus being crooked.
-		pg.offset_left = 10.0
-		pg.offset_right = -10.0
-		pg.offset_top = 10.0
-		pg.offset_bottom = -10.0
+		# Glyph.fill, not a hand-anchored Glyph. It clears the 40x40 minimum
+		# that would otherwise beat these insets and push the "+" down and
+		# right of centre, and it insets all four sides equally so the box
+		# stays square; the long version of why is on Glyph.fill itself.
 		out["plus"] = plus
+		Glyph.fill(plus, "plus", 10.0)
 	return out
 
 # A small colored tag ("BEST VALUE", "NEW"). Flat, no gloss — tags are labels
@@ -1050,10 +1090,20 @@ static func capsule(icon_kind: String, value := "0", plus_action := Callable()) 
 static func chip(text: String, color := CORAL, font_size := UI.F_TINY) -> PanelContainer:
 	var c := PanelContainer.new()
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = color
+	# THE FILL IS THE HUE TAKEN DOWN, THE RIM IS THE HUE ITSELF.
+	#
+	# A chip is white type at 22px on a saturated fill, which is the hardest
+	# combination in the palette: kelp measured 3.68 against white, brass 3.82,
+	# coral 4.41 -- so "Easy" on five collection tiles, "SAVE 78%" on three
+	# shop cards and "250% VALUE" on the starter were all under the line at
+	# once, and the SAVE tags were additionally brass printed on brass. Taking
+	# the fill 40% toward deep water clears 4.5 on every hue the chip is used
+	# in and costs nothing legible: the rim is now the pure colour, lit, so the
+	# chip reads as MORE of its own hue rather than less.
+	sb.bg_color = color.lerp(HULL, 0.40)
 	sb.set_corner_radius_all(12)
 	sb.set_border_width_all(2)
-	sb.border_color = color.lerp(HULL, 0.62)
+	sb.border_color = color
 	sb.content_margin_left = 12.0
 	sb.content_margin_right = 12.0
 	sb.content_margin_top = 3.0
@@ -1065,8 +1115,52 @@ static func chip(text: String, color := CORAL, font_size := UI.F_TINY) -> PanelC
 	l.add_theme_font_override("font", ui_bold_font())
 	l.add_theme_font_size_override("font_size", font_size)
 	l.add_theme_color_override("font_color", Color.WHITE)
-	l.add_theme_color_override("font_outline_color", color.lerp(HULL, 0.75))
+	l.add_theme_color_override("font_outline_color", HULL)
 	l.add_theme_constant_override("outline_size", 4)
+	c.add_child(l)
+	return c
+
+# A value STAMPED ONTO THE GOODS: a deep plate with bright numerals on it.
+#
+# The shop's two loudest numbers -- what you save and how long the offer has --
+# were both printed straight onto whatever card they landed on, and the shop
+# has four different card stocks. "SAVE 25%" was brass type on a brass tile
+# (invisible), then white on brass at 3.82; the countdown was coral on brass at
+# 2.80, the single worst-measuring text in the game. Neither is fixable by
+# picking a better ink, because the surface underneath changes from shelf to
+# shelf.
+#
+# So they stop being printed and start being stamped. A deep plate carries its
+# own contrast wherever it is put down -- brass, steel, silver, cream or open
+# water -- which is the same argument as the keyline, one step up: an object,
+# not a colour. Bright ink on it clears 7 : 1 on every one of those.
+# The empty plate, for the callers that put more than one thing on it -- the
+# struck price and its saving are two labels and a drawn rule, and they belong
+# to one stamp.
+static func stamp_plate(ink := KELP_HI) -> PanelContainer:
+	var c := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(HULL.r, HULL.g, HULL.b, 0.94)
+	sb.set_corner_radius_all(11)
+	sb.set_border_width_all(2)
+	sb.border_color = Color(ink.r, ink.g, ink.b, 0.45)
+	sb.content_margin_left = 11.0
+	sb.content_margin_right = 11.0
+	sb.content_margin_top = 4.0
+	sb.content_margin_bottom = 5.0
+	c.add_theme_stylebox_override("panel", sb)
+	c.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	return c
+
+static func stamp(text: String, ink := KELP_HI, font_size := UI.F_TINY) -> PanelContainer:
+	var c := stamp_plate(ink)
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_override("font", ui_bold_font())
+	l.add_theme_font_size_override("font_size", font_size)
+	l.add_theme_color_override("font_color", ink)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	c.add_child(l)
 	return c
 
@@ -1081,7 +1175,12 @@ static func progress(fill := KELP) -> ProgressBar:
 	bar.show_percentage = false
 	bar.custom_minimum_size = Vector2(0, 30)
 	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(LAGOON_DEEP.r, LAGOON_DEEP.g, LAGOON_DEEP.b, 0.72)
+	# Opaque, and deeper than the drop-off. It was LAGOON_DEEP at 0.72, which on
+	# a cream card comes out a mid teal -- and now that every track in the game
+	# carries its own count, that mid teal is what the count has to be read
+	# against. White on it measured 4.17. A track is a hole; a hole is not
+	# translucent.
+	bg.bg_color = HULL
 	bg.set_corner_radius_all(15)
 	bg.set_border_width_all(3)
 	bg.border_color = Color(HULL.r, HULL.g, HULL.b, 0.80)

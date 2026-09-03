@@ -374,16 +374,26 @@ func _box() -> void:
 
 # The podium places. Three medals in one glyph, told apart by `tint` -- gold,
 # silver and bronze are values of the same object, not three objects.
+# SMALL RIBBON, BIG DISC, and the proportions are the whole point of the glyph.
+#
+# One shape serves gold, silver and bronze -- the metal arrives as `tint`. That
+# only works if the metal is most of what you see, and it was not: the two
+# ribbons were drawn 30 units wide against a 30-unit disc, in coral, which is
+# the same coral whichever place the row is. On the tournament board the glyph
+# is 52px in a rank cell, and at that size the first three rows all read as "a
+# red bow" -- the one thing the icon exists to say was carried by the smallest
+# part of it. The ribbon is a fifth of the object now and the disc is most of
+# it, so the three places separate at a glance.
 func _medal() -> void:
 	var metal := _hue(Lagoon.BRASS)
 	for side in [-1.0, 1.0]:
 		_shape(PackedVector2Array([
-			Vector2(50, 20), Vector2(50 + 20 * side, 8), Vector2(50 + 30 * side, 26),
-			Vector2(50 + 12 * side, 34)]), Lagoon.CORAL, 5.0, Lagoon.CORAL_LO)
-	_disc(Vector2(50, 62), 30, metal, 6.0, metal.darkened(0.45))
-	_disc(Vector2(50, 62), 21, metal.lightened(0.28), 4.0, metal.darkened(0.25))
-	_shape(_star_pts(Vector2(50, 62), 13, 5.5), metal.lightened(0.55), 3.0, metal.darkened(0.35))
-	_spec(Vector2(50, 62), 24, 0.55)
+			Vector2(50, 14), Vector2(50 + 15 * side, 4), Vector2(50 + 23 * side, 17),
+			Vector2(50 + 10 * side, 25)]), Lagoon.CORAL, 4.0, Lagoon.CORAL_LO)
+	_disc(Vector2(50, 60), 38, metal, 6.0, metal.darkened(0.45))
+	_disc(Vector2(50, 60), 27, metal.lightened(0.28), 4.0, metal.darkened(0.25))
+	_shape(_star_pts(Vector2(50, 60), 17, 7.0), metal.lightened(0.55), 3.0, metal.darkened(0.35))
+	_spec(Vector2(50, 60), 30, 0.55)
 
 func _tick() -> void:
 	var c := _hue(Lagoon.KELP)
@@ -453,3 +463,42 @@ func _warn() -> void:
 	_shape(PackedVector2Array([Vector2(50, 12), Vector2(92, 84), Vector2(8, 84)]), c, 7.0, Lagoon.REEF_LO)
 	_bar(Vector2(50, 38), Vector2(50, 62), 11.0, Color.WHITE, 0.0)
 	_disc(Vector2(50, 73), 6.0, Color.WHITE, 0.0)
+
+# =============================================================================
+#  Placing a glyph inside a control
+# =============================================================================
+
+# Drops a glyph into `parent`, filling it with an equal inset on all four sides.
+#
+# WHY THIS EXISTS, AND WHY EVERY ANCHORED GLYPH SHOULD GO THROUGH IT.
+#
+# `_init` gives every glyph a 40x40 minimum so one added to a container cannot
+# collapse to nothing. Anchored inside a small button that minimum is poison:
+# ask for a 32x32 box and Control clamps the size back up to 40x40 while keeping
+# the *position* the offsets gave it -- so the icon grows down and right out of
+# the middle of the disc it is supposed to be centred in. That is the crooked
+# "+" on the coin capsule and the crooked "X" on every dialog, and both were
+# diagnosed and patched one at a time before this existed. Anchored placement
+# only governs if the minimum gets out of the way.
+#
+# The inset is one number on purpose. `_draw` scales the 100x100 artwork
+# uniformly and centres it in whatever box it is given, so an inset that is
+# deeper on one side than the other does not shift the drawing -- it makes the
+# box non-square, which shrinks the drawing and then centres it in a box whose
+# middle is no longer the button's middle. Both crooked icons were that bug
+# twice over.
+static func fill(parent: Control, kind_name: String, inset := 0.0,
+		tint_color := Color(0, 0, 0, 0)) -> Glyph:
+	var g := Glyph.new()
+	g.kind = kind_name
+	if tint_color.a > 0.0:
+		g.tint = tint_color
+	g.custom_minimum_size = Vector2.ZERO
+	g.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(g)
+	g.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	g.offset_left = inset
+	g.offset_right = -inset
+	g.offset_top = inset
+	g.offset_bottom = -inset
+	return g

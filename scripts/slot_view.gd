@@ -254,35 +254,49 @@ func _build_meter() -> Control:
 	stack.add_theme_constant_override("separation", 0)
 	wpad.add_child(stack)
 
+	# THE COUNT RIDES THE BAR, like every other track in the game.
+	#
+	# It used to sit under the bar in a two-end row -- "50 / 50" hard left, "Spins
+	# full" hard right -- with an empty strip above them, so the one gauge the
+	# player looks at before every press was three objects saying one thing, none
+	# of them in the middle of anything. The wheel comes along: it is there to
+	# say WHICH resource the number counts, which is the whole reason it was
+	# added, and that only works next to the digits.
 	_meter = Lagoon.progress(Lagoon.KELP)
-	_meter.custom_minimum_size = Vector2(0, 26)
+	_meter.custom_minimum_size = Vector2(0, 34)
 	stack.add_child(_meter)
 
-	var readout := HBoxContainer.new()
-	readout.add_theme_constant_override("separation", 6)
-	stack.add_child(readout)
-	# The wheel, next to the number it counts.
-	#
-	# The row said "308" and "Spins full" and never said what either was about.
-	# Every other counter in the game arrives with its own icon -- coins, stars,
-	# shields, the island -- so the one place the player looks BEFORE pressing
-	# SPIN was the only place that made them infer which resource it meant, and
-	# it read as an empty strip rather than as a gauge. Sized to the cap height
-	# of the digits beside it so the pair reads as one object.
+	var on_bar := CenterContainer.new()
+	on_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_meter.add_child(on_bar)
+	on_bar.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var pair := HBoxContainer.new()
+	pair.add_theme_constant_override("separation", 6)
+	pair.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	on_bar.add_child(pair)
+	# Sized to the cap height of the digits beside it so the pair reads as one
+	# object.
 	var spin_mark := Glyph.new()
 	spin_mark.kind = "wheel"
-	spin_mark.custom_minimum_size = Vector2(30, 30)
+	spin_mark.custom_minimum_size = Vector2(26, 26)
 	spin_mark.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	readout.add_child(spin_mark)
-	_meter_label = Lagoon.title("0 / 50", UI.F_CAPTION, Lagoon.SAND, Lagoon.ABYSS)
-	_meter_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	pair.add_child(spin_mark)
+	# White over a deep well and a kelp fill alike, which is what the shared
+	# track style is built for -- sand was picked when this number sat on the
+	# cabinet's brass instead.
+	_meter_label = Lagoon.title("0 / 50", UI.F_CAPTION, Color.WHITE, Lagoon.HULL)
+	_meter_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_meter_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	readout.add_child(_meter_label)
+	pair.add_child(_meter_label)
+
+	# What is left under the bar is the one thing the bar cannot show: when the
+	# next free spins land. Centred, because there is nothing to balance it
+	# against any more.
 	_timer_label = Lagoon.label("", UI.F_TINY, Lagoon.SAND)
-	_timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_timer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_timer_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_timer_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	readout.add_child(_timer_label)
+	stack.add_child(_timer_label)
 	return row
 
 func _build_card() -> void:
@@ -667,7 +681,10 @@ func _set_sign(text: String, ink: Color) -> void:
 func set_auto(on: bool) -> void:
 	auto_on = on
 	_hint.text = "Auto  spin  on  —  tap  to  stop" if on else "Hold  for  auto  spin"
-	_hint.add_theme_color_override("font_color", Color(0.72, 1.0, 0.84) if on else Lagoon.SAND)
+	# White at rest, not sand. This line lands on the cabinet's brass frame and
+	# art_label defaults to white for exactly that reason -- but this override
+	# runs on every auto toggle and was quietly putting sand back every time.
+	_hint.add_theme_color_override("font_color", Color(0.72, 1.0, 0.84) if on else Color.WHITE)
 
 func is_spinning() -> bool:
 	return reels != null and reels.is_spinning()
