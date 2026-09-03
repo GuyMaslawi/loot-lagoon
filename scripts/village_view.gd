@@ -105,7 +105,7 @@ func _ready() -> void:
 
 		# Building names sit on painted island art, which is the busiest surface
 		# in the game -- a thin outline is not enough to separate them from it.
-		var bname := Lagoon.title(b["name"], UI.F_CAPTION, Lagoon.SAND, Lagoon.ABYSS)
+		var bname := Lagoon.art_label(b["name"], UI.F_CAPTION)
 		root.add_child(bname)
 		bname.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
 		bname.offset_top = -4.0
@@ -169,10 +169,25 @@ func refresh(buildings: Array, coins: int, costs: Array) -> void:
 		if level >= CV.MAX_STAR:
 			btn.text = "MAX"
 			btn.disabled = true
+			btn.remove_theme_color_override("font_color")
 		else:
 			var cost: int = costs[level]
 			btn.text = ("Build  %s" if level == 0 else "Upgrade  %s") % UI.fmt_compact(cost)
-			btn.disabled = coins < cost
+			# CANNOT AFFORD IS A PRICE IN RED, NOT A DEAD BUTTON.
+			#
+			# These five buttons are the whole island page, and early on none of
+			# them are affordable -- so the page opened as five pale slabs, which
+			# is what a broken screen looks like. A build you cannot pay for is
+			# not unavailable, it is expensive: the button stays the green it
+			# will be when you can, and the number turns the colour of a number
+			# you are short of. The press is still refused, and it says why.
+			var short: bool = coins < cost
+			btn.disabled = false
+			btn.add_theme_color_override("font_color",
+				Lagoon.REEF if short else Color.WHITE)
+			btn.add_theme_color_override("font_outline_color",
+				Lagoon.REEF_LO.darkened(0.35) if short else Lagoon.KELP_LO.lerp(Lagoon.HULL, 0.55))
+			btn.set_meta("short", short)
 
 # `new_level` is the level the hut will stand at when the scaffold comes down.
 # Passed in rather than inferred, because the caller is the only one that knows

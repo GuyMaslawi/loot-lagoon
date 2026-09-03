@@ -28,6 +28,17 @@ extends RefCounted
 #                actions and nowhere else, which is why the eye finds SPIN
 #                instantly on a page full of other controls.
 #
+#   THE KEYLINE  Every object -- card, capsule, button, chip, token, plaque,
+#                well -- is drawn with a rim of deep lagoon water around it.
+#                This is the load-bearing rule of the whole system and it was
+#                added late, after measuring: a game where the chrome is light
+#                and the world behind it is light has no edges, so nothing
+#                separates from anything and 245 of 338 pieces of text on
+#                screen were below the readable threshold. A dark rim is what
+#                lets a bright palette stay bright and still read -- the edge
+#                carries the separation so the fills don't have to. Never draw
+#                a surface in this game without one.
+#
 # The island you are on tints the backdrop and the hero button's glow. The
 # chrome itself never changes — a constant frame is what makes 30 different
 # islands feel like one game.
@@ -56,18 +67,48 @@ const CORAL       := Color(1.000, 0.420, 0.290)
 const CORAL_LO    := Color(0.776, 0.204, 0.122)
 
 # --- support hues ------------------------------------------------------------
-const KELP        := Color(0.247, 0.749, 0.498)  # confirm / progress
-const KELP_LO     := Color(0.086, 0.478, 0.302)
-const URCHIN      := Color(0.573, 0.427, 0.851)  # rare / premium
-const URCHIN_LO   := Color(0.353, 0.235, 0.588)
-const REEF        := Color(0.945, 0.310, 0.404)  # alert / danger
-const REEF_LO     := Color(0.667, 0.145, 0.220)
+# Every one of these carries white display text, so its value is set by that and
+# not by how pretty the swatch is on its own. KELP was #3fbf7f and scored 2.34
+# against white -- the Build, Claim and price buttons, i.e. most of what the
+# player is asked to press. Darkened to clear 3:1 for the display type that sits
+# on it; the lighter tone survives as the highlight in KELP_HI so the button is
+# no less green, it is just green with somewhere to fall.
+const KELP        := Color(0.114, 0.596, 0.373)  # confirm / progress
+const KELP_HI     := Color(0.353, 0.831, 0.573)
+const KELP_LO     := Color(0.043, 0.353, 0.216)
+const URCHIN      := Color(0.502, 0.337, 0.804)  # rare / premium
+const URCHIN_LO   := Color(0.286, 0.176, 0.494)
+const REEF        := Color(0.882, 0.196, 0.298)  # alert / danger
+const REEF_LO     := Color(0.545, 0.086, 0.145)
+
+# --- the keyline -------------------------------------------------------------
+# Deep water, used as an edge rather than a fill. It is the same family as ABYSS
+# so the rim reads as the lagoon's own shadow and not as a black stroke borrowed
+# from somewhere else.
+const HULL        := Color(0.031, 0.180, 0.235)  # the rim on every object
 
 # --- ink ---------------------------------------------------------------------
+# Every value here is measured against SHELL, which is what text in this game
+# almost always lands on. tools/qa_contrast.tscn re-measures them in place --
+# on the real panel, over the real backdrop -- and is the only authority.
+#
+#   INK        13.0 : 1     INK_MUTE    7.1 : 1
+#   INK_SOFT    5.3 : 1     INK_FAINT   5.0 : 1
+#
+# INK_SOFT sat at 4.66 against pure SHELL, which sounds like a pass and is not
+# one: card faces carry a gloss and a tint, so the surface under a caption is
+# never quite SHELL and the measured ratio came back 4.45 on twenty separate
+# rows. A token has to clear the bar on the surface it actually lands on.
+#
+# INK_FAINT used to be #739ca7 and scored 2.8. It was the game's "tertiary"
+# tone and it was on the season timer, the card odds, the piggy bank's progress
+# note and the star cost of every box -- so the rule "quieter means paler" had
+# quietly taken a fifth of the copy in the game below legible. Tertiary is now
+# expressed by size and weight; every ink in the ladder clears AA.
 const INK         := Color(0.043, 0.227, 0.286)  # primary text on glass
-const INK_SOFT    := Color(0.290, 0.475, 0.529)  # secondary text on glass
+const INK_SOFT    := Color(0.259, 0.427, 0.478)  # secondary text on glass
 const INK_MUTE    := Color(0.167, 0.351, 0.408)  # secondary text at caption size
-const INK_FAINT   := Color(0.451, 0.612, 0.655)  # tertiary / disabled
+const INK_FAINT   := Color(0.267, 0.451, 0.510)  # tertiary -- still readable
 
 # Corner radii. Sea glass is tumbled smooth, so nothing in this game has a
 # tight corner; the smallest radius is still generous.
@@ -155,6 +196,38 @@ static func wordmark(text: String, size := 64) -> Label:
 	l.add_theme_color_override("font_shadow_color", Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.35))
 	return l
 
+# Display type that has to survive being printed straight onto painted art --
+# a hut's name over grass, a caption over island water. Nothing here is a flat
+# fill it can be measured against, so the letterform is carried entirely by a
+# heavy rim and a cast shadow, the way a sign painted on a wall is. title()'s
+# default rim is tuned for type on chrome and is about half what this needs:
+# the island's building names were drawn with it and could not be read at all.
+static func art_label(text: String, size := UI.F_CAPTION, ink := SAND) -> Label:
+	var l := title(text, size, ink, ABYSS)
+	l.add_theme_constant_override("outline_size", maxi(9, int(size * 0.36)))
+	l.add_theme_constant_override("shadow_offset_x", 0)
+	l.add_theme_constant_override("shadow_offset_y", maxi(3, int(size * 0.12)))
+	l.add_theme_constant_override("shadow_outline_size", 0)
+	l.add_theme_color_override("font_shadow_color", Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.45))
+	return l
+
+# A number that means treasure -- a star count, a coin total, a score. Gold on
+# its own is a light hue, so on this game's pale glass it measures about 1.4 : 1
+# and the star column of the world board was, row for row, the least readable
+# thing in the game. Gold is not a fill here; it is a fill inside a deep rim,
+# which is how every coin number in this genre is drawn and the only way a warm
+# light colour survives on a warm light surface.
+static func gold_value(text: String, size := UI.F_LABEL, fill := BRASS_HI) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_override("font", display_font())
+	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_color_override("font_color", fill)
+	l.add_theme_color_override("font_outline_color", HULL)
+	l.add_theme_constant_override("outline_size", maxi(5, int(size * 0.20)))
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	return l
+
 static func label(text: String, size := UI.F_LABEL, ink := INK, bold := false) -> Label:
 	var l := Label.new()
 	l.text = text
@@ -167,18 +240,159 @@ static func label(text: String, size := UI.F_LABEL, ink := INK, bold := false) -
 #  Sea glass
 # =============================================================================
 
-# The workhorse surface: milky, translucent, lit along its top edge. `opacity`
-# leans opaque for anything holding text, translucent for decorative layers.
-static func glass(radius := R_CARD, opacity := 0.90) -> StyleBoxFlat:
+# The workhorse surface: milky, lit along its top edge, rimmed in deep water.
+# `opacity` leans opaque for anything holding text, translucent for decorative
+# layers.
+#
+# The rim used to be white at 0.85 and the fill 0.90, which is a light edge
+# around a light surface sitting on a light lagoon -- three values within a few
+# percent of each other and therefore no edge at all. The card's own shape was
+# being carried by nothing but a soft shadow. The lit top edge is not lost: the
+# gloss overlay draws it *inside* the rim, which is where it belongs on a piece
+# of glass anyway, and the dark rim outside it is what the shape is read from.
+static func glass(radius := R_CARD, opacity := 0.95) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(SHELL.r, SHELL.g, SHELL.b, opacity)
 	sb.set_corner_radius_all(radius)
 	sb.set_border_width_all(3)
-	sb.border_color = Color(1, 1, 1, 0.85)
-	sb.shadow_size = 12
-	sb.shadow_color = Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.26)
+	sb.border_color = Color(HULL.r, HULL.g, HULL.b, 0.88 * maxf(opacity, 0.45))
+	sb.shadow_size = 14
+	sb.shadow_color = Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.32)
 	sb.shadow_offset = Vector2(0, 6)
 	return sb
+
+# =============================================================================
+#  Paper
+# =============================================================================
+#
+# The card the board carries. Sea glass is right when it floats over the world
+# and you are meant to see the water through it; on a deep board there is
+# nothing to see through to, and a translucent white panel on dark water is
+# just a grey rectangle. So a menu card is paper: warm, opaque, edged in deep
+# water, with the light catching its top edge and a shadow under its bottom.
+#
+# The warmth is the point. A pure white sheet on a teal board is a screen; sand
+# on a teal board is an object somebody handed you, and it is the same sand the
+# brass plaques are engraved in, so the two belong to each other.
+static func sheet(radius := R_CARD, tone := 0.0) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = SHELL.lerp(SAND, 0.55 + tone)
+	sb.set_corner_radius_all(radius)
+	sb.set_border_width_all(3)
+	sb.border_color = HULL
+	sb.shadow_size = 16
+	sb.shadow_color = Color(0, 0, 0, 0.42)
+	sb.shadow_offset = Vector2(0, 7)
+	return sb
+
+# A sheet with a coloured band across the top of it, and the card's name
+# engraved in the band.
+#
+# This is the difference between a page of cards and a page of rectangles. A
+# title set in dark ink at the top of a cream card is a paragraph with a bold
+# first line; the same title in white on a band of colour is a *label on an
+# object*, and it lets a page say what each card is for from across the room --
+# which is what the games this one is aimed at do on every single card.
+#
+# Returns the body to fill; the band is already built.
+static func header_card(parent: Node, heading: String, band := LAGOON_DEEP,
+		radius := R_CARD, pad := 16) -> VBoxContainer:
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", sheet(radius))
+	panel.clip_contents = true
+	parent.add_child(panel)
+
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 0)
+	panel.add_child(col)
+
+	var head := PanelContainer.new()
+	var hsb := StyleBoxFlat.new()
+	hsb.bg_color = band
+	hsb.corner_radius_top_left = radius - 3
+	hsb.corner_radius_top_right = radius - 3
+	hsb.border_width_bottom = 3
+	hsb.border_color = band.lerp(HULL, 0.55)
+	hsb.content_margin_left = 18.0
+	hsb.content_margin_right = 18.0
+	hsb.content_margin_top = 8.0
+	hsb.content_margin_bottom = 9.0
+	head.add_theme_stylebox_override("panel", hsb)
+	col.add_child(head)
+
+	var lbl := title(heading, UI.F_SUBHEAD, Color.WHITE, band.lerp(HULL, 0.72))
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	head.add_child(lbl)
+
+	var margin := MarginContainer.new()
+	for m in ["margin_left", "margin_right"]:
+		margin.add_theme_constant_override(m, pad)
+	margin.add_theme_constant_override("margin_top", pad - 2)
+	margin.add_theme_constant_override("margin_bottom", pad)
+	col.add_child(margin)
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 10)
+	margin.add_child(body)
+	return body
+
+# The section header a shelf of cards sits under: a ribbon, not a pill between
+# two hairlines.
+#
+# The old one was a small brass plaque with a faded rule out to each side. It
+# said "here is a heading" quietly and politely, in the middle of a page whose
+# whole problem was that nothing on it spoke up. A ribbon spans the column,
+# carries its title in white, and has a notch cut out of each end so it reads
+# as a strip of something rather than as another rounded rectangle.
+static func banner(text: String, fill := LAGOON_DEEP, height := 58.0) -> Control:
+	var root := Control.new()
+	root.custom_minimum_size = Vector2(0, height)
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var strip := Panel.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = fill
+	sb.set_corner_radius_all(8)
+	sb.set_border_width_all(3)
+	sb.border_color = fill.lerp(HULL, 0.60)
+	sb.shadow_size = 8
+	sb.shadow_color = Color(0, 0, 0, 0.36)
+	sb.shadow_offset = Vector2(0, 4)
+	strip.add_theme_stylebox_override("panel", sb)
+	strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(strip)
+	strip.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	strip.offset_left = 26.0
+	strip.offset_right = -26.0
+
+	# The notch. Two small pieces of the board, punched into each end, which is
+	# what turns a bar into a ribbon.
+	for side in [0.0, 1.0]:
+		var notch := Panel.new()
+		var nsb := StyleBoxFlat.new()
+		nsb.bg_color = Color(0, 0, 0, 0.42)
+		nsb.set_corner_radius_all(6)
+		notch.add_theme_stylebox_override("panel", nsb)
+		notch.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		root.add_child(notch)
+		notch.set_anchors_and_offsets_preset(
+			Control.PRESET_CENTER_LEFT if side == 0.0 else Control.PRESET_CENTER_RIGHT)
+		notch.custom_minimum_size = Vector2(18, height * 0.34)
+		notch.size = notch.custom_minimum_size
+		notch.offset_top = -notch.size.y * 0.5
+		notch.offset_bottom = notch.size.y * 0.5
+		if side == 0.0:
+			notch.offset_left = 20.0
+			notch.offset_right = 38.0
+		else:
+			notch.offset_left = -38.0
+			notch.offset_right = -20.0
+
+	var lbl := title(text, UI.F_LABEL, Color.WHITE, fill.lerp(HULL, 0.75))
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	root.add_child(lbl)
+	lbl.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	return root
 
 # A darker piece of glass, for wells that content sits *inside* rather than on
 # top of — the reel window, progress tracks, inset rows.
@@ -208,12 +422,16 @@ static func shader(code: String) -> Shader:
 		_shaders[code] = sh
 	return sh
 
+# A well is a hole, so it has to be darker than what it is cut into -- at 0.30
+# over a white card it was lighter than the card's own shadow and read as a
+# smudge. Deep enough now that a fill sitting in it is unmistakably a fill, and
+# that white text written across it survives.
 static func glass_well(radius := R_CARD) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(LAGOON_DEEP.r, LAGOON_DEEP.g, LAGOON_DEEP.b, 0.30)
+	sb.bg_color = Color(LAGOON_DEEP.r, LAGOON_DEEP.g, LAGOON_DEEP.b, 0.62)
 	sb.set_corner_radius_all(radius)
 	sb.set_border_width_all(2)
-	sb.border_color = Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.22)
+	sb.border_color = Color(HULL.r, HULL.g, HULL.b, 0.70)
 	return sb
 
 # Overlay that turns a flat fill into a piece of glass: a crisp lit edge across
@@ -269,7 +487,7 @@ static func add_gloss(panel: Control, radius := R_CARD, tint := LAGOON) -> Color
 
 # A finished sea-glass card: panel + gloss + inner margin, returns the VBox to
 # fill. This is the default container for anything in the game.
-static func card(parent: Node, radius := R_CARD, pad := 18, opacity := 0.90) -> VBoxContainer:
+static func card(parent: Node, radius := R_CARD, pad := 18, opacity := 0.95) -> VBoxContainer:
 	var panel := PanelContainer.new()
 	panel.add_theme_stylebox_override("panel", glass(radius, opacity))
 	parent.add_child(panel)
@@ -299,6 +517,7 @@ uniform float radius = 14.0;
 uniform vec3 hi  = vec3(0.976, 0.898, 0.694);
 uniform vec3 mid = vec3(0.820, 0.604, 0.278);
 uniform vec3 lo  = vec3(0.478, 0.290, 0.094);
+uniform vec3 rim = vec3(0.086, 0.145, 0.161);
 
 float rr(vec2 p, vec2 half_size, float r) {
 	vec2 q = abs(p) - half_size + vec2(r);
@@ -315,8 +534,10 @@ void fragment() {
 	c = mix(c, hi, smoothstep(0.46, 0.24, y));                 // the polished band
 	c = mix(c, lo, smoothstep(0.58, 0.94, y));                 // belly falls into shadow
 	c = mix(c, hi, smoothstep(0.99, 0.90, y) * 0.40);          // bounce off the base
-	// dark chamfer right at the outline keeps the shape crisp on any backdrop
-	c = mix(c, lo * 0.55, smoothstep(-3.5, -0.5, d));
+	// The rim. Every object in this game is edged in deep water, and brass is
+	// no exception -- a plaque whose outermost pixel is still brass has the
+	// same value as the sand it is cast against and loses its own silhouette.
+	c = mix(c, rim, smoothstep(-5.0, -1.0, d));
 	COLOR = vec4(c, inside);
 }
 """)
@@ -348,7 +569,11 @@ static func plaque(text: String, width := 0.0, height := 78.0, font_size := 44, 
 	metal.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	metal.resized.connect(func() -> void: mat.set_shader_parameter("rect_px", metal.size))
 
-	var lbl := title(text, font_size, SAND, BRASS_LO.darkened(0.25))
+	# Engraved, so the letterform is carried by the cut and not by the fill:
+	# sand on brass is 1.8 : 1 on its own and the rim is doing all the work.
+	# Deeper and heavier than title()'s default for that reason.
+	var lbl := title(text, font_size, SAND, BRASS_LO.darkened(0.55))
+	lbl.add_theme_constant_override("outline_size", maxi(7, int(font_size * 0.26)))
 	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	root.add_child(lbl)
 	lbl.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -377,7 +602,7 @@ static func brass_ring(thickness := 7.0) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0, 0, 0, 0)
 	sb.set_border_width_all(int(thickness))
-	sb.border_color = BRASS
+	sb.border_color = BRASS.lerp(HULL, 0.30)
 	sb.set_corner_radius_all(200)
 	return sb
 
@@ -415,6 +640,13 @@ static func button(btn: Button, kind := "primary", radius := 0) -> void:
 # and are the one place in the game that does not get to be lagoon-coloured.
 static func button_custom(btn: Button, face: Color, bevel: Color, ink: Color, radius := 0) -> void:
 	var r := radius if radius > 0 else 22
+	# The rim. A button used to be edged only along its bottom -- that is the
+	# bevel it presses into -- so its left, right and top edges were the face
+	# colour meeting whatever was behind it. On a bright lagoon that is a mid
+	# tone meeting a light one, and the button lost its own outline. Rimming all
+	# four sides in deep water is what makes it a moulded object; the bottom
+	# stays thicker because that is still the edge it travels down into.
+	var rim := bevel.lerp(HULL, 0.55)
 
 	for state in ["normal", "hover", "pressed", "disabled"]:
 		var sb := StyleBoxFlat.new()
@@ -423,40 +655,64 @@ static func button_custom(btn: Button, face: Color, bevel: Color, ink: Color, ra
 		sb.content_margin_bottom = 10.0
 		sb.content_margin_left = 22.0
 		sb.content_margin_right = 22.0
+		sb.set_border_width_all(3)
 		match state:
 			"hover":
 				sb.bg_color = face.lightened(0.10)
-				sb.border_width_bottom = 7
+				sb.border_width_bottom = 8
 			"pressed":
 				# the face travels down into its bevel rather than just darkening
 				sb.bg_color = face.darkened(0.10)
-				sb.border_width_bottom = 2
+				sb.border_width_bottom = 3
 				sb.content_margin_top = 15.0
 				sb.content_margin_bottom = 5.0
 			"disabled":
-				# Dark enough that the white label still reads. A pale grey face
-				# with pale text is the most common way a disabled button ends
-				# up illegible rather than merely inactive.
-				sb.bg_color = Color(0.51, 0.59, 0.62, 0.92)
-				sb.border_width_bottom = 5
+				# NOT YET IS A SHAPE, NOT A COLOUR.
+				#
+				# Two wrong answers were tried here first. A grey slab, which is
+				# what a broken control looks like -- the quests page was a
+				# column of them where every CLAIM was merely unearned, and that
+				# reads as an app that has stopped working. Then the button's
+				# own hue desaturated, which turns kelp into olive and brass
+				# into dusty pink: quieter, but also uglier, and still guessing.
+				#
+				# The affordance the player actually uses is height. Every live
+				# button in this game is a raised lozenge with a bevel under it
+				# that it travels down into when pressed. So an inactive one is
+				# the same lozenge lying flat: no bevel, nothing to press into,
+				# a cool pane of the game's own glass with the rim it always
+				# had. It is legible, it is not broken, and it is not a colour
+				# anybody has to like.
+				sb.bg_color = Color(0.847, 0.898, 0.910, 0.96)
 			_:
 				sb.bg_color = face
-				sb.border_width_bottom = 7
-		sb.border_color = bevel if state != "disabled" else Color(0.33, 0.40, 0.43, 0.92)
-		sb.shadow_size = 8
-		sb.shadow_color = Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.22)
+				sb.border_width_bottom = 8
+		sb.border_color = rim if state != "disabled" else Color(HULL.r, HULL.g, HULL.b, 0.45)
+		if state == "disabled":
+			# Flat. No bevel to travel into is the whole signal.
+			sb.border_width_bottom = 3
+		sb.shadow_size = 9
+		sb.shadow_color = Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.18 if state == "disabled" else 0.28)
 		sb.shadow_offset = Vector2(0, 4)
 		btn.add_theme_stylebox_override(state, sb)
 
 	btn.add_theme_font_override("font", display_font())
 	if not btn.has_theme_font_size_override("font_size"):
 		btn.add_theme_font_size_override("font_size", UI.F_LABEL)
-	var outline: Color = bevel.darkened(0.25) if ink.get_luminance() > 0.5 else Color(1, 1, 1, 0.55)
+	# The label is read off its outline as much as its fill, so the outline is
+	# always the dark one. White-on-kelp measured 2.34 with a pale rule behind
+	# it; the same white over a deep rim clears 3:1 without the green having to
+	# turn into a colour nobody wants on a Build button.
+	var outline: Color = rim.darkened(0.15) if ink.get_luminance() > 0.5 else Color(1, 1, 1, 0.70)
 	for c in ["font_color", "font_hover_color", "font_pressed_color", "font_focus_color"]:
 		btn.add_theme_color_override(c, ink)
-	btn.add_theme_color_override("font_disabled_color", Color(1, 1, 1, 0.88))
+	# Dark on the pale inactive face. It shares one outline colour with every
+	# other state, which is dark too -- on a disabled button that simply reads
+	# as a heavier letterform, and heavy dark type on cool glass is the most
+	# readable thing on the page. An unearned reward is still information.
+	btn.add_theme_color_override("font_disabled_color", INK_MUTE)
 	btn.add_theme_color_override("font_outline_color", outline)
-	btn.add_theme_constant_override("outline_size", 6)
+	btn.add_theme_constant_override("outline_size", 7)
 	btn.focus_mode = Control.FOCUS_NONE
 
 # Adds the specular arc that makes a button look moulded rather than printed.
@@ -550,6 +806,94 @@ void fragment() {
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	return mat
 
+# =============================================================================
+#  The board
+# =============================================================================
+#
+# THE MENUS DO NOT STAND ON THE SKY.
+#
+# Every page in the game used to sit on the same bright lagoon: sky at the top,
+# turquoise water below. That is right for the two pages that ARE the world --
+# the machine and the island -- and it is why everything else looked amateur.
+# A cream card on a bright cyan gradient has nowhere to cast a shadow and
+# nothing to be brighter than, so six menus' worth of content floated in a wash.
+#
+# A menu is not a place in the world. It is a board you have been handed, and
+# in every game this one is aimed at, a board is dark: the shop, the card
+# album, the leaderboard and the event panel all sit on deep water or deep
+# wood, and the colour is spent on the goods rather than on the ground. Dark
+# ground is also what buys the accessibility -- once the page is deep, cream
+# paper is a 14 : 1 surface and the coral, kelp and brass on top of it stop
+# competing with a lit sky for attention.
+#
+# DEEP, NOT BLACK. The first version ran to #031F31 at the foot of the page,
+# which is dark enough that the board stops being water and starts being an
+# absence -- and a page that swings from near-white paper to near-black ground
+# is tiring to read for the same reason a white page on a black desktop is. It
+# sits in the mid-dark now: the paper still carries every bit of its contrast,
+# and the eye has somewhere to rest between the cards.
+#
+# So: the world is bright, the board is deep, and the game reads as one object
+# because the same light falls on both from the same place.
+static func board(page: Control) -> ShaderMaterial:
+	var bg := ColorRect.new()
+	var sh := shader("""
+shader_type canvas_item;
+
+uniform vec3 top    = vec3(0.078, 0.286, 0.361);
+uniform vec3 bottom = vec3(0.031, 0.145, 0.204);
+uniform vec3 lamp   = vec3(1.000, 0.820, 0.480);
+
+void fragment() {
+	// Depth down the board, eased so the top third stays open and the bottom
+	// closes in. A linear ramp reads as a printed gradient; this reads as water.
+	float y = smoothstep(0.0, 1.0, UV.y);
+	vec3 c = mix(top, bottom, y);
+
+	// The lamp. One warm source above the page, the same direction the light
+	// comes from on the bright pages, so the two grounds are lit alike.
+	float d = length((UV - vec2(0.5, -0.06)) * vec2(0.92, 1.20));
+	c = mix(c, lamp, smoothstep(0.86, 0.0, d) * 0.22);
+
+	// Caustics, at a tenth of the strength they have on open water -- enough
+	// that the board is a surface rather than a fill, not enough to read as
+	// pattern behind text.
+	float t = UV.y;
+	float a = sin(UV.x * 6.0  + TIME * 0.19 + t * 7.0);
+	float b = sin(UV.x * 11.0 - TIME * 0.13 + t * 4.0);
+	float caustic = pow(max((a * 0.5 + 0.5) * (b * 0.5 + 0.5), 0.0), 2.6);
+	c += vec3(0.10, 0.20, 0.20) * caustic * (1.0 - y * 0.55) * 0.22;
+
+	// Corner vignette, so the content column is the brightest part of the page
+	// and the chrome never touches a lit edge.
+	// A column of light down the middle, where the cards are, and the corners
+	// falling away. Gentle -- a hard vignette draws a ring, which is worse than
+	// no vignette at all.
+	c *= mix(0.88, 1.05, 1.0 - smoothstep(0.30, 1.12, length((UV - vec2(0.5)) * vec2(1.15, 0.70))));
+	COLOR = vec4(c, 1.0);
+}
+""")
+	var mat := ShaderMaterial.new()
+	mat.shader = sh
+	bg.material = mat
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	page.add_child(bg)
+	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	return mat
+
+# The island's identity, pushed into a board. Much weaker than it is pushed
+# into the sky: a board is deep water and it has to stay deep water, or Ancient
+# Egypt's gold turns the shop into a brown room.
+static func tint_board(mat: ShaderMaterial, p: Dictionary) -> void:
+	if mat == null:
+		return
+	var mid: Color = p["mid"]
+	# Very little. At 0.20 a green island turned the board olive, which is not a
+	# colour deep water comes in -- the island is meant to be a hint of where you
+	# are, not the material the board is made of.
+	mat.set_shader_parameter("top", _v3(Color(0.078, 0.286, 0.361).lerp(mid, 0.10)))
+	mat.set_shader_parameter("bottom", _v3(Color(0.031, 0.145, 0.204).lerp(mid, 0.05)))
+
 # Pushes an island's identity into a backdrop without letting it go dark: the
 # island accent warms the sky, its deep tone steers the water. Luminance floors
 # keep even Volcano Isle and Neon City reading as daylight.
@@ -579,12 +923,26 @@ static func _v3(c: Color) -> Vector3:
 static func capsule(icon_kind: String, value := "0", plus_action := Callable()) -> Dictionary:
 	var root := PanelContainer.new()
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(1, 1, 1, 0.88)
+	# DEEP, NOT WHITE.
+	#
+	# A white pill is the brightest object on any screen it is on, and these
+	# eight pills are chrome -- they are on every screen in the game, they are
+	# never the thing you are looking at, and they were out-shouting the goods
+	# on every page. Every game this one is aimed at holds its currencies in a
+	# dark capsule with a metal rim and a bright numeral, for exactly this
+	# reason: dark chrome makes the content the brightest thing, which is what
+	# stops a UI reading as a settings screen with pictures on it.
+	sb.bg_color = Color(LAGOON_DEEP.r * 0.62, LAGOON_DEEP.g * 0.62, LAGOON_DEEP.b * 0.62, 0.94)
 	sb.set_corner_radius_all(28)
-	sb.set_border_width_all(3)
-	sb.border_color = BRASS
-	sb.shadow_size = 7
-	sb.shadow_color = Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.28)
+	sb.set_border_width_all(4)
+	# BRASS at 3px, on a sky this bright, is a mid tone on a light one -- the
+	# capsules had no outline and floated. BRASS_LO is the shadowed edge of the
+	# same metal, so the pill still reads as brass-rimmed, but it is now a dark
+	# ring the sky cannot swallow. This is the row the player checks first and
+	# most often; it has to survive being over the sun bloom.
+	sb.border_color = BRASS_LO
+	sb.shadow_size = 8
+	sb.shadow_color = Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.34)
 	sb.shadow_offset = Vector2(0, 3)
 	# 7 rather than 8 a side, and the icon below is 38 rather than 44. Both came
 	# down on 2026-09-02 when the HUD moved up level with the cutout: a Dynamic
@@ -616,7 +974,12 @@ static func capsule(icon_kind: String, value := "0", plus_action := Callable()) 
 	val.text = value
 	val.add_theme_font_override("font", display_font())
 	val.add_theme_font_size_override("font_size", UI.F_LABEL)
-	val.add_theme_color_override("font_color", INK)
+	# Sand on deep water, and rimmed -- these numbers sit over the sun bloom on
+	# the bright pages and over the board's lamp on the dark ones, so they carry
+	# their own separation rather than relying on either.
+	val.add_theme_color_override("font_color", SAND)
+	val.add_theme_color_override("font_outline_color", Color(0.008, 0.055, 0.078))
+	val.add_theme_constant_override("outline_size", 5)
 	val.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	val.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	hb.add_child(val)
@@ -681,12 +1044,16 @@ static func capsule(icon_kind: String, value := "0", plus_action := Callable()) 
 	return out
 
 # A small colored tag ("BEST VALUE", "NEW"). Flat, no gloss — tags are labels
-# printed on the object, not objects themselves.
+# printed on the object, not objects themselves. Rimmed and outlined all the
+# same: a chip is small and it lands on card faces, brass and open water alike,
+# and "SAVE 78%" in bare white on coral measured 2.07.
 static func chip(text: String, color := CORAL, font_size := UI.F_TINY) -> PanelContainer:
 	var c := PanelContainer.new()
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = color
 	sb.set_corner_radius_all(12)
+	sb.set_border_width_all(2)
+	sb.border_color = color.lerp(HULL, 0.62)
 	sb.content_margin_left = 12.0
 	sb.content_margin_right = 12.0
 	sb.content_margin_top = 3.0
@@ -698,27 +1065,56 @@ static func chip(text: String, color := CORAL, font_size := UI.F_TINY) -> PanelC
 	l.add_theme_font_override("font", ui_bold_font())
 	l.add_theme_font_size_override("font_size", font_size)
 	l.add_theme_color_override("font_color", Color.WHITE)
+	l.add_theme_color_override("font_outline_color", color.lerp(HULL, 0.75))
+	l.add_theme_constant_override("outline_size", 4)
 	c.add_child(l)
 	return c
 
-# Progress track: a glass well with a coral (or given) fill and a lit top edge.
+# Progress track: a dark well with a bright fill and a lit top edge.
+#
+# It was a pale wash in a paler well -- 0.28 of deep water over a white card --
+# so an empty bar and a full one were the same object and neither said anything.
+# A track only reads if the hole is unmistakably a hole; then even a few percent
+# of fill is visible, which is the whole job of the control.
 static func progress(fill := KELP) -> ProgressBar:
 	var bar := ProgressBar.new()
 	bar.show_percentage = false
-	bar.custom_minimum_size = Vector2(0, 26)
+	bar.custom_minimum_size = Vector2(0, 30)
 	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(LAGOON_DEEP.r, LAGOON_DEEP.g, LAGOON_DEEP.b, 0.28)
-	bg.set_corner_radius_all(13)
-	bg.set_border_width_all(2)
-	bg.border_color = Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.18)
+	bg.bg_color = Color(LAGOON_DEEP.r, LAGOON_DEEP.g, LAGOON_DEEP.b, 0.72)
+	bg.set_corner_radius_all(15)
+	bg.set_border_width_all(3)
+	bg.border_color = Color(HULL.r, HULL.g, HULL.b, 0.80)
 	bar.add_theme_stylebox_override("background", bg)
 	var fg := StyleBoxFlat.new()
 	fg.bg_color = fill
-	fg.set_corner_radius_all(13)
-	fg.border_width_top = 3
-	fg.border_color = fill.lightened(0.35)
+	fg.set_corner_radius_all(15)
+	fg.border_width_top = 4
+	# The lit edge along the top of the fill. For a kelp bar this is exactly the
+	# brighter green the token used to be before it was darkened to carry white
+	# text -- so nothing got less green, the green moved to where it reads.
+	fg.border_color = KELP_HI if fill == KELP else fill.lightened(0.40)
 	bar.add_theme_stylebox_override("fill", fg)
 	return bar
+
+# The number written across the middle of a track. A bar without one tells the
+# player they are "some of the way" and nothing else; the reference games this
+# game is aimed at never draw a track without its count on it. White with a
+# deep outline, so it reads over the empty end and the filled end alike.
+static func progress_value(bar: ProgressBar, text: String, size := UI.F_CAPTION) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_override("font", display_font())
+	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_color_override("font_color", Color.WHITE)
+	l.add_theme_color_override("font_outline_color", HULL)
+	l.add_theme_constant_override("outline_size", 6)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bar.add_child(l)
+	l.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	return l
 
 # Content emoji — collection items, chest art, mission markers — can't all be
 # hand-drawn, but they can be *framed*. Dropping each into a brass-rimmed glass
@@ -728,12 +1124,16 @@ static func token(emoji: String, diameter := 76.0, rim := BRASS) -> Control:
 	var root := PanelContainer.new()
 	root.custom_minimum_size = Vector2(diameter, diameter)
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(1, 1, 1, 0.92)
+	sb.bg_color = Color(1, 1, 1, 0.96)
 	sb.set_corner_radius_all(int(diameter * 0.5))
-	sb.set_border_width_all(4)
-	sb.border_color = rim
-	sb.shadow_size = 6
-	sb.shadow_color = Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.25)
+	sb.set_border_width_all(5)
+	# A token is a game piece and it lands on card faces, on water and on grass.
+	# A brass ring at brass's own value disappears against sand and against the
+	# lagoon both; the ring is darkened toward deep water so the piece has an
+	# edge wherever it is put down, while still reading as its own metal.
+	sb.border_color = rim.lerp(HULL, 0.45)
+	sb.shadow_size = 7
+	sb.shadow_color = Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.32)
 	sb.shadow_offset = Vector2(0, 3)
 	root.add_theme_stylebox_override("panel", sb)
 

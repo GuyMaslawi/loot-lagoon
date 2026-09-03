@@ -69,6 +69,16 @@ func _draw() -> void:
 		"close":   _close()
 		"rivet":   _rivet()
 		"anchor":  _anchor()
+		"piggy":   _piggy()
+		"box":     _box()
+		"medal":   _medal()
+		"tick":    _tick()
+		"spark":   _spark()
+		"crown":   _crown()
+		"sun":     _sun()
+		"moon":    _moon()
+		"calendar": _calendar()
+		"warn":    _warn()
 
 # --- drawing primitives ------------------------------------------------------
 
@@ -300,3 +310,146 @@ func _anchor() -> void:
 	_bar(Vector2(28, 40), Vector2(72, 40), 9.0, body, 5.0)
 	draw_arc(Vector2(50, 56), 30, PI * 0.16, PI * 0.84, 20, Lagoon.BRASS_LO, 17.0, true)
 	draw_arc(Vector2(50, 56), 30, PI * 0.16, PI * 0.84, 20, body, 11.0, true)
+
+
+# =============================================================================
+#  Second wave — the shapes that were emoji
+# =============================================================================
+#
+# Every one of these replaces a system glyph the game was borrowing. They are
+# built from the same rules as the first set: one light direction, one line
+# weight, one material vocabulary. That is the whole reason to draw them at
+# all -- an emoji is correct and it belongs to somebody else's design system,
+# so a row of them can never look like it was made for this game.
+
+# The piggy bank, and it is deliberately pink rather than brass: it is the one
+# object in the game that is neither a currency you hold nor a control you
+# press, and giving it its own hue is what makes it findable in a top bar full
+# of metal.
+const PIG      := Color(1.000, 0.663, 0.741)
+const PIG_MID  := Color(0.949, 0.482, 0.596)
+const PIG_LO   := Color(0.639, 0.243, 0.361)
+
+func _piggy() -> void:
+	# ear, behind the head so its base disappears under the body
+	_shape(PackedVector2Array([Vector2(30, 34), Vector2(46, 28), Vector2(36, 46)]),
+		PIG_MID, 5.0, PIG_LO)
+	# trotters, likewise behind
+	for x in [34.0, 66.0]:
+		_shape(_round_rect(Vector2(x, 78), Vector2(15, 20), 5.0), PIG_MID, 5.0, PIG_LO)
+	# body
+	_disc(Vector2(52, 56), 32, _hue(PIG), 6.0, PIG_LO)
+	# snout, on the left so the pig faces out of the screen
+	_shape(_round_rect(Vector2(22, 58), Vector2(24, 20), 8.0), PIG_MID, 5.0, PIG_LO)
+	for y in [54.0, 62.0]:
+		_disc(Vector2(21, y), 3.0, PIG_LO, 0.0)
+	# eye
+	_disc(Vector2(41, 47), 4.5, Lagoon.ABYSS, 0.0)
+	# The slot in its back and the coin going into it -- the two marks that make
+	# a pink animal a piggy BANK. Kept toward the middle: at 40px in a top bar
+	# anything within six units of the edge is the first thing to be lost.
+	_shape(_round_rect(Vector2(54, 31), Vector2(28, 8), 4.0, -0.16), Lagoon.ABYSS, 4.0, Lagoon.ABYSS)
+	_disc(Vector2(66, 16), 12, Lagoon.BRASS, 5.0, Lagoon.BRASS_LO)
+	_shape(_star_pts(Vector2(66, 16), 6.0, 2.6), Lagoon.BRASS_HI, 2.0, Lagoon.BRASS_MID)
+	# curl of tail
+	draw_arc(Vector2(82, 48), 9, PI * 0.85, PI * 2.35, 14, PIG_LO, 5.0, true)
+	_spec(Vector2(52, 56), 24, 0.55)
+
+# A crate of cards. The spares screen, the box shelf and the dock button all
+# used a brown package emoji for this.
+func _box() -> void:
+	var lid := _round_rect(Vector2(50, 33), Vector2(74, 20), 5.0)
+	_shape(lid, Lagoon.BRASS_HI, 6.0, Lagoon.BRASS_LO)
+	var body := _round_rect(Vector2(50, 62), Vector2(66, 42), 6.0)
+	_shape(body, _hue(Lagoon.BRASS), 6.0, Lagoon.BRASS_LO)
+	# strap down the front, so the crate reads as closed rather than as a block
+	_bar(Vector2(50, 43), Vector2(50, 84), 12.0, Lagoon.BRASS_MID, 4.0)
+	# two cards peeking out of the lid
+	for spec in [[-1.0, -0.22], [1.0, 0.22]]:
+		var dir: float = spec[0]
+		var rot: float = spec[1]
+		_shape(_round_rect(Vector2(50 + 15 * dir, 20), Vector2(22, 30), 4.0, rot),
+			Lagoon.SHELL, 5.0, Lagoon.INK_SOFT)
+	_spec(Vector2(50, 62), 26, 0.35)
+
+# The podium places. Three medals in one glyph, told apart by `tint` -- gold,
+# silver and bronze are values of the same object, not three objects.
+func _medal() -> void:
+	var metal := _hue(Lagoon.BRASS)
+	for side in [-1.0, 1.0]:
+		_shape(PackedVector2Array([
+			Vector2(50, 20), Vector2(50 + 20 * side, 8), Vector2(50 + 30 * side, 26),
+			Vector2(50 + 12 * side, 34)]), Lagoon.CORAL, 5.0, Lagoon.CORAL_LO)
+	_disc(Vector2(50, 62), 30, metal, 6.0, metal.darkened(0.45))
+	_disc(Vector2(50, 62), 21, metal.lightened(0.28), 4.0, metal.darkened(0.25))
+	_shape(_star_pts(Vector2(50, 62), 13, 5.5), metal.lightened(0.55), 3.0, metal.darkened(0.35))
+	_spec(Vector2(50, 62), 24, 0.55)
+
+func _tick() -> void:
+	var c := _hue(Lagoon.KELP)
+	_disc(Vector2(50, 50), 42, c, 6.0, Lagoon.KELP_LO)
+	var pts := PackedVector2Array([Vector2(30, 52), Vector2(44, 66), Vector2(72, 34)])
+	draw_polyline(pts, Lagoon.KELP_LO, 15.0, true)
+	draw_polyline(pts, Color.WHITE, 9.0, true)
+
+func _spark() -> void:
+	var c := _hue(Lagoon.BRASS_HI)
+	_shape(_star_pts(Vector2(50, 48), 44, 12, 4), c, 5.0, Lagoon.BRASS_MID)
+	_shape(_star_pts(Vector2(80, 78), 17, 5, 4), c, 3.0, Lagoon.BRASS_MID)
+
+func _crown() -> void:
+	var c := _hue(Lagoon.BRASS)
+	_shape(PackedVector2Array([
+		Vector2(18, 72), Vector2(22, 30), Vector2(36, 48), Vector2(50, 22),
+		Vector2(64, 48), Vector2(78, 30), Vector2(82, 72),
+	]), c, 6.0, Lagoon.BRASS_LO)
+	_shape(_round_rect(Vector2(50, 78), Vector2(66, 14), 5.0), Lagoon.BRASS_MID, 5.0, Lagoon.BRASS_LO)
+	for x in [22.0, 50.0, 78.0]:
+		_disc(Vector2(x, 22.0 if is_equal_approx(x, 50.0) else 30.0), 7,
+			Lagoon.CORAL, 4.0, Lagoon.CORAL_LO)
+
+func _sun() -> void:
+	var c := _hue(Lagoon.BRASS_HI)
+	for i in 8:
+		var a := TAU * float(i) / 8.0
+		var dir := Vector2(cos(a), sin(a))
+		_bar(Vector2(50, 50) + dir * 30.0, Vector2(50, 50) + dir * 44.0, 9.0, Lagoon.BRASS, 4.0)
+	_disc(Vector2(50, 50), 27, c, 6.0, Lagoon.BRASS_LO)
+	_spec(Vector2(50, 50), 20, 0.6)
+
+func _moon() -> void:
+	# A CRESCENT IS A SHAPE, NOT A SUBTRACTION.
+	#
+	# The first version drew a full disc and then covered part of it with a
+	# second disc in the page colour. That only works if you know what the page
+	# colour is, and an icon does not -- on a white card the "bite" rendered as
+	# a solid dark circle sitting on top of the moon. Built from two arcs into
+	# one polygon, it is a crescent on any background.
+	var c := _hue(Lagoon.SHELL)
+	var pts := PackedVector2Array()
+	for i in 25:
+		var a := -PI * 0.5 + PI * float(i) / 24.0
+		pts.append(Vector2(50, 50) + Vector2(cos(a), sin(a)) * 40.0)
+	for i in 25:
+		var a := PI * 0.5 - PI * float(i) / 24.0
+		pts.append(Vector2(74, 50) + Vector2(cos(a), sin(a)) * 40.0)
+	_shape(pts, c, 6.0, Lagoon.INK_SOFT)
+	_disc(Vector2(38, 40), 5, Lagoon.INK_FAINT, 0.0)
+	_disc(Vector2(33, 60), 3.5, Lagoon.INK_FAINT, 0.0)
+
+func _calendar() -> void:
+	var body := _round_rect(Vector2(50, 56), Vector2(72, 66), 8.0)
+	_shape(body, _hue(Lagoon.SHELL), 6.0, Lagoon.INK_SOFT)
+	var head := _round_rect(Vector2(50, 32), Vector2(72, 18), 6.0)
+	_shape(head, Lagoon.CORAL, 5.0, Lagoon.CORAL_LO)
+	for x in [34.0, 66.0]:
+		_bar(Vector2(x, 16), Vector2(x, 30), 8.0, Lagoon.BRASS, 4.0)
+	for row in [56.0, 74.0]:
+		for col in [34.0, 50.0, 66.0]:
+			_disc(Vector2(col, row), 5.0, Lagoon.INK_FAINT, 0.0)
+
+func _warn() -> void:
+	var c := _hue(Lagoon.REEF)
+	_shape(PackedVector2Array([Vector2(50, 12), Vector2(92, 84), Vector2(8, 84)]), c, 7.0, Lagoon.REEF_LO)
+	_bar(Vector2(50, 38), Vector2(50, 62), 11.0, Color.WHITE, 0.0)
+	_disc(Vector2(50, 73), 6.0, Color.WHITE, 0.0)

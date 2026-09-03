@@ -84,7 +84,11 @@ func _open_page(game: Control, key: String) -> void:
 
 func _glyph_sheet() -> void:
 	var kinds := ["coin", "wheel", "shield", "island", "shop", "cards", "quests",
-		"gift", "bell", "trophy", "gear", "star", "plus", "close", "rivet", "anchor"]
+		"gift", "bell", "trophy", "gear", "star", "plus", "close", "rivet", "anchor",
+		"piggy", "box", "medal", "tick", "spark", "crown", "sun", "moon",
+		"calendar", "warn"]
+	if OS.has_environment("GLYPHS"):
+		kinds = Array(OS.get_environment("GLYPHS").split(","))
 
 	var t := Lagoon.plaque("ICON  SET", 460, 84, 46)
 	add_child(t)

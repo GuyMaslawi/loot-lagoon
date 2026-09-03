@@ -193,7 +193,10 @@ func _build_cabinet() -> void:
 	)
 	col.add_child(spin_button)
 
-	_hint = Lagoon.label("Hold  for  auto  spin", UI.F_CAPTION, Lagoon.SAND, true)
+	# Printed on the cabinet's own brass, which is a mid tone -- sand on it is
+	# 3.36 : 1 with nothing to separate the two. Given the rim that every other
+	# piece of type on painted material in this game wears.
+	_hint = Lagoon.art_label("Hold  for  auto  spin", UI.F_CAPTION)
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_hint.custom_minimum_size = Vector2(0, 24)
 	col.add_child(_hint)

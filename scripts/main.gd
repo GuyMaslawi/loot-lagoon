@@ -348,6 +348,8 @@ var _slot_glow_mat: ShaderMaterial
 var _slot_decor: Array = []
 # Menu-page water, repainted with the island's palette by _apply_island_theme().
 var _page_backdrops: Array = []
+var _page_boards: Array[ShaderMaterial] = []
+var _boxes_dock_badge: Control = null
 
 var pages := {}
 var _page_bodies := {}
@@ -747,7 +749,18 @@ func _capture_page(key: String) -> void:
 		# Long enough for the welcome-back banners to have come and gone. They
 		# are transient and they sit exactly where a dialog's header does, so a
 		# shot taken too early documents the banner instead of the dialog.
+		#
+		# And long enough for the boot sequence to have let go of the tree. A
+		# paused tree does not advance tweens, so a dialog opened while boot is
+		# still running freezes part-way through its own entrance -- which is
+		# how this harness came to produce a tournament board at half scale and
+		# a daily dialog at half opacity, neither of which is a layout bug and
+		# both of which look exactly like one.
 		await get_tree().create_timer(5.0).timeout
+		for _i in 240:
+			if not get_tree().paused and _boot == null and _journey_layer == null:
+				break
+			await get_tree().process_frame
 		match key.split(":")[1]:
 			"ranks":   _open_world_ranks()
 			"tourney": _open_tourney()
@@ -805,6 +818,15 @@ func _capture_page(key: String) -> void:
 	# Long enough for the page transition and the card art to finish arriving,
 	# and for the welcome-back banners to have come and gone -- those sit across
 	# the top of the page and will happily photobomb whatever is underneath.
+	#
+	# The wait for the tree to let go is the same one the modal branch needs and
+	# for the same reason: while boot has the tree paused, the page's own slide
+	# does not advance, and the shot comes back with two pages overlapping. It
+	# looks like a broken layout and it is a stopped tween.
+	for _i in 240:
+		if not get_tree().paused and _boot == null and _journey_layer == null:
+			break
+		await get_tree().process_frame
 	await get_tree().create_timer(5.0).timeout
 	# SHOT_SCROLL=<px> shoots the page wound down to that offset. The shop is
 	# four screens tall and the products Apple wants to see sold are on the
@@ -839,6 +861,14 @@ func _setup_global_font_fallbacks() -> void:
 	# Text sits on sea glass almost everywhere, so ink-on-light is the default
 	# and the few places that invert say so explicitly.
 	t.set_color("font_color", "Label", Lagoon.INK)
+	# Line spacing, globally. Godot sets wrapped text solid -- ascender to
+	# descender with nothing between the lines -- and a rounded face like this
+	# one closes up badly at that setting: the three-line notes on the boxes and
+	# cards pages read as a block rather than as sentences. Six units is about a
+	# fifth of the caption size, which is where a UI face wants to sit, and it
+	# costs nothing anywhere else because a single-line label has no gaps to
+	# space.
+	t.set_constant("line_spacing", "Label", 6)
 	theme = t
 
 # --- login ---
@@ -2118,7 +2148,6 @@ func _swipe_ready() -> bool:
 var _nav_tabs := {}
 var _spin_nav: Button
 var _spin_glow: ColorRect
-var _float_options: Button
 
 const NAV_BAR_H := 118.0
 const NAV_ROOT_H := 152.0
@@ -2239,13 +2268,23 @@ func _build_nav() -> void:
 	# part of the game rather than an operating-system chrome strip.
 	var bar := Panel.new()
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(1, 1, 1, 0.90)
+	# Deep, like the capsules and for the same reason. A white slab across the
+	# bottom of every screen is the brightest thing in the game and it is a
+	# navigation bar -- chrome that out-shines the goods is the loudest single
+	# signal that a store page was not designed. Deep water under a brass lip
+	# reads as part of the boat instead.
+	sb.bg_color = Color(Lagoon.LAGOON_DEEP.r * 0.55, Lagoon.LAGOON_DEEP.g * 0.55,
+		Lagoon.LAGOON_DEEP.b * 0.55, 0.97)
 	sb.corner_radius_top_left = 34
 	sb.corner_radius_top_right = 34
-	sb.border_width_top = 4
-	sb.border_color = Lagoon.BRASS
-	sb.shadow_size = 18
-	sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.30)
+	# The lip is the bar's whole edge, and at BRASS it was a mid tone laid over
+	# the lagoon -- the bar had no top. BRASS_LO is the shadowed side of the
+	# same metal and it gives the slab a line to sit behind, which is what makes
+	# the page look like it is scrolling *under* the bar rather than into it.
+	sb.border_width_top = 5
+	sb.border_color = Lagoon.BRASS_LO
+	sb.shadow_size = 20
+	sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.38)
 	sb.shadow_offset = Vector2(0, -5)
 	bar.add_theme_stylebox_override("panel", sb)
 	nav_root.add_child(bar)
@@ -2294,10 +2333,10 @@ func _build_nav() -> void:
 		# with neither, and it says which tab you are on from further away.
 		var plate := Panel.new()
 		var psb := StyleBoxFlat.new()
-		psb.bg_color = Color(Lagoon.CORAL.r, Lagoon.CORAL.g, Lagoon.CORAL.b, 0.18)
+		psb.bg_color = Color(Lagoon.CORAL.r, Lagoon.CORAL.g, Lagoon.CORAL.b, 0.30)
 		psb.set_corner_radius_all(22)
 		psb.set_border_width_all(3)
-		psb.border_color = Color(Lagoon.CORAL.r, Lagoon.CORAL.g, Lagoon.CORAL.b, 0.55)
+		psb.border_color = Lagoon.CORAL_LO
 		plate.add_theme_stylebox_override("panel", psb)
 		plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		plate.visible = false
@@ -2321,7 +2360,7 @@ func _build_nav() -> void:
 		# so that its box climbed 24 units back up into the glyph, and a caption
 		# printed over a drawn palm tree is not a caption -- it is texture. The
 		# two never overlap now, at any tab scale.
-		var cap := Lagoon.label(t[1], UI.F_CAPTION, Lagoon.INK_MUTE, true)
+		var cap := Lagoon.label(t[1], UI.F_CAPTION, Color(0.72, 0.84, 0.87), true)
 		cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		cap.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		cap.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -2393,14 +2432,17 @@ void fragment() {
 
 	# Lifted clear of the wheel above it, for the same reason as the tab
 	# captions -- the rim of the wheel was landing on the S and the P.
-	var spin_cap := Lagoon.title("SPIN", UI.F_LABEL, Lagoon.SAND, Lagoon.CORAL_LO)
+	# White over a deep rim, not sand over coral's own dark. Sand on coral is
+	# 2.55 : 1 and CORAL_LO is not far enough from CORAL to rescue it -- this is
+	# the label on the button the player presses more than every other control
+	# in the game put together, and it was the softest thing on the bar.
+	var spin_cap := Lagoon.title("SPIN", UI.F_LABEL, Color.WHITE, Lagoon.HULL)
 	spin_cap.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_spin_nav.add_child(spin_cap)
 	spin_cap.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
 	spin_cap.offset_top = -52.0
 	spin_cap.offset_bottom = -10.0
 
-	_build_float_options()
 
 	# alert badges live on the nav tabs
 	_badges["missions"] = _nav_badge(_nav_tabs["quests"]["button"])
@@ -2409,60 +2451,11 @@ void fragment() {
 
 	_update_nav()
 
-# floating Options button — sits over the game at the top right instead of
-# taking a slot in the bottom bar, which keeps the bar symmetric (2 + spin + 2)
-func _build_float_options() -> void:
-	var layer := Control.new()
-	layer.z_index = 60
-	layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	add_child(layer)
-	layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-
-	# Small, quiet and off to one side: settings is the one control on
-	# the page nobody is meant to be drawn to.
-	_float_options = Button.new()
-	_float_options.size = Vector2(66, 66)
-	# Hung off the HUD rather than off the safe inset. With the bar riding at the
-	# top of the screen a fixed "96 below the notch" put the gear on the
-	# cabinet's marquee; ten below whatever the bar's own bottom edge is keeps
-	# it in the clear air between them on every phone.
-	_float_options.position = Vector2(view_size().x - 14.0 - 66.0, hud_top() + 80.0)
-	_float_options.focus_mode = Control.FOCUS_NONE
-	# Built like the rail discs -- deep lagoon face, brass ring, a bevel along
-	# the bottom -- because it floats over the same page they do and a lone
-	# pale button among them reads as one that was missed rather than one that
-	# is deliberately quiet. It stays quiet the two ways that do not cost
-	# consistency: it is 66 to their 82, and the gear on it is sand rather than
-	# the brass its neighbours are drawn in.
-	for state in ["normal", "hover", "pressed"]:
-		var sb := StyleBoxFlat.new()
-		match state:
-			"hover":   sb.bg_color = Lagoon.LAGOON_DEEP.lightened(0.10)
-			"pressed": sb.bg_color = Lagoon.LAGOON_DEEP.darkened(0.16)
-			_:         sb.bg_color = Lagoon.LAGOON_DEEP
-		sb.set_corner_radius_all(33)
-		sb.set_border_width_all(5)
-		sb.border_width_bottom = 4 if state == "pressed" else 7
-		sb.border_color = Lagoon.BRASS
-		sb.shadow_size = 11
-		sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.34)
-		sb.shadow_offset = Vector2(0, 5)
-		_float_options.add_theme_stylebox_override(state, sb)
-	_float_options.pressed.connect(func() -> void: _goto(pages["options"]))
-	FX.press_feedback(_float_options)
-	layer.add_child(_float_options)
-	var gear := Glyph.new()
-	gear.kind = "gear"
-	gear.tint = Lagoon.SAND
-	_float_options.add_child(gear)
-	gear.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	# Glyph carries a 40x40 minimum and a Control that loses to its minimum
-	# keeps its position and grows out of the bottom right of the box. 66 - 8
-	# - 8 is 50 and clears it; the 13s this replaces asked for 40 exactly,
-	# which is the crooked-plus bug sitting one pixel from happening again.
-	gear.custom_minimum_size = Vector2.ZERO
-	for m in [["offset_left", 8.0], ["offset_right", -8.0], ["offset_top", 7.0], ["offset_bottom", -11.0]]:
-		gear.set(m[0], m[1])
+# The floating Options gear is gone. It sat over every page at the top right,
+# which is exactly where the chrome row's own gear now is -- two settings
+# buttons a few pixels apart, one of them a different size and colour from its
+# neighbours. Settings is reachable from the two world pages, which is where a
+# player is when they go looking for it.
 
 func _nav_badge(parent: Control, text := "!") -> Panel:
 	var badge := Panel.new()
@@ -2487,6 +2480,9 @@ func _nav_badge(parent: Control, text := "!") -> Panel:
 	bang.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	badge.add_child(bang)
 	bang.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	# Kept reachable, so a badge that counts something can be re-labelled
+	# without the caller having to remember which child it was.
+	badge.set_meta("label", bang)
 	return badge
 
 func _update_nav() -> void:
@@ -2511,10 +2507,11 @@ func _update_nav() -> void:
 		# quieter tab, it is a missing one, so the word underneath holds a
 		# contrast the eye can still land on and the icon carries the state.
 		icon.modulate = Color.WHITE if is_active else Color(1, 1, 1, 0.72)
-		(tab["cap"] as Label).add_theme_color_override("font_color", Lagoon.INK if is_active else Lagoon.INK_MUTE)
+		# Sand for the tab you are on, cool grey-blue for the rest. The old pair
+		# were both dark inks, chosen when the bar was white.
+		(tab["cap"] as Label).add_theme_color_override("font_color",
+			Lagoon.SAND if is_active else Color(0.72, 0.84, 0.87))
 		tab["plate"].visible = is_active
-	if _float_options != null:
-		_float_options.visible = active != "options"
 	var spin_active := active == "spin"
 	if _spin_glow != null:
 		_spin_glow.create_tween().tween_property(_spin_glow, "modulate:a", 1.0 if spin_active else 0.3, 0.25)
@@ -2627,7 +2624,7 @@ void fragment() {
 	_pick_next_target()
 
 	_add_topbar(slot_page)
-	_add_side_buttons(slot_page)
+	_add_side_rail(slot_page)
 
 # The SPIN page backdrop. Instead of one fixed slot-room painting, it layers
 # the island's own artwork -- blurred, dimmed and tinted so it reads as a lit
@@ -2735,84 +2732,58 @@ void fragment() {
 # its inner rim on the cabinet's decorative border and nothing on the marquee,
 # the reels or SPIN. The buttons float over the machine instead of standing
 # above it, and the height goes back to the reels.
-func _add_side_buttons(page: Control) -> void:
-	var rails := {}
-	for side in ["left", "right"]:
-		var rail := VBoxContainer.new()
-		rail.add_theme_constant_override("separation", int(SIDE_RAIL_GAP))
-		page.add_child(rail)
-		rail.set_anchors_and_offsets_preset(
-			Control.PRESET_TOP_LEFT if side == "left" else Control.PRESET_TOP_RIGHT)
-		# BOTH LANES HANG FROM THE SAME LINE, and the next person to touch this
-		# must keep it that way. A VBox anchored to the top with no bottom
-		# offset takes its height from its children, so the run grows downward
-		# from side_rail_top(): adding a fourth button lengthens the lane, it
-		# never re-centres the three already there or pushes them up into the
-		# marquee. That is what the reference rails do and it is the only
-		# arrangement that survives new buttons being added one at a time.
-		#
-		# An earlier version dropped the right lane half a step to even out
-		# two-against-one. It looked better with exactly three and it broke
-		# this: the two sides no longer started from the same line, so the
-		# fourth and fifth buttons would have landed at different heights.
-		rail.alignment = BoxContainer.ALIGNMENT_BEGIN
-		rail.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-		rail.offset_top = side_rail_top()
-		rail.offset_bottom = rail.offset_top
-		if side == "left":
-			rail.offset_left = SIDE_RAIL_INSET
-			rail.offset_right = SIDE_RAIL_INSET + SIDE_DISC
-		else:
-			rail.offset_left = -(SIDE_RAIL_INSET + SIDE_DISC)
-			rail.offset_right = -SIDE_RAIL_INSET
-		rails[side] = rail
+# THE EVENT BUTTONS RIDE A RAIL DOWN THE RIGHT-HAND LANE.
+#
+# They have been three things now. Two edge lanes level with the reel window,
+# which put them where there was room rather than where they are looked for. A
+# horizontal row under the currency bar, which Guy's verdict on was that it
+# "looks ugly and strange" -- and he was right: a second full-width band of
+# chrome makes the top of the screen read as two toolbars stacked, and it cost
+# the reels eighty pixels to do it.
+#
+# One lane, on the right, is the arrangement both reference games use and the
+# one that costs the machine nothing. The lane is 66px (the cabinet is 588 of
+# 720) and the run grows *downward* from its top, so a fourth button lengthens
+# the rail instead of re-centring the three above it.
+#
+# WHY IT STARTS WHERE IT DOES. Higher than SIDE_RAIL_DROP and the first disc
+# lands on the marquee's left flag, which spans wider than the reel window
+# under it. That is measured, not guessed, and it is the whole reason the rail
+# is not level with the bar.
+func _add_side_rail(page: Control) -> void:
+	var rail := VBoxContainer.new()
+	rail.add_theme_constant_override("separation", int(SIDE_RAIL_GAP))
+	rail.alignment = BoxContainer.ALIGNMENT_BEGIN
+	rail.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	page.add_child(rail)
+	rail.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	rail.offset_left = -(SIDE_RAIL_INSET + SIDE_DISC)
+	rail.offset_right = -SIDE_RAIL_INSET
+	rail.offset_top = side_rail_top()
+	rail.offset_bottom = rail.offset_top
 
-	# Alternating, so adding a fourth and a fifth later balances itself instead
-	# of needing this list re-split by hand.
-	var specs := [
-		["gift", "Daily", "daily", _open_daily],
-		["trophy", "Cup", "ranks", _open_tourney],
-		["bell", "Alerts", "alerts", func() -> void: _goto(pages["alerts"])],
-	]
-	for i in specs.size():
-		var spec: Array = specs[i]
-		_side_button(rails["left" if i % 2 == 0 else "right"],
-			str(spec[0]), str(spec[1]), str(spec[2]), spec[3])
+	# Alerts and settings at the head of the run, then the three that light up.
+	# Five in a lane is what set SIDE_DISC: at 82 the run ended across the bet
+	# row and the meter, at 70 it stops on the window's frame with room to spare.
+	for spec in [
+			["bell",   "Alerts",     "alerts", func() -> void: _goto(pages["alerts"])],
+			["gear",   "Settings",   "",       func() -> void: _goto(pages["options"])],
+			["gift",   "Daily",      "daily",  _open_daily],
+			["trophy", "Tournament", "ranks",  _open_tourney],
+			["piggy",  "Piggy Bank", "piggy",  _open_piggy]]:
+		_side_button(rail, str(spec[0]), str(spec[1]), str(spec[2]), spec[3])
 
-# How the edge rails are placed, and where the machine underneath them starts.
-# Named rather than inline because they are one set of numbers, not four: the
-# disc has to fit its lane, the inset has to keep it off the screen edge on a
-# phone with rounded corners, and the rail has to start far enough below the
-# band top that the discs run down the cabinet's frame rather than across the
-# steal-target card that overhangs it.
-#
-# The one placement that works is *below the marquee*. Two discs and the gap
-# between them are 166px and the clear brass above the ribbon is 76, so a rail
-# starting at the cabinet's top edge always drops its second disc across the
-# sign. Starting the run level with the reel window instead puts all three on
-# the plain frame beside the reels, where nothing is written.
-#
-#   slot_band_top() + CARD.y  = the cabinet's own top edge
-#   ... + card overhang + ribbon + separation = the reel window
-#   side_rail_top()           = level with that window
-#
-# HOW MANY EACH LANE HOLDS, since the run grows downward from that line and
-# the point of anchoring it there is that it can. A disc plus its gap is 96,
-# and the reel window's own bottom edge is about 741 in the same coordinates:
-#
-#   3 per side -> ends around 678, still on the window's frame     ok
-#   4 per side -> ends around 774, across the bet row and the meter
-#
-# So there is room for two more buttons a side before anything has to move.
-# Past that the lane runs onto controls rather than frame, and the honest fix
-# is a taller cabinet or a scrolling lane -- not quietly shrinking the disc.
-# 82, not 76. The lane is 66 and the reel window's frame starts around 104, so
-# a disc at SIDE_RAIL_INSET has until 96 before it touches anything that is
-# drawn on -- the extra six go into presence, which is what the reference
-# games buy with theirs.
-const SIDE_DISC := 82.0
-const SIDE_RAIL_GAP := 14.0
-const SIDE_RAIL_INSET := 8.0
+# The disc every event button is made of, and the numbers that place the row
+# it now sits in. The long note that used to live here explained how to fit two
+# vertical lanes down the sides of the cabinet without them landing on the
+# marquee; the buttons ride the top in one row now, so none of it applies.
+# 70, not 82. The lane holds five buttons now -- alerts, settings, daily, cup
+# and the piggy -- and five at 82 with 14 between them is 466 units of run
+# against the 413 of cabinet frame there is to run down: the last two landed on
+# the bet row and the spin meter. At 70 with 10 between them the run is 390 and
+# stops on the window's frame, which is the only surface in the cabinet with
+# nothing drawn on it.
+const SIDE_DISC := 70.0
 # WHERE THE MACHINE STARTS, and it is a function now rather than a constant.
 #
 # It used to be "196 below the safe inset", which was right while the HUD hung
@@ -2828,13 +2799,19 @@ const SIDE_RAIL_INSET := 8.0
 const SLOT_BAND_GAP := 18.0        # clear air under whichever comes last
 const SLOT_BAND_INSET_GAP := 12.0  # ...and under the cutout, if that is lower
 
+const SIDE_RAIL_GAP := 12.0
+# 20, not 8. Eight design units is under five points on a phone -- the discs
+# were effectively touching the glass, and on a device with rounded corners the
+# outermost pixels of the rim go under the bezel. This is chrome that has to
+# look placed rather than shoved against the edge.
+const SIDE_RAIL_INSET := 20.0
+# The rail has to clear the marquee, so it is measured from the cabinet's band
+# and not from the screen: 208 is the card overhang plus the ribbon plus the
+# separation between them.
+const SIDE_RAIL_DROP := 208.0
+
 func slot_band_top() -> float:
 	return maxf(hud_top() + 70.0 + SLOT_BAND_GAP, safe_top() + SLOT_BAND_INSET_GAP)
-
-# The side rail has to land level with the reel window rather than the marquee,
-# so it is measured from the band and not from the screen. 208 is the cabinet's
-# card overhang plus its ribbon plus the separation -- see the note above.
-const SIDE_RAIL_DROP := 208.0
 
 func side_rail_top() -> float:
 	return slot_band_top() + SIDE_RAIL_DROP
@@ -2847,6 +2824,7 @@ func _side_button(container: BoxContainer, icon_kind: String, caption: String, b
 
 	var btn := Button.new()
 	btn.custom_minimum_size = Vector2(SIDE_DISC, SIDE_DISC)
+	btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	btn.tooltip_text = caption
 	btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	btn.focus_mode = Control.FOCUS_NONE
@@ -2923,17 +2901,21 @@ func _side_button(container: BoxContainer, icon_kind: String, caption: String, b
 	# just, and the next person to shrink the disc would silently reproduce the
 	# crooked-plus bug.
 	icon.custom_minimum_size = Vector2.ZERO
-	# The icon nearly fills the face, which is the last thing the reference
-	# rails have that this did not. Glyph authors in a 100x100 box and the
-	# artwork inside it only uses about seven tenths of that, so an inset that
-	# looks generous in the source leaves a disc that is mostly empty colour --
-	# at 15 a side the gift was drawing at under half the button. 9 puts the
-	# glyph box at 64 of 82 and the ink at roughly the coverage theirs have.
+	# INSET AS A FRACTION OF THE DISC, NOT A FIXED 9.
 	#
-	# The bottom inset stays deeper than the top: it has the bevel to clear, so
-	# the icon is centred in the *face* rather than in the button's rect, and
+	# 9 was tuned when the disc was 82 and the glyphs were the first set, whose
+	# artwork sits inside about seven tenths of its 100x100 authoring box. The
+	# second set fills that box -- the piggy's tail reaches x=91 and its coin
+	# reaches y=4 -- so at a fixed 9 on a 70px disc the drawing ran into the
+	# brass ring and read as an icon that had been cropped. Scaled, and with a
+	# floor, both sets sit inside their own rim at any disc size.
+	#
+	# The bottom inset stays deeper than the top: the button has a bevel to
+	# clear, so the icon is centred in the *face* rather than in the rect, and
 	# centring it in the rect leaves it sitting visibly low.
-	for m in [["offset_left", 9.0], ["offset_right", -9.0], ["offset_top", 8.0], ["offset_bottom", -14.0]]:
+	var pad := maxf(SIDE_DISC * 0.17, 11.0)
+	for m in [["offset_left", pad], ["offset_right", -pad],
+			["offset_top", pad - 1.0], ["offset_bottom", -(pad + 5.0)]]:
 		icon.set(m[0], m[1])
 
 	var badge := Panel.new()
@@ -2943,12 +2925,13 @@ func _side_button(container: BoxContainer, icon_kind: String, caption: String, b
 	bsb.set_border_width_all(3)
 	bsb.border_color = Color.WHITE
 	badge.add_theme_stylebox_override("panel", bsb)
-	badge.size = Vector2(34, 34)
+	badge.size = Vector2(32, 32)
 	# Tucked further in than the usual corner overhang. A disc in the right
-	# lane has only SIDE_RAIL_INSET between it and the screen, so a badge that
-	# hangs 26px past the disc's edge ends up flush against the glass -- and
-	# against the rounded corner on any phone that has one.
-	badge.position = Vector2(SIDE_DISC - 34, -8)
+	# Tucked in rather than hung off the corner: the outermost disc in the row
+	# has only the row's own 14px margin between it and the screen, so a badge
+	# that overhangs by 26 ends up flush against the glass -- and against the
+	# rounded corner on any phone that has one.
+	badge.position = Vector2(SIDE_DISC - 30, -6)
 	badge.visible = false
 	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	btn.add_child(badge)
@@ -2974,6 +2957,14 @@ func _update_badges() -> void:
 				any_claim = true
 				break
 		_badges["missions"].visible = any_claim
+	if _badges.has("spares"):
+		# The dock button's whole reason to be pressed. Hidden at zero rather
+		# than showing a "0", which is a badge advertising nothing.
+		var spares := _dupe_card_count()
+		_badges["spares"].visible = spares > 0
+		var sl: Variant = _badges["spares"].get_meta("label", null)
+		if sl is Label:
+			(sl as Label).text = str(mini(spares, 99))
 	if _badges.has("collections"):
 		var any_col := false
 		for c in CV.COLLECTIONS:
@@ -3196,7 +3187,9 @@ func _open_popup(title: String) -> VBoxContainer:
 	plate_row.add_child(plate)
 
 	var panel := PanelContainer.new()
-	panel.add_theme_stylebox_override("panel", Lagoon.glass(Lagoon.R_PANEL, 0.96))
+	# Paper. A modal opens over a dimmed page, so what is behind it is deep by
+	# definition -- the same reason the menu cards stopped being glass.
+	panel.add_theme_stylebox_override("panel", Lagoon.sheet(Lagoon.R_PANEL))
 	panel.custom_minimum_size = Vector2(580, 0)
 	holder.add_child(panel)
 	FX.pop_in(holder, 0.32)
@@ -3556,15 +3549,80 @@ func _build_menu_pages() -> void:
 			["quests", "Quests"], ["options", "Options"], ["alerts", "Alerts"]]:
 		_make_page(spec[0], spec[1])
 
-	# The way into the boxes used to be a floating "\u267B BOXES" button pinned
-	# to the bottom-right of the Cards page. Two things were wrong with it. It
-	# sat on top of the page rather than in it, so on the shelf it covered the
-	# sixth collection tile -- the grid is three-across precisely so all six fit
-	# above the fold, and the button was eating the one it was parked on. And it
-	# named the destination instead of the errand: a recycle glyph next to the
-	# word BOXES asks the player to already know that spare cards are the
-	# currency boxes are bought with. It is now an ordinary card at the top of
-	# the page, built by _spares_banner(), which says the whole sentence.
+	# THE WAY INTO THE BOXES IS A DOCK BUTTON, AND THE PAGE MAKES ROOM FOR IT.
+	#
+	# This has now been both things. It was a floating button, which covered the
+	# sixth collection tile -- the grid is three across precisely so all six fit
+	# above the fold, and the button was parked on one of them. So it became a
+	# full-width card at the top of the page, which said the whole sentence and
+	# cost a third of the first screen to say it, pushing the shelf the page is
+	# actually for below the fold.
+	#
+	# It is a floating button again, on Guy's call, with the reason it failed
+	# last time fixed rather than re-accepted: the collections page reserves
+	# BOXES_DOCK_CLEAR at the bottom of its scroll body, so the button sits over
+	# reserved air and can never cover a tile. The errand still gets said -- the
+	# disc carries the spare count as a badge, and the caption under it reads
+	# SPARES rather than naming the destination.
+
+# How much air the collections page keeps under its last row so the dock button
+# has somewhere to sit that is not on top of a card.
+const BOXES_DOCK_CLEAR := 116
+
+# A round dock button, bottom-right, above the nav bar. Opens the Card Boxes
+# page. Carries the number of spare cards waiting to be traded, because that is
+# the only reason to press it.
+func _build_boxes_dock(page: Control) -> void:
+	var dock := Control.new()
+	dock.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	dock.z_index = 20
+	page.add_child(dock)
+	dock.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT)
+	# No word under it. A caption printed on the tiles it floats over is the
+	# same mistake the old floating button made, one layer up: the disc carries
+	# a box and a count, which is the whole errand.
+	dock.custom_minimum_size = Vector2(96, 96)
+	dock.size = dock.custom_minimum_size
+	dock.offset_left = -112.0
+	dock.offset_right = -16.0
+	dock.offset_top = -(NAV_ROOT_H + 104.0 + safe_bottom())
+	dock.offset_bottom = -(NAV_ROOT_H + 8.0 + safe_bottom())
+
+	var btn := Button.new()
+	btn.focus_mode = Control.FOCUS_NONE
+	for state in ["normal", "hover", "pressed"]:
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = Lagoon.URCHIN if state != "pressed" else Lagoon.URCHIN.darkened(0.12)
+		sb.set_corner_radius_all(50)
+		sb.set_border_width_all(4)
+		sb.border_width_bottom = 4 if state == "pressed" else 9
+		sb.border_color = Lagoon.URCHIN_LO.lerp(Lagoon.HULL, 0.45)
+		sb.shadow_size = 12
+		sb.shadow_color = Color(0, 0, 0, 0.45)
+		sb.shadow_offset = Vector2(0, 5)
+		btn.add_theme_stylebox_override(state, sb)
+	dock.add_child(btn)
+	btn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	FX.press_feedback(btn)
+	btn.pressed.connect(func() -> void: _goto(pages["boxes"]))
+	Lagoon.button_gloss(btn, 46)
+
+	var art := _emoji_label("📦", 46)
+	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	art.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	art.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	btn.add_child(art)
+	art.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	# The count, as a badge on the disc rather than a sentence beside it.
+	var badge := _nav_badge(btn, "0")
+	badge.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	badge.offset_left = -34.0
+	badge.offset_right = 4.0
+	badge.offset_top = -6.0
+	badge.offset_bottom = 32.0
+	_badges["spares"] = badge
+	_boxes_dock_badge = badge
 
 func _make_page(key: String, title: String) -> void:
 	var page := Control.new()
@@ -3572,13 +3630,22 @@ func _make_page(key: String, title: String) -> void:
 	page.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	page.visible = false
 
-	# Every page stands on the same water. The menu screens used to each have
-	# their own dark gradient, which made them feel like four different apps.
-	var mat := Lagoon.backdrop(page)
-	Lagoon.tint_backdrop(mat, CV.island_palette(island_level))
-	_page_backdrops.append(mat)
-	if key == "shop":
-		_add_shop_night(page)
+	# THE MENUS STAND ON A BOARD, NOT ON THE SKY.
+	#
+	# They used to stand on the same bright lagoon the machine and the island
+	# do. That was meant to stop them feeling like four different apps, and it
+	# worked -- but it also put every cream card in the game on a lit cyan
+	# gradient, where it had nothing to be brighter than and nowhere to cast a
+	# shadow. Six pages of content floated in a wash, and no amount of fixing
+	# the cards was going to change that, because the problem was underneath
+	# them. The world is bright; a board handed to you is deep. They are still
+	# one game because the light still falls from the same place on both.
+	#
+	# This also retires _add_shop_night: the shop had already worked this out
+	# for itself and grown a bespoke dark layer nothing else could use.
+	var mat := Lagoon.board(page)
+	Lagoon.tint_board(mat, CV.island_palette(island_level))
+	_page_boards.append(mat)
 
 	var plate := Lagoon.plaque(title.to_upper(), 0.0, 86.0, UI.F_TITLE)
 	page.add_child(plate)
@@ -3606,6 +3673,8 @@ func _make_page(key: String, title: String) -> void:
 	vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	vb.add_theme_constant_override("separation", 14)
 	sc.add_child(vb)
+	if key == "collections":
+		_build_boxes_dock(page)
 
 	_add_topbar(page)
 	pages[key] = page
@@ -3624,38 +3693,6 @@ func _make_page(key: String, title: String) -> void:
 # offer sits, and the cards on top are unchanged. It is the same island at
 # night, which is a different room to be sold in without being a different
 # game. Nothing else uses this -- a dark Quests page would just be dark.
-func _add_shop_night(page: Control) -> void:
-	var night := ColorRect.new()
-	var sh := Lagoon.shader("""
-shader_type canvas_item;
-uniform vec3 deep = vec3(0.012, 0.110, 0.176);
-uniform vec3 lamp = vec3(1.000, 0.780, 0.400);
-
-void fragment() {
-	// Deliberately opaque. A half-transparent dark blue laid over the bright
-	// daylight sky does not read as night, it reads as grey -- the first pass
-	// at this washed the top of the page out to the colour of wet concrete.
-	// The layer has to commit to being water.
-	float v = smoothstep(0.02, 0.62, UV.y) * 0.16 + 0.80;
-	float edge = smoothstep(0.34, 0.02, abs(UV.x - 0.5) * 2.0 - 0.34);
-	v += (1.0 - edge) * 0.06;
-
-	// One warm shaft from above, over the top card. Cheap, and it is the only
-	// thing on the page that says which end of it matters.
-	float d = length((UV - vec2(0.5, -0.04)) * vec2(0.9, 1.25));
-	float glow = smoothstep(0.80, 0.0, d);
-
-	vec3 c = mix(deep, lamp, glow * 0.30);
-	COLOR = vec4(c, clamp(v - glow * 0.16, 0.0, 1.0));
-}
-""")
-	var mat := ShaderMaterial.new()
-	mat.shader = sh
-	night.material = mat
-	night.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	page.add_child(night)
-	night.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-
 func _fill_page(key: String) -> void:
 	var vb: VBoxContainer = _page_bodies[key]
 	# Detached first, then freed. queue_free only schedules the free for the end
@@ -3696,8 +3733,23 @@ func _let_drags_through(node: Node) -> void:
 			c.mouse_filter = Control.MOUSE_FILTER_PASS
 		_let_drags_through(child)
 
-func _page_card(vb: VBoxContainer) -> VBoxContainer:
-	return Lagoon.card(vb, Lagoon.R_CARD, 16)
+# Paper on the board, not glass over water. `heading` gives the card a coloured
+# band with its name engraved in it -- which is what stops a page reading as a
+# stack of rectangles and starts it reading as a set of labelled objects.
+func _page_card(vb: VBoxContainer, heading := "", band := Lagoon.LAGOON_DEEP) -> VBoxContainer:
+	if heading != "":
+		return Lagoon.header_card(vb, heading, band, Lagoon.R_CARD, 16)
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", Lagoon.sheet())
+	vb.add_child(panel)
+	var margin := MarginContainer.new()
+	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		margin.add_theme_constant_override(m, 16)
+	panel.add_child(margin)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 10)
+	margin.add_child(col)
+	return col
 
 # Sea glass with a coloured rim. Rarity, tier and set difficulty are all "this
 # card is worth more" signals, and they now all say it the same way: the glass
@@ -3705,11 +3757,22 @@ func _page_card(vb: VBoxContainer) -> VBoxContainer:
 # inventing its own dark fill.
 func _tinted_card(parent: Node, tint: Color, strong := false, radius := Lagoon.R_CARD) -> PanelContainer:
 	var panel := PanelContainer.new()
-	var sb := Lagoon.glass(radius, 0.93)
-	sb.bg_color = Color(1, 1, 1, 0.93).lerp(Color(tint.r, tint.g, tint.b, 0.93), 0.10)
+	# Paper, not glass. Glass is for panels floating over the world, where you
+	# are meant to see the water through them; on the deep board a menu stands
+	# on there is nothing behind to see, and a translucent white card is just a
+	# grey rectangle. Opaque warm stock, washed with the card's own signal
+	# colour, is an object -- and it is a 13 : 1 surface for everything printed
+	# on it instead of a value that shifts with whatever is underneath.
+	var sb := Lagoon.sheet(radius)
+	sb.bg_color = sb.bg_color.lerp(tint, 0.13 if not strong else 0.18)
 	sb.set_border_width_all(4 if strong else 3)
-	sb.border_color = tint
-	sb.shadow_color = Color(tint.r, tint.g, tint.b, 0.30 if strong else 0.20)
+	# Rarity-tinted, but pulled toward deep water first. A card's rim is the
+	# only thing separating it from the tile next to it and from the page under
+	# both; a one-star card's mint green at its own value did neither, so the
+	# grid read as a single pale sheet with pictures floating on it. The hue is
+	# what carries "how rare" -- the value is what carries "this is an object".
+	sb.border_color = tint.lerp(Lagoon.HULL, 0.42)
+	sb.shadow_color = Color(0, 0, 0, 0.46 if strong else 0.36)
 	panel.add_theme_stylebox_override("panel", sb)
 	parent.add_child(panel)
 	Lagoon.add_gloss(panel, radius)
@@ -3732,8 +3795,13 @@ func _fill_shop(vb: VBoxContainer) -> void:
 	if not purchased_ids.has(CV.STARTER_PACK["id"]):
 		_shop_hero_offer(vb)
 
-	_shop_section(vb, "piggy", "PIGGY  BANK")
-	_piggy_card(vb)
+	# THE PIGGY IS NOT A SHOP SHELF ANY MORE.
+	#
+	# It is the one thing on this page that is not bought on impulse: it fills
+	# while you play, and the moment worth acting on is the moment you notice it
+	# is full -- which is never while scrolling a price list. It lives on the
+	# main page now, as a pink pig in the top row, and the row's badge is what
+	# tells you it is ready. See _open_piggy.
 
 	_shop_section(vb, "bundles", "BUNDLES")
 	for pack in CV.BUNDLE_PACKS:
@@ -3783,16 +3851,13 @@ func _fill_shop(vb: VBoxContainer) -> void:
 # backdrop; on brass it needs none, and the reader gets a shape they have
 # already learned to read as "heading".
 func _shop_section(vb: VBoxContainer, key: String, title: String) -> void:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 12)
-	vb.add_child(row)
+	# A ribbon across the column. It used to be a small brass pill with a faded
+	# rule out to each side -- a heading that said "heading" politely, on a page
+	# whose whole problem was that nothing on it spoke up.
+	var ribbon := Lagoon.banner(title, Lagoon.LAGOON_DEEP)
+	vb.add_child(ribbon)
 	if key != "":
-		_shop_anchors[key] = row
-	row.add_child(_section_line())
-	var plate := Lagoon.plaque(title, 0.0, 54.0, UI.F_LABEL, false)
-	plate.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	row.add_child(plate)
-	row.add_child(_section_line())
+		_shop_anchors[key] = ribbon
 
 func _section_line() -> Panel:
 	return Lagoon.divider()
@@ -3810,7 +3875,15 @@ func _star_row(lit: int, size := UI.F_CAPTION) -> HBoxContainer:
 		var s := Label.new()
 		s.text = "★"
 		s.add_theme_font_size_override("font_size", size)
-		s.add_theme_color_override("font_color", col if i < lit else Color(Lagoon.INK_FAINT.r, Lagoon.INK_FAINT.g, Lagoon.INK_FAINT.b, 0.35))
+		# An unlit star at 35% alpha of a pale ink is not a dim star, it is an
+		# absent one -- the rarity ladder was five gold stars on one card and
+		# what looked like nothing at all on another, so "two stars out of five"
+		# never got said. Unlit is a drawn socket now: solid, dark, empty.
+		s.add_theme_color_override("font_color", col if i < lit else
+			Color(Lagoon.INK_FAINT.r, Lagoon.INK_FAINT.g, Lagoon.INK_FAINT.b, 0.60))
+		if i >= lit:
+			s.add_theme_color_override("font_outline_color", Color(Lagoon.HULL.r, Lagoon.HULL.g, Lagoon.HULL.b, 0.35))
+			s.add_theme_constant_override("outline_size", 3)
 		row.add_child(s)
 	return row
 
@@ -4232,7 +4305,10 @@ func _offer_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	var ribbon_gap := Control.new()
 	ribbon_gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	timer_row.add_child(ribbon_gap)
-	var timer := Lagoon.label("\u23f3  ENDS  IN  %s" % _offer_countdown_text(), UI.F_CAPTION, Lagoon.CORAL_HI, true)
+	# Outlined, because it lands on the card's warm ray-light rather than on the
+	# card -- coral over that glow measures 2.86 : 1, and this countdown is the
+	# only reason the card is different from the shelf below it.
+	var timer := Lagoon.title("\u23f3  ENDS  IN  %s" % _offer_countdown_text(), UI.F_CAPTION, Lagoon.CORAL_HI, Lagoon.HULL)
 	timer_row.add_child(timer)
 	_offer_timer_label = timer
 	FX.pulse_forever(timer, 1.05, 1.0)
@@ -4255,7 +4331,7 @@ func _offer_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	text.alignment = BoxContainer.ALIGNMENT_CENTER
 	text.add_theme_constant_override("separation", 4)
 	row.add_child(text)
-	text.add_child(Lagoon.label(pack["name"], UI.F_BODY, Lagoon.BRASS_HI, true))
+	text.add_child(Lagoon.title(pack["name"], UI.F_BODY, Color.WHITE, Lagoon.BRASS_LO.darkened(0.4)))
 	# Light ink, because the card underneath is deep water now. The old call
 	# took the default dark INK, which on this background is invisible.
 	text.add_child(_reward_row(pack, Color(0.86, 0.93, 0.95)))
@@ -4287,103 +4363,169 @@ func _offer_card(vb: VBoxContainer, pack: Dictionary) -> void:
 # The bar is the whole design. A number alone would read as another pack; a bar
 # creeping toward a line the player can see reads as something of theirs
 # accumulating, and that is the feeling the mechanic is built on.
-func _piggy_card(vb: VBoxContainer) -> void:
+# =============================================================================
+#  The Piggy Bank
+# =============================================================================
+#
+# Its own screen, opened from the pink pig in the right-hand rail. It was a card
+# on the shop shelf, which is the wrong place for it twice over: the moment
+# worth acting on is "it is full", which nobody notices while scrolling a price
+# list, and a bank that fills while you play is not an impulse buy sitting
+# between two bundles.
+#
+# The pig is the screen. It is drawn at 220 across, it breathes, it leans, and
+# coins fall into the slot in its back on a loop -- and when it is full it
+# rattles and throws sparks instead. A still picture of a pig with a number
+# under it is a form; a pig with coins going into it is the mechanic, said
+# without a sentence.
+func _open_piggy() -> void:
 	var full := _piggy_full()
-	var pink := Color(1.0, 0.62, 0.72)
-	var panel := _tinted_card(vb, pink, full)
-	if full:
-		panel.add_child(_shine_overlay(Color(1.0, 0.82, 0.88)))
-
-	var margin := MarginContainer.new()
-	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
-		margin.add_theme_constant_override(m, 14)
-	panel.add_child(margin)
-
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 14)
-	margin.add_child(row)
-
-	var art := Control.new()
-	art.custom_minimum_size = Vector2(92, 96)
-	row.add_child(art)
-	art.add_child(_radial_glow(pink, 118))
-	var e := _emoji_label("🐷", 56)
-	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	e.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	art.add_child(e)
-	e.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	FX.pulse_forever(e, 1.1 if full else 1.04, 1.1 if full else 2.4)
-
-	var col := VBoxContainer.new()
-	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	col.alignment = BoxContainer.ALIGNMENT_CENTER
-	col.add_theme_constant_override("separation", 5)
-	row.add_child(col)
-
-	var head := HBoxContainer.new()
-	head.add_theme_constant_override("separation", 8)
-	col.add_child(head)
-	head.add_child(Lagoon.label("Piggy Bank", UI.F_BODY, Lagoon.INK, true))
-	if full:
-		head.add_child(_tag_chip("FULL!", Lagoon.REEF, 11))
-
-	var amount := Lagoon.label("%s coins inside" % _fmt_compact(piggy_coins), UI.F_LABEL, Lagoon.INK, true)
-	col.add_child(amount)
-
-	# Fill bar: a well with a pink column drawn across the filled fraction.
-	#
-	# The track is a bare Control, not a PanelContainer, for the same reason the
-	# modal's close button is not parented to its panel -- a PanelContainer
-	# stretches every child to its own rect, so a hand-sized fill would sit there
-	# at 100% no matter what the player had banked.
 	var frac := _piggy_frac()
-	var bar := Control.new()
-	bar.custom_minimum_size = Vector2(0, 20)
-	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	col.add_child(bar)
-	var well := Panel.new()
-	well.add_theme_stylebox_override("panel", Lagoon.glass_well(10))
-	well.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	bar.add_child(well)
-	well.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	var fill := Panel.new()
-	var fsb := StyleBoxFlat.new()
-	fsb.bg_color = pink
-	fsb.set_corner_radius_all(10)
-	fill.add_theme_stylebox_override("panel", fsb)
-	fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	bar.add_child(fill)
-	# Same guard as the modal's close button: this is deferred, and the shop
-	# page rebuilds itself whenever the piggy takes a coin, so the bar it sizes
-	# can already be gone by the time it runs.
-	var place_fill := func() -> void:
-		if not is_instance_valid(bar) or not is_instance_valid(fill):
-			return
-		fill.position = Vector2.ZERO
-		fill.size = Vector2(bar.size.x * frac, bar.size.y)
-		fill.visible = frac > 0.0
-	bar.resized.connect(place_fill)
-	place_fill.call_deferred()
+	var vbox := _open_popup("Piggy Bank")
 
-	var note := Lagoon.label(
-		"Smash it now and the coins are yours" if full else "Fills as you spin and raid — %d%% of the way there" % int(frac * 100.0),
-		UI.F_TINY, Lagoon.INK_FAINT)
+	var stage := Control.new()
+	stage.custom_minimum_size = Vector2(0, 250)
+	stage.clip_contents = true
+	vbox.add_child(stage)
+
+	# A pool of warm light for it to stand in, so the pig is lit rather than
+	# pasted onto the paper.
+	stage.add_child(_radial_glow(Glyph.PIG if not full else Color(1.0, 0.84, 0.55), 300))
+
+	var pig := Glyph.new()
+	pig.kind = "piggy"
+	pig.custom_minimum_size = Vector2(220, 220)
+	pig.size = Vector2(220, 220)
+	pig.pivot_offset = Vector2(110, 200)   # stands on its trotters, not its middle
+	stage.add_child(pig)
+	pig.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	pig.offset_left = -110.0
+	pig.offset_right = 110.0
+	pig.offset_top = -110.0
+	pig.offset_bottom = 110.0
+
+	# Breathing, and a lean. Two tweens rather than one so the two motions drift
+	# out of phase with each other -- a single tween doing both reads as a
+	# mechanical bob, and the whole point of the animation is that the thing
+	# looks alive.
+	var breathe := pig.create_tween().set_loops()
+	breathe.tween_property(pig, "scale", Vector2(1.04, 0.97), 0.9).set_trans(Tween.TRANS_SINE)
+	breathe.tween_property(pig, "scale", Vector2(1.0, 1.0), 1.1).set_trans(Tween.TRANS_SINE)
+	if full:
+		# Full: it rattles. Short, sharp and always coming back to level, so it
+		# reads as a bank stuffed too tight rather than as a bug.
+		var shake := pig.create_tween().set_loops()
+		shake.tween_property(pig, "rotation", 0.06, 0.09).set_trans(Tween.TRANS_SINE)
+		shake.tween_property(pig, "rotation", -0.06, 0.18).set_trans(Tween.TRANS_SINE)
+		shake.tween_property(pig, "rotation", 0.0, 0.09).set_trans(Tween.TRANS_SINE)
+		shake.tween_interval(1.4)
+	else:
+		var lean := pig.create_tween().set_loops()
+		lean.tween_property(pig, "rotation", 0.035, 1.7).set_trans(Tween.TRANS_SINE)
+		lean.tween_property(pig, "rotation", -0.035, 1.7).set_trans(Tween.TRANS_SINE)
+
+	# Coins into the slot, on a loop. The slot in the pig's back is at roughly
+	# (0.54, 0.31) of the glyph's own box, so the drop is aimed there rather
+	# than at the middle of the stage.
+	if not full:
+		for i in 3:
+			_piggy_coin(stage, float(i) * 1.1)
+	else:
+		for i in 5:
+			_piggy_spark(stage, float(i) * 0.42)
+
+	var amount := Lagoon.gold_value("%s coins inside" % _fmt_compact(piggy_coins), UI.F_TITLE)
+	amount.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(amount)
+
+	var bar := Lagoon.progress(Glyph.PIG_MID)
+	bar.max_value = 1.0
+	bar.value = 0.0
+	vbox.add_child(bar)
+	Lagoon.progress_value(bar, "FULL" if full else "%d%% full" % int(frac * 100.0))
+	# Filled rather than set, so opening the screen after a run of spins shows
+	# the ground you gained instead of presenting it as if it was always there.
+	bar.create_tween().tween_property(bar, "value", frac, 0.7) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+
+	var note := _popup_row_label(
+		"It is full — smash it and the coins are yours." if full
+			else "It fills as you spin and raid. The price never changes, so there is nothing lost by waiting.",
+		UI.F_CAPTION)
+	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	col.add_child(note)
+	note.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	vbox.add_child(note)
 
 	var buy := Button.new()
-	buy.text = IAP.price_for(CV.PIGGY_PACK)
-	buy.custom_minimum_size = Vector2(140, UI.TAP)
-	buy.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	buy.text = "SMASH  \u2014  %s" % IAP.price_for(CV.PIGGY_PACK)
+	buy.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
 	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
-	_candy_button(buy, Color(0.28, 0.68, 0.34))
+	Lagoon.button(buy, "kelp")
+	Lagoon.button_gloss(buy, 22)
 	FX.press_feedback(buy)
 	# An empty bank is not for sale -- charging for nothing is the one way this
 	# mechanic can leave a player feeling cheated.
 	buy.disabled = piggy_coins <= 0
-	buy.modulate.a = 1.0 if piggy_coins > 0 else 0.45
-	buy.pressed.connect(_confirm_piggy)
-	row.add_child(buy)
+	if full:
+		FX.pulse_forever(buy, 1.035, 1.0)
+	buy.pressed.connect(func() -> void:
+		_close_popup(true)
+		_confirm_piggy())
+	vbox.add_child(buy)
+
+# One coin, falling into the slot in the pig's back and disappearing into it.
+func _piggy_coin(stage: Control, delay: float) -> void:
+	var c := Glyph.new()
+	c.kind = "coin"
+	c.custom_minimum_size = Vector2(38, 38)
+	c.size = Vector2(38, 38)
+	c.pivot_offset = Vector2(19, 19)
+	c.modulate.a = 0.0
+	stage.add_child(c)
+	var land := Vector2(0.0, -46.0)   # the slot, relative to the stage centre
+	var place := func() -> void:
+		c.position = stage.size * 0.5 - Vector2(19, 19) + land
+	place.call()
+	stage.resized.connect(place)
+	var tw := c.create_tween().set_loops()
+	tw.tween_interval(delay)
+	tw.tween_callback(func() -> void:
+		c.position = stage.size * 0.5 - Vector2(19, 19) + land + Vector2(0, -120)
+		c.rotation = -0.5
+		c.modulate.a = 0.0)
+	tw.tween_property(c, "modulate:a", 1.0, 0.16)
+	tw.parallel().tween_property(c, "position",
+		stage.size * 0.5 - Vector2(19, 19) + land, 0.46).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.parallel().tween_property(c, "rotation", 0.4, 0.46)
+	# Into the slot: it shrinks to nothing at the moment it arrives rather than
+	# fading on top of the pig, so it reads as going *in*.
+	tw.tween_property(c, "scale", Vector2(0.2, 0.05), 0.12)
+	tw.parallel().tween_property(c, "modulate:a", 0.0, 0.12)
+	tw.tween_callback(func() -> void: c.scale = Vector2.ONE)
+	tw.tween_interval(2.4)
+
+# A spark off a full bank.
+func _piggy_spark(stage: Control, delay: float) -> void:
+	var g := Glyph.new()
+	g.kind = "spark"
+	g.custom_minimum_size = Vector2(30, 30)
+	g.size = Vector2(30, 30)
+	g.pivot_offset = Vector2(15, 15)
+	g.modulate.a = 0.0
+	stage.add_child(g)
+	var seed_x := fmod(delay * 97.0, 1.0) * 2.0 - 1.0
+	var place := func() -> void:
+		g.position = stage.size * 0.5 - Vector2(15, 15) + Vector2(seed_x * 110.0, -30.0)
+	place.call()
+	stage.resized.connect(place)
+	var tw := g.create_tween().set_loops()
+	tw.tween_interval(delay)
+	tw.tween_property(g, "modulate:a", 1.0, 0.18)
+	tw.parallel().tween_property(g, "scale", Vector2(1.25, 1.25), 0.18)
+	tw.tween_property(g, "modulate:a", 0.0, 0.34)
+	tw.parallel().tween_property(g, "scale", Vector2(0.5, 0.5), 0.34)
+	tw.tween_interval(1.6)
 
 func _confirm_piggy() -> void:
 	var vbox := _open_popup("Smash the Piggy?")
@@ -4742,12 +4884,21 @@ func _chest_card(row: HBoxContainer, pack: Dictionary) -> void:
 func _treasure_card(parent: Node, top: bool) -> PanelContainer:
 	var panel := PanelContainer.new()
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.043, 0.204, 0.271, 0.97)
+	# THE PREMIUM CARD IS THE BRIGHTEST THING ON THE PAGE, NOT THE DARKEST.
+	#
+	# It used to be deep navy, which worked when the shop stood on a lit sky --
+	# a dark card on a bright page is the loudest object on it. The shop stands
+	# on a deep board now, and a dark card on a deep board is a hole: the one
+	# thing the page most wants you to look at was reading as an absence. So it
+	# inverts. Warm brass stock, a brighter rim than any other card gets, and
+	# the light shaft above the goods now has something to fall on.
+	var warm := top
+	sb.bg_color = Color(0.322, 0.216, 0.086, 0.98) if not warm else Color(0.404, 0.271, 0.106, 0.98)
 	sb.set_corner_radius_all(Lagoon.R_CARD)
-	sb.set_border_width_all(4 if top else 3)
+	sb.set_border_width_all(5 if top else 3)
 	sb.border_color = Lagoon.BRASS_HI if top else Lagoon.BRASS
-	sb.shadow_size = 14 if top else 10
-	sb.shadow_color = Color(0, 0, 0, 0.45)
+	sb.shadow_size = 18 if top else 10
+	sb.shadow_color = Color(0.35, 0.22, 0.04, 0.55) if top else Color(0, 0, 0, 0.45)
 	sb.shadow_offset = Vector2(0, 5)
 	panel.add_theme_stylebox_override("panel", sb)
 	parent.add_child(panel)
@@ -4826,7 +4977,10 @@ func _shop_tile(grid: GridContainer, pack: Dictionary, _accent: Color, amount_te
 		unit.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		col.add_child(unit)
 
-	var nm := Lagoon.label(pack["name"], UI.F_TINY, Color(0.60, 0.76, 0.80))
+	# On a hold this dark the pack's name was a mid grey-blue on near-black.
+	# Sand keeps it quieter than the number above it without asking the player
+	# to squint at the only word that says which pack this is.
+	var nm := Lagoon.label(pack["name"], UI.F_TINY, Lagoon.SAND)
 	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(nm)
 
@@ -4842,7 +4996,7 @@ func _shop_tile(grid: GridContainer, pack: Dictionary, _accent: Color, amount_te
 	var save_slot := CenterContainer.new()
 	save_slot.custom_minimum_size = Vector2(0, 40)
 	col.add_child(save_slot)
-	var struck := _struck_price_row(pack, Color(0.56, 0.71, 0.76))
+	var struck := _struck_price_row(pack, Color(0.78, 0.87, 0.90))
 	if struck != null:
 		save_slot.add_child(struck)
 
@@ -5339,7 +5493,7 @@ func _spin_offer_card(vbox: VBoxContainer, pack: Dictionary, timed: bool) -> voi
 	var save_slot := CenterContainer.new()
 	save_slot.custom_minimum_size = Vector2(0, 40)
 	col.add_child(save_slot)
-	var struck := _struck_price_row(pack, Color(0.56, 0.71, 0.76))
+	var struck := _struck_price_row(pack, Color(0.78, 0.87, 0.90))
 	if struck != null:
 		save_slot.add_child(struck)
 
@@ -5740,7 +5894,9 @@ func _fill_quests(vb: VBoxContainer) -> void:
 	var st: Dictionary = mission_state[quests_tab]
 
 	# header: cycle title, reset countdown, overall completion
-	var head := _page_card(vb)
+	# The cycle's name rides the card's band; the countdown and the tally stay in
+	# the body, because those are the two numbers that change.
+	var head := _page_card(vb, "%s  MISSIONS" % info["title"], Lagoon.LAGOON_DEEP)
 	var hrow := HBoxContainer.new()
 	hrow.add_theme_constant_override("separation", 14)
 	head.add_child(hrow)
@@ -5751,8 +5907,6 @@ func _fill_quests(vb: VBoxContainer) -> void:
 	hcol.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hcol.add_theme_constant_override("separation", 3)
 	hrow.add_child(hcol)
-	var ht := Lagoon.label("%s  MISSIONS" % info["title"], UI.F_BODY, Lagoon.INK, true)
-	hcol.add_child(ht)
 	_quests_timer_label = _popup_row_label("", UI.F_CAPTION)
 	_quests_timer_label.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 	hcol.add_child(_quests_timer_label)
@@ -6665,51 +6819,14 @@ func _collection_item_card(emoji: String, iname: String, owned: bool, rarity := 
 # none of them. A player who has never seen a spare still gets the card, with
 # the copy turned around to say what a spare is for, so the boxes are never
 # unreachable and the rule is learnable before the first duplicate lands.
-func _spares_banner(vb: VBoxContainer) -> void:
-	var spare := _dupe_card_count()
-	var worth := _dupe_star_value()
-	var panel := _tinted_card(vb, Lagoon.URCHIN, spare > 0)
-	var pad := MarginContainer.new()
-	for m in [["margin_left", 14], ["margin_right", 14], ["margin_top", 12], ["margin_bottom", 12]]:
-		pad.add_theme_constant_override(m[0], m[1])
-	panel.add_child(pad)
-	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 8)
-	pad.add_child(col)
-
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 12)
-	col.add_child(row)
-	var tok := Lagoon.token("📦", 60.0, Lagoon.URCHIN)
-	tok.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	row.add_child(tok)
-	var text := VBoxContainer.new()
-	text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	text.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	text.add_theme_constant_override("separation", 2)
-	row.add_child(text)
-	text.add_child(Lagoon.label(
-		"%d spare cards" % spare if spare > 0 else "Card Boxes", UI.F_LABEL, Lagoon.INK, true))
-	# Both halves of the trade on one line, in the order they happen, with the
-	# numbers filled in -- a player should be able to decide whether the trip is
-	# worth taking without making it first.
-	var sub := Lagoon.label(
-		"Worth \u2605 %d \u2014 stars you spend on a box of new ones." % worth if spare > 0
-			else "Pull a card you already own and it becomes a spare, worth \u2605 stars towards a box of new cards.",
-		UI.F_CAPTION, Lagoon.INK_SOFT)
-	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	text.add_child(sub)
-
-	var go := Button.new()
-	go.text = "TRADE  IN  SPARES" if spare > 0 else "SEE  CARD  BOXES"
-	go.custom_minimum_size = Vector2(0, UI.TAP)
-	# Purple in both states. The empty-handed version is not a disabled button
-	# -- there are boxes through it either way, and a pale glass one read as
-	# something that would not do anything if pressed.
-	_candy_button(go, Lagoon.URCHIN)
-	FX.press_feedback(go)
-	go.pressed.connect(func() -> void: _goto(pages["boxes"]))
-	col.add_child(go)
+# The air the dock button sits over. Reserved in the scroll body rather than
+# left to chance, because the last time this button floated it did so on top of
+# the sixth collection tile.
+func _boxes_dock_clearance(vb: VBoxContainer) -> void:
+	var gap := Control.new()
+	gap.custom_minimum_size = Vector2(0, BOXES_DOCK_CLEAR)
+	gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vb.add_child(gap)
 
 func _collection_by_id(id: String) -> Dictionary:
 	for c in CV.COLLECTIONS:
@@ -6822,13 +6939,11 @@ func _fill_collection_shelf(vb: VBoxContainer) -> void:
 		_season_ribbon(vb)
 	if _col_break():
 		_season_break_card(vb)
-	var head := _page_card(vb)
-	var trow := HBoxContainer.new()
-	trow.alignment = BoxContainer.ALIGNMENT_CENTER
-	trow.add_theme_constant_override("separation", 12)
-	head.add_child(trow)
-	trow.add_child(_emoji_label("🏆", 36))
-	trow.add_child(Lagoon.label("GRAND  PRIZE", UI.F_SUBHEAD, Lagoon.INK, true))
+	# The name goes in the card's band, not in ink at the top of its body. A
+	# title set in dark ink is a bold first line; a title in white on a band of
+	# colour is a label on an object, and it is what lets the page say what each
+	# card is for from arm's length.
+	var head := _page_card(vb, "GRAND  PRIZE", Lagoon.BRASS_MID)
 	var claimed_n := 0
 	for c in CV.COLLECTIONS:
 		if col_claimed.get(c["id"], false):
@@ -6840,6 +6955,11 @@ func _fill_collection_shelf(vb: VBoxContainer) -> void:
 	gpb.max_value = CV.COLLECTIONS.size()
 	gpb.value = claimed_n
 	head.add_child(gpb)
+	# The count, written across the track. Empty, this bar was a dark groove
+	# with nothing in it and nothing on it -- the page's headline reward and no
+	# statement anywhere of how far off it is. Anchored inside the bar, so it
+	# cannot widen anything.
+	Lagoon.progress_value(gpb, "%d / %d  sets" % [claimed_n, CV.COLLECTIONS.size()])
 	# The old line said "Season ends in 0d 0h" during the lull, which is both
 	# wrong and the least useful thing it could say to somebody staring at a
 	# shelf that has stopped taking cards.
@@ -6865,13 +6985,11 @@ func _fill_collection_shelf(vb: VBoxContainer) -> void:
 		mega.pressed.connect(_claim_mega)
 		head.add_child(mega)
 
-	# One voice at a time. With spares in hand the banner below already says
-	# where cards come from and what the spare ones are for; the note is the
-	# teaching line for a player who has not seen a duplicate yet.
+	# The teaching line, for a player who has not seen a duplicate yet. Once
+	# they have spares the dock button's badge says it in one number and this
+	# sentence is in the way.
 	if _dupe_card_count() == 0:
 		vb.add_child(_page_note("Every spin has a chance to drop a card, and every new one is worth \u2605 stars!", UI.F_CAPTION))
-	_spares_banner(vb)
-
 	var grid := GridContainer.new()
 	grid.columns = 3
 	grid.add_theme_constant_override("h_separation", 12)
@@ -6879,6 +6997,9 @@ func _fill_collection_shelf(vb: VBoxContainer) -> void:
 	vb.add_child(grid)
 	for c in CV.COLLECTIONS:
 		grid.add_child(_collection_tile(c))
+	# Last, so the reserved air is under the final row rather than a hole in the
+	# middle of the page.
+	_boxes_dock_clearance(vb)
 
 
 func _collection_tile(c: Dictionary) -> Control:
@@ -6934,7 +7055,7 @@ func _collection_tile(c: Dictionary) -> Control:
 		String(c["diff"]), Lagoon.LAGOON_DEEP)
 	var well := PanelContainer.new()
 	var wsb := Lagoon.glass_well(18)
-	wsb.bg_color = Color(dcol.r, dcol.g, dcol.b, 0.20)
+	wsb.bg_color = Color(dcol.r, dcol.g, dcol.b, 0.42)
 	well.add_theme_stylebox_override("panel", wsb)
 	well.custom_minimum_size = Vector2(0, 98)
 	well.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -6979,8 +7100,15 @@ func _collection_tile(c: Dictionary) -> Control:
 	# the CARD tiles need, because those are PanelContainers and a container
 	# does overwrite anchors; putting one here instead gave the chip a zero-size
 	# parent to anchor against.
+	# Only while the tile has no news. The difficulty chip and the CLAIM flag
+	# both corner themselves top-right and grow left, so on a finished set they
+	# were drawn one on top of the other -- "CLAIM!" printed across "Easy". The
+	# chip is the one that gives way: a set you have already completed is not
+	# one you are still deciding whether to start, and the well behind the
+	# emblem is tinted by difficulty anyway, so nothing is lost by dropping it.
 	var dchip := _diff_chip(c["diff"])
 	dchip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	dchip.visible = not (ready or claimed)
 	tile.add_child(dchip)
 	dchip.anchor_left = 1.0
 	dchip.anchor_right = 1.0
@@ -7119,9 +7247,6 @@ func _fill_collection_detail(vb: VBoxContainer, c: Dictionary) -> void:
 		left.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 		head.add_child(left)
 
-	if spare_n > 0:
-		_spares_banner(vb)
-
 	var card := _page_card(vb)
 	var grid := GridContainer.new()
 	grid.columns = 3
@@ -7132,6 +7257,7 @@ func _fill_collection_detail(vb: VBoxContainer, c: Dictionary) -> void:
 		var it: Array = items[i]
 		grid.add_child(_collection_item_card(it[0], it[1], i < owned.size() and owned[i],
 			int(it[2]), true, _dupe_count(id, i)))
+	_boxes_dock_clearance(vb)
 
 # =============================================================================
 #  Card Boxes
@@ -7196,8 +7322,10 @@ func _fill_boxes(vb: VBoxContainer) -> void:
 	big_star.custom_minimum_size = Vector2(64, 64)
 	big_star.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	brow.add_child(big_star)
-	var amount := Lagoon.label(_fmt(stars), UI.F_DISPLAY, Lagoon.INK, true)
-	amount.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	# The balance this whole page spends, drawn as treasure rather than as a
+	# number in a paragraph: gold inside a deep rim, beside the gold star it
+	# counts. In flat ink at display size it read as a heading, not a wallet.
+	var amount := Lagoon.gold_value(_fmt(stars), UI.F_DISPLAY)
 	brow.add_child(amount)
 	_star_bank_label = amount
 	# Two glyphs on purpose: \u2b50 for the standing, matching the top bar, and
@@ -7871,7 +7999,21 @@ func _tourney_track_card(holder: VBoxContainer) -> void:
 	var top := _tourney_tier_at(TOURNEY_TIERS.size() - 1, lap)
 
 	var card := PanelContainer.new()
-	card.add_theme_stylebox_override("panel", Lagoon.glass(Lagoon.R_CARD, 0.55))
+	# The same deep board the standings sit in, so the dialog is one object: a
+	# competition screen with a lit track at the top and a lit table under it.
+	# It was a pane of translucent white on cream, which is a grey box -- and a
+	# grey box is the last thing the piece that says "this is a contest and here
+	# is the clock" should be.
+	var tcs := StyleBoxFlat.new()
+	tcs.bg_color = Color(0.031, 0.153, 0.204, 0.97)
+	tcs.set_corner_radius_all(Lagoon.R_CARD)
+	tcs.set_border_width_all(3)
+	tcs.border_color = Lagoon.BRASS_LO
+	tcs.content_margin_top = 6.0
+	tcs.shadow_size = 8
+	tcs.shadow_color = Color(0, 0, 0, 0.35)
+	tcs.shadow_offset = Vector2(0, 4)
+	card.add_theme_stylebox_override("panel", tcs)
 	holder.add_child(card)
 	var pad := MarginContainer.new()
 	for m in ["margin_left", "margin_right"]:
@@ -7903,7 +8045,7 @@ func _tourney_track_card(holder: VBoxContainer) -> void:
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(spacer)
 	var left := _popup_row_label("ENDS IN " + _tourney_left_text(_tourney_seconds_left()), UI.F_CAPTION)
-	left.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	left.add_theme_color_override("font_color", Color(0.72, 0.85, 0.88))
 	head.add_child(left)
 
 	# Titled rather than labelled, so it carries the dark outline every gold
@@ -7948,8 +8090,12 @@ func _tourney_track_card(holder: VBoxContainer) -> void:
 
 	var track := Panel.new()
 	var tsb := StyleBoxFlat.new()
-	tsb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.40)
+	# The rail is a groove cut into the card, and at 0.40 it was a grey smear on
+	# a pale panel -- the amber fill running along it had nothing to run along.
+	tsb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.72)
 	tsb.set_corner_radius_all(9)
+	tsb.set_border_width_all(2)
+	tsb.border_color = Color(Lagoon.HULL.r, Lagoon.HULL.g, Lagoon.HULL.b, 0.85)
 	track.add_theme_stylebox_override("panel", tsb)
 	track.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	host.add_child(track)
@@ -8299,9 +8445,17 @@ func _tourney_result_dialog(place: int, field: int, scored: int,
 	var won: bool = got_coins > 0 or got_spins > 0 or got_cards > 0
 	var vbox := _open_popup("Tournament over")
 
-	var medal := ["🥇", "🥈", "🥉"]
-	var crest := _emoji_label(medal[place - 1] if place <= medal.size() else "🏁", 92)
-	crest.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var crest: Control
+	if place <= 3:
+		var m := Glyph.new()
+		m.kind = "medal"
+		m.tint = [Lagoon.BRASS, Color(0.741, 0.784, 0.804), Color(0.776, 0.494, 0.290)][place - 1]
+		m.custom_minimum_size = Vector2(112, 112)
+		m.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		crest = m
+	else:
+		crest = _emoji_label("🏁", 92)
+		(crest as Label).horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(crest)
 	FX.pulse_forever(crest, 1.1, 1.0)
 
@@ -8322,7 +8476,8 @@ func _tourney_result_dialog(place: int, field: int, scored: int,
 		% [place, maxi(field, place), _fmt_compact(scored)], UI.F_LABEL)
 	line.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	line.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	line.add_theme_color_override("font_color", Color(0.85, 0.6, 0.1))
+	line.add_theme_font_override("font", Lagoon.display_font())
+	line.add_theme_color_override("font_color", Lagoon.BRASS_LO)
 	vbox.add_child(line)
 
 	if won:
@@ -8416,7 +8571,11 @@ func _open_tourney() -> void:
 	# scrolling to the gold row.
 	var standing := _popup_row_label("", UI.F_LABEL)
 	standing.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	standing.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	# BRASS_LO, not the pale gold it used to be. "#1 of 10 · Driftwood League"
+	# is the one line on this dialog that says where the player actually
+	# stands, and in pale gold on pale glass it measured 1.27 : 1.
+	standing.add_theme_font_override("font", Lagoon.display_font())
+	standing.add_theme_color_override("font_color", Lagoon.BRASS_LO)
 	# Wrapped, which is what stops it from setting the width of the dialog.
 	# A Label with autowrap off hands its whole string up as a minimum width;
 	# this one grows with the league name, the field size and (on a later
@@ -8435,30 +8594,61 @@ func _open_tourney() -> void:
 	cycle_line.visible = false
 	vbox.add_child(cycle_line)
 
-	# What earns a point, and that the bet multiplies it. Guy asked for this
-	# specifically and he is right to: the numbers are the whole strategy of the
-	# screen -- a build is worth five steals at x1 and is worth less than one at
-	# x5 -- and until it is written down the player is guessing.
-	var key := _popup_row_label(
-		"Steal %d × bet   ·   Attack %d × bet   ·   Build %d"
-		% [TP_STEAL, TP_ATTACK, TP_BUILD], UI.F_CAPTION)
-	key.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	key.add_theme_color_override("font_color", Lagoon.INK_SOFT)
-	key.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	vbox.add_child(key)
+	# THE RULES ARE BEHIND A BUTTON, NOT ABOVE THE TABLE.
+	#
+	# Two centred paragraphs of scoring key sat between the standing line and
+	# the first name -- four lines of type that never change, in the one place
+	# on the dialog where the thing you came to see should be. They are still a
+	# tap away, and the tap is on a "?" beside the standings header where a
+	# rules button belongs in every competition screen there is.
+	var head_row := HBoxContainer.new()
+	head_row.add_theme_constant_override("separation", 10)
+	vbox.add_child(head_row)
+	var standings := Lagoon.title("STANDINGS", UI.F_CAPTION, Lagoon.BRASS_LO, Lagoon.SAND)
+	standings.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	standings.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	head_row.add_child(standings)
+	var hspace := Control.new()
+	hspace.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head_row.add_child(hspace)
+	var rules := Button.new()
+	rules.text = "?"
+	rules.custom_minimum_size = Vector2(46, 46)
+	rules.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	rules.add_theme_font_size_override("font_size", UI.F_LABEL)
+	rules.tooltip_text = "How scoring works"
+	Lagoon.button(rules, "glass", 23)
+	FX.press_feedback(rules)
+	rules.pressed.connect(_open_tourney_rules)
+	head_row.add_child(rules)
 
-	var note := _popup_row_label("A blocked attack scores nothing — top 5 win a prize when the clock runs out", UI.F_CAPTION)
-	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	note.add_theme_color_override("font_color", Lagoon.INK_SOFT)
-	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	vbox.add_child(note)
+	# A BOARD, NOT A LIST.
+	#
+	# The standings were bare rows on the dialog's paper, which is the palest
+	# surface in the game -- so a competition, the one screen that is supposed to
+	# feel like it has stakes, was the softest thing in it. They sit in a deep
+	# well now, the way a scoreboard is a dark panel with lit names on it, and
+	# the rows are drawn in sand and gold instead of ink.
+	var board := PanelContainer.new()
+	var bsb := StyleBoxFlat.new()
+	bsb.bg_color = Color(0.031, 0.153, 0.204, 0.97)
+	bsb.set_corner_radius_all(Lagoon.R_CARD)
+	bsb.set_border_width_all(3)
+	bsb.border_color = Lagoon.BRASS_LO
+	bsb.content_margin_left = 8.0
+	bsb.content_margin_right = 8.0
+	bsb.content_margin_top = 8.0
+	bsb.content_margin_bottom = 8.0
+	board.add_theme_stylebox_override("panel", bsb)
+	board.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.add_child(board)
 
 	var scroll := ScrollContainer.new()
 	scroll.custom_minimum_size = Vector2(0, TOURNEY_VIEW_H)
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	vbox.add_child(scroll)
+	board.add_child(scroll)
 	# The scrollbar is drawn INSIDE the scroll region, over the right-hand end
 	# of every row, and the points column is the right-hand end of every row.
 	# Forty rows of score with a grey bar down the middle of the digits is not
@@ -8561,11 +8751,95 @@ func _fill_tourney(list: VBoxContainer, standing: Label, cycle_line: Label, rows
 		list.add_child(Lagoon.divider())
 		list.add_child(_tourney_row(me, place))
 
+# The scoring key, on demand. It is four facts and they never change, which is
+# exactly the shape of thing that belongs behind a "?" rather than above the
+# table it explains.
+func _open_tourney_rules() -> void:
+	var vbox := _open_popup("How scoring works")
+	for spec in [
+			["steal", "Steal", "%d × your bet" % TP_STEAL],
+			["hammer", "Attack", "%d × your bet" % TP_ATTACK],
+			["island", "Build or upgrade", "%d points" % TP_BUILD]]:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 12)
+		vbox.add_child(row)
+		var g := Glyph.new()
+		g.kind = "island" if spec[0] == "island" else "shield"
+		g.custom_minimum_size = Vector2(46, 46)
+		g.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(g)
+		var what := Lagoon.label(str(spec[1]), UI.F_LABEL, Lagoon.INK, true)
+		what.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		what.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(what)
+		var worth := Lagoon.gold_value(str(spec[2]), UI.F_LABEL)
+		row.add_child(worth)
+	vbox.add_child(Lagoon.divider())
+	for line in [
+			"A blocked attack scores nothing.",
+			"The top five win a prize when the clock runs out.",
+			"Your bet multiplies every steal and every attack — a bigger bet is a bigger score."]:
+		var l := _popup_row_label(line, UI.F_CAPTION)
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		l.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		vbox.add_child(l)
+	var ok := Button.new()
+	ok.text = "GOT  IT"
+	ok.custom_minimum_size = Vector2(0, UI.TAP)
+	Lagoon.button(ok, "primary")
+	Lagoon.button_gloss(ok, 22)
+	FX.press_feedback(ok)
+	ok.pressed.connect(func() -> void: _close_popup())
+	vbox.add_child(ok)
+
 func _tourney_row(r: Dictionary, place: int) -> Control:
 	var mine: bool = bool(r.get("me", false))
+	# EVERY ROW GETS A PLATE, AND THE PLAYER'S IS A DIFFERENT ONE.
+	#
+	# The table used to be bare HBoxes stacked on the modal's glass, and "which
+	# one is me" was said by turning that row's name and score gold. Gold text
+	# on pale glass measures 1.02 : 1 -- so the single row the player opens this
+	# board to find was the only row on it that could not be read. The colour
+	# has to be on the plate, not in the ink: brass under the row, deep rim
+	# around it, and the name and score stay the same readable ink as everybody
+	# else's. Alternate rows get a whisper of a well so forty names do not run
+	# together into one block of text.
+	var plate := PanelContainer.new()
+	plate.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var psb := StyleBoxFlat.new()
+	psb.set_corner_radius_all(Lagoon.R_CHIP)
+	psb.content_margin_left = 8.0
+	psb.content_margin_right = 10.0
+	psb.content_margin_top = 5.0
+	psb.content_margin_bottom = 5.0
+	# The podium rows carry their metal, the player's row is lit brass, and the
+	# rest alternate a whisper so forty names do not run together. All of it on
+	# a deep board, so the plates are lighter than the ground rather than darker.
+	if mine:
+		psb.bg_color = Color(Lagoon.BRASS_HI.r, Lagoon.BRASS_HI.g, Lagoon.BRASS_HI.b, 0.95)
+		psb.set_border_width_all(3)
+		psb.border_color = Lagoon.BRASS
+		psb.shadow_size = 8
+		psb.shadow_color = Color(Lagoon.BRASS.r, Lagoon.BRASS.g, Lagoon.BRASS.b, 0.45)
+		psb.shadow_offset = Vector2(0, 3)
+	elif place <= 3:
+		var metal: Color = [Lagoon.BRASS, Color(0.741, 0.784, 0.804), Color(0.776, 0.494, 0.290)][place - 1]
+		psb.bg_color = Color(metal.r, metal.g, metal.b, 0.20)
+		psb.set_border_width_all(2)
+		psb.border_color = Color(metal.r, metal.g, metal.b, 0.62)
+	elif place % 2 == 0:
+		psb.bg_color = Color(1, 1, 1, 0.06)
+	else:
+		psb.bg_color = Color(0, 0, 0, 0)
+	plate.add_theme_stylebox_override("panel", psb)
+
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
 	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	plate.add_child(row)
+	# Everything below is drawn for the board, not for the paper: sand names,
+	# gold scores, and dark ink only on the player's own lit plate.
+	var ink: Color = Lagoon.BRASS_LO if mine else Lagoon.SAND
 
 	# A medal for the three places that get one, the number for everybody else.
 	# The medal is the same width as the digits it replaces so the names below
@@ -8573,17 +8847,34 @@ func _tourney_row(r: Dictionary, place: int) -> Control:
 	var rank_cell := Control.new()
 	rank_cell.custom_minimum_size = Vector2(52, 0)
 	row.add_child(rank_cell)
-	var medal := ["🥇", "🥈", "🥉"]
-	var rank_l: Label
-	if place <= medal.size():
-		rank_l = _emoji_label(medal[place - 1], UI.F_SUBHEAD)
+	# Drawn, not typed. The three podium places were Apple's medal emoji, which
+	# are the only objects on this board that came from somebody else's design
+	# system -- and they sat directly beside the game's own brass. One glyph in
+	# three metals: gold, silver and bronze are values of the same object.
+	if place <= 3:
+		var m := Glyph.new()
+		m.kind = "medal"
+		m.tint = [Lagoon.BRASS, Color(0.741, 0.784, 0.804), Color(0.776, 0.494, 0.290)][place - 1]
+		m.custom_minimum_size = Vector2.ZERO
+		rank_cell.add_child(m)
+		m.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		m.offset_top = -4.0
+		m.offset_bottom = 4.0
 	else:
-		rank_l = _popup_row_label("#%d" % place, UI.F_LABEL)
-	rank_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	rank_cell.add_child(rank_l)
-	rank_l.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		var rank_l := _popup_row_label("#%d" % place, UI.F_LABEL)
+		rank_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		rank_l.add_theme_color_override("font_color",
+			Lagoon.BRASS_LO if mine else Color(0.62, 0.76, 0.80))
+		rank_cell.add_child(rank_l)
+		rank_l.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
-	row.add_child(_emoji_label(r["emoji"], UI.F_SUBHEAD))
+	# Framed, not bare. A leaderboard of system emoji sitting loose on a row is
+	# the single clearest "this is a placeholder" signal in the game -- the same
+	# glyph in a rimmed disc reads as an avatar, which is what it is standing in
+	# for. Lagoon.token() is the frame the rest of the game already uses.
+	var face := Lagoon.token(str(r["emoji"]), 52.0, Lagoon.BRASS_MID if not mine else Lagoon.BRASS_HI)
+	face.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(face)
 
 	# Name over prize. Two lines rather than a fifth column, because the prize
 	# is only on five of the rows and a column that is empty for the other
@@ -8605,14 +8896,17 @@ func _tourney_row(r: Dictionary, place: int) -> Control:
 	row.add_child(text)
 	var name_l := _popup_row_label(str(r["name"]))
 	name_l.clip_text = true
+	name_l.add_theme_color_override("font_color", ink)
 	if mine:
-		name_l.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+		# Bolder, not paler. The plate already says whose row this is; weight is
+		# what is left to say it with, and weight costs no contrast.
+		name_l.add_theme_font_override("font", Lagoon.display_font())
 	text.add_child(name_l)
 	var prize := _tourney_prize_text(place)
 	if prize != "":
 		var pl := _popup_row_label(prize, UI.F_TINY)
 		pl.clip_text = true
-		pl.add_theme_color_override("font_color", Lagoon.KELP_LO if not mine else Color(1.0, 0.8, 0.45))
+		pl.add_theme_color_override("font_color", Lagoon.BRASS_LO if mine else Color(0.53, 0.85, 0.70))
 		text.add_child(pl)
 
 	var pts := _popup_row_label(_fmt_compact(int(r["points"])), UI.F_LABEL)
@@ -8620,12 +8914,14 @@ func _tourney_row(r: Dictionary, place: int) -> Control:
 	# is dark brass; this dialog is pale glass, and on it a sand number is the
 	# same value as the panel behind it -- every row but the player's own read
 	# as having no score at all.
-	if mine:
-		pts.add_theme_color_override("font_color", Color(0.85, 0.6, 0.1))
+	# The score is the point of the row, so it is gold on the board and stays
+	# dark on the player's own lit plate.
+	pts.add_theme_font_override("font", Lagoon.display_font())
+	pts.add_theme_color_override("font_color", Lagoon.BRASS_LO if mine else Lagoon.BRASS_HI)
 	pts.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	pts.custom_minimum_size = Vector2(96, 0)
 	row.add_child(pts)
-	return row
+	return plate
 
 
 # The lifetime table, and it is deliberately no longer behind the trophy.
@@ -8743,23 +9039,58 @@ func _fill_ranks(list: VBoxContainer, rows: Array) -> void:
 # One row of the board. Shared by the top fifty and by the pinned row beneath
 # them, so the player's own row cannot end up looking like a different object
 # from every other row on the screen.
-func _ranks_row(r: Dictionary, place: int) -> HBoxContainer:
+func _ranks_row(r: Dictionary, place: int) -> Control:
+	var mine: bool = bool(r.get("me", false))
+	# Plated, for the same reason the tournament table is: fifty names stacked
+	# straight onto the modal's glass is a wall of text with no rows in it, and
+	# "which one is me" was being said by turning that one row's ink gold --
+	# which on this panel is the one colour that cannot be read at all.
+	var plate := PanelContainer.new()
+	plate.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var psb := StyleBoxFlat.new()
+	psb.set_corner_radius_all(Lagoon.R_CHIP)
+	psb.content_margin_left = 8.0
+	psb.content_margin_right = 10.0
+	psb.content_margin_top = 5.0
+	psb.content_margin_bottom = 5.0
+	if mine:
+		psb.bg_color = Color(Lagoon.BRASS_HI.r, Lagoon.BRASS_HI.g, Lagoon.BRASS_HI.b, 0.95)
+		psb.set_border_width_all(3)
+		psb.border_color = Lagoon.BRASS_LO
+		psb.shadow_size = 6
+		psb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.30)
+		psb.shadow_offset = Vector2(0, 3)
+	elif place % 2 == 0:
+		psb.bg_color = Color(Lagoon.LAGOON_DEEP.r, Lagoon.LAGOON_DEEP.g, Lagoon.LAGOON_DEEP.b, 0.10)
+	else:
+		psb.bg_color = Color(0, 0, 0, 0)
+	plate.add_theme_stylebox_override("panel", psb)
+
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 12)
 	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	plate.add_child(row)
 	var rank := _popup_row_label("#%d" % place, UI.F_LABEL)
 	rank.custom_minimum_size = Vector2(50, 0)
 	row.add_child(rank)
-	row.add_child(_emoji_label(r["emoji"], UI.F_SUBHEAD))
+	# Framed, not bare. A leaderboard of system emoji sitting loose on a row is
+	# the single clearest "this is a placeholder" signal in the game -- the same
+	# glyph in a rimmed disc reads as an avatar, which is what it is standing in
+	# for. Lagoon.token() is the frame the rest of the game already uses.
+	var face := Lagoon.token(str(r["emoji"]), 52.0, Lagoon.BRASS_MID if not mine else Lagoon.BRASS_HI)
+	face.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(face)
 	var name_l := _popup_row_label(r["name"])
 	name_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var mine: bool = bool(r.get("me", false))
 	if mine:
-		name_l.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+		name_l.add_theme_font_override("font", Lagoon.display_font())
+		name_l.add_theme_color_override("font_color", Lagoon.BRASS_LO)
 	row.add_child(name_l)
-	var c2 := _popup_row_label("\u2605  %s" % _fmt_compact(int(r["stars"])))
-	c2.add_theme_color_override("font_color",
-		Color(1.0, 0.85, 0.4) if mine else CV.STAR_COLORS[CV.MAX_STAR - 1])
+	# The star column is the thing this board ranks, so it is drawn as treasure
+	# rather than as text -- gold inside a deep rim, which is the only way gold
+	# reads on glass this pale.
+	var c2 := Lagoon.gold_value("\u2605  %s" % _fmt_compact(int(r["stars"])), UI.F_LABEL,
+		Lagoon.BRASS_HI if not mine else Lagoon.SAND)
 	row.add_child(c2)
 	# Guideline 1.2: a name somebody else chose, and a way to do something
 	# about it that is not "email the developer". Reporting blocks as well,
@@ -8767,7 +9098,7 @@ func _ranks_row(r: Dictionary, place: int) -> HBoxContainer:
 	# than after a review.
 	var id := str(r.get("id", ""))
 	if id == "" or mine:
-		return row
+		return plate
 	var flag := Button.new()
 	flag.text = "\u2691"
 	flag.flat = true
@@ -8777,7 +9108,7 @@ func _ranks_row(r: Dictionary, place: int) -> HBoxContainer:
 	FX.press_feedback(flag)
 	flag.pressed.connect(func() -> void: _confirm_report(id, str(r["name"])))
 	row.add_child(flag)
-	return row
+	return plate
 
 func _confirm_report(player_id: String, who: String) -> void:
 	var box := _open_popup("Report name")
@@ -8837,8 +9168,15 @@ func _build_village_page() -> void:
 	name_plate.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
 	name_plate.offset_left = -210.0
 	name_plate.offset_right = 210.0
-	name_plate.offset_top = 100.0 + safe_top()
-	name_plate.offset_bottom = 176.0 + safe_top()
+	# CLEAR OF THE CUTOUT, NOT JUST OF THE BAR.
+	#
+	# The HUD tucks under a notch on purpose and rides the very top beside a
+	# Dynamic Island -- so "18 below the bar" puts the island's nameplate hard
+	# against the black housing on exactly the phones that have one. The plate
+	# is a title; it needs air above it, and the air it needs is measured from
+	# whichever ends lower, the bar or the cutout.
+	name_plate.offset_top = maxf(hud_top() + 70.0, safe_top()) + 30.0
+	name_plate.offset_bottom = name_plate.offset_top + 76.0
 	_island_title = name_plate.get_meta("label")
 
 	village = VillageView.new()
@@ -8855,6 +9193,7 @@ func _build_village_page() -> void:
 		_candy_button(slot_dict["button"], Lagoon.KELP)
 
 	_add_topbar(village_page)
+	_add_side_rail(village_page)
 
 func _add_background(page: Control, bg_id: String, top_color: Color, bottom_color: Color) -> TextureRect:
 	var t := CV.bg_tex(bg_id)
@@ -8974,6 +9313,23 @@ func _add_topbar(page: Control) -> void:
 	var isl := Lagoon.capsule("island", "1")
 	right_grp.add_child(isl["root"])
 	labels["island"] = isl["value"]
+
+	# SETTINGS AND ALERTS ARE NOT IN THIS BAR, AND THE REASON IS MEASURED.
+	#
+	# Guy asked for six things up here -- money, shields, settings, alerts,
+	# island, stars. Six does not fit beside a Dynamic Island and no amount of
+	# arranging changes that: the cutout owns 245..475 of 720, which leaves 462
+	# units of bar split between the two ends, and the four counters already
+	# spend 293 of the left-hand share on their own. Building it his way and
+	# running tools/measure_hud.tscn put the right-hand group's start at 351 --
+	# 124 units inside the cutout, with the alerts button entirely under the
+	# camera housing.
+	#
+	# So they went to the top of the right-hand rail instead, which is the top
+	# right of the screen and is clear of the hardware. If the six-in-a-bar
+	# version is wanted anyway, the thing that has to leave is the island
+	# capsule -- dropping it puts the right group's start at 479 and clears the
+	# cutout by four units.
 
 	# The bar places itself once it knows how wide its two groups have come out,
 	# and again every time a counter changes width. `sort_children` fires on
@@ -9940,6 +10296,8 @@ func _apply_island_theme() -> void:
 		_island_title.text = CV.island_theme(island_level)["name"]
 	for mat in _page_backdrops:
 		Lagoon.tint_backdrop(mat, CV.island_palette(island_level))
+	for bmat in _page_boards:
+		Lagoon.tint_board(bmat, CV.island_palette(island_level))
 	_apply_slot_theme()
 
 # Repaints the SPIN page in the current island's palette: its artwork behind
@@ -10479,12 +10837,18 @@ func _style_shield_chip(chip, full: bool) -> void:
 		return
 	chip.set_meta("shield_face", want)
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(1.0, 0.94, 0.80, 0.95) if full else Color(1, 1, 1, 0.88)
+	# Deep like its neighbours -- this one had been left behind as a white pill
+	# when the rest of the HUD went dark, so the shield read as the odd capsule
+	# out on every screen. A full shield still lights: the face warms toward
+	# brass and the rim goes to the bright metal, which says "topped up" without
+	# the capsule leaving the row it belongs to.
+	sb.bg_color = Color(0.208, 0.145, 0.055, 0.95) if full else Color(
+		Lagoon.LAGOON_DEEP.r * 0.62, Lagoon.LAGOON_DEEP.g * 0.62, Lagoon.LAGOON_DEEP.b * 0.62, 0.94)
 	sb.set_corner_radius_all(28)
-	sb.set_border_width_all(4 if full else 3)
-	sb.border_color = Lagoon.BRASS_HI if full else Lagoon.BRASS
-	sb.shadow_size = 10 if full else 7
-	sb.shadow_color = Color(Lagoon.BRASS.r, Lagoon.BRASS.g, Lagoon.BRASS.b, 0.45) if full 		else Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.28)
+	sb.set_border_width_all(4)
+	sb.border_color = Lagoon.BRASS_HI if full else Lagoon.BRASS_LO
+	sb.shadow_size = 11 if full else 8
+	sb.shadow_color = Color(Lagoon.BRASS.r, Lagoon.BRASS.g, Lagoon.BRASS.b, 0.50) if full 		else Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.34)
 	sb.shadow_offset = Vector2(0, 3)
 	sb.content_margin_left = 8.0
 	sb.content_margin_right = 8.0
