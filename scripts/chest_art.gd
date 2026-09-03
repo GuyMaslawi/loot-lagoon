@@ -66,6 +66,36 @@ func _init() -> void:
 func _ready() -> void:
 	resized.connect(queue_redraw)
 
+# --- the rendered art --------------------------------------------------------
+#
+# The three chests are Blender renders now -- tools/render_props.py builds and
+# shoots them, and the reasoning is in its docstring: what separates the island's
+# buildings from these was never colour or line weight, it was that a render
+# computes specular on a curve and contact shading in a crevice and a draw call
+# cannot.
+#
+# The drawing below stays, and is not dead code. It is what the shelf shows if
+# the texture is missing, which keeps a shipped build honest if an export ever
+# drops the asset -- a shelf with a plain box on it beats a shelf with a hole.
+
+static var _shot: Array[Texture2D] = [null, null, null]
+static var _shot_read := false
+
+static func _rendered(t: int) -> Texture2D:
+	if not _shot_read:
+		_shot_read = true
+		for i in 3:
+			_shot[i] = CV.tex("res://assets/art/props/chest_t%d.png" % i)
+	return _shot[clampi(t, 0, 2)]
+
+# Fitted, never stretched: these are square renders and the callers are not all
+# square boxes.
+func _blit(t: Texture2D, alpha := 1.0) -> void:
+	var ts := Vector2(t.get_width(), t.get_height())
+	var k := minf(size.x / ts.x, size.y / ts.y)
+	var d := ts * k
+	draw_texture_rect(t, Rect2((size - d) * 0.5, d), false, Color(1, 1, 1, alpha))
+
 # --- primitives --------------------------------------------------------------
 
 func _round_rect(center: Vector2, box: Vector2, radius: float) -> PackedVector2Array:
@@ -131,6 +161,11 @@ func _star(c: Vector2, r: float, col: Color) -> void:
 func _draw() -> void:
 	if size.x <= 0.0 or size.y <= 0.0:
 		return
+	var shot := _rendered(tier)
+	if shot != null:
+		_blit(shot)
+		return
+
 	var s := minf(size.x, size.y) / SPACE
 	var off := (size - Vector2(SPACE, SPACE) * s) * 0.5
 	draw_set_transform(off, 0.0, Vector2(s, s))

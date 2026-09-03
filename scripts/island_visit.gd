@@ -248,7 +248,9 @@ func _setup_chests() -> void:
 
 	var idxs := [0, 1, 2, 3, 4]
 	idxs.shuffle()
-	var chest_t := CV.prop_tex("chest")
+	var chest_t := CV.prop_tex("chest_t0")
+	if chest_t == null:
+		chest_t = CV.prop_tex("chest")
 	for k in 4:
 		var rect: Rect2 = CV.SLOT_RECTS[idxs[k]]
 		var btn := Button.new()
@@ -273,7 +275,9 @@ func _on_chest(btn: Button, amount: int) -> void:
 	btn.disabled = true
 	_picks_left -= 1
 	_attempts_label.text = "Attempts left: %d" % _picks_left
-	var open_t := CV.prop_tex("chest_open")
+	var open_t := CV.prop_tex("chest_t0_open")
+	if open_t == null:
+		open_t = CV.prop_tex("chest_open")
 	if open_t != null and btn.icon != null:
 		btn.icon = open_t
 	Sfx.play("raid", -6.0)

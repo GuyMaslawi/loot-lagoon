@@ -76,6 +76,50 @@ func _init() -> void:
 func _ready() -> void:
 	resized.connect(queue_redraw)
 
+# --- the rendered art --------------------------------------------------------
+#
+# Six Blender renders, one per fill step -- tools/render_props.py builds them.
+# The reasoning for going to renders at all is in that file; the reasoning for
+# six of them is here.
+#
+# `fill` is tweened continuously by the piggy screen, and a render is a fixed
+# frame, so the two frames either side of the current level are cross-faded.
+# That works because consecutive frames are the same object under the same
+# light with a slightly larger heap inside -- everything except the gold is
+# pixel-identical, so the blend has nothing to smear.
+#
+# Six is a judgement, not a measurement: the popup fills from empty over 1.05s,
+# so six frames is a coin landing roughly every 200ms, which is about the rate
+# the coin animation drops them at anyway. If a step ever shows, add frames --
+# the count lives in SHOTS here and in TARGETS in tools/render_props.py, and
+# nothing else has to change.
+#
+# The drawing below stays as the fallback, exactly as in ChestArt, and it is
+# still the thing that documents what the object is supposed to be.
+
+const SHOTS := 6
+
+static var _shot: Array[Texture2D] = []
+static var _shot_read := false
+
+static func _rendered() -> Array[Texture2D]:
+	if not _shot_read:
+		_shot_read = true
+		var got: Array[Texture2D] = []
+		for i in SHOTS:
+			var t := CV.tex("res://assets/art/props/piggy_%d.png" % i)
+			if t == null:          # a partial set is worse than none: the blend
+				return _shot       # between a render and a drawing is a smear
+			got.append(t)
+		_shot = got
+	return _shot
+
+func _blit(t: Texture2D, alpha := 1.0) -> void:
+	var ts := Vector2(t.get_width(), t.get_height())
+	var k := minf(size.x / ts.x, size.y / ts.y)
+	var d := ts * k
+	draw_texture_rect(t, Rect2((size - d) * 0.5, d), false, Color(1, 1, 1, alpha))
+
 # Full at the top, and "empty" is deliberately not 0 -- a bank holding eleven
 # coins out of forty thousand is empty in every sense the face is for.
 func mood() -> String:
@@ -107,11 +151,18 @@ const SNOUT_R  := Vector2(24, 20)
 const SLOT_C   := Vector2(124, 66)
 const EYE_C    := Vector2(64, 90)
 
-# Where a coin has to land to go in, in this control's own coordinates.
+# Where a coin has to land to go in, in this control's own coordinates. The
+# rendered pig is a different pose from the drawing, so its slot is somewhere
+# else -- measured off the render by finding the brass in the top of the frame,
+# rather than guessed. Both textures are square and fitted the same way, so one
+# off/scale calculation covers both.
+const SLOT_SHOT := Vector2(94, 43)
+
 func slot_point() -> Vector2:
 	var s := minf(size.x, size.y) / SPACE
 	var off := (size - Vector2(SPACE, SPACE) * s) * 0.5
-	return off + SLOT_C * s
+	var p := SLOT_SHOT if not _rendered().is_empty() else SLOT_C
+	return off + p * s
 
 # --- primitives -------------------------------------------------------------
 
@@ -165,6 +216,19 @@ func _edge(c: Vector2, r: Vector2, w := 4.5, spec := 0.75) -> void:
 func _draw() -> void:
 	if size.x <= 0.0 or size.y <= 0.0:
 		return
+	var shot := _rendered()
+	if not shot.is_empty():
+		# `face` is an override for the drawing's three expressions; against the
+		# renders it means "hold the full one", which is the frame at the top.
+		var lv := 1.0 if face == "full" else fill
+		var x := clampf(lv, 0.0, 1.0) * float(SHOTS - 1)
+		var i := clampi(int(floor(x)), 0, SHOTS - 2)
+		var t := x - float(i)
+		_blit(shot[i])
+		if t > 0.002:
+			_blit(shot[i + 1], t)
+		return
+
 	var s := minf(size.x, size.y) / SPACE
 	var off := (size - Vector2(SPACE, SPACE) * s) * 0.5
 	draw_set_transform(off, 0.0, Vector2(s, s))
