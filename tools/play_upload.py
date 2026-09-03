@@ -150,6 +150,17 @@ def main() -> None:
     code = bundle["versionCode"]
     print(f"    accepted as version code {code}")
 
+    # What is on the track right now, read before we overwrite it. This line
+    # used to be a hardcoded "62 stays live", written the day the script was and
+    # a lie on every run after -- which is exactly the stale-build-number
+    # confusion this project has already paid for once.
+    was = []
+    for tr in call("GET", f"{API}/applications/{PACKAGE}/edits/{edit_id}/tracks",
+                   tok).get("tracks", []):
+        if tr.get("track") == track:
+            for r in tr.get("releases", []):
+                was += r.get("versionCodes", []) or []
+
     print(f"==> assigning to track '{track}'")
     call("PUT", f"{API}/applications/{PACKAGE}/edits/{edit_id}/tracks/{track}", tok, body={
         "track": track,
@@ -159,7 +170,11 @@ def main() -> None:
     print("==> committing")
     call("POST", f"{API}/applications/{PACKAGE}/edits/{edit_id}:commit", tok)
     print(f"\nDONE. Version code {code} is on '{track}' and now goes through review.")
-    print("62 stays live for testers until it clears; the 14-day clock is untouched.")
+    if was:
+        print(f"{', '.join(was)} stays live for testers until it clears; "
+              "the 14-day clock is untouched.")
+    else:
+        print(f"'{track}' had no release before this one; the 14-day clock is untouched.")
 
 
 if __name__ == "__main__":
