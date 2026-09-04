@@ -4313,6 +4313,8 @@ func _fill_clan(vb: VBoxContainer) -> void:
 func _clan_invites_ui(vb: VBoxContainer) -> void:
 	if int(clan_news.get("invites", 0)) <= 0:
 		return
+	if not _clan_fake and not Cloud.clan_extras_ready():
+		return
 	# THE SLOT IS TAKEN NOW AND FILLED LATER.
 	#
 	# The list is a round trip, and the page keeps building while it is in
@@ -4600,20 +4602,27 @@ func _clan_roster_ui(vb: VBoxContainer) -> void:
 	var me_id := String(Cloud.player().get("id", ""))
 	var is_owner: bool = String(my_clan.get("owner", "")) == me_id and me_id != ""
 
-	# Recruiting. Any member may do it -- see the migration for why the owner is
-	# not made a bottleneck on the only thing that grows a clan.
-	var ask := Button.new()
-	ask.text = "INVITE  A  PLAYER"
-	ask.custom_minimum_size = Vector2(0, UI.TAP)
-	ask.disabled = members.size() >= CLAN_MAX_MEMBERS
-	_candy_button(ask, Color(0.28, 0.68, 0.34))
-	FX.press_feedback(ask)
-	ask.pressed.connect(_open_clan_invite)
-	head.add_child(ask)
+	# EVERYTHING BELOW NEEDS THE SECOND MIGRATION, so it is drawn only on a
+	# project that has it. Clans shipped in one migration and recruiting in
+	# another, and the two reach a project on different days -- a CREATE button
+	# that refuses is the exact failure the "Clans open soon" card exists to
+	# avoid, and an INVITE button that refuses is the same thing one screen in.
+	# The roster, the browse list and card giving all work regardless.
+	if _clan_fake or Cloud.clan_extras_ready():
+		# Recruiting. Any member may do it -- see the migration for why the
+		# owner is not made a bottleneck on the only thing that grows a clan.
+		var ask := Button.new()
+		ask.text = "INVITE  A  PLAYER"
+		ask.custom_minimum_size = Vector2(0, UI.TAP)
+		ask.disabled = members.size() >= CLAN_MAX_MEMBERS
+		_candy_button(ask, Color(0.28, 0.68, 0.34))
+		FX.press_feedback(ask)
+		ask.pressed.connect(_open_clan_invite)
+		head.add_child(ask)
 
-	if is_owner:
-		_clan_door_switch(head)
-		_clan_requests_ui(vb)
+		if is_owner:
+			_clan_door_switch(head)
+			_clan_requests_ui(vb)
 
 	for m in members:
 		if typeof(m) != TYPE_DICTIONARY:
@@ -8476,7 +8485,7 @@ func _refresh_gift_budget() -> void:
 # minute for a number that is almost always zero costs battery on every phone
 # in the game to make one of them slightly fresher.
 func _refresh_clan_news() -> void:
-	if _clan_fake or not Cloud.linked():
+	if _clan_fake or not Cloud.linked() or not Cloud.clan_extras_ready():
 		return
 	Cloud.clan_news(func(res: Dictionary) -> void:
 		if res.is_empty():

@@ -619,10 +619,30 @@ func leave_clan(then: Callable) -> void:
 #  Invites, join requests, and the number on the clan button
 # =============================================================================
 #
-# Every one of these degrades to "nothing pending" rather than erroring when
-# the 20260904170000 migration has not been applied yet -- the same contract
-# the rest of this section keeps, and the reason the clan disc's badge simply
-# stays dark on a project whose SQL is a build behind.
+# THESE HAVE THEIR OWN AVAILABILITY FLAG, AND THAT IS THE WHOLE POINT OF IT.
+#
+# They arrived in a SECOND migration (20260904170000) on top of the one clans
+# shipped with, and the two land on the project at different moments. Routing a
+# 404 from `clan_news` into `_note_clan_code` -- which is what the first draft
+# of this did -- turns the entire clan tab off on a project where clans are
+# applied and working, because one function of the fourteen is missing. The tab
+# would read "Clans open soon" to a player standing in a clan.
+#
+# So: `_clans_ok` means "clans exist at all" and is decided only by the three
+# calls the first migration shipped. `_extras_ok` means "this project also has
+# invites and requests", and everything below reports into that instead. The
+# badge stays dark, the recruiting controls stay hidden, and the roster, the
+# browse list and card giving all carry on.
+var _extras_ok := true
+
+func clan_extras_ready() -> bool:
+	return _clans_ok and _extras_ok
+
+func _note_extra_code(code: int) -> void:
+	if code == 404:
+		_extras_ok = false
+	elif code == 200:
+		_extras_ok = true
 
 # THE ONE CALL THE BADGE IS DRAWN FROM.
 #
@@ -635,7 +655,7 @@ func clan_news(then: Callable) -> void:
 		then.call({})
 		return
 	_rpc("clan_news", {}, func(code: int, body) -> void:
-		_note_clan_code(code)
+		_note_extra_code(code)
 		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
 	)
 
@@ -644,7 +664,7 @@ func clan_invites(then: Callable) -> void:
 		then.call([])
 		return
 	_rpc("my_clan_invites", {}, func(code: int, body) -> void:
-		_note_clan_code(code)
+		_note_extra_code(code)
 		then.call(body if code == 200 and typeof(body) == TYPE_ARRAY else [])
 	)
 
@@ -685,7 +705,7 @@ func clan_join_requests(then: Callable) -> void:
 		then.call([])
 		return
 	_rpc("clan_join_requests", {}, func(code: int, body) -> void:
-		_note_clan_code(code)
+		_note_extra_code(code)
 		then.call(body if code == 200 and typeof(body) == TYPE_ARRAY else [])
 	)
 
@@ -716,7 +736,7 @@ func find_players(query: String, then: Callable) -> void:
 		return
 	_rpc("find_players", {"p_query": query.strip_edges(), "p_limit": 12},
 		func(code: int, body) -> void:
-			_note_clan_code(code)
+			_note_extra_code(code)
 			then.call(body if code == 200 and typeof(body) == TYPE_ARRAY else [])
 	)
 
