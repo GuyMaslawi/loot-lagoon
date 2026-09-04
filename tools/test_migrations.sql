@@ -658,6 +658,172 @@ begin
                                'public.tourney_report(integer, integer)', 'execute'));
     end;
 
+
+    -- =========================================================================
+    --  clans, and giving a spare card to a clanmate
+    -- =========================================================================
+    --
+    -- Every rule here is one the CLIENT could otherwise lie about. The card
+    -- collection lives in save_blob and the server never sees it, so these
+    -- checks are the whole of what "no holes" can mean for this feature.
+    declare
+        dave uuid := gen_random_uuid();
+        erin uuid := gen_random_uuid();
+        p_dave uuid; p_erin uuid;
+        clan_id uuid;
+        g jsonb;
+        i integer;
+    begin
+        insert into auth.users (id, email) values
+            (dave, 'dave@example.com'), (erin, 'erin@example.com');
+        insert into auth.identities (user_id, provider) values
+            (dave, 'google'), (erin, 'google');
+
+        perform pg_temp.be(dave);
+        perform public.claim_player('{}'::jsonb, 'Dave', '🧔', 50, 4, 3000, 0, '{1,1,0,0,0}');
+        select id into p_dave from public.players
+         where id = public.current_player();
+        perform pg_temp.be(erin);
+        perform public.claim_player('{}'::jsonb, 'Erin', '👩', 60, 4, 3000, 0, '{1,1,0,0,0}');
+        select id into p_erin from public.players
+         where id = public.current_player();
+
+        -- --- making and joining one ----------------------------------------
+        perform pg_temp.be(dave);
+        r := public.create_clan('Sea Dogs', '🐕');
+        perform pg_temp.ck('a clan can be made', (r->>'ok')::boolean, r::text);
+        clan_id := ((r->'clan')->>'id')::uuid;
+        perform pg_temp.ck('and its founder is in it',
+            jsonb_array_length((r->'clan')->'members') = 1);
+
+        perform pg_temp.ck('a second clan by the same person is refused',
+            not (public.create_clan('Other Crew')->>'ok')::boolean);
+
+        perform pg_temp.be(erin);
+        perform pg_temp.ck('a name that differs only by case or spacing is taken',
+            (public.create_clan('  sea   dogs ')->>'reason') = 'taken');
+        perform pg_temp.ck('a name that is too short is refused',
+            (public.create_clan('ab')->>'reason') = 'length');
+
+        r := public.join_clan(clan_id);
+        perform pg_temp.ck('somebody else can join it', (r->>'ok')::boolean, r::text);
+        perform pg_temp.ck('and the roster now shows both',
+            jsonb_array_length((r->'clan')->'members') = 2);
+        perform pg_temp.ck('the member count kept up',
+            (select members from public.clans where id = clan_id) = 2);
+        perform pg_temp.ck('my_clan answers with the one I am in',
+            (public.my_clan()->>'id')::uuid = clan_id);
+
+        -- --- the four rules the client cannot be trusted with ---------------
+        perform pg_temp.be(dave);
+
+        perform pg_temp.ck('SENDING TO YOURSELF IS REFUSED',
+            (public.send_card(p_dave, 'reef', 2, 1)->>'reason') = 'self');
+
+        perform pg_temp.ck('A FIVE-STAR CARD CANNOT BE SENT',
+            (public.send_card(p_erin, 'reef', 2, 5)->>'reason') = 'stars');
+        perform pg_temp.ck('...nor anything pretending to be one',
+            (public.send_card(p_erin, 'reef', 2, 99)->>'reason') = 'stars'
+        and (public.send_card(p_erin, 'reef', 2, 0)->>'reason') = 'stars');
+
+        -- ...and it holds even if send_card is bypassed entirely. The check
+        -- constraint is the floor under the function.
+        begin
+            insert into public.card_gifts (from_player, to_player, set_id, card_idx, stars)
+                 values (p_dave, p_erin, 'reef', 2, 5);
+            perform pg_temp.ck('a 5-star gift cannot be written even directly', false);
+        exception when check_violation then
+            perform pg_temp.ck('a 5-star gift cannot be written even directly', true);
+        end;
+        begin
+            insert into public.card_gifts (from_player, to_player, set_id, card_idx, stars)
+                 values (p_dave, p_dave, 'reef', 2, 1);
+            perform pg_temp.ck('a self-gift cannot be written even directly', false);
+        exception when check_violation then
+            perform pg_temp.ck('a self-gift cannot be written even directly', true);
+        end;
+
+        -- --- a real send ----------------------------------------------------
+        g := public.send_card(p_erin, 'reef', 2, 3);
+        perform pg_temp.ck('a legitimate gift to a clanmate goes through',
+            (g->>'ok')::boolean, g::text);
+
+        perform pg_temp.be(erin);
+        r := public.unseen_gifts();
+        perform pg_temp.ck('the receiver has it waiting', jsonb_array_length(r) = 1);
+        perform pg_temp.ck('...with the card it was sent',
+            (r->0->>'set') = 'reef' and (r->0->>'idx')::int = 2
+            and (r->0->>'stars')::int = 3);
+        -- Compared against the stored name rather than the literal passed to
+        -- claim_player: display names are uniqued on the way in and a taken
+        -- one is handed back with a suffix, so the literal is not what the
+        -- row necessarily holds.
+        perform pg_temp.ck('...and who sent it, so the game can say so',
+            ((r->0->'by')->>'name')
+            = (select display_name from public.players where id = p_dave),
+            coalesce((r->0->'by')->>'name', '<null>'));
+
+        perform public.ack_gifts(array[(r->0->>'id')::uuid]);
+        perform pg_temp.ck('once applied it stops arriving',
+            jsonb_array_length(public.unseen_gifts()) = 0);
+
+        -- --- clan membership is the gate ------------------------------------
+        perform public.leave_clan();
+        perform pg_temp.be(dave);
+        perform pg_temp.ck('SOMEBODY WHO LEFT CANNOT BE SENT TO',
+            (public.send_card(p_erin, 'reef', 3, 1)->>'reason') = 'not_clanmates');
+        perform pg_temp.be(erin);
+        perform pg_temp.ck('and they cannot send in either',
+            (public.send_card(p_dave, 'reef', 3, 1)->>'reason') = 'not_clanmates');
+        perform public.join_clan(clan_id);
+
+        -- --- the caps, which are the ceiling on the whole feature ------------
+        perform pg_temp.be(dave);
+        -- Dave has already sent one. The receive cap is the tighter of the two,
+        -- so it is what stops him first.
+        i := 0;
+        while (public.send_card(p_erin, 'reef', 10 + i, 1)->>'ok')::boolean loop
+            i := i + 1;
+            exit when i > 20;
+        end loop;
+        perform pg_temp.ck('THE RECEIVER CANNOT BE PUSHED PAST THEIR DAILY CAP',
+            (select count(*) from public.card_gifts
+              where to_player = p_erin and created_at > now() - interval '24 hours')
+            = public.gift_receive_cap(),
+            (select count(*)::text from public.card_gifts where to_player = p_erin));
+        perform pg_temp.ck('...and the refusal says which cap it was',
+            (public.send_card(p_erin, 'reef', 40, 1)->>'reason') = 'their_cap');
+
+        perform pg_temp.ck('the budget readout matches what was actually sent',
+            (public.gift_budget()->>'sent')::int
+            = (select count(*) from public.card_gifts where from_player = p_dave
+                and created_at > now() - interval '24 hours'));
+
+        -- The give cap bites even when fresh receivers are available, which is
+        -- what stops one modified client servicing everybody.
+        perform pg_temp.be(erin);
+        perform pg_temp.ck('nobody is left holding more give budget than the cap',
+            (public.gift_budget()->>'give_cap')::int = public.gift_give_cap()
+        and (public.gift_budget()->>'receive_cap')::int = public.gift_receive_cap());
+
+        -- --- leaving tidies up ----------------------------------------------
+        perform public.leave_clan();
+        perform pg_temp.be(dave);
+        perform public.leave_clan();
+        perform pg_temp.ck('the last member out takes the empty clan with them',
+            not exists (select 1 from public.clans where id = clan_id));
+
+        -- --- grants ----------------------------------------------------------
+        perform pg_temp.ck('anon cannot send a card',
+            not has_function_privilege('anon',
+                'public.send_card(uuid, text, integer, integer)', 'execute'));
+        perform pg_temp.ck('while a signed-in player can',
+            has_function_privilege('authenticated',
+                'public.send_card(uuid, text, integer, integer)', 'execute'));
+        perform pg_temp.ck('anon cannot read anybody''s gift inbox',
+            not has_function_privilege('anon', 'public.unseen_gifts()', 'execute'));
+    end;
+
     raise notice 'ALL FUNCTIONAL TESTS PASSED';
 end;
 $$;
