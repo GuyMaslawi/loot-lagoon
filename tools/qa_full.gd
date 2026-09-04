@@ -81,6 +81,7 @@ func _ready() -> void:
 	_t_streak()
 	_section("27. clans and card gifts")
 	await _t_clans()
+	_t_clan_gate()
 
 	print("")
 	print("QA-FULL: %d checks, %s" % [checks, "ALL PASS" if fails == 0 else "%d FAILURES" % fails])
@@ -2353,3 +2354,16 @@ func _t_clans() -> void:
 	await get_tree().process_frame
 	_chk("the applied-gift list survives a relaunch",
 		m.applied_gifts.has("keep-me"), str(m.applied_gifts))
+
+# The clan page has to survive its own server half not existing yet, because a
+# build reaches the stores by a different hand than the SQL does.
+func _t_clan_gate() -> void:
+	_chk("clans are assumed on until the server says otherwise", Cloud.clans_ready())
+	Cloud._note_clan_code(404)
+	_chk("a 404 from the RPC switches the feature off", not Cloud.clans_ready())
+	Cloud._note_clan_code(401)
+	_chk("...but a 401 does NOT -- that is a live function refusing anon",
+		not Cloud.clans_ready())
+	Cloud._note_clan_code(200)
+	_chk("and it comes back on with no new build when the migration lands",
+		Cloud.clans_ready())

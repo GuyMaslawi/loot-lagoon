@@ -4223,6 +4223,28 @@ func _fill_clan(vb: VBoxContainer) -> void:
 		card.add_child(sub)
 		return
 
+	# The server half may not be applied yet -- a build reaches the stores by a
+	# different hand than the SQL does. Saying so is the whole point: a CREATE
+	# button that refuses reads as a broken feature, and this reads as one that
+	# has not opened. It needs no new build to switch on.
+	if not Cloud.clans_ready():
+		var soon := _page_card(vb)
+		var e2 := _emoji_label("\U01F3F4", 72)
+		e2.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		e2.modulate = Color(1, 1, 1, 0.5)
+		soon.add_child(e2)
+		var t2 := _popup_row_label("Clans open soon", UI.F_SUBHEAD)
+		t2.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		soon.add_child(t2)
+		var s2 := _popup_row_label(
+			"Clanmates will be able to pass each other spare cards. It is not switched on yet — nothing to do here for now.",
+			UI.F_CAPTION)
+		s2.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		s2.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		s2.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		soon.add_child(s2)
+		return
+
 	if my_clan.is_empty():
 		_clan_join_ui(vb)
 		return

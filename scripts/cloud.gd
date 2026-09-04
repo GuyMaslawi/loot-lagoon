@@ -552,11 +552,32 @@ func fetch_raids() -> void:
 # has not been applied yet: an unknown RPC comes back non-200, which every
 # callback below reads as an empty answer.
 
+# Whether the clan migration is live on this project.
+#
+# A build can reach the stores before the SQL is applied -- they are two
+# separate hands -- and a client that cannot tell the difference offers a
+# CREATE button that refuses. PostgREST is unambiguous about it: a function
+# that exists but is not callable answers 401, and one that does not exist
+# answers 404 with PGRST202. So the first call that comes back 404 turns the
+# feature off, and it turns itself back on the moment the migration lands,
+# with no build in between.
+var _clans_ok := true
+
+func clans_ready() -> bool:
+	return _clans_ok
+
+func _note_clan_code(code: int) -> void:
+	if code == 404:
+		_clans_ok = false
+	elif code == 200:
+		_clans_ok = true
+
 func my_clan(then: Callable) -> void:
 	if not linked():
 		then.call({})
 		return
 	_rpc("my_clan", {}, func(code: int, body) -> void:
+		_note_clan_code(code)
 		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
 	)
 
@@ -565,6 +586,7 @@ func clan_list(then: Callable, limit := 30) -> void:
 		then.call([])
 		return
 	_rpc("clan_list", {"p_limit": limit}, func(code: int, body) -> void:
+		_note_clan_code(code)
 		then.call(body if code == 200 and typeof(body) == TYPE_ARRAY else [])
 	)
 
@@ -600,6 +622,7 @@ func gift_budget(then: Callable) -> void:
 		then.call({})
 		return
 	_rpc("gift_budget", {}, func(code: int, body) -> void:
+		_note_clan_code(code)
 		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
 	)
 
