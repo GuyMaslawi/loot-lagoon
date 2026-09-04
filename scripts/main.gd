@@ -880,8 +880,23 @@ func _fake_clan() -> void:
 			"island_level": 14 - i * 2})
 	roster[0]["id"] = "me-0000"
 	my_clan = {"id": "c1", "name": "Kraken's Own", "emoji": "\U01F419",
-		"owner": "me-0000", "members": roster}
+		"owner": "me-0000", "open": false, "members": roster}
 	gift_budget = {"sent": 1, "give_cap": 5, "got": 2, "receive_cap": 3}
+	# The pending halves, so the harnesses measure the rows that carry the
+	# longest strings this page can hold. `open: false` above is what makes the
+	# owner's request queue exist at all -- an open clan never has one, so a
+	# fake that left the door open would have measured a page with two of its
+	# four cards missing.
+	clan_news = {"invites": 1, "requests": 2}
+	_clan_fake_invites = [{
+		"id": "i1", "clan_id": "c2", "name": "The Long Reef Company",
+		"emoji": "\U01F41A", "members": 12,
+		"from": {"id": "p9", "name": "Wilhelmina", "emoji": "\U01F9D4", "island_level": 22}}]
+	_clan_fake_requests = [
+		{"id": "r1", "player": {"id": "q1", "name": "Constantinople",
+			"emoji": "\U01F9D1", "island_level": 17}},
+		{"id": "r2", "player": {"id": "q2", "name": "Bo", "emoji": "\U01F469",
+			"island_level": 3}}]
 	for c in CV.COLLECTIONS:
 		var arr: Array = col_dupes.get(String(c["id"]), [])
 		for i in arr.size():
@@ -1497,6 +1512,10 @@ func _cloud_claim() -> void:
 # what was on this device, so there is nothing to reconcile.
 func _on_cloud_signed_in(_who: Dictionary, is_new: bool, remote: Dictionary) -> void:
 	_close_restoring()
+	# The clan disc's badge has to be right on the page the player lands on, not
+	# only once they have wandered onto the clan page -- an invitation nobody is
+	# told about is an invitation that expires by being forgotten.
+	_refresh_clan_news()
 	if is_new or remote.is_empty():
 		_flush_save()
 		return
@@ -2026,6 +2045,10 @@ func _resume_from_away() -> void:
 		_offline_raids()
 	_offline_spins_gained = 0
 	_refresh()
+	# Somebody may have been invited, or knocked on their clan's door, during
+	# the absence just credited above. Cheap, and this is the one moment the
+	# badge is guaranteed to be looked at straight afterwards.
+	_refresh_clan_news()
 	_flush_save()
 	Alerts.set_badge(_unread_count())
 	Diag.awake(_page_name(_current_page))
@@ -2222,6 +2245,7 @@ const SHOP_ANCHOR_LEAD := 18.0
 func _enter_clan_page() -> void:
 	_refresh_clan()
 	_refresh_gift_budget()
+	_refresh_clan_news()
 
 func _goto_shop(anchor := "") -> void:
 	# Already on the page, so there is no transition to hide the movement --
@@ -3081,7 +3105,7 @@ func _add_side_rail(page: Control, top: float) -> void:
 	# player last found the bell on is worth more than a tidy count.
 	_side_rail_lane(page, top, false, [
 			["bell",   "Alerts",     "alerts", func() -> void: _goto(pages["alerts"])],
-			["cards",  "Clan",       "clan",   func() -> void: _goto(pages["clan"])]])
+			["clan",   "Clan",       "clan",   func() -> void: _goto(pages["clan"])]])
 	_side_rail_lane(page, top, true, [
 			["gift",   "Daily",      "daily",  _open_daily],
 			["trophy", "Tournament", "ranks",  _open_tourney],
@@ -3113,13 +3137,19 @@ func _side_rail_lane(page: Control, top: float, right: bool, specs: Array) -> vo
 # it now sits in. The long note that used to live here explained how to fit two
 # vertical lanes down the sides of the cabinet without them landing on the
 # marquee; the buttons ride the top in one row now, so none of it applies.
-# 70, not 82. The lane holds five buttons now -- alerts, settings, daily, cup
-# and the piggy -- and five at 82 with 14 between them is 466 units of run
-# against the 413 of cabinet frame there is to run down: the last two landed on
-# the bet row and the spin meter. At 70 with 10 between them the run is 390 and
-# stops on the window's frame, which is the only surface in the cabinet with
-# nothing drawn on it.
-const SIDE_DISC := 70.0
+# 88, not 70. Guy, 2026-09-04, off a screenshot of a real phone: "raise them
+# further and make them bigger, they are very small."
+#
+# 70 was arithmetic left over from a lane of five, where the run was the
+# binding constraint and every unit of diameter cost five units of height. The
+# lane holds two on one side and three on the other now, so the run is no
+# longer what is being economised -- what is, is that 70 design units is 32pt
+# on a phone, which is under Apple's own 44pt minimum for a tap target and
+# reads at arm's length as chrome rather than as buttons. 88 is 40pt of disc
+# inside a 44pt touch box once the rim is counted, and it fits because
+# CABINET_INSET widened to 96 in the same pass: the lane is 96 wide, the disc
+# is 88, and the rim still clears the cabinet's own frame.
+const SIDE_DISC := 88.0
 # WHERE THE MACHINE STARTS, and it is a function now rather than a constant.
 #
 # It used to be "196 below the safe inset", which was right while the HUD hung
@@ -3135,16 +3165,26 @@ const SIDE_DISC := 70.0
 const SLOT_BAND_GAP := 18.0        # clear air under whichever comes last
 const SLOT_BAND_INSET_GAP := 12.0  # ...and under the cutout, if that is lower
 
-const SIDE_RAIL_GAP := 12.0
-# 20, not 8. Eight design units is under five points on a phone -- the discs
-# were effectively touching the glass, and on a device with rounded corners the
-# outermost pixels of the rim go under the bezel. This is chrome that has to
-# look placed rather than shoved against the edge.
-const SIDE_RAIL_INSET := 20.0
-# The rail has to clear the marquee, so it is measured from the cabinet's band
-# and not from the screen: 208 is the card overhang plus the ribbon plus the
-# separation between them.
-const SIDE_RAIL_DROP := 208.0
+const SIDE_RAIL_GAP := 14.0
+# 16, not 20 and not 8. Eight design units is under five points on a phone --
+# the discs were effectively touching the glass, and on a device with rounded
+# corners the outermost pixels of the rim go under the bezel. 16 is still 7pt
+# of clear glass, and it is what buys the extra 18 units of diameter above
+# without the disc's rim landing on the cabinet's frame: 16 + 88 = 104, the rim
+# reaches 108, and the cabinet's inner content starts at 96 + 20 = 116.
+const SIDE_RAIL_INSET := 16.0
+# THE RAIL HANGS BESIDE THE MARQUEE NOW, NOT UNDER IT.
+#
+# 208 was "clear the ribbon vertically", which is what you have to do while the
+# discs are wide enough to reach under it. At CABINET_INSET 96 they are not:
+# the lane is outside the cabinet's padding entirely, so the top disc can sit
+# level with the sign instead of waiting for it to finish. That is the whole of
+# the raise Guy asked for -- 76 units of it -- and it costs the marquee
+# nothing, because the two never share a column.
+#
+# It is still measured from the cabinet's band rather than from the screen, so
+# the rail arrives with the machine on every phone.
+const SIDE_RAIL_DROP := 132.0
 
 func slot_band_top() -> float:
 	return maxf(hud_top() + 70.0 + SLOT_BAND_GAP, safe_top() + SLOT_BAND_INSET_GAP)
@@ -3255,17 +3295,17 @@ func _side_button(container: BoxContainer, icon_kind: String, caption: String, b
 	var badge := Panel.new()
 	var bsb := StyleBoxFlat.new()
 	bsb.bg_color = Lagoon.REEF
-	bsb.set_corner_radius_all(17)
+	bsb.set_corner_radius_all(19)
 	bsb.set_border_width_all(3)
 	bsb.border_color = Color.WHITE
 	badge.add_theme_stylebox_override("panel", bsb)
-	badge.size = Vector2(32, 32)
+	badge.size = Vector2(36, 36)
 	# Tucked further in than the usual corner overhang. A disc in the right
 	# Tucked in rather than hung off the corner: the outermost disc in the row
 	# has only the row's own 14px margin between it and the screen, so a badge
 	# that overhangs by 26 ends up flush against the glass -- and against the
 	# rounded corner on any phone that has one.
-	badge.position = Vector2(SIDE_DISC - 30, -6)
+	badge.position = Vector2(SIDE_DISC - 32, -8)
 	badge.visible = false
 	badge.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	btn.add_child(badge)
@@ -3312,6 +3352,15 @@ func _update_badges() -> void:
 		_badges["collections"].visible = any_col or col_season_new
 	if _badges.has("ranks"):
 		_badges["ranks"].visible = _tourney_claimable()
+	if _badges.has("clan"):
+		# The count, not a dot. An invitation and a stack of six people knocking
+		# on your clan's door are different amounts of errand, and the disc is
+		# the only place either is ever announced -- there is no push for this.
+		var pending := _clan_pending()
+		_badges["clan"].visible = pending > 0
+		var cl := _badges["clan"].get_child(0) as Label
+		if cl != null:
+			cl.text = str(mini(pending, 9)) if pending > 0 else "!"
 	if _badges.has("alerts"):
 		var unread := _unread_count()
 		_badges["alerts"].visible = unread > 0
@@ -4245,10 +4294,125 @@ func _fill_clan(vb: VBoxContainer) -> void:
 		soon.add_child(s2)
 		return
 
+	# INVITATIONS COME FIRST, WHATEVER ELSE THE PAGE IS SHOWING.
+	#
+	# They are the reason the disc had a number on it, so the page they open has
+	# to answer that number in its first screenful. Above the roster too, not
+	# only above the join list: somebody already in a clan can still hold an
+	# invitation to a different one, and burying it under their own roster is
+	# how it goes unanswered for a week.
+	_clan_invites_ui(vb)
 	if my_clan.is_empty():
 		_clan_join_ui(vb)
 		return
 	_clan_roster_ui(vb)
+
+# The invitations addressed to me. Fetched rather than cached: the page is
+# rebuilt on every visit and every answer, and a list of two rows is not worth
+# a staleness bug.
+func _clan_invites_ui(vb: VBoxContainer) -> void:
+	if int(clan_news.get("invites", 0)) <= 0:
+		return
+	# THE SLOT IS TAKEN NOW AND FILLED LATER.
+	#
+	# The list is a round trip, and the page keeps building while it is in
+	# flight -- so a card appended from the callback lands at the BOTTOM of the
+	# page, under the roster or under the whole clan browser. This is the one
+	# card on the page whose entire job is to be seen first. An empty holder
+	# added synchronously holds the position; a VBoxContainer with no children
+	# has no minimum size, so it costs nothing if the answer turns out to be
+	# empty or never comes at all.
+	var slot := VBoxContainer.new()
+	slot.add_theme_constant_override("separation", 10)
+	vb.add_child(slot)
+	var build := _clan_build
+	var deliver := func(rows: Array) -> void:
+		if build != _clan_build or not is_instance_valid(slot):
+			return
+		if rows.is_empty():
+			# The count and the list disagreed, which means somebody answered on
+			# another device. The list is the newer of the two.
+			clan_news["invites"] = 0
+			_update_badges()
+			return
+		var head := _page_card(slot, "INVITATIONS", Lagoon.CORAL_LO)
+		for row in rows:
+			if typeof(row) != TYPE_DICTIONARY:
+				continue
+			var inv: Dictionary = row
+			head.add_child(_clan_invite_row(inv))
+	if _clan_fake:
+		deliver.call(_clan_fake_invites)
+		return
+	Cloud.clan_invites(deliver)
+
+func _clan_invite_row(inv: Dictionary) -> Control:
+	var wrap := VBoxContainer.new()
+	wrap.add_theme_constant_override("separation", 8)
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 12)
+	wrap.add_child(hb)
+	hb.add_child(Lagoon.token(String(inv.get("emoji", "\U01F3F4")), 62.0, Lagoon.BRASS))
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	col.add_theme_constant_override("separation", 2)
+	hb.add_child(col)
+	col.add_child(Lagoon.label(String(inv.get("name", "")), UI.F_LABEL, Lagoon.INK, true))
+	var who: Dictionary = inv.get("from", {}) if typeof(inv.get("from", {})) == TYPE_DICTIONARY else {}
+	col.add_child(Lagoon.label("%s invited you  \u00b7  %d members"
+		% [String(who.get("name", "A clanmate")), int(inv.get("members", 0))],
+		UI.F_TINY, Lagoon.INK_SOFT, true))
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	wrap.add_child(row)
+	var no := Button.new()
+	no.text = "DECLINE"
+	no.custom_minimum_size = Vector2(0, UI.TAP)
+	no.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_candy_button(no, Color(0.55, 0.45, 0.65))
+	FX.press_feedback(no)
+	row.add_child(no)
+	var yes := Button.new()
+	yes.text = "JOIN"
+	yes.custom_minimum_size = Vector2(0, UI.TAP)
+	yes.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# ALREADY IN A CLAN MEANS THE INVITE IS INFORMATION, NOT AN OFFER. The
+	# server refuses a second membership outright, and a JOIN that is pressed
+	# and then explains itself is the shape _clan_roster_ui already refuses to
+	# ship for the self-send row.
+	yes.disabled = not my_clan.is_empty()
+	_candy_button(yes, Color(0.28, 0.68, 0.34))
+	FX.press_feedback(yes)
+	row.add_child(yes)
+	var id := String(inv.get("id", ""))
+	no.pressed.connect(func() -> void:
+		no.disabled = true
+		Cloud.decline_clan_invite(id, func(_r: Dictionary) -> void:
+			clan_news["invites"] = maxi(0, int(clan_news.get("invites", 1)) - 1)
+			_update_badges()
+			_fill_page("clan")
+		)
+	)
+	yes.pressed.connect(func() -> void:
+		yes.disabled = true
+		Cloud.accept_clan_invite(id, func(res: Dictionary) -> void:
+			if not bool(res.get("ok", false)):
+				yes.disabled = false
+				_banner(_clan_refusal(res), Lagoon.CORAL_LO)
+				return
+			my_clan = res.get("clan", {})
+			clan_news["invites"] = maxi(0, int(clan_news.get("invites", 1)) - 1)
+			_update_badges()
+			Sfx.play("levelup", -6.0)
+			_banner("Joined %s" % String(my_clan.get("name", "")), Lagoon.KELP_HI)
+			_fill_page("clan")
+		)
+	)
+	if my_clan.is_empty():
+		FX.pulse_forever(yes, 1.04, 0.9)
+	return wrap
 
 # No clan yet: make one, or take one off the list.
 func _clan_join_ui(vb: VBoxContainer) -> void:
@@ -4344,17 +4508,44 @@ func _clan_join_ui(vb: VBoxContainer) -> void:
 				Lagoon.INK_SOFT, true)
 			n.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 			hb.add_child(n)
+			# WHICH DOOR THIS IS, SAID BEFORE IT IS PRESSED.
+			#
+			# `open` and `full` are absent from the answer of a server that has
+			# not taken the invites migration yet, and both default to the
+			# behaviour that shipped -- an open clan with room -- so this row
+			# keeps working unchanged against the older schema.
+			var is_open := bool(here.get("open", true))
+			var is_full := bool(here.get("full", false))
+			if is_full:
+				hb.add_child(Lagoon.chip("FULL", Lagoon.INK_SOFT, UI.F_TINY))
+				btn.disabled = true
+			elif not is_open:
+				hb.add_child(Lagoon.chip("ASK", Lagoon.URCHIN, UI.F_TINY))
+			var clan_id := String(here.get("id", ""))
 			btn.pressed.connect(func() -> void:
 				btn.disabled = true
-				Cloud.join_clan(String(here.get("id", "")), func(res: Dictionary) -> void:
+				if is_open:
+					Cloud.join_clan(clan_id, func(res: Dictionary) -> void:
+						if not bool(res.get("ok", false)):
+							btn.disabled = false
+							_banner(_clan_refusal(res), Lagoon.CORAL_LO)
+							return
+						my_clan = res.get("clan", {})
+						Sfx.play("levelup", -6.0)
+						_banner("Joined %s" % String(my_clan.get("name", "")), Lagoon.KELP_HI)
+						_fill_page("clan")
+					)
+					return
+				Cloud.request_join_clan(clan_id, func(res: Dictionary) -> void:
+					btn.disabled = false
 					if not bool(res.get("ok", false)):
-						btn.disabled = false
 						_banner(_clan_refusal(res), Lagoon.CORAL_LO)
 						return
-					my_clan = res.get("clan", {})
-					Sfx.play("levelup", -6.0)
-					_banner("Joined %s" % String(my_clan.get("name", "")), Lagoon.KELP_HI)
-					_fill_page("clan")
+					# No page rebuild: nothing about the list has changed, and
+					# repainting it under the finger that just tapped reads as
+					# the request having failed and reset.
+					_banner("Asked to join %s \u2014 they will get your request."
+						% String(here.get("name", "")), Lagoon.KELP_HI)
 				)
 			)
 	)
@@ -4366,6 +4557,13 @@ func _clan_refusal(res: Dictionary) -> String:
 		"name":            return "That name cannot be used."
 		"already_in_clan": return "You are already in a clan."
 		"gone":            return "That clan no longer exists."
+		"closed":          return "That clan approves its own members \u2014 ask to join instead."
+		"open":            return "That clan takes anyone \u2014 just join it."
+		"full":            return "That clan is full."
+		"not_owner":       return "Only the clan's founder can do that."
+		"no_clan":         return "You are not in a clan."
+		"too_many":        return "This clan has too many invitations out already."
+		"self":            return "You cannot invite yourself."
 		_:                 return "Could not do that. Try again in a moment."
 
 # In a clan: the roster, today's budget, and a way out.
@@ -4399,12 +4597,29 @@ func _clan_roster_ui(vb: VBoxContainer) -> void:
 	sub.add_theme_color_override("font_color", Lagoon.INK_FAINT)
 	head.add_child(sub)
 
-	var me := String(Cloud.player().get("id", ""))
+	var me_id := String(Cloud.player().get("id", ""))
+	var is_owner: bool = String(my_clan.get("owner", "")) == me_id and me_id != ""
+
+	# Recruiting. Any member may do it -- see the migration for why the owner is
+	# not made a bottleneck on the only thing that grows a clan.
+	var ask := Button.new()
+	ask.text = "INVITE  A  PLAYER"
+	ask.custom_minimum_size = Vector2(0, UI.TAP)
+	ask.disabled = members.size() >= CLAN_MAX_MEMBERS
+	_candy_button(ask, Color(0.28, 0.68, 0.34))
+	FX.press_feedback(ask)
+	ask.pressed.connect(_open_clan_invite)
+	head.add_child(ask)
+
+	if is_owner:
+		_clan_door_switch(head)
+		_clan_requests_ui(vb)
+
 	for m in members:
 		if typeof(m) != TYPE_DICTIONARY:
 			continue
 		var who: Dictionary = m
-		var is_me: bool = String(who.get("id", "")) == me
+		var is_me: bool = String(who.get("id", "")) == me_id
 		var card := _tinted_card(vb, Lagoon.KELP if is_me else Lagoon.BRASS_MID, is_me)
 		var btn: Button = null
 		# YOUR OWN ROW IS NOT A BUTTON. The server refuses a self-send outright,
@@ -4457,6 +4672,249 @@ func _clan_roster_ui(vb: VBoxContainer) -> void:
 		)
 	)
 	vb.add_child(leave)
+
+# THE ROSTER CAP, MIRRORED FROM public.clan_max_members().
+#
+# Mirrored, not fetched: it is used to grey a button out before a call is made,
+# and one extra round trip on every clan page to learn a number that changes
+# roughly never is a worse trade than the two drifting. The server is still the
+# one that enforces it -- everything here can do is refuse early.
+const CLAN_MAX_MEMBERS := 30
+
+# The owner's door. Open, and anybody browsing walks in; closed, and they file a
+# request this same page then lists.
+#
+# ONE SENTENCE AND ONE BUTTON, not a two-way switch. The first pass was a pair
+# of segments with the current one disabled, and after the disabled style got
+# the fade it needed (see Lagoon.button_custom) that read exactly backwards:
+# the greyed-out half looked like the option you could not have rather than the
+# one you already had. A statement of the state, and a button that changes it,
+# cannot be read the wrong way round.
+#
+# It is also not the Toggle control the options page uses, because this is a
+# round trip that can be refused -- Toggle animates on press and would have to
+# be animated back on a failure, which reads as the game changing its mind.
+func _clan_door_switch(head: VBoxContainer) -> void:
+	var open_now := bool(my_clan.get("open", true))
+	head.add_child(Lagoon.divider())
+	var state := _popup_row_label(
+		"Anyone can join this clan." if open_now
+		else "New members need your approval.", UI.F_CAPTION)
+	state.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	state.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	state.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	head.add_child(state)
+
+	var want := not open_now
+	var b := Button.new()
+	b.text = "LET  ANYONE  JOIN" if want else "APPROVE  EACH  MEMBER"
+	b.custom_minimum_size = Vector2(0, UI.TAP)
+	_candy_button(b, Color(0.45, 0.75, 0.35) if want else Color(0.55, 0.45, 0.65))
+	FX.press_feedback(b)
+	b.pressed.connect(func() -> void:
+		b.disabled = true
+		Cloud.set_clan_open(want, func(res: Dictionary) -> void:
+			if not bool(res.get("ok", false)):
+				b.disabled = false
+				_banner(_clan_refusal(res), Lagoon.CORAL_LO)
+				return
+			my_clan = res.get("clan", my_clan)
+			# Opening the door answers every request standing at it, server
+			# side, so the badge has to be told rather than left to expire.
+			if want:
+				clan_news["requests"] = 0
+				_update_badges()
+			_fill_page("clan")
+		)
+	)
+	head.add_child(b)
+
+# Who is knocking. Owner only, and the list is the authority on the count -- a
+# badge that survives the page it is answered on is the one thing this cannot
+# be allowed to leave behind.
+func _clan_requests_ui(vb: VBoxContainer) -> void:
+	# Same reserved slot as the invitations card, and for the same reason: this
+	# has to sit under the clan's own header and above the roster, not after
+	# thirty member rows.
+	var slot := VBoxContainer.new()
+	slot.add_theme_constant_override("separation", 10)
+	vb.add_child(slot)
+	var build := _clan_build
+	var deliver := func(rows: Array) -> void:
+		if build != _clan_build or not is_instance_valid(slot):
+			return
+		if int(clan_news.get("requests", 0)) != rows.size():
+			clan_news["requests"] = rows.size()
+			_update_badges()
+		if rows.is_empty():
+			return
+		var card := _page_card(slot, "ASKING  TO  JOIN", Lagoon.URCHIN_LO)
+		for row in rows:
+			if typeof(row) != TYPE_DICTIONARY:
+				continue
+			card.add_child(_clan_request_row(row))
+	if _clan_fake:
+		deliver.call(_clan_fake_requests)
+		return
+	Cloud.clan_join_requests(deliver)
+
+func _clan_request_row(req: Dictionary) -> Control:
+	var who: Dictionary = req.get("player", {}) if typeof(req.get("player", {})) == TYPE_DICTIONARY else {}
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 12)
+	hb.add_child(Lagoon.token(String(who.get("emoji", "\U01F642")), 56.0, Lagoon.BRASS))
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	col.add_theme_constant_override("separation", 2)
+	hb.add_child(col)
+	col.add_child(Lagoon.label(String(who.get("name", "")), UI.F_LABEL, Lagoon.INK, true))
+	col.add_child(Lagoon.label("Island %d" % int(who.get("island_level", 1)),
+		UI.F_TINY, Lagoon.INK_SOFT, true))
+
+	var id := String(req.get("id", ""))
+	# Two square buttons rather than two words. This row is already a name, a
+	# level and an avatar wide, and "APPROVE"/"DECLINE" spelled out is what
+	# carries a clan roster off the right-hand edge of a small phone -- the
+	# failure qa_layout exists to catch.
+	for spec in [[false, "\u2715", Color(0.55, 0.45, 0.65)], [true, "\u2713", Color(0.45, 0.75, 0.35)]]:
+		var accept: bool = spec[0]
+		var b := Button.new()
+		b.text = String(spec[1])
+		b.custom_minimum_size = Vector2(UI.TAP, UI.TAP)
+		b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		_candy_button(b, spec[2])
+		FX.press_feedback(b)
+		b.pressed.connect(func() -> void:
+			b.disabled = true
+			Cloud.answer_clan_request(id, accept, func(res: Dictionary) -> void:
+				if not bool(res.get("ok", false)):
+					b.disabled = false
+					_banner(_clan_refusal(res), Lagoon.CORAL_LO)
+					return
+				clan_news["requests"] = maxi(0, int(clan_news.get("requests", 1)) - 1)
+				_update_badges()
+				if accept and bool(res.get("joined", false)):
+					my_clan = res.get("clan", my_clan)
+					Sfx.play("levelup", -6.0)
+					_banner("%s joined the clan." % String(who.get("name", "")), Lagoon.KELP_HI)
+				_refresh_clan()
+				_fill_page("clan")
+			)
+		)
+		hb.add_child(b)
+	return hb
+
+# Finding somebody to invite.
+#
+# A NAME, TYPED, AND NOTHING ELSE. There is no player directory in this game and
+# deliberately no browse -- the server does a prefix match on three characters
+# or more and answers only with players who are not already in a clan, so this
+# screen can find somebody you know the name of and cannot be used to page
+# through the table. See find_players in the migration.
+func _open_clan_invite() -> void:
+	var vbox := _open_popup("Invite A Player")
+	var lead := _popup_row_label(
+		"Type a player's name. They will see the invitation on their clan button.",
+		UI.F_CAPTION)
+	lead.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lead.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lead.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	vbox.add_child(lead)
+
+	var field := LineEdit.new()
+	field.placeholder_text = "Player name"
+	field.max_length = 20
+	field.custom_minimum_size = Vector2(0, UI.TAP)
+	vbox.add_child(field)
+
+	var results := VBoxContainer.new()
+	results.add_theme_constant_override("separation", 8)
+	vbox.add_child(results)
+
+	var note := _popup_row_label("At least three letters.", UI.F_TINY)
+	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	note.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+	results.add_child(note)
+
+	var find := Button.new()
+	find.text = "SEARCH"
+	find.custom_minimum_size = Vector2(0, UI.TAP)
+	_candy_button(find, Color(0.28, 0.68, 0.34))
+	FX.press_feedback(find)
+	vbox.add_child(find)
+
+	# A BUTTON, NOT A KEYSTROKE HANDLER. Searching per character is a request
+	# per character over a mobile radio, and this query is a table scan behind a
+	# function -- see the load-test note in 20260831120000 for what that costs
+	# once there are real players in the table.
+	var run := func() -> void:
+		for child in results.get_children():
+			child.queue_free()
+		var q := field.text.strip_edges()
+		if q.length() < 3:
+			var short := _popup_row_label("At least three letters.", UI.F_TINY)
+			short.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			short.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+			results.add_child(short)
+			return
+		find.disabled = true
+		Cloud.find_players(q, func(rows: Array) -> void:
+			find.disabled = false
+			if not is_instance_valid(results):
+				return
+			if rows.is_empty():
+				var none := _popup_row_label(
+					"Nobody by that name who is free to join a clan.", UI.F_CAPTION)
+				none.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+				none.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+				none.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+				results.add_child(none)
+				return
+			for row in rows:
+				if typeof(row) != TYPE_DICTIONARY:
+					continue
+				results.add_child(_clan_invite_result(row))
+		)
+	find.pressed.connect(run)
+	field.text_submitted.connect(func(_t: String) -> void: run.call())
+
+func _clan_invite_result(who: Dictionary) -> Control:
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 12)
+	hb.add_child(Lagoon.token(String(who.get("emoji", "\U01F642")), 56.0, Lagoon.BRASS))
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	col.add_theme_constant_override("separation", 2)
+	hb.add_child(col)
+	col.add_child(Lagoon.label(String(who.get("name", "")), UI.F_LABEL, Lagoon.INK, true))
+	col.add_child(Lagoon.label("Island %d" % int(who.get("island_level", 1)),
+		UI.F_TINY, Lagoon.INK_SOFT, true))
+	var b := Button.new()
+	b.text = "INVITE"
+	b.custom_minimum_size = Vector2(140, UI.TAP)
+	b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_candy_button(b, Color(0.28, 0.68, 0.34))
+	FX.press_feedback(b)
+	b.pressed.connect(func() -> void:
+		b.disabled = true
+		Cloud.invite_to_clan(String(who.get("id", "")), func(res: Dictionary) -> void:
+			if not bool(res.get("ok", false)):
+				b.disabled = false
+				_banner(_clan_refusal(res), Lagoon.CORAL_LO)
+				return
+			# Permanently spent, so it goes properly inactive rather than
+			# staying a live-looking lozenge that no longer does anything --
+			# see Lagoon.set_enabled for why this is said out loud here.
+			b.text = "SENT"
+			Lagoon.set_enabled(b, false)
+			Sfx.play("levelup", -8.0)
+			_banner("Invited %s." % String(who.get("name", "")), Lagoon.KELP_HI)
+		)
+	)
+	hb.add_child(b)
+	return hb
 
 # Which spare to give. Only spares appear, and golds never do.
 func _open_give_card(who: Dictionary) -> void:
@@ -7883,6 +8341,12 @@ var applied_gifts := []
 var my_clan := {}
 var gift_budget := {}
 
+# The two numbers the clan disc's badge is drawn from: invitations addressed to
+# me, and requests waiting at my own clan's door if I am the one who owns it.
+# Kept as a plain dictionary rather than two ints so a stale server answer
+# replaces both at once and the badge can never show a mix of two moments.
+var clan_news := {"invites": 0, "requests": 0}
+
 const APPLIED_GIFTS_KEEP := 200
 
 # THE SPARE COMES OFF ONLY AFTER THE SERVER SAYS YES.
@@ -8002,11 +8466,43 @@ func _refresh_gift_budget() -> void:
 			_fill_page("clan")
 	)
 
+# THE BADGE'S ONE SOURCE OF TRUTH, and the only clan call made from outside the
+# clan page.
+#
+# It runs on launch, on coming back from the background and on entering the
+# page. It deliberately does not poll: an invitation is not time-critical --
+# nothing expires, and nobody loses anything by seeing it on the next launch
+# instead of ninety seconds sooner -- and a timer that wakes the radio every
+# minute for a number that is almost always zero costs battery on every phone
+# in the game to make one of them slightly fresher.
+func _refresh_clan_news() -> void:
+	if _clan_fake or not Cloud.linked():
+		return
+	Cloud.clan_news(func(res: Dictionary) -> void:
+		if res.is_empty():
+			return
+		clan_news = res
+		_update_badges()
+		if _current_page == pages.get("clan"):
+			_fill_page("clan")
+	)
+
+# How many things are waiting on the player, as one number for the badge.
+func _clan_pending() -> int:
+	return int(clan_news.get("invites", 0)) + int(clan_news.get("requests", 0))
+
 # Set only by the screenshot harness, which fakes a session so the roster can
 # be rendered at all. Without it _refresh_clan's answer -- an empty one, since
 # there is no real server behind the fake -- lands a moment later and repaints
 # the page back to its signed-out state.
 var _clan_fake := false
+# What the two pending lists answer with while _clan_fake is on. There is no
+# server behind the harness, so without these the invite card and the request
+# queue are the two things on this page that can never be rendered by a
+# screenshot or measured by qa_layout -- which is exactly how the roster's
+# previous over-wide row got to ship.
+var _clan_fake_invites: Array = []
+var _clan_fake_requests: Array = []
 
 func _refresh_clan(then := Callable()) -> void:
 	if _clan_fake:
@@ -8082,9 +8578,26 @@ func _maybe_drop_card() -> void:
 	_mission_add("cards")
 	_update_badges()
 
-func _diff_chip(diff: String) -> Control:
+# `on_colour` is for the one place this chip lands on a fill of its own hue.
+#
+# Lagoon.chip is built for pale glass: it fills with the hue taken 40% toward
+# deep water and rims it with the pure hue, which clears 4.5:1 for its white
+# type on anything light behind it. The collection shelf's well is now that
+# same hue at 0.86, so "Easy" in dark kelp on a kelp pool was a chip you could
+# see the shape of and not read -- a contrast problem the chip cannot solve
+# from inside, because it does not know what it was dropped onto. Told, it
+# swaps the fill for deep water and keeps the rim, so the hue still reads as
+# the chip's own and the word reads at all.
+func _diff_chip(diff: String, on_colour := false) -> Control:
 	var colors := {"Easy": Lagoon.KELP, "Medium": Lagoon.BRASS, "Hard": Lagoon.REEF}
-	return Lagoon.chip(diff, colors.get(diff, Lagoon.INK_SOFT), UI.F_TINY)
+	var hue: Color = colors.get(diff, Lagoon.INK_SOFT)
+	var c := Lagoon.chip(diff, hue, UI.F_TINY)
+	if on_colour:
+		var sb: StyleBoxFlat = c.get_theme_stylebox("panel").duplicate()
+		sb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.92)
+		sb.border_color = hue.lightened(0.25)
+		c.add_theme_stylebox_override("panel", sb)
+	return c
 
 # `big` is the set's own page, where a card gets a third of the width instead
 # of a fifth and can afford to be looked at rather than counted.
@@ -8106,36 +8619,64 @@ func _collection_item_card(emoji: String, iname: String, owned: bool, rarity := 
 	var tint: Color = CV.STAR_COLORS[clampi(rarity, 1, CV.MAX_STAR) - 1] if rarity > 0 else Lagoon.BRASS
 	var rank := clampi(rarity, 1, CV.MAX_STAR)
 	var p := PanelContainer.new()
-	var sb := Lagoon.glass(Lagoon.R_CHIP + 2, 0.92 if owned else 0.55)
-	sb.set_border_width_all((2 + rank / 2) if owned else 2)
-	sb.border_color = tint if owned else Color(tint.r, tint.g, tint.b, 0.30)
+	# AN UNOWNED CARD IS A SOCKET, NOT A FAINTER CARD.
+	#
+	# It used to be the same sea glass at 0.55 with a 0.30 rim, which on the
+	# sand panel these sit on is a pale rectangle next to a slightly less pale
+	# rectangle. Guy, 2026-09-04: "everything there is far too pale and washed
+	# out." A nine-card grid with one card in it looked like nine cards in fog.
+	#
+	# So an empty slot takes the well -- the same deep water the reel window and
+	# the meter are cut out of -- and the card that fills it stays bright glass.
+	# The page then reads the way a collection book does: dark holes, and the
+	# ones you have filled lit up. The rim still carries the card's own star
+	# colour at both ends, so which of the holes is the gold one is still
+	# answerable at a glance, which was the point of draining the rim rather
+	# than greying it in the first place.
+	var sb := Lagoon.glass(Lagoon.R_CHIP + 2, 0.94) if owned else Lagoon.glass_well(Lagoon.R_CHIP + 2)
+	if not owned:
+		# 0.90, not the well's own 0.62. The well is drawn to sit on the lagoon,
+		# where 0.62 already reads as deep; this one sits on a sand panel, and
+		# at 0.62 over sand it composites to a mid teal that put "???" at 1.85
+		# against its own background. Nothing on this page is allowed to be less
+		# readable than the page it replaced -- see the collection-set entry in
+		# qa_contrast, which measures exactly this pair.
+		sb.bg_color = Color(Lagoon.LAGOON_DEEP.r, Lagoon.LAGOON_DEEP.g,
+			Lagoon.LAGOON_DEEP.b, 0.90)
+	sb.set_border_width_all((2 + rank / 2) if owned else 3)
+	sb.border_color = tint if owned else Color(tint.r, tint.g, tint.b, 0.55)
 	# 6, 10, 14, 20, 26 -- the jump at the top is deliberate, because the only
 	# rim a player should be able to pick out across a nine-card grid is gold.
-	sb.shadow_size = (2 + rank * 4 + (4 if rank >= CV.MAX_STAR else 0)) if owned else 3
+	sb.shadow_size = (2 + rank * 4 + (4 if rank >= CV.MAX_STAR else 0)) if owned else 0
 	sb.shadow_color = Color(tint.r, tint.g, tint.b, 0.10 + 0.09 * float(rank)) if owned \
 		else Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.18)
 	p.add_theme_stylebox_override("panel", sb)
 	if owned and rank >= CV.MAX_STAR:
 		p.add_child(_shine_overlay(tint.lightened(0.45)))
-	p.custom_minimum_size = Vector2(0, 196) if big else Vector2(120, 150)
+	p.custom_minimum_size = Vector2(0, 214) if big else Vector2(120, 150)
 	if big:
 		p.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var col := VBoxContainer.new()
 	col.alignment = BoxContainer.ALIGNMENT_CENTER
 	col.add_theme_constant_override("separation", 0)
 	p.add_child(col)
-	var e := _emoji_label(emoji, 58 if big else 40)
+	var e := _emoji_label(emoji, 74 if big else 44)
 	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	e.modulate = Color(1, 1, 1, 1.0) if owned else Color(0.55, 0.65, 0.68, 0.45)
+	e.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	# The ghost goes LIGHT now that the slot behind it went dark. Multiplying an
+	# emoji by a mid grey on pale glass is what made the unowned half of a set
+	# disappear; on deep water the same trick has to run the other way.
+	e.modulate = Color(1, 1, 1, 1.0) if owned else Color(0.90, 0.96, 0.99, 0.50)
 	col.add_child(e)
 	var n := Lagoon.label(iname if owned else "???", UI.F_CAPTION if big else UI.F_TINY,
-		Lagoon.INK if owned else Lagoon.INK_FAINT, owned)
+		Lagoon.INK if owned else Color(0.93, 0.97, 0.99), owned)
 	n.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	n.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	n.clip_text = true
 	col.add_child(n)
 	if rarity > 0:
 		var sr := _star_row(rarity, UI.F_CAPTION if big else UI.F_TINY)
-		sr.modulate = Color(1, 1, 1, 1.0) if owned else Color(1, 1, 1, 0.4)
+		sr.modulate = Color(1, 1, 1, 1.0) if owned else Color(1, 1, 1, 0.62)
 		col.add_child(sr)
 	# Spares sit on the corner of the card they are spares of, in the same
 	# purple every other spare count uses, so "I have three going spare" is
@@ -8364,6 +8905,95 @@ func _fill_collection_shelf(vb: VBoxContainer) -> void:
 	_boxes_dock_clearance(vb)
 
 
+# =============================================================================
+#  The emblem on a shelf tile
+# =============================================================================
+#
+# A COLLECTION HAS TO LOOK LIKE MORE THAN ONE THING.
+#
+# Every tile used to carry a single emoji -- 🏖️ for Beach Day, 🧺 for Fruit
+# Basket -- centred in a pool. Guy, 2026-09-04: "replace the collections' main
+# images with something more serious; it looks like each collection is actually
+# one item, and that is strange." That is exactly what a lone pictogram says.
+# The page is a shelf of nine-card SETS and the emblem was a picture of an
+# object, so the tile read as "here is an umbrella" rather than "here are nine
+# cards, and you have eight."
+#
+# So the emblem is three of the set's OWN cards, fanned. It is three because
+# two reads as a pair and four is mush at 210 units of tile width; and it is
+# the set's own first, middle and last item rather than a generic card back,
+# because the last item of every set is its 5-star -- so the fan doubles as a
+# preview of what finishing this one is actually for.
+#
+# WHICH THREE IS FIXED, NOT RANDOM. The shelf is rebuilt on every visit and on
+# every card drop; a fan that reshuffled each time would make fifteen tiles
+# flicker for no reason a player could name.
+func _collection_fan(c: Dictionary, scale := 1.0) -> Control:
+	var items: Array = c["items"]
+	var holder := Control.new()
+	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	holder.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	var picks := [items[0], items[items.size() / 2], items[items.size() - 1]]
+	# A SHALLOW FAN, DRAWN OUTSIDE-IN. The middle card has to be added last or
+	# the two wings are painted over its face; and the wings lean away by a
+	# fifth of a radian, which is enough to read as a stack of separate objects
+	# and not so much that anybody thinks a card is falling over.
+	# SIZED OFF THE NARROWEST TILE THE GRID CAN MAKE, not off what looks right
+	# in isolation. Three columns of a 720 canvas, less the page's own margins
+	# and two 12-unit gutters, leaves each tile about 215 wide and the well
+	# inside it about 195. The fan is 76 + 2x38 = 152 across, plus the bulge a
+	# 0.22 rotation puts on a 100-tall card (~22), which lands at 174 -- inside
+	# the well with 10 a side to spare. The first pass was 84/46 and the outer
+	# two cards were clipped by the well's own corners.
+	var order := [0, 2, 1]
+	var lean := [-0.22, 0.0, 0.22]
+	var slide := [-38.0 * scale, 0.0, 38.0 * scale]
+	var drop := [11.0 * scale, -4.0 * scale, 11.0 * scale]
+	var cw := 76.0 * scale
+	var ch := 100.0 * scale
+	for i in order:
+		var item: Array = picks[i]
+		var card := PanelContainer.new()
+		var csb := StyleBoxFlat.new()
+		csb.bg_color = Lagoon.SHELL
+		csb.set_corner_radius_all(int(12.0 * scale))
+		csb.set_border_width_all(maxi(2, int(4.0 * scale)))
+		# The rim carries the card's own star rating, so the 5-star at the fly
+		# of the fan is visibly the prize. Same brass/urchin split the card
+		# faces in the detail page use.
+		csb.border_color = Lagoon.BRASS if int(item[2]) >= 5 else (
+			Lagoon.URCHIN if int(item[2]) >= 4 else Lagoon.LAGOON_DEEP)
+		csb.shadow_size = 8
+		csb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.42)
+		csb.shadow_offset = Vector2(0, 4)
+		card.add_theme_stylebox_override("panel", csb)
+		card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		holder.add_child(card)
+		# Anchored to the well's centre and sized by hand, because a rotation
+		# needs a pivot and a pivot needs a size a container is not going to
+		# hand out. The box is comfortably wider than the emoji inside it -- an
+		# anchored Control whose minimum wins keeps its position and grows, and
+		# a fan of cards that has quietly grown is a fan of cards hanging off
+		# the side of the tile.
+		card.anchor_left = 0.5
+		card.anchor_right = 0.5
+		card.anchor_top = 0.5
+		card.anchor_bottom = 0.5
+		card.offset_left = slide[i] - cw * 0.5
+		card.offset_right = slide[i] + cw * 0.5
+		card.offset_top = drop[i] - ch * 0.5
+		card.offset_bottom = drop[i] + ch * 0.5
+		card.pivot_offset = Vector2(cw, ch) * 0.5
+		card.rotation = lean[i]
+
+		var em := _emoji_label(String(item[0]), int(46.0 * scale))
+		em.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		em.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		em.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		card.add_child(em)
+	return holder
+
 func _collection_tile(c: Dictionary) -> Control:
 	var id: String = c["id"]
 	var items: Array = c["items"]
@@ -8373,7 +9003,14 @@ func _collection_tile(c: Dictionary) -> Control:
 
 	var tile := Button.new()
 	tile.focus_mode = Control.FOCUS_NONE
-	tile.custom_minimum_size = Vector2(0, 250)
+	# 306, not 250. Guy, 2026-09-04, off a real phone: "everything is very small
+	# and you can barely see it, and the whole thing is pale and washed out
+	# there." Three columns on a 720 canvas gives each tile about 210 units of
+	# width no matter what, so the only room a tile can be given is height --
+	# and the height is what the emblem was starving for. The extra 56 goes
+	# entirely to the fan (see _collection_fan), which is now the thing the eye
+	# lands on rather than a 56px emoji floating in a pale pool.
+	tile.custom_minimum_size = Vector2(0, 292)
 	tile.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	# A tile is a card, not a candy button: same sea glass as everything else,
 	# with the brass rim reserved for a set that has something to give you.
@@ -8405,32 +9042,44 @@ func _collection_tile(c: Dictionary) -> Control:
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pad.add_child(col)
 
-	# the set's emblem, sunk into a pool of its own water
+	# the set's cards, fanned, sunk into a pool of its own water
 	# The well takes the set's difficulty colour, which is the one thing on a
 	# tile that says how long this set is going to take. Fifteen tiles in one
 	# grey was the real complaint about this page: with every well the same pale
 	# blue, the only difference between an afternoon's set and a month's was a
 	# word in the corner, and the eye had to read all fifteen to find anything.
-	# It is a wash rather than a fill -- the tile is still sea glass, and the rim
-	# is still reserved for saying whether there is a reward waiting.
-	var dcol: Color = {"Easy": Lagoon.KELP, "Medium": Lagoon.BRASS, "Hard": Lagoon.REEF}.get(
+	#
+	# IT IS NO LONGER A WASH. It was 0.42 alpha of the difficulty hue over sea
+	# glass, which on a phone is three barely-distinguishable pastels -- the
+	# "pale and washed out" half of Guy's note. At 0.86 over a darkened floor
+	# each difficulty is its own material, the fan on top of it has something to
+	# be light against, and the tile is still sea glass everywhere else, so the
+	# brass rim keeps its job of saying whether there is a reward waiting.
+	var dcol: Color = {"Easy": Lagoon.KELP, "Medium": Lagoon.BRASS_MID, "Hard": Lagoon.REEF}.get(
 		String(c["diff"]), Lagoon.LAGOON_DEEP)
 	var well := PanelContainer.new()
 	var wsb := Lagoon.glass_well(18)
-	wsb.bg_color = Color(dcol.r, dcol.g, dcol.b, 0.42)
+	wsb.bg_color = Color(dcol.r, dcol.g, dcol.b, 0.86)
+	wsb.border_color = Color(Lagoon.HULL.r, Lagoon.HULL.g, Lagoon.HULL.b, 0.85)
+	wsb.set_border_width_all(3)
 	well.add_theme_stylebox_override("panel", wsb)
-	well.custom_minimum_size = Vector2(0, 98)
+	well.custom_minimum_size = Vector2(0, 138)
 	well.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	col.add_child(well)
-	var em := _emoji_label(c["icon"], 56)
-	em.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	em.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	well.add_child(em)
+	well.add_child(_collection_fan(c))
 
-	var nm := Lagoon.label(c["name"], UI.F_CAPTION, Lagoon.INK, true)
+	# F_LABEL, not F_CAPTION. 13pt on the smallest supported phone for the one
+	# line that says which set this is, under an emblem that was itself too
+	# small to identify it, is the whole of "you can barely see it".
+	var nm := Lagoon.label(c["name"], UI.F_LABEL, Lagoon.INK, true)
 	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	nm.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	nm.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	nm.custom_minimum_size = Vector2(0, 62)
+	# Two lines' worth, reserved, so the progress tracks on a row of tiles line
+	# up with each other whether the name wrapped or not -- "Beach Day" and
+	# "Shipwright's Yard" are in the same grid row and must not sit at
+	# different heights.
+	nm.custom_minimum_size = Vector2(0, 74)
 	col.add_child(nm)
 
 	# One object, not two. The tile used to carry an 18px sliver of a track with
@@ -8438,7 +9087,7 @@ func _collection_tile(c: Dictionary) -> Control:
 	# to read a fill in and a number too faint to read at all. The track is tall
 	# enough to hold its own count now and the footer row is gone.
 	var pb := _styled_progress(Lagoon.KELP if owned_n == items.size() else Lagoon.LAGOON)
-	pb.custom_minimum_size = Vector2(0, 30)
+	pb.custom_minimum_size = Vector2(0, 36)
 	pb.max_value = items.size()
 	pb.value = owned_n
 	col.add_child(pb)
@@ -8472,7 +9121,7 @@ func _collection_tile(c: Dictionary) -> Control:
 	# chip is the one that gives way: a set you have already completed is not
 	# one you are still deciding whether to start, and the well behind the
 	# emblem is tinted by difficulty anyway, so nothing is lost by dropping it.
-	var dchip := _diff_chip(c["diff"])
+	var dchip := _diff_chip(c["diff"], true)
 	dchip.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	dchip.visible = not (ready or claimed)
 	tile.add_child(dchip)
@@ -8551,16 +9200,22 @@ func _fill_collection_detail(vb: VBoxContainer, c: Dictionary) -> void:
 	var hrow := HBoxContainer.new()
 	hrow.add_theme_constant_override("separation", 14)
 	head.add_child(hrow)
+	# The same fan the shelf tile carries, at two thirds. A set is identified by
+	# one picture in two places and they have to be the same picture -- the
+	# emblem here was still the single emoji, so tapping a tile swapped the
+	# three-card fan you pressed for one umbrella, which reads as arriving
+	# somewhere else.
+	var dcol: Color = {"Easy": Lagoon.KELP, "Medium": Lagoon.BRASS_MID, "Hard": Lagoon.REEF}.get(
+		String(c["diff"]), Lagoon.LAGOON_DEEP)
 	var badge := PanelContainer.new()
 	var bsb := Lagoon.glass_well(20)
-	bsb.bg_color = Color(Lagoon.LAGOON_DEEP.r, Lagoon.LAGOON_DEEP.g, Lagoon.LAGOON_DEEP.b, 0.16)
+	bsb.bg_color = Color(dcol.r, dcol.g, dcol.b, 0.86)
+	bsb.border_color = Color(Lagoon.HULL.r, Lagoon.HULL.g, Lagoon.HULL.b, 0.85)
+	bsb.set_border_width_all(3)
 	badge.add_theme_stylebox_override("panel", bsb)
-	badge.custom_minimum_size = Vector2(104, 104)
+	badge.custom_minimum_size = Vector2(176, 126)
 	hrow.add_child(badge)
-	var bem := _emoji_label(c["icon"], 62)
-	bem.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	bem.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	badge.add_child(bem)
+	badge.add_child(_collection_fan(c, 0.74))
 
 	var info := VBoxContainer.new()
 	info.add_theme_constant_override("separation", 6)

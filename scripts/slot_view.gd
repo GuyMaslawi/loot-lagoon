@@ -52,7 +52,22 @@ const CARD := Vector2(438, 96)
 #
 # Anything that floats in these lanes is read by main.gd off this constant --
 # do not widen it without looking at what lands on the brass.
-const CABINET_INSET := 66.0
+#
+# 96, not 66. Guy, 2026-09-04, on the build before this one: "you made the spin
+# page smaller, but you shrank the INNER part instead of its wrapper -- the
+# wrapper is what I meant." The previous pass took the height out of the reel
+# window and left the cabinet the size it was, so the machine turned into a
+# large slab of brass with a small grid in it. This is the other half of the
+# same instruction and the correct one: the CABINET gets smaller, on all four
+# sides, and the reel window keeps its share of what is left.
+const CABINET_INSET := 96.0
+
+# ...and the same again at the bottom. The machine used to end exactly on the
+# nav bar, which is what made it read as a wall rather than an object standing
+# on the page. A band of the spin room under its feet is what the shrink is
+# for; it is also where the cabinet's own drop shadow finally has somewhere to
+# fall.
+const CABINET_FOOT := 56.0
 
 # =============================================================================
 #  How much of the cabinet the reel window is allowed to be
@@ -71,12 +86,22 @@ const CABINET_INSET := 66.0
 # tall one. The window keeps this fraction of the free space and the rest goes
 # back to the brass, split evenly above and below so the window stays optically
 # centred between the sign and the meter.
-const WINDOW_SHARE := 0.80
+#
+# BACK UP TO 0.92 from the 0.80 this shipped at for one build. The share is not
+# what was wrong -- 0.80 of a cabinet that had not itself been narrowed was.
+# With CABINET_INSET at 96 the whole machine is 528 wide instead of 588 and 56
+# shorter, so the same reels inside a bigger share of it come out very close to
+# the size they were, in a machine that is visibly smaller. That is the trade
+# Guy asked for. The remaining eight per cent is what keeps a band of plain
+# brass above and below the glass, which is what stops the window reading as a
+# grid with a rim.
+const WINDOW_SHARE := 0.92
 
 # ...and the sides come in by this much on top of the 20 the column already
-# holds off the cabinet wall. Wider than this and the three symbols start to
-# read as small rather than the window as narrow.
-const WINDOW_INSET := 42
+# holds off the cabinet wall. It was 42 while the cabinet was 588 wide; the
+# cabinet has since given up 60 of its own width, and taking it out of both
+# would be charging the reels twice for one instruction.
+const WINDOW_INSET := 14
 
 # The hero button gets its own gutter for the same reason. It is still the
 # first thing on the page the eye lands on at this size -- past a point extra
@@ -175,6 +200,7 @@ func _build_cabinet() -> void:
 	_cabinet.offset_left = CABINET_INSET
 	_cabinet.offset_right = -CABINET_INSET
 	_cabinet.offset_top = CARD.y * 0.5
+	_cabinet.offset_bottom = -CABINET_FOOT
 	var body := _cabinet_material()
 	var metal := ColorRect.new()
 	metal.material = body

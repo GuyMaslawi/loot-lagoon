@@ -80,6 +80,7 @@ func _draw() -> void:
 		"calendar": _calendar()
 		"warn":    _warn()
 		"hammer":  _hammer()
+		"clan":    _clan()
 
 # --- drawing primitives ------------------------------------------------------
 
@@ -490,6 +491,38 @@ func _calendar() -> void:
 	for row in [56.0, 74.0]:
 		for col in [34.0, 50.0, 66.0]:
 			_disc(Vector2(col, row), 5.0, Lagoon.INK_FAINT, 0.0)
+
+# THE CLAN RAIL BUTTON WAS DRAWING "cards", WHICH IS THE CARDS TAB.
+#
+# Guy, 2026-09-04, off a real device: "the clan icon is not clear at all,
+# replace it." He was describing a collision rather than a drawing -- the disc
+# on the left rail and the Cards tab on the nav bar were literally the same
+# glyph, two inches apart, meaning two unrelated things. Nothing drawn inside
+# that silhouette could have been read as a clan.
+#
+# So: a banner on a staff. It is chosen for its OUTLINE, which is the only
+# thing that survives at 88px inside a brass ring -- a swallow-tailed pennant is
+# the one shape in this icon set that is neither a rectangle, a disc nor a
+# rounded lozenge, so it cannot be confused with cards, the gift box, the bell
+# or the trophy even out of focus. A crest is stamped on it because a bare flag
+# reads as "event"; a marked one reads as "whose".
+func _clan() -> void:
+	var cloth := _hue(Lagoon.CORAL)
+	# the staff, first, so the cloth laps over its front edge
+	_bar(Vector2(24, 12), Vector2(24, 94), 10.0, Lagoon.BRASS, 5.0)
+	_disc(Vector2(24, 11), 8.0, Lagoon.BRASS_HI, 4.0, Lagoon.BRASS_LO)
+	# The pennant: a hanging fold at the hoist, a heavier one at the fly, and
+	# the swallow tail cut back into the middle of it.
+	_shape(PackedVector2Array([
+		Vector2(24, 20), Vector2(88, 26), Vector2(70, 45),
+		Vector2(88, 64), Vector2(24, 70),
+	]), cloth, 6.0, Lagoon.CORAL_LO)
+	# the crest -- a star, the game's own mark for "yours"
+	_shape(_star_pts(Vector2(47, 45), 16, 7.0), Lagoon.SAND, 4.0, Lagoon.BRASS_MID)
+	# ...and the shadowed underside of the fold, so the cloth has a weight
+	_shape(PackedVector2Array([
+		Vector2(24, 62), Vector2(88, 57), Vector2(88, 64), Vector2(24, 70),
+	]), Lagoon.CORAL_LO, 0.0)
 
 func _warn() -> void:
 	var c := _hue(Lagoon.REEF)

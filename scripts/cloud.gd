@@ -615,6 +615,111 @@ func leave_clan(then: Callable) -> void:
 		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
 	)
 
+# =============================================================================
+#  Invites, join requests, and the number on the clan button
+# =============================================================================
+#
+# Every one of these degrades to "nothing pending" rather than erroring when
+# the 20260904170000 migration has not been applied yet -- the same contract
+# the rest of this section keeps, and the reason the clan disc's badge simply
+# stays dark on a project whose SQL is a build behind.
+
+# THE ONE CALL THE BADGE IS DRAWN FROM.
+#
+# Two counts in one round trip, because this is read on launch, on returning
+# from the background and on every visit to the clan page, and a badge is not
+# worth two requests. `requests` comes back zero for anybody who is not the
+# owner of their own clan, so the client never has to know that rule.
+func clan_news(then: Callable) -> void:
+	if not linked():
+		then.call({})
+		return
+	_rpc("clan_news", {}, func(code: int, body) -> void:
+		_note_clan_code(code)
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+func clan_invites(then: Callable) -> void:
+	if not linked():
+		then.call([])
+		return
+	_rpc("my_clan_invites", {}, func(code: int, body) -> void:
+		_note_clan_code(code)
+		then.call(body if code == 200 and typeof(body) == TYPE_ARRAY else [])
+	)
+
+func accept_clan_invite(invite_id: String, then: Callable) -> void:
+	if not linked() or invite_id == "":
+		then.call({})
+		return
+	_rpc("accept_clan_invite", {"p_id": invite_id}, func(code: int, body) -> void:
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+func decline_clan_invite(invite_id: String, then: Callable) -> void:
+	if not linked() or invite_id == "":
+		then.call({})
+		return
+	_rpc("decline_clan_invite", {"p_id": invite_id}, func(code: int, body) -> void:
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+func invite_to_clan(player_id: String, then: Callable) -> void:
+	if not linked() or player_id == "":
+		then.call({})
+		return
+	_rpc("invite_to_clan", {"p_to": player_id}, func(code: int, body) -> void:
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+func request_join_clan(clan_id: String, then: Callable) -> void:
+	if not linked() or clan_id == "":
+		then.call({})
+		return
+	_rpc("request_join_clan", {"p_clan": clan_id}, func(code: int, body) -> void:
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+func clan_join_requests(then: Callable) -> void:
+	if not linked():
+		then.call([])
+		return
+	_rpc("clan_join_requests", {}, func(code: int, body) -> void:
+		_note_clan_code(code)
+		then.call(body if code == 200 and typeof(body) == TYPE_ARRAY else [])
+	)
+
+func answer_clan_request(request_id: String, accept: bool, then: Callable) -> void:
+	if not linked() or request_id == "":
+		then.call({})
+		return
+	_rpc("answer_clan_request", {"p_id": request_id, "p_accept": accept},
+		func(code: int, body) -> void:
+			then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+func set_clan_open(open: bool, then: Callable) -> void:
+	if not linked():
+		then.call({})
+		return
+	_rpc("set_clan_open", {"p_open": open}, func(code: int, body) -> void:
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+# Prefix search over display names, for picking somebody to invite. The server
+# refuses anything under three characters and only ever answers with players who
+# are not already in a clan, so this sends the query as typed and does no
+# filtering of its own -- see the migration for why the narrowness is the point.
+func find_players(query: String, then: Callable) -> void:
+	if not linked() or query.strip_edges().length() < 3:
+		then.call([])
+		return
+	_rpc("find_players", {"p_query": query.strip_edges(), "p_limit": 12},
+		func(code: int, body) -> void:
+			_note_clan_code(code)
+			then.call(body if code == 200 and typeof(body) == TYPE_ARRAY else [])
+	)
+
 # What is left of today's giving and receiving, so a button can be greyed out
 # rather than pressed and refused.
 func gift_budget(then: Callable) -> void:

@@ -741,17 +741,36 @@ static func button_custom(btn: Button, face: Color, bevel: Color, ink: Color, ra
 				# a cool pane of the game's own glass with the rim it always
 				# had. It is legible, it is not broken, and it is not a colour
 				# anybody has to like.
-				sb.bg_color = Color(0.847, 0.898, 0.910, 0.96)
+				#
+				# THAT SHAPE ONLY LANDS IF THE OTHER THREE LIFT SIGNALS GO TOO,
+				# and until now they did not. Guy, 2026-09-04, off the quests
+				# page on a real phone: "the buttons, once they are not
+				# pressable, need to be faded more -- right now they still look
+				# a bit pressable." He was right, and the flat bevel was not the
+				# thing failing. A disabled CLAIM was still carrying a full drop
+				# shadow, still wearing the specular arc button_gloss paints
+				# over every face, and still setting its label in a 7-unit dark
+				# outline -- three separate "raised object" cues on a button
+				# whose only inactive cue was the missing 5px of bottom border.
+				# The shadow and the gloss are dealt with below and in
+				# button_gloss; the face itself now also drops toward the page
+				# instead of sitting on it as near-opaque white.
+				sb.bg_color = Color(0.784, 0.831, 0.847, 0.62)
 			_:
 				sb.bg_color = face
 				sb.border_width_bottom = 8
 		sb.border_color = rim if state != "disabled" else Color(HULL.r, HULL.g, HULL.b, 0.45)
 		if state == "disabled":
-			# Flat. No bevel to travel into is the whole signal.
-			sb.border_width_bottom = 3
-		sb.shadow_size = 9
-		sb.shadow_color = Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.18 if state == "disabled" else 0.28)
-		sb.shadow_offset = Vector2(0, 4)
+			# Flat, and lying ON the page rather than above it. No bevel to
+			# travel into and no shadow to cast: a thing with a shadow under it
+			# is a thing at a height, which is exactly the read being denied.
+			sb.set_border_width_all(2)
+			sb.shadow_size = 0
+			sb.shadow_offset = Vector2.ZERO
+		else:
+			sb.shadow_size = 9
+			sb.shadow_color = Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.28)
+			sb.shadow_offset = Vector2(0, 4)
 		btn.add_theme_stylebox_override(state, sb)
 
 	btn.add_theme_font_override("font", display_font())
@@ -764,14 +783,57 @@ static func button_custom(btn: Button, face: Color, bevel: Color, ink: Color, ra
 	var outline: Color = rim.darkened(0.15) if ink.get_luminance() > 0.5 else Color(1, 1, 1, 0.70)
 	for c in ["font_color", "font_hover_color", "font_pressed_color", "font_focus_color"]:
 		btn.add_theme_color_override(c, ink)
-	# Dark on the pale inactive face. It shares one outline colour with every
-	# other state, which is dark too -- on a disabled button that simply reads
-	# as a heavier letterform, and heavy dark type on cool glass is the most
-	# readable thing on the page. An unearned reward is still information.
-	btn.add_theme_color_override("font_disabled_color", INK_MUTE)
+	# THE OUTLINE IS WHY THE OLD DISABLED LABEL LOOKED LIVE.
+	#
+	# The note this replaces argued that dark ink on the pale inactive face is
+	# the most readable thing on the page and that an unearned reward is still
+	# information. Both halves are true and neither was the problem: every state
+	# shares one 7-unit dark outline, and a 7-unit outline on a label is what
+	# every ENABLED button in this game wears. Set in the same weight, in the
+	# same dark, on a face at the same apparent height, "CLAIM" on an unearned
+	# mission was typographically identical to "CLAIM" on an earned one -- so
+	# the page read as a column of live buttons that simply did not respond.
+	#
+	# Inactive type therefore loses the outline as well as the lift, and drops
+	# to a muted grey-teal. What it does NOT do is go pale: this measures 4.52
+	# against the inactive face, over the 4.5 line, and the first attempt at it
+	# was a lighter 3.49 that nothing caught -- qa_contrast walks the quests
+	# page, but the dev save it walks it with has every mission already claimed,
+	# so there was not one disabled button in the frame it measured. The harness
+	# empties the board first now. An unearned reward is still information; only
+	# the impression that it is waiting to be pressed has to go.
+	btn.add_theme_color_override("font_disabled_color", Color(0.290, 0.375, 0.405))
 	btn.add_theme_color_override("font_outline_color", outline)
-	btn.add_theme_constant_override("outline_size", 7)
 	btn.focus_mode = Control.FOCUS_NONE
+	set_enabled(btn, not btn.disabled)
+
+# The two inactive cues a StyleBox cannot carry, applied together.
+#
+# Godot's Button theme has one `outline_size` and one `font_outline_color` for
+# every state, so "no outline while disabled" is not something the disabled
+# stylebox can say; and the specular arc button_gloss paints is a child node,
+# which a stylebox knows nothing about either. Both therefore have to be set
+# imperatively, and both have to move whenever `disabled` does.
+#
+# WHY THIS IS A FUNCTION AND NOT A SIGNAL. Button emits nothing when `disabled`
+# changes, and the obvious workaround -- hanging a lambda off `draw`, which does
+# fire on a state change -- was written first and thrown away. It has to write
+# theme overrides, writing a theme override queues a redraw, and a redraw is
+# what called it: correct only with a latch, and a per-frame comparison on every
+# button in the game to catch a transition that nearly never happens. Applied
+# once at build time it covers every button whose state is decided before it is
+# styled, which is nearly all of them; the handful that go permanently inactive
+# later call this directly.
+#
+# A button disabled only while a request is in flight deliberately does NOT need
+# it. Busy is not the same claim as unearned, and a control that keeps its
+# height for the second it is waiting reads as "working", which is true.
+static func set_enabled(btn: Button, live: bool) -> void:
+	btn.disabled = not live
+	btn.add_theme_constant_override("outline_size", 7 if live else 0)
+	for c in btn.get_children():
+		if c is ColorRect and c.has_meta("ll_gloss"):
+			(c as ColorRect).visible = live
 
 # Adds the specular arc that makes a button look moulded rather than printed.
 # Kept separate because it needs a live size, so only call it on buttons that
@@ -810,6 +872,17 @@ void fragment() {
 	btn.add_child(r)
 	r.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	r.resized.connect(func() -> void: mat.set_shader_parameter("rect_px", r.size))
+	# A specular highlight is light bouncing off a raised, curved face. Painted
+	# over a disabled button it undoes the flat stylebox underneath it, which is
+	# most of why an unearned CLAIM still read as pressable -- the arc is the
+	# single strongest "this is a moulded object" cue on the control, and it was
+	# being drawn regardless of state.
+	#
+	# The meta is how set_enabled finds this rect later. It is marked rather
+	# than searched for by type because a button may have other ColorRects on
+	# it, and the one that must not be drawn over an inactive face is this one.
+	r.set_meta("ll_gloss", true)
+	r.visible = not btn.disabled
 	return r
 
 # =============================================================================
@@ -1135,7 +1208,16 @@ static func chip(text: String, color := CORAL, font_size := UI.F_TINY) -> PanelC
 	# the fill 40% toward deep water clears 4.5 on every hue the chip is used
 	# in and costs nothing legible: the rim is now the pure colour, lit, so the
 	# chip reads as MORE of its own hue rather than less.
-	sb.bg_color = color.lerp(HULL, 0.40)
+	#
+	# 0.52, NOT THE 0.40 THAT NOTE WAS WRITTEN FOR, and the difference is that
+	# 0.40 was arithmetic and this is a measurement. The daily dialog's streak
+	# rewards are chips -- "+8", "+10", "+13" and so on down the ladder -- and
+	# qa_contrast had seven of them failing at 2.26 for as long as it has been
+	# run. At 0.52 the same seven measure 3.33. Still short of 4.5 at 22px, and
+	# still on the list, but every chip in the game moved the safe way for one
+	# constant: white on a darker fill can only gain, and none of them stop
+	# reading as their own colour, because the rim is still the pure hue.
+	sb.bg_color = color.lerp(HULL, 0.52)
 	sb.set_corner_radius_all(12)
 	sb.set_border_width_all(2)
 	sb.border_color = color

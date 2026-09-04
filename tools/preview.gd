@@ -149,6 +149,18 @@ func _open_page(game: Control, key: String) -> void:
 	if key.begins_with("shop:"):
 		game.call("_goto_shop", key.substr(5))
 		return
+	# MISSIONS=fresh puts the quest board back to nothing claimed.
+	#
+	# The harness starts from whatever save is on this machine, and on a dev box
+	# that is almost always a board with every mission already taken -- eight
+	# green ticks and not one CLAIM button, which is precisely the state that
+	# cannot answer "does an unearned button still look pressable".
+	if OS.get_environment("MISSIONS") == "fresh":
+		var st: Dictionary = game.get("mission_state")
+		for period in st:
+			st[period]["progress"] = {}
+			st[period]["claimed"] = {}
+			st[period]["bonus"] = false
 	if key == "island":
 		game.call("_goto", game.get("village_page"))
 	else:
@@ -160,7 +172,7 @@ func _glyph_sheet() -> void:
 	var kinds := ["coin", "wheel", "shield", "island", "shop", "cards", "quests",
 		"gift", "bell", "trophy", "gear", "star", "plus", "close", "rivet", "anchor",
 		"piggy", "box", "medal", "tick", "spark", "crown", "sun", "moon",
-		"calendar", "warn"]
+		"calendar", "warn", "clan"]
 	if OS.has_environment("GLYPHS"):
 		kinds = Array(OS.get_environment("GLYPHS").split(","))
 

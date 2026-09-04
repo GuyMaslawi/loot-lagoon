@@ -56,9 +56,41 @@ func _ready() -> void:
 	if want != "":
 		keys = Array(want.split(","))
 
+	# A QUEST BOARD WITH NOTHING CLAIMED ON IT.
+	#
+	# This harness runs against whatever save is on the machine, and on a dev
+	# box that board is always fully claimed -- eight green ticks and not one
+	# CLAIM button. The disabled button style is the hardest type in the game to
+	# get right (pale ink on a pale translucent face, by design), and it was
+	# being measured exactly zero times. Emptied here so the page draws the
+	# state the style exists for.
+	for period in m.mission_state:
+		m.mission_state[period]["progress"] = {}
+		m.mission_state[period]["claimed"] = {}
+		m.mission_state[period]["bonus"] = false
+
 	for key in keys:
 		await _goto(key)
 		await _measure(key, m)
+
+	# ONE SET'S OWN PAGE, WHICH THE SHELF ABOVE DOES NOT REACH.
+	#
+	# "collections" measures the shelf of tiles; the nine-card grid behind a
+	# tile is a different page built by a different function, and it is the one
+	# with the hardest type on it -- an unowned card is a "???" and a name in
+	# pale ink on a dark socket, which is a combination that has to be argued
+	# for every time either half moves. It was being argued on paper.
+	# ONE KNOWN FALSE POSITIVE ON THIS PAGE, so it is not chased twice. The
+	# boxes dock is a button that FLOATS over the bottom-right of the scroll,
+	# and this harness reads each text node's colours out of the framebuffer at
+	# that node's own rect. A spare tag on the last card of a row is behind the
+	# dock, so what comes back is the dock's purple and a ratio that has nothing
+	# to do with the tag. It reports as "+N" against #8e69d3. Everything else
+	# measured here is real.
+	m.col_open = "beach"
+	await _goto("collections")
+	await _measure("collection set", m)
+	m.col_open = ""
 
 	for opener in ["_open_tourney", "_open_world_ranks", "_open_daily"]:
 		await _goto("slot")

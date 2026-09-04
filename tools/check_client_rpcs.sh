@@ -59,6 +59,25 @@ my_identities:
 redeem_link_token:p_token
 delete_account:
 server_time:
+my_clan:
+clan_list:p_limit
+create_clan:p_name,p_emoji
+join_clan:p_clan
+leave_clan:
+gift_budget:
+send_card:p_to,p_set,p_idx,p_stars
+unseen_gifts:
+ack_gifts:p_ids
+clan_news:
+my_clan_invites:
+accept_clan_invite:p_id
+decline_clan_invite:p_id
+invite_to_clan:p_to
+request_join_clan:p_clan
+clan_join_requests:
+answer_clan_request:p_id,p_accept
+set_clan_open:p_open
+find_players:p_query,p_limit
 RPC
 echo
 [ "$fails" -eq 0 ] && echo "every RPC the client calls still resolves" || echo "$fails MISMATCH(ES)"
