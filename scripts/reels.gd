@@ -33,6 +33,40 @@ const STRIP := 14
 const STOP_AT := [0.95, 1.40, 1.90]
 const TRAVEL := [3, 4, 5]    # whole strips passed before each reel lands
 
+# =============================================================================
+#  The hold
+# =============================================================================
+#
+# When the first two reels land on the same symbol, the third one does not stop
+# on schedule. It keeps running long after the other two have gone quiet, then
+# slows to a crawl and creeps onto its cell one detent at a time.
+#
+# This is the only moment in the machine where the show is worth more than the
+# payout, and until now nothing produced it: STOP_AT was three fixed numbers, so
+# the third reel took exactly 1.90 seconds whether it was about to pay a jackpot
+# or nothing at all.
+#
+# NOTHING HERE TOUCHES THE OUTCOME. _roll() has already decided all three
+# symbols before start_spin is called, and the cell this reel lands on is the
+# same cell it would have landed on at the old timing. The hold paces the
+# reveal; it does not bend it, and it must never be made to -- a reel that
+# creeps past the winning symbol more often than chance put it there is a
+# different thing entirely, and not one this game does.
+#
+# It is spent on the four symbols worth waiting for -- the jackpot, the gems and
+# the two that open a raid -- and not on coin, shield or bolt. Held on every
+# matching pair it would fire on 40% of spins and stop reading as an event; held
+# on these four it lands around one spin in four, which is the rate a player
+# still leans in at.
+const HOLD_AT := 3.30        # what the third reel's stop time becomes
+const HOLD_TRAVEL := 14      # more strip to cover, so it still LEAVES at speed
+const HOLD_POWER := 2.6      # the long tail: fast for a second, then a crawl
+const HOLD_SYMBOLS := ["bag", "gem", "hammer", "steal"]
+
+# Below this, the strip reads as individual symbols rather than a smear, and
+# each cell boundary it crosses gets a detent tick.
+const TICK_SPEED := 22.0
+
 const STRIPS := [
 	["coin", "hammer", "gem", "coin", "steal", "bag", "coin", "shield", "hammer", "gem", "bolt", "coin", "steal", "bag"],
 	["gem", "coin", "shield", "hammer", "coin", "bolt", "steal", "coin", "bag", "gem", "hammer", "coin", "steal", "shield"],
@@ -44,6 +78,10 @@ var _from := PackedFloat32Array([0.0, 0.0, 0.0])
 var _to := PackedFloat32Array([0.0, 0.0, 0.0])
 var _speed := PackedFloat32Array([0.0, 0.0, 0.0])
 var _stopped := PackedByteArray([1, 1, 1])
+var _stop_at := PackedFloat32Array([0.95, 1.40, 1.90])
+var _held := false
+var _heat := 0.0        # how lit the held column is, 0 while it is still a blur
+var _tick_cell := -1    # last cell the crawling reel ticked on
 var _t := 0.0
 var _spinning := false
 var _settle := 0.0
@@ -101,12 +139,25 @@ func payline_centre(col: int) -> Vector2:
 func is_spinning() -> bool:
 	return _spinning
 
+# True once the other two have landed matching and the third is still running.
+# slot_view leans on this for the beat it puts on screen at the same moment.
+func is_holding() -> bool:
+	return _held
+
 func start_spin(result: Array) -> void:
 	_spinning = true
 	_t = 0.0
 	_settle = 0.0
 	_win = 0.0
+	_heat = 0.0
+	_tick_cell = -1
+	# Decided here, off the roll, because the reel needs its extra strip from
+	# the first frame -- a reel told to keep going only once the second one
+	# lands has nowhere left to travel and would have to stall in place.
+	_held = result.size() >= 2 and result[0] == result[1] \
+		and HOLD_SYMBOLS.has(String(result[0]))
 	for c in COLS:
+		_stop_at[c] = HOLD_AT if (_held and c == 2) else float(STOP_AT[c])
 		_stopped[c] = 0
 		# Wrapped back onto the strip before anything is measured from it.
 		#
@@ -120,7 +171,8 @@ func start_spin(result: Array) -> void:
 		_pos[c] = fposmod(_pos[c], float(STRIP))
 		_from[c] = _pos[c]
 		var strip: Array = STRIPS[c]
-		var want: int = int(_pos[c]) + int(TRAVEL[c]) * STRIP
+		var strips: int = HOLD_TRAVEL if (_held and c == 2) else int(TRAVEL[c])
+		var want: int = int(_pos[c]) + strips * STRIP
 		# roll forward from there to the next cell carrying the rolled symbol
 		var landed: int = want
 		for k in STRIP:
@@ -133,11 +185,14 @@ func start_spin(result: Array) -> void:
 
 func _process(delta: float) -> void:
 	if not _spinning:
-		if _settle > 0.0 or _win > 0.0:
+		if _settle > 0.0 or _win > 0.0 or _heat > 0.0:
 			_settle = maxf(0.0, _settle - delta)
 			_win = maxf(0.0, _win - delta / 0.9)
+			# Faster than the settle, so the column has cooled by the time a
+			# win takes the payline over and the two glows never stack.
+			_heat = maxf(0.0, _heat - delta * 3.2)
 			queue_redraw()
-			if _settle == 0.0 and _win == 0.0:
+			if _settle == 0.0 and _win == 0.0 and _heat == 0.0:
 				set_process(false)
 		return
 
@@ -146,10 +201,14 @@ func _process(delta: float) -> void:
 	for c in COLS:
 		if _stopped[c] == 1:
 			continue
-		var k := clampf(_t / float(STOP_AT[c]), 0.0, 1.0)
+		var holding: bool = _held and c == 2
+		var k := clampf(_t / _stop_at[c], 0.0, 1.0)
 		var prev: float = _pos[c]
-		_pos[c] = _from[c] + (_to[c] - _from[c]) * _decel(k)
+		_pos[c] = _from[c] + (_to[c] - _from[c]) * (_crawl(k) if holding else _decel(k))
 		_speed[c] = absf(_pos[c] - prev) / maxf(delta, 0.0001)
+		if holding:
+			_heat = clampf((k - 0.45) / 0.45, 0.0, 1.0)
+			_detent()
 		if k >= 1.0:
 			_stopped[c] = 1
 			_pos[c] = _to[c]
@@ -162,6 +221,33 @@ func _process(delta: float) -> void:
 	if all_done:
 		_spinning = false
 		_settle = 0.5
+
+# The held reel's curve. It leaves at the same speed the other two did -- the
+# extra strips in HOLD_TRAVEL are what buy that, so the hold never reads as a
+# reel that started slow -- and then bleeds off for the rest of its run, so the
+# last half second is a visible creep from one cell to the next.
+#
+# No overshoot and no bounce, unlike _decel: a reel arriving at two cells a
+# second has no momentum to bounce with, and giving it one looks like a nudge.
+func _crawl(k: float) -> float:
+	return 1.0 - pow(1.0 - k, HOLD_POWER)
+
+# One click per cell once the held reel is slow enough for the symbols to read,
+# pitched up as it runs out of travel. About seven of these land in the last
+# second -- the sound of a reel being watched, rather than one being waited on.
+func _detent() -> void:
+	if _speed[2] > TICK_SPEED:
+		_tick_cell = -1        # still a smear; there is nothing to click yet
+		return
+	var cell := int(floor(_pos[2]))
+	if _tick_cell < 0:
+		_tick_cell = cell      # arm on the cell it was in, do not tick for it
+		return
+	if cell == _tick_cell:
+		return
+	_tick_cell = cell
+	var climb := 1.0 - clampf(_speed[2] / TICK_SPEED, 0.0, 1.0)
+	Sfx.play("tick", -13.0 + 5.0 * climb, 0.04, 1.0 + 0.55 * climb)
 
 # Flat out for most of the run, then a hard brake and a short bounce as the
 # reel drops onto the detent.
@@ -194,11 +280,15 @@ func _draw() -> void:
 		var strip: Array = STRIPS[c]
 		var p: float = _pos[c]
 
-		# the printed strip face, brighter across the payline row
-		_col_style.bg_color = _face
+		# The printed strip face, brighter across the payline row -- and warmer
+		# still on the held reel, which heats up as it runs out of travel.
+		# Handed straight over to the win glow the moment celebrate() fires, so
+		# the two rings are never on screen together.
+		var heat: float = _heat if (c == 2 and _win == 0.0) else 0.0
+		_col_style.bg_color = _face.lerp(Lagoon.BRASS_HI, 0.20 * heat)
 		draw_style_box(_col_style, Rect2(x + 5.0, -4.0, cw - 10.0, size.y + 8.0))
 		draw_rect(Rect2(x + 5.0, pay.position.y, cw - 10.0, ch),
-			Color(1, 1, 1, 0.55))
+			Color(1, 1, 1, 0.55 + 0.30 * heat))
 
 		# Fast reels smear: the symbol stretches along the strip and thins out,
 		# which is what stops a spinning reel from looking like a slide show.
@@ -223,6 +313,12 @@ func _draw() -> void:
 		# the strip runs off into shadow rather than ending at a cut edge
 		draw_texture_rect(_shade_top, Rect2(x + 5.0, 0.0, cw - 10.0, ch * 0.80), false)
 		draw_texture_rect(_shade_bottom, Rect2(x + 5.0, size.y - ch * 0.80, cw - 10.0, ch * 0.80), false)
+
+		# The rim on the cell the held reel is creeping towards. Drawn over the
+		# shadow, because the point of it is to say where to look.
+		if heat > 0.0:
+			draw_rect(Rect2(x + 5.0, pay.position.y, cw - 10.0, ch).grow(1.0),
+				Color(_glow.r, _glow.g, _glow.b, 0.85 * heat), false, 2.0 + 3.0 * heat)
 
 		if _win > 0.0:
 			var r := Rect2(x + 5.0, pay.position.y, cw - 10.0, ch).grow(-3.0 + 9.0 * (1.0 - _win))

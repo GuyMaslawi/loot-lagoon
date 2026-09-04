@@ -765,9 +765,18 @@ func _on_spin_pressed() -> void:
 func _on_reel_stopped(index: int) -> void:
 	# Two matching on the payline with one reel still running is the moment the
 	# whole machine exists for.
+	#
+	# When the pair is one of the four the third reel HOLDS for, this beat is
+	# not a flourish on the way to a stop that was coming anyway -- it opens a
+	# second and a half of the reel still running. It gets the bigger hit, so
+	# the sound and the sparks are telling the truth about how long to watch.
 	if index == 1 and _result.size() >= 2 and _result[0] == _result[1]:
-		Sfx.play("pop", -6.0)
-		FX.burst(self, payline_pos(), Lagoon.BRASS_HI, 10)
+		if reels.is_holding():
+			Sfx.play("pop", -2.0, 0.03, 1.18)
+			FX.burst(self, payline_pos(), Lagoon.BRASS_HI, 22)
+		else:
+			Sfx.play("pop", -6.0)
+			FX.burst(self, payline_pos(), Lagoon.BRASS_HI, 10)
 	if index < 2:
 		return
 	spin_button.disabled = false
