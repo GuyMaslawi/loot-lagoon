@@ -380,7 +380,7 @@ const PIGGY_PRICE := "$3.99"
 # The piggy is sold like any other pack, so it needs a pack-shaped record for
 # the purchase path to carry. It has no contents field -- what it pays out is
 # whatever the player already banked, not a fixed amount.
-const PIGGY_PACK := {"id": "piggy", "name": "Piggy Bank", "emoji": "\U0001F437", "price": PIGGY_PRICE}
+const PIGGY_PACK := {"id": "piggy", "name": "Piggy Bank", "emoji": "\U01F437", "price": PIGGY_PRICE}
 
 # Rotating limited-time offer.
 #
@@ -459,11 +459,11 @@ const STAR_COLORS := [
 # Vault draws on exactly the same table the paid Magical Chest does -- the
 # money buys the shortcut, not the ceiling.
 const CARD_BOXES := [
-	{"id": "box_s", "name": "Driftwood Box", "sub": "2 cards", "emoji": "\U0001F4E6", "stars": 12, "cards": 2, "tier": 0,
+	{"id": "box_s", "name": "Driftwood Box", "sub": "2 cards", "emoji": "\U01F4E6", "stars": 12, "cards": 2, "tier": 0,
 	 "color": Color(0.72, 0.5, 0.3)},
-	{"id": "box_m", "name": "Brass Coffer", "sub": "4 cards \u2014 better odds", "emoji": "\U0001F9F0", "stars": 40, "cards": 4, "tier": 1,
+	{"id": "box_m", "name": "Brass Coffer", "sub": "4 cards \u2014 better odds", "emoji": "\U01F9F0", "stars": 40, "cards": 4, "tier": 1,
 	 "color": Color(1.0, 0.78, 0.25)},
-	{"id": "box_l", "name": "Treasure Vault", "sub": "6 cards \u2014 5\u2605 guaranteed", "emoji": "\U0001F52E", "stars": 110, "cards": 6, "tier": 2,
+	{"id": "box_l", "name": "Treasure Vault", "sub": "6 cards \u2014 5\u2605 guaranteed", "emoji": "\U01F52E", "stars": 110, "cards": 6, "tier": 2,
 	 "color": Color(0.72, 0.45, 1.0), "guarantee5": true},
 ]
 
@@ -725,6 +725,61 @@ static func prop_tex(id: String) -> Texture2D:
 
 static func island_theme(level: int) -> Dictionary:
 	return ISLANDS[(level - 1) % ISLANDS.size()]
+
+# =============================================================================
+#  Laps -- what happens after island thirty
+# =============================================================================
+#
+# ISLANDS holds thirty and island_theme wraps, so island 31 is Green Meadows
+# again: same name, same art, same five buildings. curve() clamps at
+# ECONOMY_MAX_LEVEL too, so prices and payouts stop climbing there as well.
+#
+# NEITHER OF THOSE IS THE BUG, and neither is being changed here. Thirty
+# islands is a lot of art and the economy flattening at the top is deliberate.
+# What was wrong is that NOTHING SAID SO. A regular player reaches island 31 in
+# about two and a half weeks and the game silently starts over -- which, after
+# a fortnight of it, reads as the save having been eaten. Testers on the
+# fourteen-day closed track land on it inside the window.
+#
+# So the repeat is named and owned. Islands one to thirty are the first lap;
+# 31 to 60 are the second, and they say so.
+const LAP_NAMES := ["", "", "New World", "Far Reaches", "Deep Blue", "Uncharted"]
+
+# 1 for islands 1-30, 2 for 31-60, and on.
+static func island_lap(level: int) -> int:
+	return (maxi(1, level) - 1) / ISLANDS.size() + 1
+
+# The lap's title, used where there is room for a sentence -- the crossing
+# announcement. Past the named ones it keeps counting rather than shrugging:
+# somebody on lap seven has earned a number.
+static func lap_name(lap: int) -> String:
+	if lap <= 1:
+		return ""
+	if lap < LAP_NAMES.size():
+		return LAP_NAMES[lap]
+	return "Lap %d" % lap
+
+# The island's name as the player reads it, everywhere a name is printed.
+#
+# The SUFFIX IS DELIBERATELY TINY -- "Green Meadows II", not "Green Meadows ·
+# New World". This string goes on the slot machine's ribbon, on the island
+# page's plaque and into the rival card, all of which are sized to the longest
+# name in ISLANDS; adding nine characters to every one of them is how a
+# container in this codebase quietly carries a page off the right edge of the
+# phone. The full lap name gets said once, on the crossing, where there is a
+# whole dialog for it.
+static func island_name(level: int) -> String:
+	var base := String(island_theme(level)["name"])
+	var lap := island_lap(level)
+	if lap <= 1:
+		return base
+	return "%s %s" % [base, _numeral(lap)]
+
+# II through X, then plain digits. Roman past ten stops being readable at a
+# glance, which is the only thing this is for.
+static func _numeral(n: int) -> String:
+	const ROMAN := ["", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"]
+	return ROMAN[n] if n >= 0 and n < ROMAN.size() else str(n)
 
 static func island_palette(level: int) -> Dictionary:
 	return ISLAND_PALETTES[(level - 1) % ISLAND_PALETTES.size()]

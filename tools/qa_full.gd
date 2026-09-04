@@ -69,6 +69,10 @@ func _ready() -> void:
 	await _t_raids()
 	_section("21. alerts and the notification log")
 	_t_alerts()
+	_section("22. the first session")
+	await _t_intro()
+	_section("23. laps")
+	_t_laps()
 
 	print("")
 	print("QA-FULL: %d checks, %s" % [checks, "ALL PASS" if fails == 0 else "%d FAILURES" % fails])
@@ -1717,3 +1721,178 @@ func _t_alerts() -> void:
 			positive = false
 	_chk("every entry carries the four keys the Java reads", shaped)
 	_chk("and `in` is a forward delay, never a past one", positive)
+
+# =============================================================================
+#  22. the first session
+# =============================================================================
+#
+# Two separate promises, and the second one is the one with teeth.
+#
+# The script has to hand out the symbols it says it will, in order, and then
+# get out of the way permanently -- a scripted spin that leaks into ordinary
+# play is a payout nobody rolled for.
+#
+# And NOBODY ALREADY PLAYING MAY EVER SEE ANY OF IT. There is no version stamp
+# in this save format and no migration step; the whole mechanism is that
+# _load_game defaults these three keys to "already done", so a save written
+# before the first-session work existed loads as a player who has finished it.
+# Get that backwards and every existing player on the next update is welcomed
+# to the game, handed a scripted jackpot and told where the island tab is.
+func _t_intro() -> void:
+	# --- the script itself ---
+	m.intro_spins = 0
+	var served := []
+	for i in m.INTRO_REEL.size():
+		var r: Array = m._intro_roll()
+		var want := String(m.INTRO_REEL[i])
+		if want == "":
+			# A free slot: whatever the reels say, but it must still be three
+			# symbols and it must still cost a step of the counter.
+			served.append("free" if r.size() == 3 else "BROKEN")
+		else:
+			served.append(want if (r[0] == want and r[1] == want and r[2] == want) else "BROKEN")
+	_chk("the script serves its symbols in order", not served.has("BROKEN"), str(served))
+	_chk("and every slot costs exactly one spin of the counter",
+		m.intro_spins == m.INTRO_REEL.size(), str(m.intro_spins))
+
+	# Past the end it is the ordinary table for ever, and the counter stops.
+	var before: int = m.intro_spins
+	var forced := 0
+	for i in 300:
+		var r: Array = m._intro_roll()
+		if r.size() != 3:
+			forced += 1
+	_chk("past the script the counter stops moving", m.intro_spins == before, str(m.intro_spins))
+	_chk("and 300 more spins are all ordinary rolls", forced == 0)
+
+	# The scripted symbols are all real ones the reels can land on. A typo here
+	# would hand start_spin a symbol that is not on any strip, and it would
+	# search all fourteen cells, find nothing and stop somewhere arbitrary.
+	var known := true
+	for s in m.INTRO_REEL:
+		if String(s) != "" and not CV.SYMBOLS.has(String(s)):
+			known = false
+	_chk("every scripted symbol exists on the strips", known, str(m.INTRO_REEL))
+
+	# --- the migration, which is a default and nothing else ---
+	var path: String = m.SAVE_PATH
+	var old_save := {
+		"coins": 250000, "spins": 40, "stars": 340, "rank_stars": 3400,
+		"island_level": 12, "buildings": [5, 5, 4, 3, 2],
+	}
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	f.store_string(JSON.stringify(old_save))
+	f.close()
+	m.intro_spins = 0
+	m.intro_greeted = false
+	m.intro_build_tip = false
+	m._load_game()
+	await get_tree().process_frame
+	_chk("a save with no intro keys loads the welcome as already seen", m.intro_greeted)
+	_chk("...and the build tip as already given", m.intro_build_tip)
+	_chk("...and the script as already spent",
+		m.intro_spins >= m.INTRO_REEL.size(), str(m.intro_spins))
+
+	# A save that DOES carry them is trusted, so a player half way through the
+	# first session keeps their place across a relaunch.
+	var mid := old_save.duplicate()
+	mid["intro_spins"] = 2
+	mid["intro_greeted"] = true
+	mid["intro_build_tip"] = false
+	f = FileAccess.open(path, FileAccess.WRITE)
+	f.store_string(JSON.stringify(mid))
+	f.close()
+	m._load_game()
+	await get_tree().process_frame
+	_chk("a half-finished first session survives a relaunch",
+		m.intro_spins == 2 and m.intro_greeted and not m.intro_build_tip,
+		"%d/%s/%s" % [m.intro_spins, m.intro_greeted, m.intro_build_tip])
+
+	# --- the build tip's gate ---
+	m._close_popup(true)
+	m.intro_build_tip = false
+	m.stars = 0
+	m.coins = 999999
+	m.intro_spins = 1
+	m._maybe_intro_build()
+	_chk("the tip holds until the scripted raid has been seen",
+		m._popup == null and not m.intro_build_tip)
+
+	m.intro_spins = m.INTRO_REEL.size()
+	m.coins = 0
+	m._maybe_intro_build()
+	_chk("and holds while the first hut is unaffordable",
+		m._popup == null and not m.intro_build_tip)
+
+	m.coins = 999999
+	m._maybe_intro_build()
+	await get_tree().process_frame
+	_chk("then fires once the coins are there", m._popup != null and m.intro_build_tip)
+	m._close_popup(true)
+	m._maybe_intro_build()
+	_chk("and never a second time", m._popup == null)
+
+	# Somebody who found the island on their own is not told about it later.
+	m.intro_build_tip = false
+	m.stars = 7
+	m._maybe_intro_build()
+	_chk("a player who already built is never nudged", m._popup == null)
+	_chk("...and the nudge is retired rather than left armed", m.intro_build_tip)
+	m._close_popup(true)
+
+# =============================================================================
+#  23. laps -- what island 31 is called
+# =============================================================================
+#
+# The islands repeat, on purpose, and the economy flattens at thirty, also on
+# purpose. Neither is under test. What IS under test is that the game says so:
+# a player who reaches island 31 in two and a half weeks and finds Green
+# Meadows again with no acknowledgement reads it as a wiped save.
+func _t_laps() -> void:
+	_chk("islands 1-30 are the first lap",
+		CV.island_lap(1) == 1 and CV.island_lap(30) == 1,
+		"%d..%d" % [CV.island_lap(1), CV.island_lap(30)])
+	_chk("31 opens the second", CV.island_lap(31) == 2, str(CV.island_lap(31)))
+	_chk("and 60/61 the boundary after that",
+		CV.island_lap(60) == 2 and CV.island_lap(61) == 3,
+		"%d/%d" % [CV.island_lap(60), CV.island_lap(61)])
+	# A hostile or corrupt level must not index the name table off the end.
+	_chk("a nonsense level still answers", CV.island_lap(-5) == 1 and CV.island_lap(0) == 1)
+
+	_chk("the first lap carries no suffix", CV.island_name(1) == CV.island_theme(1)["name"],
+		CV.island_name(1))
+	_chk("island 31 is visibly not island 1",
+		CV.island_name(31) != CV.island_name(1),
+		"%s vs %s" % [CV.island_name(31), CV.island_name(1)])
+	_chk("...and it is the same island, relabelled",
+		CV.island_name(31).begins_with(String(CV.island_theme(1)["name"])),
+		CV.island_name(31))
+	_chk("the suffix stays short", CV.island_name(31).length()
+		- String(CV.island_theme(1)["name"]).length() <= 5,
+		CV.island_name(31))
+
+	# The name goes on the slot ribbon and the island plaque, both sized to the
+	# longest entry in ISLANDS. A lap that pushes past that is the shop deal
+	# row's bug again, so the growth is bounded here as well as measured in
+	# qa_layout.
+	var longest := 0
+	for i in CV.ISLANDS.size():
+		longest = maxi(longest, String(CV.ISLANDS[i]["name"]).length())
+	var worst := 0
+	for lap in range(1, 11):
+		for i in CV.ISLANDS.size():
+			worst = maxi(worst, CV.island_name(lap * CV.ISLANDS.size() + i + 1).length())
+	_chk("ten laps of names stay within five characters of the longest island",
+		worst <= longest + 5, "%d vs %d" % [worst, longest])
+
+	_chk("lap 1 has no title to announce", CV.lap_name(1) == "")
+	_chk("lap 2 does", CV.lap_name(2) != "", CV.lap_name(2))
+	var deep := CV.lap_name(99)
+	_chk("and a lap past the named ones still answers", deep != "", deep)
+
+	# The crossing test the arrival actually runs.
+	var fires := []
+	for level in [2, 15, 30, 31, 32, 60, 61]:
+		if CV.island_lap(level) > CV.island_lap(maxi(1, level - 1)):
+			fires.append(level)
+	_chk("the crossing fires only on 31 and 61", fires == [31, 61], str(fires))

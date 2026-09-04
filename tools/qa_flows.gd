@@ -276,9 +276,9 @@ func _t_offline_raids() -> void:
 	# takes the test out with it, and still prints ALL PASS because the harness
 	# counts failed checks rather than checks that never ran.
 	m.pending_raids = [
-		{"at": 0.0, "kind": "steal", "coins": 900000, "npc": "nobody", "text": "raid", "emoji": "\U0001F6A8"},
-		{"at": 0.0, "kind": "smash", "building": 2, "text": "smash", "emoji": "\U0001F6A8"},
-		{"at": 0.0, "kind": "blocked", "text": "blocked", "emoji": "\U0001F6A8"},
+		{"at": 0.0, "kind": "steal", "coins": 900000, "npc": "nobody", "text": "raid", "emoji": "\U01F6A8"},
+		{"at": 0.0, "kind": "smash", "building": 2, "text": "smash", "emoji": "\U01F6A8"},
+		{"at": 0.0, "kind": "blocked", "text": "blocked", "emoji": "\U01F6A8"},
 	]
 	m._offline_raids()
 	var flat := true
@@ -291,8 +291,8 @@ func _t_offline_raids() -> void:
 	m.coins = 0
 	m.buildings = [0, 0, 0, 0, 0]
 	m.pending_raids = [
-		{"at": 0.0, "kind": "steal", "coins": 5000, "npc": "nobody", "text": "raid", "emoji": "\U0001F6A8"},
-		{"at": 0.0, "kind": "smash", "building": 0, "text": "smash", "emoji": "\U0001F6A8"},
+		{"at": 0.0, "kind": "steal", "coins": 5000, "npc": "nobody", "text": "raid", "emoji": "\U01F6A8"},
+		{"at": 0.0, "kind": "smash", "building": 0, "text": "smash", "emoji": "\U01F6A8"},
 	]
 	m._offline_raids()
 	_chk("a stripped island survives another wave", m.coins >= 0 and m.buildings.min() >= 0,

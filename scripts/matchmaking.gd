@@ -375,7 +375,7 @@ func _lock_in() -> void:
 	_name_label.text = str(npc.get("name", "Rival"))
 	_name_label.add_theme_color_override("font_color", Lagoon.BRASS_HI)
 	_flag.text = str(npc.get("flag", "??"))
-	_home.text = CV.island_theme(int(npc.get("island", 1)))["name"]
+	_home.text = CV.island_name(int(npc.get("island", 1)))
 	_shield_chip.visible = mode == "attack" and bool(npc.get("shield", false))
 	_status.text = "Ready to %s" % ("steal" if mode == "steal" else "attack")
 	_hint.text = "tap  to  go"

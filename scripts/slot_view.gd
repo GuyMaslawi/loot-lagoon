@@ -558,7 +558,7 @@ func set_island(level: int) -> void:
 	var p := CV.island_palette(level)
 	reels.apply_palette(p)
 	spin_button.apply_palette(p)
-	_ribbon_home = CV.island_theme(level)["name"].to_upper()
+	_ribbon_home = CV.island_name(level).to_upper()
 	_ribbon.set_plate(Lagoon.LAGOON_DEEP.lerp(p["mid"], 0.30))
 	_set_sign(_ribbon_home, Lagoon.SAND)
 

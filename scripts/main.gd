@@ -255,6 +255,46 @@ var _hud_labels: Array = []
 var _regen_accum := 0.0
 var _transitioning := false
 
+# =============================================================================
+#  The first session
+# =============================================================================
+#
+# There was no onboarding of any kind. A new player landed on the reels with
+# 1,500 coins and 30 spins, and nothing after the sign-in screen ever said what
+# the coins were for, that there was an island, or that raiding was a thing
+# that happened here. The tagline under the wordmark says "Spin · Raid · Build
+# your island" and then the game never mentions it again -- which is a promise
+# made on the one screen a player is trying to get past.
+#
+# Three pieces answer it, and none of them takes the controls away:
+#
+#   * ONE CARD, once, naming the three verbs against the art they belong to
+#   * A SCRIPTED OPENING, so every new player MEETS all three inside two
+#     minutes rather than waiting for the reels to get round to it
+#   * A NUDGE towards the first hut, once, at the moment it is affordable
+#
+# THE SCRIPT DOES NOT TOUCH _roll(). It is read at the call site and _roll() is
+# left exactly as it was, which is what keeps qa_full's measured triple rate
+# and card drop rate measurements of the real thing -- and what keeps the one
+# copy of the odds the one copy of the odds.
+#
+# The order is the whole argument. Spin one pays, because a machine that takes
+# three goes to do anything is a machine you put down. Spin three raids: the
+# raid is what this game IS, and at 14.5% of spins a quarter of new players
+# would not meet one in their first ten. Spin five is the jackpot, which is
+# both the best beat on the reels and the moment the island turns affordable.
+#
+# An empty string is a spin the script does not touch, so the reels are still
+# the reels in between and the run does not read as a cutscene.
+const INTRO_REEL := ["coin", "", "hammer", "", "bag", "", "steal"]
+
+# How many scripted spins have been served. A save that predates all of this
+# loads it FULL and the two flags TRUE (see _load_game), so nobody already
+# playing is welcomed to a game they are twelve islands into.
+var intro_spins := 0
+var intro_greeted := false
+var intro_build_tip := false
+
 const DAILY_COOLDOWN := 86400.0
 const DAILY_BONUS_COINS := 1200
 const DAILY_BONUS_SPINS := 8
@@ -470,7 +510,7 @@ func _run_boot() -> void:
 	var started := Time.get_ticks_msec()
 	await _boot_step(0.14, "Reading your logbook", _boot_load)
 	_boot.set_island(CV.island_palette(island_level), CV.island_bg_tex(island_level))
-	await _boot_step(0.34, "Charting %s" % CV.island_theme(island_level)["name"], _boot_warm_art)
+	await _boot_step(0.34, "Charting %s" % CV.island_name(island_level), _boot_warm_art)
 	await _boot_step(0.58, "Polishing the reels", _build_slot_page)
 	await _boot_step(0.74, "Raising the village", _build_village_page)
 	await _boot_step(0.90, "Stocking shop, cards and quests", _build_menu_pages)
@@ -765,6 +805,12 @@ func _capture_page(key: String) -> void:
 			"ranks":   _open_world_ranks()
 			"tourney": _open_tourney()
 			"daily":   _open_daily()
+			"intro":   _open_intro()
+			"build":   _intro_build_card()
+			# The lap crossing. Reaching it honestly is thirty islands, so the
+			# only other way to look at it is DEMO_JOURNEY=30, which plays the
+			# whole voyage first.
+			"newworld": _open_new_world(31)
 		# DEMO_VIEW_TRACK pages the reward card without a finger. The arrows are
 		# the only way there in the game, so every track but the live one was
 		# unreachable from a harness.
@@ -1653,6 +1699,14 @@ func _close_login() -> void:
 	Sfx.play("jackpot", -4.0)
 	FX.confetti(self, 30)
 	_banner("Welcome, %s!" % profile.get("name", "Player"), Color(1.0, 0.85, 0.3))
+	# The first thing after the sign-in screen on a first run, and only there:
+	# a save that already exists loads intro_greeted TRUE. Deferred past the
+	# banner and the confetti, which are talking about the same moment and
+	# would otherwise be delivered underneath a dialog.
+	if not intro_greeted:
+		_after(1.5, func() -> void:
+			if _popup == null and not _raiding():
+				_open_intro())
 
 func _process(delta: float) -> void:
 	# The pages are built a step at a time behind the title screen, so until it
@@ -3334,6 +3388,168 @@ func _page_note(text: String, size := UI.F_CAPTION) -> Label:
 	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	return l
 
+# =============================================================================
+#  The welcome card
+# =============================================================================
+#
+# Shown once, the moment the sign-in screen clears on a first run. One card,
+# three rows, one button -- it is not a gated tutorial and it never drives the
+# game for the player.
+#
+# The first two rows carry the ACTUAL REEL SYMBOLS rather than emoji, because
+# the player is about to watch those exact pictures come down the strips and
+# the whole value of the card is that they recognise them when they do. The
+# third has no symbol to carry, because building is not something the reels do.
+func _open_intro() -> void:
+	intro_greeted = true
+	_save_game()
+	var vbox := _open_popup("Welcome Aboard")
+	var lead := _popup_row_label("Three things, and then the reels are yours.", UI.F_BODY)
+	lead.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lead.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(lead)
+
+	_intro_row(vbox, CV.symbol_tex("coin"), "Spin for coins",
+		"Every spin pays. Three of a kind pays properly.")
+	_intro_row(vbox, CV.symbol_tex("hammer"), "Raid rivals",
+		"Hammers and raccoons sail you to another island to take what is on it.")
+	# A hut, not an emoji of one. Two things were wrong with the emoji:
+	#
+	# It rendered as the letters "dzDD" -- the game's emoji font has no
+	# U+1F3DD, and a missing glyph here does not fall back to a box, it falls
+	# back to something that reads as file corruption. ANY EMOJI ADDED TO THIS
+	# GAME GETS LOOKED AT IN A RENDER BEFORE IT SHIPS.
+	#
+	# And the cure was nearly worse: island_building_tex is the hut painted
+	# into its own scene, so it arrives with a sky and a patch of ground behind
+	# it and sat in the card as a photograph in a row of cut-outs. buildings/
+	# holds the same hut on transparency, which is the treatment the coin and
+	# the hammer beside it already have.
+	_intro_row(vbox, CV.building_tex(String(CV.BUILDINGS[0]["id"])), "Build your island",
+		"That is what the coins are for. Five buildings, five stars each, then you sail on.")
+
+	var go := Button.new()
+	go.text = "START SPINNING"
+	go.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	_candy_button(go, Color(0.28, 0.68, 0.34))
+	FX.press_feedback(go)
+	go.pressed.connect(func() -> void: _close_popup())
+	vbox.add_child(go)
+
+# One verb: its picture, its name, and the sentence under it.
+#
+# The picture box carries an explicit minimum and the text column expands into
+# whatever is left, which is the arrangement that survives a long caption. The
+# other way round -- letting the wrapped label decide -- is the trap the shop's
+# deal row was carrying: a VBoxContainer hands its widest child's minimum out
+# to every sibling, so one row that will not shrink takes the whole card with
+# it. `tools/qa_layout.tscn` opens this dialog and measures it for exactly that.
+func _intro_row(parent: VBoxContainer, tex: Texture2D, title: String, body: String) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 16)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	parent.add_child(row)
+
+	var pic := TextureRect.new()
+	pic.texture = tex
+	pic.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	pic.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	# Fixed on both axes so the three rows line their text up with each other:
+	# a building is a much taller drawing than a coin, and a box that took its
+	# height from the art would step the captions in and out down the card.
+	pic.custom_minimum_size = Vector2(74, 74)
+	row.add_child(pic)
+
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 2)
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(col)
+
+	var t := _popup_row_label(title, UI.F_LABEL)
+	t.custom_minimum_size = Vector2.ZERO
+	col.add_child(t)
+
+	var b := _popup_row_label(body, UI.F_CAPTION)
+	b.custom_minimum_size = Vector2.ZERO
+	b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	b.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	col.add_child(b)
+
+# =============================================================================
+#  The nudge towards the first hut
+# =============================================================================
+#
+# The one thing a new player will not find on their own. The reels are the
+# whole screen and the island is a tab, so a player with coins and no idea what
+# they are for keeps spinning until the meter empties and then leaves.
+#
+# It fires ONCE, and it does not merely say the thing -- it takes them there.
+# Telling somebody to go and find a tab is the version of this that gets
+# dismissed.
+#
+# Held until spin four, which is one past the scripted raid: the raid is the
+# loudest thing that has happened yet and landing a dialog on top of it would
+# spend the moment. By then the coin triple and the raid loot are both in the
+# wallet and the first star costs 400.
+func _maybe_intro_build() -> void:
+	if intro_build_tip:
+		return
+	# They found it themselves. Nothing to teach, and the tip must not turn up
+	# three islands later.
+	if stars > 0:
+		intro_build_tip = true
+		return
+	if intro_spins < 4 or _popup != null or _raiding() or _login_layer != null:
+		return
+	var cost: int = _star_costs()[0]
+	if coins < cost:
+		return
+	intro_build_tip = true
+	_save_game()
+	_intro_build_card()
+
+# The card itself, split off the gate above so SHOT=popup:build can open it
+# without having to reach the state that earns it.
+func _intro_build_card() -> void:
+	var vbox := _open_popup("Time To Build")
+	# The hut itself, for the same reason the welcome card carries it and with
+	# the same emoji behind it: U+1F3D7 came out as "dzD 7" -- the hex box the
+	# font draws for a codepoint it does not have. See _open_intro.
+	var pic := TextureRect.new()
+	pic.texture = CV.building_tex(String(CV.BUILDINGS[0]["id"]))
+	pic.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	pic.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	pic.custom_minimum_size = Vector2(0, 132)
+	vbox.add_child(pic)
+	var line := _popup_row_label(
+		"You have enough for your first hut. Coins are for the island — spend them and it grows.",
+		UI.F_BODY)
+	line.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	line.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(line)
+	var go := Button.new()
+	go.text = "SHOW ME"
+	go.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	# Kelp, not the island blue that "SET SAIL" wears. Lagoon.kind_for maps
+	# anything at 205 degrees to "glass", which is the palest button the game
+	# has -- and it rendered this call to action quieter than the "Keep
+	# spinning" beside it, which is the hierarchy exactly backwards. Green is
+	# what every other confirming button in the game is.
+	_candy_button(go, Color(0.28, 0.68, 0.34))
+	FX.press_feedback(go)
+	go.pressed.connect(func() -> void:
+		_close_popup()
+		_goto(village_page)
+	)
+	vbox.add_child(go)
+	var later := Button.new()
+	later.text = "Keep spinning"
+	later.custom_minimum_size = Vector2(0, UI.TAP)
+	_candy_button(later, Color(0.55, 0.45, 0.65))
+	FX.press_feedback(later)
+	later.pressed.connect(func() -> void: _close_popup())
+	vbox.add_child(later)
+
 func _open_daily() -> void:
 	var vbox := _open_popup("Daily Bonus")
 	var gift := _emoji_label("🎁", 74)
@@ -3512,7 +3728,7 @@ func _time_ago(ts: float) -> String:
 func _fill_alerts(vb: VBoxContainer) -> void:
 	if notif_log.is_empty():
 		var card := _page_card(vb)
-		var bell := _emoji_label("\U0001F514", 72)
+		var bell := _emoji_label("\U01F514", 72)
 		bell.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		bell.modulate = Color(1, 1, 1, 0.5)
 		card.add_child(bell)
@@ -3546,7 +3762,7 @@ func _fill_alerts(vb: VBoxContainer) -> void:
 			var row := HBoxContainer.new()
 			row.add_theme_constant_override("separation", 14)
 			pad.add_child(row)
-			var tok := Lagoon.token(str(entry.get("emoji", "\U0001F514")), 72.0,
+			var tok := Lagoon.token(str(entry.get("emoji", "\U01F514")), 72.0,
 				Lagoon.REEF if unread else Lagoon.BRASS)
 			tok.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 			row.add_child(tok)
@@ -5533,7 +5749,7 @@ func _offer_need_coins(shortfall: int) -> void:
 	# and a store that hides that behind its own price list to make the sale is
 	# a store that has decided its player is a mark.
 	if piggy_coins > 0:
-		var pig := _popup_row_label("\U0001F437  %s coins waiting in your piggy bank" % _fmt_compact(piggy_coins), UI.F_CAPTION)
+		var pig := _popup_row_label("\U01F437  %s coins waiting in your piggy bank" % _fmt_compact(piggy_coins), UI.F_CAPTION)
 		pig.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		pig.add_theme_color_override("font_color", Color(1.0, 0.62, 0.72))
 		vbox.add_child(pig)
@@ -9594,7 +9810,7 @@ func _on_spin_requested() -> void:
 	if _last_bet >= 2:
 		_mission_add("big_bet")
 	_refresh()
-	slot.start_spin(_roll())
+	slot.start_spin(_intro_roll())
 
 # The win read-out, on the reels.
 #
@@ -9710,6 +9926,26 @@ func _land_loot(amount: int) -> void:
 			_hud_labels[0]["coins"].global_position, clampi(amount / 400, 6, 12))
 	)
 
+# The next line of the opening script if there is one, and the rolled outcome
+# for ever after.
+#
+# THIS WRAPS _roll(), IT DOES NOT LIVE INSIDE IT. The odds are in _roll() and
+# nothing that is not the odds is allowed in there -- qa_full measures the
+# triple rate and the card drop rate by calling it directly, and a first-run
+# branch hiding in that function would make both of those measurements of
+# something no player ever plays.
+#
+# The counter advances on every spin, scripted or not, so the free slots in
+# INTRO_REEL are real spins on the real table.
+func _intro_roll() -> Array:
+	if intro_spins >= INTRO_REEL.size():
+		return _roll()
+	var want := String(INTRO_REEL[intro_spins])
+	intro_spins += 1
+	if want == "":
+		return _roll()
+	return [want, want, want]
+
 func _roll() -> Array:
 	if randf() < 0.3:
 		var triple := _weighted_pick({"hammer": 25, "steal": 22, "coin": 14, "bag": 9, "gem": 12, "shield": 12, "bolt": 6})
@@ -9811,6 +10047,10 @@ func _on_spin_finished(result: Array) -> void:
 	# pays for and never sees.
 	if not _raiding():
 		_maybe_revenge()
+		# Before the auto-spin is armed, not after: the tip opens a dialog and
+		# _schedule_auto_spin's callback cancels the run when it finds one, so
+		# arming first would start a spin this is about to interrupt.
+		_maybe_intro_build()
 		_schedule_auto_spin()
 	_refresh()
 	_save_game()
@@ -10494,7 +10734,7 @@ func _apply_island_theme() -> void:
 	if _village_sky != null:
 		_village_sky.color = CV.bg_top_color(CV.bg_image(bg_t), Color(0.55, 0.8, 0.95))
 	if _island_title != null:
-		_island_title.text = CV.island_theme(island_level)["name"]
+		_island_title.text = CV.island_name(island_level)
 	for mat in _page_backdrops:
 		Lagoon.tint_backdrop(mat, CV.island_palette(island_level))
 	for bmat in _page_boards:
@@ -10651,7 +10891,7 @@ func _show_island_complete_popup() -> void:
 	var title := Lagoon.title("ISLAND  COMPLETE!", UI.F_TITLE, Lagoon.SAND, Lagoon.BRASS_LO)
 	vbox.add_child(title)
 
-	var sub := _popup_row_label("%s is fully built — amazing job!" % CV.island_theme(island_level)["name"], UI.F_LABEL)
+	var sub := _popup_row_label("%s is fully built — amazing job!" % CV.island_name(island_level), UI.F_LABEL)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(sub)
 
@@ -10660,7 +10900,7 @@ func _show_island_complete_popup() -> void:
 	reward.add_theme_color_override("font_color", Lagoon.KELP_LO)
 	vbox.add_child(reward)
 
-	var next_name: String = CV.island_theme(island_level + 1)["name"]
+	var next_name: String = CV.island_name(island_level + 1)
 	var sail := Button.new()
 	sail.text = "⛵  SET SAIL TO %s" % next_name.to_upper()
 	sail.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
@@ -10950,7 +11190,7 @@ func _start_island_journey(from_level: int) -> void:
 		host.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		signs.add_child(host)
 		host.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		host.add_child(Lagoon.plaque(CV.island_theme(int(pair[1]))["name"], 0.0, 74.0, UI.F_SUBHEAD))
+		host.add_child(Lagoon.plaque(CV.island_name(int(pair[1])), 0.0, 74.0, UI.F_SUBHEAD))
 	sign_to.modulate.a = 0.0
 
 	var tw := layer.create_tween()
@@ -10987,8 +11227,78 @@ func _start_island_journey(from_level: int) -> void:
 	tw.tween_callback(func() -> void:
 		layer.queue_free()
 		_journey_layer = null
-		_banner("Welcome to %s!  +%s coins, +%d spins" % [CV.island_theme(to_level)["name"], _fmt_compact(_scaled(ISLAND_REWARD_COINS, to_level)), ISLAND_REWARD_SPINS], Color(1.0, 0.85, 0.3))
+		# The one arrival that is not another island. A banner is the right
+		# weight for "you are on island 12 now" and much too light for "the
+		# chart has run out" -- see _open_new_world.
+		if CV.island_lap(to_level) > CV.island_lap(maxi(1, to_level - 1)):
+			_open_new_world(to_level)
+			return
+		_banner("Welcome to %s!  +%s coins, +%d spins" % [CV.island_name(to_level), _fmt_compact(_scaled(ISLAND_REWARD_COINS, to_level)), ISLAND_REWARD_SPINS], Color(1.0, 0.85, 0.3))
 	)
+
+# =============================================================================
+#  The crossing
+# =============================================================================
+#
+# Shown once per lap, when the islands come round again.
+#
+# This is the fix for the single worst moment in the game's long tail, and the
+# moment was silence. A regular player finishes island 30 in about two and a
+# half weeks, sails, and arrives at Green Meadows -- the island they started
+# on, same name, same art -- with a "Welcome to Green Meadows!" banner and no
+# other acknowledgement anywhere. After a fortnight that does not read as a
+# design decision. It reads as the save having been wiped, which is the one
+# thing a player will not wait around to find out about.
+#
+# What it says is true and it does not oversell. The islands DO repeat, the
+# prices and payouts DO stop climbing at thirty, and the thing that genuinely
+# keeps going is the star count -- the world ranking and the league both run
+# off it and neither has a ceiling. Promising a fresh economy here would buy
+# one session and cost the next one.
+func _open_new_world(level: int) -> void:
+	var lap := CV.island_lap(level)
+	Sfx.play("levelup", -2.0)
+	FX.confetti(self, 60)
+	var vbox := _open_popup(CV.lap_name(lap).to_upper())
+
+	var e := _emoji_label("🧭", 76)
+	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(e)
+	FX.pulse_forever(e, 1.10, 1.4)
+
+	var head := Lagoon.title("THE  CHART  RUNS  OUT", UI.F_TITLE, Lagoon.SAND, Lagoon.BRASS_LO)
+	vbox.add_child(head)
+
+	var body := _popup_row_label(
+		"You have sailed all thirty islands. They come round again from here — the same shores, on your %s lap."
+			% CV._numeral(lap).to_lower().replace("ii", "second").replace("iii", "third"),
+		UI.F_BODY)
+	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(body)
+
+	var honest := _popup_row_label(
+		"Islands carry their lap now, so %s is not the one you started on. Your stars keep counting — the world ranking and the league have no ceiling."
+			% CV.island_name(level),
+		UI.F_CAPTION)
+	honest.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	honest.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	honest.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	vbox.add_child(honest)
+
+	var reward := _popup_row_label("💰 +%s   🌀 +%d"
+		% [_fmt_compact(_scaled(ISLAND_REWARD_COINS, level)), ISLAND_REWARD_SPINS], UI.F_LABEL)
+	reward.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	reward.add_theme_color_override("font_color", Lagoon.KELP_LO)
+	vbox.add_child(reward)
+
+	var go := Button.new()
+	go.text = "SET SAIL"
+	go.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	_candy_button(go, Color(0.28, 0.68, 0.34))
+	FX.press_feedback(go)
+	go.pressed.connect(func() -> void: _close_popup())
+	vbox.add_child(go)
 
 # --- shared UI ---
 
@@ -11389,6 +11699,9 @@ func _save_dict() -> Dictionary:
 		"revenge": revenge_pending,
 		"npcs": npcs,
 		"daily_last": daily_last,
+		"intro_spins": intro_spins,
+		"intro_greeted": intro_greeted,
+		"intro_build_tip": intro_build_tip,
 		"muted": muted,
 		"missions3": mission_state,
 		"col_owned": col_owned,
@@ -11554,6 +11867,21 @@ func _load_game() -> void:
 	island_level = clampi(_i(data.get("island_level", data.get("village_level", 1)), 1), 1, MAX_ISLAND)
 	revenge_pending = _b(data.get("revenge", false))
 	daily_last = _f(data.get("daily_last", 0.0))
+	# THE DEFAULTS HERE ARE "ALREADY DONE", WHICH IS THE OPPOSITE OF THE VAR
+	# INITIALISERS, AND THAT IS THE WHOLE MECHANISM.
+	#
+	# Reaching this line at all means a save was read, and a save existing means
+	# somebody has played. Every one of those saves predates the first session
+	# work and carries none of these keys, so defaulting them the other way
+	# would welcome a player twelve islands in to a game they already know, hand
+	# them a scripted jackpot, and tell them where the island tab is.
+	#
+	# A genuine first run never gets here -- _load_game returns early on an
+	# empty read -- so it keeps the initialisers, which are the fresh ones. No
+	# migration, no version stamp, and nothing to remove later.
+	intro_spins = maxi(0, _i(data.get("intro_spins", INTRO_REEL.size())))
+	intro_greeted = _b(data.get("intro_greeted", true))
+	intro_build_tip = _b(data.get("intro_build_tip", true))
 	muted = _b(data.get("muted", false))
 	var lo = data.get("col_owned", {})
 	if typeof(lo) == TYPE_DICTIONARY:

@@ -56,7 +56,11 @@ func _ready() -> void:
 	# top five names -- which is the state the table is widest in, because the
 	# chip is the longest string any row ever carries.
 	m.tourney_points = 1500
-	for opener in ["_open_tourney", "_open_world_ranks", "_open_daily"]:
+	# _open_intro is in here because it is the widest arrangement in the game
+	# that a container gets to decide: three rows of picture-plus-wrapped-text,
+	# where the text column is the thing asked to shrink. That is the shop deal
+	# row's bug exactly, and this is the harness that caught that one.
+	for opener in ["_open_tourney", "_open_world_ranks", "_open_daily", "_open_intro"]:
 		m.call(opener)
 		await get_tree().process_frame
 		await get_tree().process_frame
@@ -74,6 +78,41 @@ func _ready() -> void:
 		_check_page("popup tourney result #%d" % int(spec[0]), m._popup)
 		m._close_popup(true)
 		await get_tree().process_frame
+	# --- the second lap ---
+	#
+	# Island names carry their lap past thirty ("Green Meadows II"), and that
+	# string goes on the slot machine's ribbon and the island page's plaque,
+	# both of which are cut to fit the longest name in ISLANDS. Five characters
+	# is not much, but "one card grew and took the page with it" is this
+	# harness's entire reason for existing, so it gets measured rather than
+	# argued about. Run against the longest island name there is, not island 31.
+	var longest_i := 0
+	for i in CV.ISLANDS.size():
+		if String(CV.ISLANDS[i]["name"]).length() > String(CV.ISLANDS[longest_i]["name"]).length():
+			longest_i = i
+	for lap in [1, 2, 10]:
+		m.island_level = (lap - 1) * CV.ISLANDS.size() + longest_i + 1
+		m._apply_island_theme()
+		# THE TWO THINGS THE NAME IS PRINTED ON, not the pages around them.
+		#
+		# Both pages spill by design and do so identically on lap one, so
+		# measuring them here would report art rather than the suffix:
+		# slot_page carries a full-bleed 800px backdrop starting at x=-55, and
+		# the island's own buildings are placed at authored SLOT_RECTS, one of
+		# which runs 19px past the right edge on Samurai Village. Neither is
+		# anything to do with laps, and a check that goes red for a reason it
+		# was not asked about is a check people learn to skip.
+		for pair in [["island plaque", m._island_title], ["slot ribbon", m.slot]]:
+			var node: Control = pair[1]
+			if node == null:
+				continue
+			var page: Control = m.village_page if pair[0].begins_with("island") else m.slot_page
+			var was := page.visible
+			page.visible = true
+			await get_tree().process_frame
+			await get_tree().process_frame
+			_check_page("%s on lap %d (%s)" % [pair[0], lap, CV.island_name(m.island_level)], node)
+			page.visible = was
 	print("QA-LAYOUT: %s" % ("ALL PASS" if fails == 0 else "%d FAILURES" % fails))
 	get_tree().quit(1 if fails > 0 else 0)
 
