@@ -52,6 +52,7 @@ signal save_rejected(stored_rank: int, remote_save: Dictionary)
 # own rules and then acknowledge. See the note on record_raid in migration 0002:
 # the server records that a raid happened and never touches the victim's save.
 signal raids_arrived(raids: Array)
+signal gifts_arrived(gifts: Array)
 
 # "off" | "syncing" | "synced" | "error" -- for a single small icon, nothing
 # more. A player who is not signed in sees "off" and no error, ever, because
@@ -346,6 +347,7 @@ func claim(local: Dictionary, name: String, emoji: String,
 		signed_in.emit(_player.duplicate(true), bool(body.get("is_new", false)),
 				remote if typeof(remote) == TYPE_DICTIONARY else {})
 		fetch_raids()
+		fetch_gifts()
 		# Before the game has had a chance to hand out a daily bonus against a
 		# clock nobody has checked.
 		refresh_time()
@@ -535,6 +537,107 @@ func fetch_raids() -> void:
 			raids_arrived.emit(body)
 	)
 
+
+# =============================================================================
+#  Clans, and giving a spare card to somebody in one
+# =============================================================================
+#
+# Every rule the feature depends on is enforced in the migration, not here:
+# no self-sends, no 5-stars, clanmates only, and a daily cap on both giving
+# and receiving. This layer only carries the call and hands back what the
+# server said, because anything decided on this side is decided by the thing
+# the rules are defending against.
+#
+# All of these degrade to "no clan" rather than erroring when the migration
+# has not been applied yet: an unknown RPC comes back non-200, which every
+# callback below reads as an empty answer.
+
+func my_clan(then: Callable) -> void:
+	if not linked():
+		then.call({})
+		return
+	_rpc("my_clan", {}, func(code: int, body) -> void:
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+func clan_list(then: Callable, limit := 30) -> void:
+	if not linked():
+		then.call([])
+		return
+	_rpc("clan_list", {"p_limit": limit}, func(code: int, body) -> void:
+		then.call(body if code == 200 and typeof(body) == TYPE_ARRAY else [])
+	)
+
+func create_clan(name: String, emoji: String, then: Callable) -> void:
+	if not linked():
+		then.call({})
+		return
+	_rpc("create_clan", {"p_name": name, "p_emoji": emoji},
+		func(code: int, body) -> void:
+			then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+func join_clan(clan_id: String, then: Callable) -> void:
+	if not linked() or clan_id == "":
+		then.call({})
+		return
+	_rpc("join_clan", {"p_clan": clan_id}, func(code: int, body) -> void:
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+func leave_clan(then: Callable) -> void:
+	if not linked():
+		then.call({})
+		return
+	_rpc("leave_clan", {}, func(code: int, body) -> void:
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+# What is left of today's giving and receiving, so a button can be greyed out
+# rather than pressed and refused.
+func gift_budget(then: Callable) -> void:
+	if not linked():
+		then.call({})
+		return
+	_rpc("gift_budget", {}, func(code: int, body) -> void:
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+# THE SPARE IS NOT DEDUCTED HERE, and it must not be. main.gd takes it off
+# `col_dupes` only after this call comes back `ok` -- a gift that failed at
+# the cap, at the clan check or at the radio must not cost the sender a card
+# they still hold. Same shape as the upgrade path, which has always paid for
+# nothing until the thing bought exists.
+func send_card(to_id: String, set_id: String, idx: int, stars: int, then: Callable) -> void:
+	if not linked() or to_id == "":
+		then.call({})
+		return
+	_rpc("send_card", {"p_to": to_id, "p_set": set_id, "p_idx": idx, "p_stars": stars},
+		func(code: int, body) -> void:
+			then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+func fetch_gifts() -> void:
+	if not linked():
+		return
+	_rpc("unseen_gifts", {}, func(code: int, body) -> void:
+		if code == 200 and typeof(body) == TYPE_ARRAY and not (body as Array).is_empty():
+			gifts_arrived.emit(body)
+	)
+
+# The same retry the raid ack has, for the same reason: unseen_gifts keeps
+# returning a gift until seen_at is set, so a dropped ack means the card
+# arrives again on the next launch. main.gd dedupes on the id as well, which
+# is the half that holds even if this never lands.
+func ack_gifts(ids: Array, attempt: int = 0) -> void:
+	if not linked() or ids.is_empty():
+		return
+	_rpc("ack_gifts", {"p_ids": ids}, func(code: int, _b) -> void:
+		if code == 200 or attempt >= ACK_RETRIES:
+			return
+		var t := get_tree().create_timer(2.0 * float(attempt + 1))
+		t.timeout.connect(func() -> void: ack_gifts(ids, attempt + 1))
+	)
 
 # An ack that does not land is not cosmetic. unseen_raids keeps returning a raid
 # until seen_at is set, so a dropped ack means the same raid arrives again on the

@@ -40,6 +40,30 @@ func _ready() -> void:
 	m.daily_last = m._trusted_now() - m.DAILY_COOLDOWN * 3.0
 	# ...and the mark chooser needs rivals to choose between.
 	m._stock_rivals()
+	# THE CLAN PAGE'S WIDE STATE IS THE ROSTER, NOT THE SIGNED-OUT CARD.
+	#
+	# _fill_clan asks Cloud.linked() first, which is false in a harness, so
+	# without this the page measured here is a single centred paragraph -- the
+	# narrowest thing it can draw, and a clean pass that means nothing. Faking
+	# the session makes it draw the real one: eight members, the longest names
+	# the game will accept, and a budget line under a clan name at full length.
+	m._clan_fake = true
+	Cloud._access = "harness"
+	Cloud._player = {"id": "me-0000"}
+	var roster := []
+	for i in 8:
+		roster.append({"id": "p%d" % i, "name": "Islander%dXXXXXX" % i,
+			"emoji": "🧑", "island_level": 30 - i})
+	roster[0]["id"] = "me-0000"
+	m.my_clan = {"id": "c1", "name": "The Kraken's Own", "emoji": "🐙",
+		"owner": "me-0000", "members": roster}
+	m.gift_budget = {"sent": 4, "give_cap": 5, "got": 2, "receive_cap": 3}
+	# The give-card list is as long as the player has spares, so every set gets
+	# one -- and a gold one too, which must NOT appear in the dialog.
+	for c in CV.COLLECTIONS:
+		var arr: Array = m.col_dupes.get(String(c["id"]), [])
+		for i in arr.size():
+			arr[i] = 2
 	m.grudges = [{"name": String(m.npcs[0]["name"]) if not m.npcs.is_empty() else "Boris",
 		"emoji": "🏴", "coins": 99999, "hits": 3, "at": m._now()}]
 	# Shown, not merely filled. Every page but the current one is visible=false,
@@ -47,7 +71,7 @@ func _ready() -> void:
 	# passes, which is worse than not measuring it at all. The first version of
 	# this harness did exactly that and gave a clean bill of health to a page
 	# that was known to be broken.
-	for key in ["shop", "quests", "collections", "boxes", "options", "alerts"]:
+	for key in ["shop", "quests", "collections", "boxes", "clan", "options", "alerts"]:
 		var page: Control = m.pages.get(key, null)
 		if page == null:
 			print("  [skip] %s (no such page)" % key)
@@ -70,7 +94,7 @@ func _ready() -> void:
 	# where the text column is the thing asked to shrink. That is the shop deal
 	# row's bug exactly, and this is the harness that caught that one.
 	for opener in ["_open_tourney", "_open_world_ranks", "_open_daily", "_open_intro",
-			"_open_pick_target", "_intro_build_card"]:
+			"_open_pick_target", "_intro_build_card", "_shot_give_card"]:
 		m.call(opener)
 		await get_tree().process_frame
 		await get_tree().process_frame

@@ -680,6 +680,7 @@ func _after_boot() -> void:
 	Cloud.signed_in.connect(_on_cloud_signed_in)
 	Cloud.save_rejected.connect(_on_cloud_save_rejected)
 	Cloud.raids_arrived.connect(_on_cloud_raids)
+	Cloud.gifts_arrived.connect(_on_cloud_gifts)
 	Cloud.link_result.connect(_on_cloud_link_result)
 	Cloud.sign_in_failed.connect(_on_cloud_sign_in_failed)
 	Cloud.signed_out.connect(_on_cloud_signed_out)
@@ -857,6 +858,40 @@ func _shot_mark() -> void:
 			"coins": 24000, "hits": 3, "at": _now()}]
 	_open_pick_target()
 
+# The give-card dialog, opened against whoever the clan page would offer. Its
+# height is decided by how many spares the player is holding, so a harness that
+# fills every set is measuring the tallest it can ever be.
+func _shot_clan() -> void:
+	_fake_clan()
+	_goto(pages["clan"])
+
+func _shot_give() -> void:
+	_fake_clan()
+	_shot_give_card()
+
+func _fake_clan() -> void:
+	_clan_fake = true
+	Cloud._access = "harness"
+	Cloud._player = {"id": "me-0000"}
+	var roster := []
+	for i in 5:
+		roster.append({"id": "p%d" % i, "name": ["Guy", "Boris", "Mimi", "Kai", "Priya"][i],
+			"emoji": ["\U01F9D1", "\U01F9D4", "\U01F469", "\U01F3C4", "\U01F469"][i],
+			"island_level": 14 - i * 2})
+	roster[0]["id"] = "me-0000"
+	my_clan = {"id": "c1", "name": "Kraken's Own", "emoji": "\U01F419",
+		"owner": "me-0000", "members": roster}
+	gift_budget = {"sent": 1, "give_cap": 5, "got": 2, "receive_cap": 3}
+	for c in CV.COLLECTIONS:
+		var arr: Array = col_dupes.get(String(c["id"]), [])
+		for i in arr.size():
+			arr[i] = 2
+
+func _shot_give_card() -> void:
+	var members: Array = my_clan.get("members", [])
+	var who: Dictionary = members[1] if members.size() > 1 else {"id": "x", "name": "Dave"}
+	_open_give_card(who)
+
 func _shot_streak() -> void:
 	streak_days = 12
 	daily_last = _trusted_now() - DAILY_COOLDOWN * 3.0
@@ -871,6 +906,12 @@ func _scrolls_in(node: Node) -> Array:
 	return out
 
 func _capture_page(key: String) -> void:
+	# SHOT=clan is a PAGE key, so it never reaches the popup branch below and
+	# the hook there would never fire. The clan page needs a session to draw
+	# anything but its signed-out card, so the fake goes in before the page is
+	# filled rather than after.
+	if key == "clan":
+		_fake_clan()
 	# SHOT=popup:ranks shoots a dialog rather than a page. Modals are where most
 	# of the game's chrome lives and none of it could be screenshotted without
 	# opening the thing by hand first.
@@ -904,6 +945,10 @@ func _capture_page(key: String) -> void:
 			# the ladder at full width and the "your streak ended" line above it.
 			"mark":    _shot_mark()
 			"streak":  _shot_streak()
+			# The clan roster and the give-card list, which need a session the
+			# harness does not have. Same fake Cloud state qa_layout uses.
+			"clan":    _shot_clan()
+			"give":    _shot_give()
 		# DEMO_VIEW_TRACK pages the reward card without a finger. The arrows are
 		# the only way there in the game, so every track but the live one was
 		# unreachable from a harness.
@@ -2078,7 +2123,7 @@ func _spins_full_at(from: float) -> float:
 # page that sits to the right on the bar. The old order counted outward from
 # Spin, which had Island and Shop -- opposite ends of the bar -- both sliding
 # in from the same side.
-const PAGE_ORDER := ["island", "shop", "spin", "collections", "boxes", "quests", "options", "alerts"]
+const PAGE_ORDER := ["island", "shop", "spin", "collections", "boxes", "quests", "clan", "options", "alerts"]
 
 # Which page is this, as a word. `pages` is keyed by exactly these names, so
 # there is nothing to keep in step -- the two pages that predate the dictionary
@@ -2113,6 +2158,12 @@ func _goto(target: Control) -> void:
 		col_open = ""
 	for key in pages:
 		if pages[key] == target:
+			# The clan page's two facts live on the server, so they are asked
+			# for on the way in. _fill_page draws whatever the cache holds now;
+			# the answers repaint it when they land, and only if this is still
+			# the page on screen.
+			if key == "clan":
+				_enter_clan_page()
 			_fill_page(key)
 	_transitioning = true
 	Sfx.play("pop", -10.0)
@@ -2165,6 +2216,12 @@ func _goto(target: Control) -> void:
 # not a request for anything in particular, and it should land where the timed
 # offer is.
 const SHOP_ANCHOR_LEAD := 18.0
+
+# The clan page's two facts come off the server, so they are asked for on the
+# way in. Both callbacks repaint only if the page is still the one on screen.
+func _enter_clan_page() -> void:
+	_refresh_clan()
+	_refresh_gift_budget()
 
 func _goto_shop(anchor := "") -> void:
 	# Already on the page, so there is no transition to hide the movement --
@@ -3023,7 +3080,8 @@ func _add_side_rail(page: Control, top: float) -> void:
 	# left on its own rather than being shuffled across, because which side a
 	# player last found the bell on is worth more than a tidy count.
 	_side_rail_lane(page, top, false, [
-			["bell",   "Alerts",     "alerts", func() -> void: _goto(pages["alerts"])]])
+			["bell",   "Alerts",     "alerts", func() -> void: _goto(pages["alerts"])],
+			["cards",  "Clan",       "clan",   func() -> void: _goto(pages["clan"])]])
 	_side_rail_lane(page, top, true, [
 			["gift",   "Daily",      "daily",  _open_daily],
 			["trophy", "Tournament", "ranks",  _open_tourney],
@@ -4123,6 +4181,305 @@ func _fill_grudges(vb: VBoxContainer) -> void:
 	vb.add_child(note)
 	vb.add_child(Lagoon.divider())
 
+# =============================================================================
+#  The clan page
+# =============================================================================
+#
+# Three states, and which one is drawn is decided by two facts only: signed in,
+# and in a clan. Everything else is loading.
+#
+# THE PAGE IS BUILT FROM `my_clan`, WHICH IS A CACHE, and it is refreshed on
+# arrival rather than on a timer. A roster that repaints while somebody is
+# reading it is how a tap lands on a different name than the one under the
+# finger -- the same reason the rival card does not flip mid-raid.
+# Bumped on every clan repaint. Any answer that comes back from the server
+# carrying an older token is from a build that has been thrown away.
+#
+# THE NODE IDENTITY IS NOT ENOUGH TO TEST THIS, which is what the first version
+# got wrong. _fill_page does not replace the page body -- it removes and frees
+# the CHILDREN of the same VBoxContainer -- so `is_instance_valid(vb)` is true
+# for every stale callback too, and two visits to the page before the first
+# answer landed appended two copies of the clan list to the live page. It was
+# visible in a render as "No clans yet" printed twice.
+var _clan_build := 0
+
+func _fill_clan(vb: VBoxContainer) -> void:
+	_clan_build += 1
+	if not Cloud.linked():
+		var card := _page_card(vb)
+		var e := _emoji_label("\U01F3F4", 72)
+		e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		e.modulate = Color(1, 1, 1, 0.5)
+		card.add_child(e)
+		var t := _popup_row_label("Sign in to join a clan", UI.F_SUBHEAD)
+		t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		card.add_child(t)
+		var sub := _popup_row_label(
+			"A clan is a few islands who pass spare cards to each other. It needs an account so the cards know where to go.",
+			UI.F_CAPTION)
+		sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		sub.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		card.add_child(sub)
+		return
+
+	if my_clan.is_empty():
+		_clan_join_ui(vb)
+		return
+	_clan_roster_ui(vb)
+
+# No clan yet: make one, or take one off the list.
+func _clan_join_ui(vb: VBoxContainer) -> void:
+	var intro := _page_card(vb)
+	var t := _popup_row_label("Join a clan", UI.F_SUBHEAD)
+	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	intro.add_child(t)
+	var sub := _popup_row_label(
+		"Clanmates can give each other spare cards — up to %d a day each way. Gold cards are never sendable."
+			% int(gift_budget.get("receive_cap", 3)), UI.F_CAPTION)
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	sub.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	intro.add_child(sub)
+
+	var name_row := LineEdit.new()
+	name_row.placeholder_text = "New clan name"
+	name_row.max_length = 20
+	name_row.custom_minimum_size = Vector2(0, UI.TAP)
+	intro.add_child(name_row)
+
+	var make := Button.new()
+	make.text = "CREATE"
+	make.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	_candy_button(make, Color(0.28, 0.68, 0.34))
+	FX.press_feedback(make)
+	make.pressed.connect(func() -> void:
+		var want := name_row.text.strip_edges()
+		if want.length() < 3:
+			_banner("A clan name needs at least three characters.", Lagoon.CORAL_LO)
+			return
+		make.disabled = true
+		Cloud.create_clan(want, "\U01F3F4", func(res: Dictionary) -> void:
+			make.disabled = false
+			if not bool(res.get("ok", false)):
+				_banner(_clan_refusal(res), Lagoon.CORAL_LO)
+				return
+			my_clan = res.get("clan", {})
+			Sfx.play("levelup", -6.0)
+			_banner("Clan created — %s" % String(my_clan.get("name", "")), Lagoon.KELP_HI)
+			_fill_page("clan")
+		)
+	)
+	intro.add_child(make)
+
+	vb.add_child(Lagoon.divider())
+	var head := _popup_row_label("OR JOIN ONE", UI.F_CAPTION)
+	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	head.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+	vb.add_child(head)
+
+	var build := _clan_build
+	Cloud.clan_list(func(rows: Array) -> void:
+		# The page may have been left, or repainted, while the list was in
+		# flight. The token catches the repaint; the page check catches the
+		# player walking away.
+		if build != _clan_build or _current_page != pages.get("clan") \
+				or not is_instance_valid(vb):
+			return
+		if rows.is_empty():
+			var none := _popup_row_label("No clans yet — make the first one.", UI.F_CAPTION)
+			none.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			none.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+			vb.add_child(none)
+			return
+		for row in rows:
+			if typeof(row) != TYPE_DICTIONARY:
+				continue
+			var here: Dictionary = row
+			var card := _tinted_card(vb, Lagoon.BRASS_MID, false)
+			var btn := Button.new()
+			btn.flat = true
+			btn.custom_minimum_size = Vector2(0, 84)
+			card.add_child(btn)
+			var pad := MarginContainer.new()
+			for m in [["margin_left", 14], ["margin_right", 14], ["margin_top", 10], ["margin_bottom", 10]]:
+				pad.add_theme_constant_override(m[0], m[1])
+			pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			card.add_child(pad)
+			var hb := HBoxContainer.new()
+			hb.add_theme_constant_override("separation", 14)
+			hb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			pad.add_child(hb)
+			var tok := Lagoon.token(String(here.get("emoji", "\U01F3F4")), 62.0, Lagoon.BRASS)
+			tok.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			tok.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			hb.add_child(tok)
+			var nm := Lagoon.label(String(here.get("name", "")), UI.F_LABEL, Lagoon.INK, true)
+			nm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			nm.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			hb.add_child(nm)
+			var n := Lagoon.label("%d" % int(here.get("members", 0)), UI.F_LABEL,
+				Lagoon.INK_SOFT, true)
+			n.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			hb.add_child(n)
+			btn.pressed.connect(func() -> void:
+				btn.disabled = true
+				Cloud.join_clan(String(here.get("id", "")), func(res: Dictionary) -> void:
+					if not bool(res.get("ok", false)):
+						btn.disabled = false
+						_banner(_clan_refusal(res), Lagoon.CORAL_LO)
+						return
+					my_clan = res.get("clan", {})
+					Sfx.play("levelup", -6.0)
+					_banner("Joined %s" % String(my_clan.get("name", "")), Lagoon.KELP_HI)
+					_fill_page("clan")
+				)
+			)
+	)
+
+func _clan_refusal(res: Dictionary) -> String:
+	match String(res.get("reason", "")):
+		"taken":           return "That name is taken."
+		"length":          return "A clan name is 3 to 20 characters."
+		"name":            return "That name cannot be used."
+		"already_in_clan": return "You are already in a clan."
+		"gone":            return "That clan no longer exists."
+		_:                 return "Could not do that. Try again in a moment."
+
+# In a clan: the roster, today's budget, and a way out.
+func _clan_roster_ui(vb: VBoxContainer) -> void:
+	var head := _page_card(vb)
+	var title := HBoxContainer.new()
+	title.alignment = BoxContainer.ALIGNMENT_CENTER
+	title.add_theme_constant_override("separation", 12)
+	head.add_child(title)
+	title.add_child(Lagoon.token(String(my_clan.get("emoji", "\U01F3F4")), 62.0, Lagoon.BRASS))
+	var nm := Lagoon.label(String(my_clan.get("name", "")), UI.F_SUBHEAD, Lagoon.INK, true)
+	nm.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	title.add_child(nm)
+
+	var got := int(gift_budget.get("got", 0))
+	var rcap := int(gift_budget.get("receive_cap", 3))
+	var sent := int(gift_budget.get("sent", 0))
+	var gcap := int(gift_budget.get("give_cap", 5))
+	var budget := _popup_row_label("Given today  %d/%d      ·      Received  %d/%d"
+		% [sent, gcap, got, rcap], UI.F_CAPTION)
+	budget.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	budget.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	head.add_child(budget)
+
+	var members: Array = my_clan.get("members", [])
+	var sub := _popup_row_label(
+		"Tap a clanmate to give them one of your spare cards. Gold cards can never be sent.",
+		UI.F_CAPTION)
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	sub.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+	head.add_child(sub)
+
+	var me := String(Cloud.player().get("id", ""))
+	for m in members:
+		if typeof(m) != TYPE_DICTIONARY:
+			continue
+		var who: Dictionary = m
+		var is_me: bool = String(who.get("id", "")) == me
+		var card := _tinted_card(vb, Lagoon.KELP if is_me else Lagoon.BRASS_MID, is_me)
+		var btn: Button = null
+		# YOUR OWN ROW IS NOT A BUTTON. The server refuses a self-send outright,
+		# but a row that looks pressable and then explains why it was not is a
+		# worse answer than a row that never offered.
+		if not is_me:
+			btn = Button.new()
+			btn.flat = true
+			btn.custom_minimum_size = Vector2(0, 84)
+			card.add_child(btn)
+		var pad := MarginContainer.new()
+		for mm in [["margin_left", 14], ["margin_right", 14], ["margin_top", 10], ["margin_bottom", 10]]:
+			pad.add_theme_constant_override(mm[0], mm[1])
+		pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		card.add_child(pad)
+		var hb := HBoxContainer.new()
+		hb.add_theme_constant_override("separation", 14)
+		hb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		pad.add_child(hb)
+		var tok := Lagoon.token(String(who.get("emoji", "\U01F642")), 62.0,
+			Lagoon.KELP if is_me else Lagoon.BRASS)
+		tok.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		tok.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hb.add_child(tok)
+		var col := VBoxContainer.new()
+		col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		col.add_theme_constant_override("separation", 2)
+		col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hb.add_child(col)
+		col.add_child(Lagoon.label("%s%s" % [String(who.get("name", "")),
+			"  (you)" if is_me else ""], UI.F_LABEL, Lagoon.INK, true))
+		col.add_child(Lagoon.label("Island %d" % int(who.get("island_level", 1)),
+			UI.F_TINY, Lagoon.INK_SOFT, true))
+		if btn != null:
+			var target: Dictionary = who
+			btn.pressed.connect(func() -> void: _open_give_card(target))
+
+	var leave := Button.new()
+	leave.text = "Leave clan"
+	leave.custom_minimum_size = Vector2(0, UI.TAP)
+	_candy_button(leave, Color(0.55, 0.45, 0.65))
+	FX.press_feedback(leave)
+	leave.pressed.connect(func() -> void:
+		leave.disabled = true
+		Cloud.leave_clan(func(_res: Dictionary) -> void:
+			my_clan = {}
+			_banner("You left the clan.", Lagoon.INK_SOFT)
+			_fill_page("clan")
+		)
+	)
+	vb.add_child(leave)
+
+# Which spare to give. Only spares appear, and golds never do.
+func _open_give_card(who: Dictionary) -> void:
+	var vbox := _open_popup("Give A Card")
+	var to_name := String(who.get("name", ""))
+	var lead := _popup_row_label("To %s" % to_name, UI.F_BODY)
+	lead.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(lead)
+
+	var any := false
+	for c in CV.COLLECTIONS:
+		var items: Array = c["items"]
+		for i in items.size():
+			if _dupe_count(String(c["id"]), i) <= 0:
+				continue
+			# The rule, applied where the player can see it applied: a gold
+			# spare simply is not on this list.
+			if int(items[i][2]) >= CV.MAX_STAR:
+				continue
+			any = true
+			var row := Button.new()
+			row.custom_minimum_size = Vector2(0, UI.TAP)
+			row.text = "%s  %s   x%d" % [String(items[i][0]), String(items[i][1]),
+				_dupe_count(String(c["id"]), i)]
+			row.add_theme_font_size_override("font_size", UI.F_LABEL)
+			_candy_button(row, CV.STAR_COLORS[clampi(int(items[i][2]) - 1, 0, CV.MAX_STAR - 1)])
+			FX.press_feedback(row)
+			var set_id := String(c["id"])
+			var idx := i
+			row.pressed.connect(func() -> void:
+				row.disabled = true
+				_close_popup()
+				_send_card(String(who.get("id", "")), to_name, set_id, idx)
+			)
+			vbox.add_child(row)
+
+	if not any:
+		var none := _popup_row_label(
+			"You have no spare cards to give. Spares come from pulling a card you already own — gold ones can never be sent.",
+			UI.F_CAPTION)
+		none.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		none.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		none.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		vbox.add_child(none)
+
 func _fill_alerts(vb: VBoxContainer) -> void:
 	_fill_grudges(vb)
 	if notif_log.is_empty():
@@ -4219,7 +4576,7 @@ func _fill_alerts(vb: VBoxContainer) -> void:
 
 func _build_menu_pages() -> void:
 	for spec in [["shop", "Shop"], ["collections", "Cards"], ["boxes", "Card Boxes"],
-			["quests", "Quests"], ["options", "Options"], ["alerts", "Alerts"]]:
+			["quests", "Quests"], ["clan", "Clan"], ["options", "Options"], ["alerts", "Alerts"]]:
 		_make_page(spec[0], spec[1])
 
 	# THE WAY INTO THE BOXES IS A DOCK BUTTON, AND THE PAGE MAKES ROOM FOR IT.
@@ -4381,6 +4738,10 @@ func _fill_page(key: String) -> void:
 		"quests": _fill_quests(vb)
 		"collections": _fill_collections(vb)
 		"boxes": _fill_boxes(vb)
+		# Asked for on arrival rather than polled: a roster that repaints while
+		# somebody is reading it is how a tap lands on a different name than the
+		# one under the finger. _refresh_clan repaints when the answer differs.
+		"clan": _fill_clan(vb)
 		"alerts": _fill_alerts(vb)
 		"options": _fill_options(vb)
 	_let_drags_through(vb)
@@ -7482,6 +7843,166 @@ func _collection_complete(c: Dictionary) -> bool:
 		if not v:
 			return false
 	return true
+
+# =============================================================================
+#  Clans -- giving and receiving a card
+# =============================================================================
+#
+# Guy's rules, 2026-09-04: the card comes OFF the sender and lands ON the
+# receiver, nobody can send to themselves, and 5-stars are not sendable at all.
+# Every one of those is enforced in the migration rather than here, because
+# this file is the thing being defended against -- what is here is the
+# bookkeeping and the two places it can go wrong.
+#
+# `applied_gifts` is the replay guard, the same one `applied_raids` is. The
+# server keeps handing a gift back until the ack lands, and the ack is the
+# thing most likely to be lost to a tunnel, so the id is remembered.
+var applied_gifts := []
+var my_clan := {}
+var gift_budget := {}
+
+const APPLIED_GIFTS_KEEP := 200
+
+# THE SPARE COMES OFF ONLY AFTER THE SERVER SAYS YES.
+#
+# The obvious order -- take the card, then send it -- loses a card every time
+# the cap is hit, the clan check fails or the radio drops, and the player has
+# no way to tell that from a card that arrived somewhere. Same rule the upgrade
+# path has always followed: nothing is paid for until the thing bought exists.
+func _send_card(to_id: String, to_name: String, set_id: String, idx: int) -> void:
+	var c := _collection_by_id(set_id)
+	if c.is_empty() or idx < 0 or idx >= (c["items"] as Array).size():
+		return
+	var stars := int((c["items"] as Array)[idx][2])
+	# Checked here as well as on the server, not INSTEAD of it: this one is so
+	# the button can refuse politely rather than round-tripping to be told no.
+	if stars >= CV.MAX_STAR:
+		_banner("Gold cards cannot be given away.", Lagoon.CORAL_LO)
+		return
+	if _dupe_count(set_id, idx) <= 0:
+		_banner("You have no spare of that card.", Lagoon.CORAL_LO)
+		return
+	var name: String = String((c["items"] as Array)[idx][1])
+	Cloud.send_card(to_id, set_id, idx, stars, func(res: Dictionary) -> void:
+		if not bool(res.get("ok", false)):
+			_banner(_gift_refusal(res), Lagoon.CORAL_LO)
+			_refresh_gift_budget()
+			return
+		# Now, and only now.
+		var arr: Array = col_dupes.get(set_id, [])
+		if idx < arr.size():
+			arr[idx] = maxi(0, int(arr[idx]) - 1)
+		Sfx.play("pop", -6.0)
+		_banner("Sent %s to %s" % [name, to_name], Lagoon.KELP_HI)
+		gift_budget = {"sent": res.get("sent_today", 0), "give_cap": res.get("give_cap", 0),
+			"got": gift_budget.get("got", 0), "receive_cap": gift_budget.get("receive_cap", 0)}
+		_save_game()
+		_refresh()
+		if _current_page == pages.get("clan"):
+			_fill_page("clan")
+	)
+
+# The server answers with a reason rather than a sentence, so the sentence is
+# written here -- and every one of them says what to do next, because "failed"
+# is not a thing a player can act on.
+func _gift_refusal(res: Dictionary) -> String:
+	match String(res.get("reason", "")):
+		"self":          return "You cannot send a card to yourself."
+		"stars":         return "Gold cards cannot be given away."
+		"not_clanmates": return "They are not in your clan any more."
+		"give_cap":      return "You have given all %d of today's cards." % int(res.get("cap", 0))
+		"their_cap":     return "They have already received today's %d cards." % int(res.get("cap", 0))
+		"gone":          return "That islander is no longer reachable."
+		_:               return "Could not send that card. Try again in a moment."
+
+# Cards other people gave this island while it was shut. Shaped on
+# _offline_raids, which is the proven half of this pattern.
+func _on_cloud_gifts(gifts: Array) -> void:
+	var ids := []
+	var landed := []
+	for g in gifts:
+		if typeof(g) != TYPE_DICTIONARY:
+			continue
+		var gid := str(g.get("id", ""))
+		if gid != "":
+			ids.append(gid)
+		# An id we cannot read is not one we can dedupe on, so it is acked and
+		# dropped rather than applied -- the same call the raid path makes.
+		if gid == "" or applied_gifts.has(gid):
+			continue
+		var set_id := String(g.get("set", ""))
+		var idx := int(g.get("idx", -1))
+		var c := _collection_by_id(set_id)
+		if c.is_empty() or idx < 0 or idx >= (c["items"] as Array).size():
+			continue
+		# THE STAR RULE, CHECKED AGAIN ON THE WAY IN. The table constraint means
+		# the server cannot have written a 5-star gift, so this can only fire if
+		# the card tables changed under a gift already in flight -- a season
+		# rebuild, say. Dropping it is right: a gold that arrives as a gift is
+		# the one thing this feature promises cannot happen.
+		if int((c["items"] as Array)[idx][2]) >= CV.MAX_STAR:
+			applied_gifts.append(gid)
+			continue
+		applied_gifts.append(gid)
+		var owned: Array = col_owned[set_id]
+		if owned[idx]:
+			_add_dupe(set_id, idx)
+		else:
+			owned[idx] = true
+			_award_stars(int((c["items"] as Array)[idx][2]))
+		landed.append({"name": String((c["items"] as Array)[idx][1]),
+			"emoji": String((c["items"] as Array)[idx][0]),
+			"from": String(((g.get("by", {}) as Dictionary)).get("name", "a clanmate"))})
+	if ids.is_empty():
+		return
+	if applied_gifts.size() > APPLIED_GIFTS_KEEP:
+		applied_gifts = applied_gifts.slice(applied_gifts.size() - APPLIED_GIFTS_KEEP)
+	Cloud.ack_gifts(ids)
+	_flush_save()
+	_update_badges()
+	_refresh()
+	if landed.is_empty():
+		return
+	# One line names the giver, because who gave it is the entire point of the
+	# feature. More than one and the count carries it.
+	if landed.size() == 1:
+		_notify("gift", "%s sent you %s" % [landed[0]["from"], landed[0]["name"]],
+			String(landed[0]["emoji"]))
+	else:
+		_notify("gift", "Your clan sent you %d cards" % landed.size(), "\U01F0CF")
+
+func _refresh_gift_budget() -> void:
+	if _clan_fake or not Cloud.linked():
+		return
+	Cloud.gift_budget(func(res: Dictionary) -> void:
+		gift_budget = res
+		if _current_page == pages.get("clan"):
+			_fill_page("clan")
+	)
+
+# Set only by the screenshot harness, which fakes a session so the roster can
+# be rendered at all. Without it _refresh_clan's answer -- an empty one, since
+# there is no real server behind the fake -- lands a moment later and repaints
+# the page back to its signed-out state.
+var _clan_fake := false
+
+func _refresh_clan(then := Callable()) -> void:
+	if _clan_fake:
+		if then.is_valid():
+			then.call()
+		return
+	if not Cloud.linked():
+		my_clan = {}
+		if then.is_valid():
+			then.call()
+		return
+	Cloud.my_clan(func(res: Dictionary) -> void:
+		my_clan = res
+		if then.is_valid():
+			then.call()
+		elif _current_page == pages.get("clan"):
+			_fill_page("clan")
+	)
 
 func _maybe_drop_card() -> void:
 	# Nothing drops during the lull between seasons. The shelf has already been
@@ -12421,6 +12942,7 @@ func _save_dict() -> Dictionary:
 		"revenge": revenge_pending,
 		"npcs": npcs,
 		"daily_last": daily_last,
+		"applied_gifts": applied_gifts,
 		"grudges": grudges,
 		"streak_days": streak_days,
 		"intro_spins": intro_spins,
@@ -12610,6 +13132,15 @@ func _load_game() -> void:
 	# Coerced entry by entry rather than trusted: this list drives a banner, a
 	# page and the raid matcher, and a save that says `grudges` is a string
 	# would take all three down on the next launch.
+	# str() on every entry, like applied_raids: these are compared with has()
+	# against ids that arrive as strings off the wire.
+	applied_gifts = []
+	var _ag = data.get("applied_gifts", [])
+	if typeof(_ag) == TYPE_ARRAY:
+		for _a in (_ag as Array):
+			applied_gifts.append(str(_a))
+		if applied_gifts.size() > APPLIED_GIFTS_KEEP:
+			applied_gifts = applied_gifts.slice(applied_gifts.size() - APPLIED_GIFTS_KEEP)
 	grudges = []
 	var _gr = data.get("grudges", [])
 	if typeof(_gr) == TYPE_ARRAY:

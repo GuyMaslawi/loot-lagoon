@@ -79,6 +79,8 @@ func _ready() -> void:
 	_t_tide()
 	_section("26. the daily streak")
 	_t_streak()
+	_section("27. clans and card gifts")
+	await _t_clans()
 
 	print("")
 	print("QA-FULL: %d checks, %s" % [checks, "ALL PASS" if fails == 0 else "%d FAILURES" % fails])
@@ -2223,3 +2225,131 @@ func _find_button(node: Node, prefix: String) -> Button:
 		if hit != null:
 			return hit
 	return null
+
+# =============================================================================
+#  27. clans -- the client half of giving a card
+# =============================================================================
+#
+# The server enforces every rule (tools/test_migrations.sql covers those). What
+# THIS side has to get right is the bookkeeping Guy asked for by name: the card
+# comes off the sender and lands on the receiver, and neither happens when it
+# should not.
+#
+# The most important check in here is the FAILED send. The obvious ordering --
+# take the card, then ask the server -- destroys a card every time the cap is
+# hit or the radio drops, and the player cannot tell that from one that arrived.
+func _t_clans() -> void:
+	# Sections 22 and 24 both load crafted saves that carry no collection, so
+	# the shelf has to be rebuilt before anything here can index it. A harness
+	# that inherits another section's wreckage is testing the wreckage.
+	m._ensure_collections()
+	var set_id: String = String(CV.COLLECTIONS[0]["id"])
+	var items: Array = CV.COLLECTIONS[0]["items"]
+
+	# Find a non-gold card and, if the set has one, a gold.
+	var plain := -1
+	var gold := -1
+	for i in items.size():
+		if int(items[i][2]) < CV.MAX_STAR and plain < 0:
+			plain = i
+		if int(items[i][2]) >= CV.MAX_STAR and gold < 0:
+			gold = i
+	_chk("there is a non-gold card to test with", plain >= 0)
+
+	# --- receiving ---
+	m.applied_gifts = []
+	m.col_owned[set_id][plain] = false
+	m.col_dupes[set_id][plain] = 0
+	var stars_before: int = m.rank_stars
+	var gift := {"id": "g1", "set": set_id, "idx": plain,
+		"stars": int(items[plain][2]), "at": 0.0, "by": {"name": "Dave"}}
+	m._on_cloud_gifts([gift])
+	_chk("a gift for a card you lack marks it owned", bool(m.col_owned[set_id][plain]))
+	_chk("...and pays the stars a new card pays",
+		m.rank_stars == stars_before + int(items[plain][2]),
+		"%d -> %d" % [stars_before, m.rank_stars])
+
+	# The same gift again is the dropped-ack case, and it must not pay twice.
+	var dupes_before: int = m._dupe_count(set_id, plain)
+	m._on_cloud_gifts([gift])
+	_chk("THE SAME GIFT ARRIVING TWICE IS APPLIED ONCE",
+		m._dupe_count(set_id, plain) == dupes_before,
+		"%d -> %d" % [dupes_before, m._dupe_count(set_id, plain)])
+
+	# A gift for a card already held becomes a spare, which is what makes it
+	# giveable onward.
+	var before_dupes: int = m._dupe_count(set_id, plain)
+	m._on_cloud_gifts([{"id": "g2", "set": set_id, "idx": plain,
+		"stars": int(items[plain][2]), "by": {"name": "Dave"}}])
+	_chk("a gift for a card you already own becomes a spare",
+		m._dupe_count(set_id, plain) == before_dupes + 1)
+
+	# A gold gift cannot exist -- the table constraint refuses to store one --
+	# but if the card tables ever move under one in flight, the client drops it.
+	if gold >= 0:
+		m.col_owned[set_id][gold] = false
+		m._on_cloud_gifts([{"id": "g3", "set": set_id, "idx": gold,
+			"stars": CV.MAX_STAR, "by": {"name": "Dave"}}])
+		_chk("A GOLD CARD ARRIVING AS A GIFT IS REFUSED BY THE CLIENT TOO",
+			not bool(m.col_owned[set_id][gold]))
+		_chk("...and is still acked, so it does not arrive for ever",
+			m.applied_gifts.has("g3"))
+
+	# Junk off the wire cannot corrupt the shelf.
+	var owned_snapshot: Array = (m.col_owned[set_id] as Array).duplicate()
+	m._on_cloud_gifts([{"id": "g4", "set": "no-such-set", "idx": 0, "stars": 1},
+		{"id": "g5", "set": set_id, "idx": 9999, "stars": 1},
+		{"id": "g6", "set": set_id, "idx": -1, "stars": 1},
+		"not a dictionary", 42, null])
+	_chk("a gift naming a card that does not exist changes nothing",
+		m.col_owned[set_id] == owned_snapshot)
+
+	# --- the replay guard is bounded ---
+	m.applied_gifts = []
+	for i in m.APPLIED_GIFTS_KEEP + 60:
+		m.applied_gifts.append("x%d" % i)
+	m._on_cloud_gifts([{"id": "trim", "set": set_id, "idx": plain,
+		"stars": int(items[plain][2])}])
+	_chk("the applied-gift list is trimmed, not grown for ever",
+		m.applied_gifts.size() <= m.APPLIED_GIFTS_KEEP,
+		str(m.applied_gifts.size()))
+
+	# --- sending: the card is only spent when the server said yes ---
+	#
+	# Not signed in, so Cloud.send_card answers {} without a round trip, which
+	# is exactly the shape of every refusal and of a dropped radio.
+	m.col_dupes[set_id][plain] = 3
+	m._send_card("someone", "Dave", set_id, plain)
+	_chk("A SEND THAT FAILED COSTS THE SENDER NOTHING",
+		m._dupe_count(set_id, plain) == 3, str(m._dupe_count(set_id, plain)))
+
+	# ...and a card you do not hold cannot be offered at all.
+	m.col_dupes[set_id][plain] = 0
+	m._send_card("someone", "Dave", set_id, plain)
+	_chk("a card with no spare cannot be sent", m._dupe_count(set_id, plain) == 0)
+
+	if gold >= 0:
+		m.col_dupes[set_id][gold] = 4
+		m._send_card("someone", "Dave", set_id, gold)
+		_chk("A GOLD SPARE CANNOT BE SENT EVEN WITH SPARES IN HAND",
+			m._dupe_count(set_id, gold) == 4)
+
+	# Every refusal the server can return says something a player can act on.
+	var seen := {}
+	var blank := true
+	for reason in ["self", "stars", "not_clanmates", "give_cap", "their_cap", "gone", ""]:
+		var line: String = m._gift_refusal({"reason": reason, "cap": 3})
+		if line.strip_edges() == "":
+			blank = false
+		seen[line] = true
+	_chk("every refusal has a sentence", blank)
+	_chk("...and they are not all the same sentence", seen.size() >= 6, str(seen.size()))
+
+	# The save carries the replay guard, or a relaunch re-applies everything.
+	m.applied_gifts = ["keep-me"]
+	m._flush_save()
+	m.applied_gifts = []
+	m._load_game()
+	await get_tree().process_frame
+	_chk("the applied-gift list survives a relaunch",
+		m.applied_gifts.has("keep-me"), str(m.applied_gifts))
