@@ -846,6 +846,82 @@ static func island_bg_tex(level: int) -> Texture2D:
 # the curve flattens where the islands run out. Past that, prices and payouts
 # hold their island-30 values and stay in proportion to each other, which is
 # the only property the curve was ever for.
+# =============================================================================
+#  The Spin Tide -- the one live event that costs nothing
+# =============================================================================
+#
+# Every countdown in this game was either a PRICE TAG (the timed offer, two
+# hours) or a MONTH (the card season, the 72-hour tournament). The audit on
+# 2026-09-04 called that out as the hole in an otherwise well-paced FOMO
+# system: a player learns within a week that a clock on screen means somebody
+# wants money, and then stops reading clocks. There was nothing short, free and
+# recurring anywhere in the product.
+#
+# The Tide is that. For four hours the spin meter refills twice as fast, and
+# that is the whole event.
+#
+# WHY THE METER AND NOT COINS OR CARDS. Doubling coins for four hours inflates
+# an economy that is tuned to the 1.6x island curve, and players will simply
+# shift their whole session into the window -- the multiplier is not 13% more
+# coins, it is 2x for the people who matter. Doubling card drops shortens a
+# season that was deliberately measured to run a month. The meter has a CAP:
+# whatever the rate, nobody banks more than SPIN_CAP, so the Tide cannot be
+# farmed by being away -- only by being HERE, which is the entire point of a
+# live event.
+#
+# THE PERIOD IS DELIBERATELY NOT A MULTIPLE OF 24 HOURS. At 48h the window
+# lands at the same clock time every time, so a player in the wrong timezone
+# gets an event that is permanently at 4am and might as well not exist. At 30
+# the window walks six hours around the clock each cycle and covers every hour
+# of the day over four of them. Nobody is structurally excluded.
+#
+# It rides the same global-clock trick as the tournament and the card season --
+# derived from unix time, identical on every device, computed offline, no
+# server round trip and nothing in the save.
+const TIDE_PERIOD := 108000.0   # 30 hours between windows
+const TIDE_WINDOW := 14400.0    # 4 of them live
+const TIDE_MULT := 2.0          # what the refill rate becomes
+
+static func tide_live(now: float) -> bool:
+	return fposmod(now, TIDE_PERIOD) < TIDE_WINDOW
+
+# When the live window the given moment sits in ends, or the next one starts.
+static func tide_ends(now: float) -> float:
+	return now - fposmod(now, TIDE_PERIOD) + TIDE_WINDOW
+
+static func tide_starts(now: float) -> float:
+	if tide_live(now):
+		return now - fposmod(now, TIDE_PERIOD)
+	return now - fposmod(now, TIDE_PERIOD) + TIDE_PERIOD
+
+# How many of the seconds between `from` and `to` were inside a live window.
+#
+# This is what makes the Tide exact rather than approximate, and it has to be,
+# because the meter is credited in two completely different ways: _process
+# ticks it a sixtieth of a second at a time while the game is open, and
+# _credit_time_away hands it a single span of up to a week on the way back in.
+# A "is it live right now" check would pay a player who slept through the whole
+# window the same as one who sat in it, or nothing at all, depending on which
+# side of it they happened to reopen the app.
+#
+# The span is bounded by MAX_AWAY_SECS (a week), so the loop runs at most six
+# times -- but it is clamped here as well rather than trusting the caller,
+# because a hostile save's clock is exactly the sort of thing that would ask
+# this to count a million windows.
+static func tide_overlap(from: float, to: float) -> float:
+	if to <= from:
+		return 0.0
+	var span := minf(to - from, 8.0 * 86400.0)
+	var start := to - span
+	var total := 0.0
+	var k: float = floor(start / TIDE_PERIOD)
+	var last: float = floor(to / TIDE_PERIOD)
+	while k <= last:
+		var ws: float = k * TIDE_PERIOD
+		total += maxf(0.0, minf(to, ws + TIDE_WINDOW) - maxf(start, ws))
+		k += 1.0
+	return total
+
 const ECONOMY_MAX_LEVEL := 30
 
 static func curve(level: int) -> float:

@@ -73,6 +73,12 @@ func _ready() -> void:
 	await _t_intro()
 	_section("23. laps")
 	_t_laps()
+	_section("24. grudges")
+	_t_grudges()
+	_section("25. the Spin Tide")
+	_t_tide()
+	_section("26. the daily streak")
+	_t_streak()
 
 	print("")
 	print("QA-FULL: %d checks, %s" % [checks, "ALL PASS" if fails == 0 else "%d FAILURES" % fails])
@@ -1896,3 +1902,324 @@ func _t_laps() -> void:
 		if CV.island_lap(level) > CV.island_lap(maxi(1, level - 1)):
 			fires.append(level)
 	_chk("the crossing fires only on 31 and 61", fires == [31, 61], str(fires))
+
+# =============================================================================
+#  24. grudges
+# =============================================================================
+#
+# The list only works if it is a list of PEOPLE, not a list of events. A
+# repeat offender has to be one row that grows, the row has to clear on the
+# raid that repays it and not on any other, and none of it may survive a
+# hostile save.
+func _t_grudges() -> void:
+	m.grudges = []
+	var boris := {"name": "Boris", "emoji": "🧔"}
+	var olga := {"name": "Olga", "emoji": "👵"}
+
+	m._add_grudge(boris, "steal", 500)
+	m._add_grudge(boris, "steal", 300)
+	m._add_grudge(boris, "smash", 0)
+	_chk("a repeat offender is one row, not three", m.grudges.size() == 1, str(m.grudges.size()))
+	_chk("...with the raids tallied", int(m.grudges[0]["hits"]) == 3, str(m.grudges[0]["hits"]))
+	_chk("...and the coins summed", int(m.grudges[0]["coins"]) == 800, str(m.grudges[0]["coins"]))
+
+	m._add_grudge(olga, "steal", 100)
+	_chk("the newest offender is at the top", String(m.grudges[0]["name"]) == "Olga",
+		String(m.grudges[0]["name"]))
+	m._add_grudge(boris, "steal", 50)
+	_chk("...and hitting you again moves you back to it",
+		String(m.grudges[0]["name"]) == "Boris", String(m.grudges[0]["name"]))
+
+	# Nobody nameless gets on the list -- an offline event with no npc, or a
+	# cloud raid whose `by` block did not come back, would otherwise file a
+	# blank row that can never be settled because nothing can ever match it.
+	var before: int = m.grudges.size()
+	m._add_grudge({}, "steal", 900)
+	m._add_grudge({"name": "   "}, "steal", 900)
+	_chk("a raider with no name is not filed", m.grudges.size() == before, str(m.grudges.size()))
+
+	var owed: Dictionary = m._settle_grudge("Boris")
+	_chk("raiding them back clears the row", not m._grudge_names().has("Boris"),
+		str(m._grudge_names()))
+	_chk("...and hands back what was owed, to say so",
+		int(owed.get("coins", 0)) == 850, str(owed.get("coins", 0)))
+	_chk("...leaving everyone else alone", m._grudge_names().has("Olga"))
+	_chk("settling a stranger is a no-op", m._settle_grudge("Nobody").is_empty())
+
+	# The cap. Eight is a list; forty is a log, and the oldest debts are the
+	# ones a player has stopped caring about.
+	m.grudges = []
+	for i in 20:
+		m._add_grudge({"name": "R%d" % i, "emoji": "🏴"}, "steal", 10)
+	_chk("the list is capped", m.grudges.size() == m.GRUDGE_MAX, str(m.grudges.size()))
+	_chk("...and it is the oldest that fall off", String(m.grudges[0]["name"]) == "R19"
+		and not m._grudge_names().has("R0"), str(m._grudge_names()))
+
+	# The matcher only ever points at somebody who is actually in the pool --
+	# a grudge holds a name and a face and deliberately NOT a vault, so a row
+	# with nobody behind it must fall through to the ordinary pick.
+	m.grudges = [{"name": "Ghost", "emoji": "🏴", "coins": 1, "hits": 1, "at": 0.0}]
+	var ghosted := true
+	for i in 40:
+		if not m._grudge_target().is_empty():
+			ghosted = false
+	_chk("a grudge nobody in the pool matches never becomes a target", ghosted)
+
+	# And when they ARE in the pool it fires, at roughly the stated rate.
+	# Restocked first: earlier sections leave the pool in whatever state their
+	# own raids left it, and an empty one would make this measure the ghost
+	# case above all over again and call it a pass.
+	m._stock_rivals()
+	_chk("there are rivals to match against", not m.npcs.is_empty())
+	m.grudges = [{"name": String(m.npcs[0]["name"]), "emoji": "🏴",
+		"coins": 1, "hits": 1, "at": 0.0}]
+	var hits := 0
+	for i in 4000:
+		if not m._grudge_target().is_empty():
+			hits += 1
+	var rate := float(hits) / 4000.0
+	_chk("and fires near GRUDGE_TARGET_ODDS when they are",
+		absf(rate - m.GRUDGE_TARGET_ODDS) < 0.04, "%.2f vs %.2f" % [rate, m.GRUDGE_TARGET_ODDS])
+
+	# A hostile save.
+	var path: String = m.SAVE_PATH
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	f.store_string(JSON.stringify({"grudges": [
+		"not a dictionary", 42, null,
+		{"name": "", "coins": 5},
+		{"name": "Real", "coins": -900, "hits": -4, "at": "yesterday"},
+	]}))
+	f.close()
+	m._load_game()
+	var clean := true
+	for g in m.grudges:
+		if typeof(g) != TYPE_DICTIONARY or String(g.get("name", "")) == "" \
+				or int(g.get("coins", 0)) < 0 or int(g.get("hits", 0)) < 1:
+			clean = false
+	_chk("a hostile grudge list loads as real rows or none", clean, str(m.grudges))
+	_chk("...keeping only the one that had a name", m.grudges.size() == 1, str(m.grudges.size()))
+
+# =============================================================================
+#  25. the Spin Tide
+# =============================================================================
+#
+# The event is free, so the risk it carries is not that it charges anybody --
+# it is that it QUIETLY CHANGES THE ECONOMY IT SITS IN. The tournament's four
+# tracks were sized against a known free-spin supply, with the load-bearing
+# property that the top track cannot be cleared without buying spins. More free
+# spins per cycle moves that line, so the supply is measured here rather than
+# assumed.
+func _t_tide() -> void:
+	var P: float = CV.TIDE_PERIOD
+	var W: float = CV.TIDE_WINDOW
+
+	# The window is where it says it is.
+	_chk("the window opens each period", CV.tide_live(0.0) and CV.tide_live(P))
+	_chk("...runs for its length", CV.tide_live(W - 1.0) and not CV.tide_live(W + 1.0))
+	_chk("...and is dark the rest of the time", not CV.tide_live(P - 1.0))
+
+	# THE TIMEZONE PROPERTY, and it is the reason the period is 30 hours.
+	# At any multiple of 24 the window lands at the same clock hour for ever and
+	# a player in the wrong timezone gets an event permanently at 4am.
+	_chk("the period is not a whole number of days",
+		absf(fmod(P, 86400.0)) > 1.0, "%.0fh" % (P / 3600.0))
+	var hours := {}
+	for c in 8:
+		hours[int(floor((fposmod(c * P, 86400.0)) / 3600.0))] = true
+	_chk("eight cycles start at %d different hours of the day, not one" % hours.size(),
+		hours.size() >= 4, str(hours.keys()))
+
+	# tide_overlap is what makes the catch-up path exact.
+	_chk("no overlap for a span that misses the window",
+		CV.tide_overlap(W + 10.0, W + 20.0) == 0.0)
+	_chk("a span inside the window is all overlap",
+		absf(CV.tide_overlap(10.0, 110.0) - 100.0) < 0.01,
+		str(CV.tide_overlap(10.0, 110.0)))
+	_chk("a span straddling the close counts only the live part",
+		absf(CV.tide_overlap(W - 50.0, W + 50.0) - 50.0) < 0.01,
+		str(CV.tide_overlap(W - 50.0, W + 50.0)))
+	_chk("a backwards span is zero, not negative", CV.tide_overlap(500.0, 100.0) == 0.0)
+	# A week away crosses several windows and must count every one.
+	var week := 7.0 * 86400.0
+	var want := week / P * W
+	_chk("a week away counts every window it crossed",
+		absf(CV.tide_overlap(0.0, week) - want) < W, "%.0f vs ~%.0f"
+			% [CV.tide_overlap(0.0, week), want])
+	# The clamp: a hostile clock must not ask this to walk a million windows.
+	var t0 := Time.get_ticks_msec()
+	var huge := CV.tide_overlap(0.0, 1.0e12)
+	_chk("an absurd span returns fast and bounded",
+		Time.get_ticks_msec() - t0 < 200 and huge <= 8.0 * 86400.0,
+		"%.0f in %dms" % [huge, Time.get_ticks_msec() - t0])
+
+	# THE SUPPLY. What a 72-hour tournament cycle's free meter is worth now.
+	var cycle := 259200.0
+	var base: float = cycle / m.SPIN_REGEN_SECS * float(m.SPIN_REGEN_AMOUNT)
+	var extra: float = CV.tide_overlap(0.0, cycle) * (CV.TIDE_MULT - 1.0) \
+		/ m.SPIN_REGEN_SECS * float(m.SPIN_REGEN_AMOUNT)
+	var lift: float = extra / base
+	print("    free meter per 72h: %.0f -> %.0f  (+%.0f%%)" % [base, base + extra, lift * 100.0])
+	_chk("the Tide lifts the free meter by a real but modest amount",
+		lift > 0.05 and lift < 0.20, "%.1f%%" % (lift * 100.0))
+
+	# THE PROPERTY THE TOURNAMENT'S FOURTH TRACK DEPENDS ON, and the reason
+	# this section exists at all. TOURNEY_TRACKS is 4 rather than 3 because a
+	# free player must never be able to clear the top track -- if they could,
+	# the reward track becomes a way to farm the thing the shop sells.
+	#
+	# The design note's figures: 13,491 spins to clear four tracks, against
+	# 10,459 free spins available in a cycle. That 10,459 is the meter's 6,480
+	# PLUS 3,979 paid by the tracks themselves, and the Tide only touches the
+	# meter -- so the lift is added in spins, not applied as a percentage to
+	# the whole. Multiplying the total instead overstates the danger, which
+	# would be the comfortable mistake rather than the dangerous one, but a
+	# margin nobody can trust is not a margin.
+	var free_before := 10459.0
+	var to_clear := 13491.0
+	var free_now: float = free_before + extra
+	print("    free spins per cycle: %.0f -> %.0f   (need %.0f to clear track 4)"
+		% [free_before, free_now, to_clear])
+	_chk("...and the top tournament track is STILL unreachable on free spins",
+		free_now < to_clear, "%.0f free vs %.0f needed" % [free_now, to_clear])
+	_chk("...with room left before that line is in danger",
+		free_now < to_clear * 0.92, "%.0f%% of the way there"
+			% (free_now / to_clear * 100.0))
+
+	# The cap is what makes the event unfarmable by absence.
+	m.spins = m.SPIN_CAP
+	m._credit_time_away(CV.TIDE_WINDOW)
+	_chk("a full meter banks nothing, Tide or not", m.spins == m.SPIN_CAP, str(m.spins))
+
+# =============================================================================
+#  26. the daily streak
+# =============================================================================
+#
+# The streak is the only thing in this game a player can LOSE by not turning
+# up, so the two things that matter are that it survives when it should and
+# dies when it should -- and that neither answer depends on a timezone.
+func _t_streak() -> void:
+	var DAY: float = m.DAILY_COOLDOWN
+	m._close_popup(true)
+
+	# The ladder is well formed. _streak_tier indexes both arrays.
+	_chk("there is one coin figure and one spin figure per rung",
+		m.STREAK_COINS.size() == m.STREAK_TOP and m.STREAK_SPINS.size() == m.STREAK_TOP,
+		"%d / %d" % [m.STREAK_COINS.size(), m.STREAK_SPINS.size()])
+	var climbs := true
+	for i in range(1, m.STREAK_TOP):
+		if int(m.STREAK_COINS[i]) <= int(m.STREAK_COINS[i - 1]) \
+				or int(m.STREAK_SPINS[i]) <= int(m.STREAK_SPINS[i - 1]):
+			climbs = false
+	_chk("every rung pays more than the one below it", climbs)
+	_chk("day seven is worth coming back for",
+		int(m.STREAK_COINS[m.STREAK_TOP - 1]) >= int(m.STREAK_COINS[0]) * 8
+			and m._streak_has_card(m.STREAK_TOP),
+		"%dx and a card" % (int(m.STREAK_COINS[m.STREAK_TOP - 1]) / int(m.STREAK_COINS[0])))
+
+	# It HOLDS past seven rather than dropping back to day one, which is the
+	# whole reason a long streak is worth protecting.
+	_chk("day 40 pays what day 7 pays, not what day 1 pays",
+		m._streak_coins(40) == m._streak_coins(m.STREAK_TOP)
+			and m._streak_spins(40) == m._streak_spins(m.STREAK_TOP))
+	_chk("...and still carries the card", m._streak_has_card(40))
+
+	# A hostile save cannot index off either end of the arrays.
+	var safe := true
+	for d in [-2147483648, -7, 0, 1, 7, 8, 999999999]:
+		var c: int = m._streak_coins(d)
+		var sp: int = m._streak_spins(d)
+		if c <= 0 or sp <= 0:
+			safe = false
+	_chk("every day number, however absurd, pays a real reward", safe)
+
+	# --- survival and death, measured off daily_last only ---
+	m.streak_days = 5
+	m.daily_last = m._trusted_now() - DAY - 60.0        # ready an hour ago
+	_chk("claiming as soon as it is ready continues the run", m._streak_next() == 6,
+		str(m._streak_next()))
+	_chk("...and the run is not yet broken", not m._streak_broken())
+
+	m.daily_last = m._trusted_now() - DAY - m.STREAK_GRACE + 600.0   # 10 min left
+	_chk("claiming in the last minutes of the window still continues it",
+		m._streak_next() == 6 and not m._streak_broken(), str(m._streak_next()))
+
+	m.daily_last = m._trusted_now() - DAY - m.STREAK_GRACE - 60.0    # a minute late
+	_chk("a minute past the window starts again at one", m._streak_next() == 1,
+		str(m._streak_next()))
+	_chk("...and the dialog is told to say so", m._streak_broken())
+
+	m.streak_days = 0
+	m.daily_last = 0.0
+	_chk("a player who has never claimed starts at day one", m._streak_next() == 1)
+	_chk("...with nothing to mourn", not m._streak_broken())
+
+	# THE WINDOW IS THE SAME LENGTH FOR EVERYBODY. This is the timezone
+	# property: nothing in the streak reads a calendar date, so a player's
+	# window cannot be shortened by where they happen to live.
+	m.streak_days = 3
+	var lengths := {}
+	for offset in [0.0, 3600.0 * 5.5, 3600.0 * 13.0, 3600.0 * 23.0]:
+		m.daily_last = m._trusted_now() - DAY - offset
+		if m._streak_broken():
+			continue
+		lengths[int(round(m._streak_deadline() - m.daily_last))] = true
+	_chk("the window is one fixed length whatever hour the claim landed on",
+		lengths.size() == 1, str(lengths.keys()))
+	_chk("...and it is a full day of grace",
+		int(m.STREAK_GRACE) == int(DAY), "%.0fh" % (m.STREAK_GRACE / 3600.0))
+
+	# The claim banks the streak BEFORE stamping the clock. Stamped first, every
+	# claim would look on time and the streak could never break -- so this
+	# drives the real dialog rather than reimplementing it.
+	m.streak_days = 4
+	m.daily_last = m._trusted_now() - DAY - 100.0
+	var coins_before: int = m.coins
+	var spins_before: int = m.spins
+	m._open_daily()
+	var btn: Button = _find_button(m._popup, "CLAIM")
+	if btn == null:
+		_chk("the daily dialog offers a claim button", false)
+	else:
+		btn.pressed.emit()
+		_chk("claiming moves the run on", m.streak_days == 5, str(m.streak_days))
+		_chk("...and pays that rung, not the flat old figure",
+			m.coins - coins_before == m._streak_coins(5)
+				and m.spins - spins_before == m._streak_spins(5),
+			"%d coins, %d spins" % [m.coins - coins_before, m.spins - spins_before])
+		_chk("...and the bonus is no longer ready", not m._daily_ready())
+	m._close_popup(true)
+
+	# The notification only exists once there is something worth mourning.
+	m.notif_enabled = true
+	m.streak_days = 1
+	var plan: Array = m._alert_plan(m._trusted_now())
+	_chk("a one-day run gets no streak warning", not _plan_has(plan, "streak"))
+	m.streak_days = 9
+	plan = m._alert_plan(m._trusted_now())
+	_chk("a nine-day run does", _plan_has(plan, "streak"))
+	for row in plan:
+		if String(row.get("id", "")) == "streak":
+			_chk("...and it lands before the deadline, not on it",
+				float(row["at"]) < m._streak_deadline()
+					and float(row["at"]) > m._streak_deadline() - 6.0 * 3600.0,
+				"%.1fh early" % ((m._streak_deadline() - float(row["at"])) / 3600.0))
+	m.notif_enabled = false
+
+func _plan_has(plan: Array, id: String) -> bool:
+	for row in plan:
+		if typeof(row) == TYPE_DICTIONARY and String(row.get("id", "")) == id:
+			return true
+	return false
+
+# Depth-first hunt for a Button whose text starts with `prefix`.
+func _find_button(node: Node, prefix: String) -> Button:
+	if node == null:
+		return null
+	var b := node as Button
+	if b != null and b.text.begins_with(prefix):
+		return b
+	for c in node.get_children():
+		var hit := _find_button(c, prefix)
+		if hit != null:
+			return hit
+	return null

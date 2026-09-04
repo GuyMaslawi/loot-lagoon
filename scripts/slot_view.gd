@@ -20,6 +20,7 @@ extends Control
 # a wager -- you already know what is on the table.
 
 signal spin_requested
+signal target_tapped
 signal spin_finished(result: Array)
 signal auto_toggled(on: bool)
 
@@ -97,6 +98,7 @@ var _ribbon_home := ""
 var _card: PanelContainer
 var _card_avatar: Control
 var _card_slot: Control
+var _card_cap: Label
 var _card_name: Label
 var _card_coins: Label
 var _meter: ProgressBar
@@ -356,6 +358,20 @@ func _build_card() -> void:
 	_card = PanelContainer.new()
 	_card.add_theme_stylebox_override("panel", _card_style())
 	add_child(_card)
+	# THE CARD IS A CONTROL THE PLAYER CAN PRESS NOW.
+	#
+	# It has always been a promise -- these coins, this island, and the raid
+	# lands on exactly who it names. Making it tappable does not weaken that;
+	# it is the only place the promise can be CHANGED without breaking it,
+	# because everything here happens before a spin is paid for. A chooser
+	# after the reels stop would be the machine renegotiating a bet already
+	# placed, which is the one thing matchmaking.gd exists to prevent.
+	_card.mouse_filter = Control.MOUSE_FILTER_STOP
+	_card.gui_input.connect(func(e: InputEvent) -> void:
+		var mb := e as InputEventMouseButton
+		if mb != null and mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
+			target_tapped.emit()
+	)
 	_card.set_anchors_preset(Control.PRESET_TOP_WIDE)
 	_card.offset_left = (720.0 - CARD.x) * 0.5
 	_card.offset_right = -(720.0 - CARD.x) * 0.5
@@ -383,8 +399,8 @@ func _build_card() -> void:
 	text.alignment = BoxContainer.ALIGNMENT_CENTER
 	text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(text)
-	var cap := Lagoon.label("STEAL  TARGET", UI.F_TINY, Lagoon.INK_FAINT, true)
-	text.add_child(cap)
+	_card_cap = Lagoon.label("STEAL  TARGET", UI.F_TINY, Lagoon.INK_FAINT, true)
+	text.add_child(_card_cap)
 	_card_name = Lagoon.label("—", UI.F_LABEL, Lagoon.INK, true)
 	text.add_child(_card_name)
 
@@ -568,12 +584,24 @@ func set_island(level: int) -> void:
 # the island curve times the stake you are playing -- so raising the bet visibly
 # raises what is on the table, and the number you read here is the number that
 # comes out of the chests.
-func set_target(npc: Dictionary, coin_mult := 1.0) -> void:
+# `owes` is set when this rival is on main.gd's grudge list -- they have taken
+# something off this island and not paid for it. The card says so, because the
+# card is the only place the player sees who is next BEFORE they commit a spin
+# to it, and "the machine happened to pick somebody" and "the machine picked
+# the person who robbed you last night" are not the same offer.
+func set_target(npc: Dictionary, coin_mult := 1.0, owes := false) -> void:
 	if npc.is_empty():
 		return
 	_target_coins = int(npc.get("coins", 0))
 	_target_mult = coin_mult
 	_style_pot()
+	# Ahead of the name check below, not after it: the same rival can go from
+	# stranger to owing you while their name is still on the card, and an early
+	# return would leave the caption a spin behind the list.
+	if _card_cap != null and is_instance_valid(_card_cap):
+		_card_cap.text = "THEY  OWE  YOU" if owes else "STEAL  TARGET"
+		_card_cap.add_theme_color_override("font_color",
+			Lagoon.CORAL_LO if owes else Lagoon.INK_FAINT)
 	var who: String = npc.get("name", "—")
 	if who == _target_name:
 		return
@@ -592,7 +620,11 @@ func meter_center() -> Vector2:
 		return _meter_label.global_position + _meter_label.size * 0.5
 	return global_position + size * 0.5
 
-func set_meter(held: int, cap: int, secs_to_refill: float, refill: int) -> void:
+# `tide` is CV's Spin Tide: for four hours the meter refills at double rate.
+# It is said on this label rather than anywhere else on the page because this
+# is the one piece of chrome whose only job is to answer "when do I get more
+# spins", and during a Tide that answer is the event.
+func set_meter(held: int, cap: int, secs_to_refill: float, refill: int, tide := false) -> void:
 	_held = held
 	_clamp_bet()
 	_meter.max_value = float(cap)
@@ -612,7 +644,13 @@ func set_meter(held: int, cap: int, secs_to_refill: float, refill: int) -> void:
 		_timer_label.text = "Spins full"
 	else:
 		var s := maxi(0, int(ceil(secs_to_refill)))
-		_timer_label.text = "+%d spins in  %d:%02d" % [refill, s / 60, s % 60]
+		_timer_label.text = ("\U01F30A  +%d in  %d:%02d" if tide else "+%d spins in  %d:%02d") \
+			% [refill, s / 60, s % 60]
+	# Coral while the Tide runs. The label is otherwise the quietest text on the
+	# cabinet, which is right for a countdown nobody is waiting on and wrong for
+	# four hours somebody should be spending here.
+	_timer_label.add_theme_color_override("font_color",
+		Lagoon.CORAL_HI if (tide and held < cap) else Lagoon.SAND)
 
 # The sign calls the result. It is the one part of the cabinet that talks, so
 # it goes back to the island's name a couple of seconds later.

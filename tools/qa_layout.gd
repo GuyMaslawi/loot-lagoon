@@ -33,6 +33,15 @@ func _ready() -> void:
 	m.offer_until = m._now() + 7000.0
 	m.purchased_ids = []
 	m.piggy_coins = 105000
+	# The daily dialog is widest with a long streak behind it: seven pips in a
+	# row, a "your N-day streak ended" line above them, and the day-seven
+	# promise below. A fresh save draws none of that.
+	m.streak_days = 12
+	m.daily_last = m._trusted_now() - m.DAILY_COOLDOWN * 3.0
+	# ...and the mark chooser needs rivals to choose between.
+	m._stock_rivals()
+	m.grudges = [{"name": String(m.npcs[0]["name"]) if not m.npcs.is_empty() else "Boris",
+		"emoji": "🏴", "coins": 99999, "hits": 3, "at": m._now()}]
 	# Shown, not merely filled. Every page but the current one is visible=false,
 	# and a hidden Control is never laid out -- measuring one reports zeroes and
 	# passes, which is worse than not measuring it at all. The first version of
@@ -60,7 +69,8 @@ func _ready() -> void:
 	# that a container gets to decide: three rows of picture-plus-wrapped-text,
 	# where the text column is the thing asked to shrink. That is the shop deal
 	# row's bug exactly, and this is the harness that caught that one.
-	for opener in ["_open_tourney", "_open_world_ranks", "_open_daily", "_open_intro"]:
+	for opener in ["_open_tourney", "_open_world_ranks", "_open_daily", "_open_intro",
+			"_open_pick_target", "_intro_build_card"]:
 		m.call(opener)
 		await get_tree().process_frame
 		await get_tree().process_frame

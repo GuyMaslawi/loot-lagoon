@@ -295,10 +295,84 @@ var intro_spins := 0
 var intro_greeted := false
 var intro_build_tip := false
 
+# =============================================================================
+#  Grudges
+# =============================================================================
+#
+# The list of people who have taken something off this island and not paid for
+# it yet. It survives launches, and it clears one name at a time -- by raiding
+# that name back.
+#
+# WHY THIS EXISTS. The audit on 2026-09-04 scored the social side of this game
+# 1 out of 5: no friends, no invites, no gifts, no clans, no trading anywhere
+# in the twenty-six scripts. What it does have is genuine PvP -- real players
+# raid this island through the cloud and the damage is applied on the way back
+# in -- and every one of them was ANONYMOUS. `RIVAL_POOL`'s own comment says
+# the pool is kept small so "you meet the same faces often enough to hold a
+# grudge", and nothing in the game let you hold one.
+#
+# THE SERVER WAS ALREADY SENDING THE NAME. `unseen_raids` returns
+# `'by': public_player(attacker)` -- id, name, emoji, island, vault, the lot --
+# and _on_cloud_raids read the coins out of the row and dropped the person on
+# the floor. That is why a real player robbing you announced itself as
+# "Someone knocked a hut down while you were away". No migration was needed to
+# fix it; the data had been arriving all along.
+const GRUDGE_MAX := 8
+
+# How often a raid that could go to somebody who owes you actually does.
+#
+# Not 100%. A game that only ever points you at your own grudge list stops
+# introducing anybody new and the world quietly shrinks to eight people; at
+# zero it is the anonymous shuffle this replaced. Two thirds reads as the game
+# being on your side without closing the door.
+const GRUDGE_TARGET_ODDS := 0.65
+
+var grudges := []
+
 const DAILY_COOLDOWN := 86400.0
 const DAILY_BONUS_COINS := 1200
 const DAILY_BONUS_SPINS := 8
 var daily_last := 0.0
+
+# =============================================================================
+#  The streak
+# =============================================================================
+#
+# The one thing this game had nothing of: something a player can BREAK.
+#
+# Everything else here only ever goes up. Islands, stars, cards, the rank --
+# leave for a month and all of it is exactly where you left it, which is
+# generous and is also why nothing was ever urgent. Loss is worth two to two
+# and a half times the same size of gain, and the only loss in the product was
+# a raid, which the player does not control and cannot prevent by turning up.
+#
+# THE STREAK IS COUNTED IN CLAIMS, NOT IN CALENDAR DAYS, and that is not a
+# shortcut -- it is the only version that is fair everywhere. A calendar day
+# needs a timezone, and the game does not have one it can trust: the clock is
+# the player's own, `_sanitize_clock` exists precisely because it moves, and a
+# midnight rollover means a player in one place gets sixteen hours to keep a
+# streak while somebody else gets four. Counted off `daily_last` instead, every
+# player on earth gets the same 24-hour window to come back in, wherever they
+# are and whatever their phone thinks the date is.
+#
+#   claimed within 24h of the bonus becoming ready  ->  the streak grows
+#   later than that                                 ->  it starts again at 1
+const STREAK_GRACE := DAILY_COOLDOWN          # how late is too late
+const STREAK_TOP := 7                         # where the ladder stops climbing
+
+# What day N of a streak pays, at island-1 prices. Day seven is a real prize --
+# ten times day one and a card with it -- because the whole ladder is an
+# argument for coming back tomorrow and the argument has to land somewhere.
+const STREAK_COINS := [1200, 1800, 2600, 3600, 5000, 7000, 12000]
+const STREAK_SPINS := [8, 10, 13, 16, 20, 25, 40]
+
+# IT HOLDS AT DAY SEVEN RATHER THAN CYCLING BACK TO DAY ONE.
+#
+# The seven-day loop that resets is the genre default and it is wrong here: a
+# player on day 34 opens the game, gets the day-one reward, and learns that the
+# streak they have been protecting for a month buys nothing. The ladder caps;
+# the NUMBER keeps climbing, and the number is the thing they are protecting.
+var streak_days := 0
 var muted := false
 # Missions run in three reset cycles. "coins" is the base reward at island 1;
 # actual payouts scale with the same 1.6^(level-1) curve as star costs, so a
@@ -773,6 +847,21 @@ func _after_boot() -> void:
 			quests_tab = demo_tab
 		call_deferred("_goto", pages["quests"])
 
+# Two SHOT setups that need state rather than just a call. Kept beside the
+# harness rather than in the dialogs, so nothing the player reaches can end up
+# depending on them.
+func _shot_mark() -> void:
+	_stock_rivals()
+	if not npcs.is_empty():
+		grudges = [{"name": String(npcs[0]["name"]), "emoji": String(npcs[0].get("emoji", "\U01F3F4")),
+			"coins": 24000, "hits": 3, "at": _now()}]
+	_open_pick_target()
+
+func _shot_streak() -> void:
+	streak_days = 12
+	daily_last = _trusted_now() - DAILY_COOLDOWN * 3.0
+	_open_daily()
+
 func _scrolls_in(node: Node) -> Array:
 	var out := []
 	for c in node.get_children():
@@ -811,6 +900,10 @@ func _capture_page(key: String) -> void:
 			# only other way to look at it is DEMO_JOURNEY=30, which plays the
 			# whole voyage first.
 			"newworld": _open_new_world(31)
+			# The chooser needs rivals; the daily needs a run behind it to draw
+			# the ladder at full width and the "your streak ended" line above it.
+			"mark":    _shot_mark()
+			"streak":  _shot_streak()
 		# DEMO_VIEW_TRACK pages the reward card without a finger. The arrows are
 		# the only way there in the game, so every track but the live one was
 		# unreachable from a harness.
@@ -1554,6 +1647,11 @@ func _on_cloud_raids(raids: Array) -> void:
 	var fresh := []
 	var taken := 0
 	var smashed := 0
+	# Who did it, for the banner. The most recent raider of each kind, because
+	# a single line cannot name six people and the freshest one is the one the
+	# player is most likely to still be angry about.
+	var last_thief := ""
+	var last_smasher := ""
 	for r in raids:
 		if typeof(r) != TYPE_DICTIONARY:
 			continue
@@ -1566,18 +1664,30 @@ func _on_cloud_raids(raids: Array) -> void:
 		if rid == "" or applied_raids.has(rid):
 			continue
 		fresh.append(rid)
+		# THE RAIDER, WHICH THIS FUNCTION USED TO THROW AWAY. unseen_raids has
+		# always returned `by` -- the attacker's public_player block -- and
+		# nothing here read it, so a real person robbing a real island was
+		# reported as "Someone". See the note on GRUDGE_MAX.
+		var by: Dictionary = r.get("by", {}) if typeof(r.get("by")) == TYPE_DICTIONARY else {}
 		match str(r.get("mode", "")):
 			"steal":
 				var c := int(r.get("coins", 0))
 				# maxi, because the vault moved on while the app was closed and
 				# a raid must never push a player into debt.
-				taken += mini(c, coins)
+				var got := mini(c, coins)
+				taken += got
 				coins = maxi(0, coins - c)
+				if not by.is_empty():
+					last_thief = String(by.get("name", ""))
+					_add_grudge(by, "steal", got)
 			"attack":
 				var h := int(r.get("hut", -1))
 				if h >= 0 and h < buildings.size() and int(buildings[h]) > 0:
 					buildings[h] = int(buildings[h]) - 1
 					smashed += 1
+					if not by.is_empty():
+						last_smasher = String(by.get("name", ""))
+						_add_grudge(by, "smash", 0)
 	if ids.is_empty():
 		return
 	# Recorded before the ack is attempted, not after it succeeds: the damage is
@@ -1589,12 +1699,23 @@ func _on_cloud_raids(raids: Array) -> void:
 	Cloud.ack_raids(ids)
 	_flush_save()
 	_refresh()
+	# Named, now that the name is being read. "Boris took 12K while you were
+	# away" is a sentence about a person; "Someone knocked a hut down" is a
+	# sentence about weather, and you cannot be angry at weather.
 	if taken > 0:
-		_banner("Raided while you were away — %s taken." % _fmt_compact(taken),
-				Color(0.95, 0.55, 0.3), "🏴‍☠️")
+		if last_thief != "":
+			_banner("%s took %s while you were away." % [last_thief, _fmt_compact(taken)],
+					Color(0.95, 0.55, 0.3), "🏴‍☠️")
+		else:
+			_banner("Raided while you were away — %s taken." % _fmt_compact(taken),
+					Color(0.95, 0.55, 0.3), "🏴‍☠️")
 	elif smashed > 0:
-		_banner("Someone knocked a hut down while you were away.",
-				Color(0.95, 0.55, 0.3), "🔨")
+		if last_smasher != "":
+			_banner("%s knocked a hut down while you were away." % last_smasher,
+					Color(0.95, 0.55, 0.3), "🔨")
+		else:
+			_banner("Someone knocked a hut down while you were away.",
+					Color(0.95, 0.55, 0.3), "🔨")
 
 func _login_apple() -> void:
 	if _auth != null and is_instance_valid(_auth):
@@ -1714,7 +1835,11 @@ func _process(delta: float) -> void:
 	if _boot != null:
 		return
 
-	_regen_accum += delta
+	# The Tide, on the live path. Both paths credit the accumulator in SECONDS,
+	# so the event is applied as extra seconds rather than as a divided rate --
+	# one place to be right, and the remainder logic below is untouched by it.
+	_regen_accum += _tide_seconds(delta)
+	_tide_watch()
 	if _regen_accum >= SPIN_REGEN_SECS:
 		# Subtracted, not zeroed: zeroing threw away however far past the mark
 		# the frame landed, so the meter's countdown drifted a little later
@@ -1745,7 +1870,8 @@ func _process(delta: float) -> void:
 			# animation contract, broken by the one line that did not know
 			# about it.
 			slot.set_meter(_hud_shown("spins", spins), SPIN_CAP,
-				SPIN_REGEN_SECS - _regen_accum, SPIN_REGEN_AMOUNT)
+				(SPIN_REGEN_SECS - _regen_accum) / (CV.TIDE_MULT if _tide_live() else 1.0),
+				SPIN_REGEN_AMOUNT, _tide_live())
 		if _shop_free_ready() or _piggy_full() or not _active_offer().is_empty():
 			# the gift, the piggy or an offer may have come due while playing
 			if _badges.has("shop_free") and not _badges["shop_free"].visible:
@@ -1859,6 +1985,40 @@ func _resume_from_away() -> void:
 	Alerts.set_badge(_unread_count())
 	Diag.awake(_page_name(_current_page))
 
+# =============================================================================
+#  The Spin Tide, client side
+# =============================================================================
+
+# What a frame of real time is worth to the meter right now. See CV.TIDE_PERIOD
+# for what the event is and why it boosts the meter rather than the wallet.
+func _tide_seconds(delta: float) -> float:
+	return delta * (CV.TIDE_MULT if _tide_live() else 1.0)
+
+func _tide_live() -> bool:
+	return CV.tide_live(_trusted_now())
+
+func _tide_left() -> float:
+	return maxf(0.0, CV.tide_ends(_trusted_now()) - _trusted_now())
+
+# Announced once per window, and the flag is what makes it once.
+#
+# _process runs sixty times a second and the window is four hours long, so
+# "announce it while live" without a latch is fourteen thousand toasts. The id
+# is the window's own -- derived from the global clock, so it is the same
+# integer on every device and a player who was mid-session when it opened and
+# one who launched into it both get exactly one.
+var _tide_told := -1
+
+func _tide_watch() -> void:
+	if not _tide_live():
+		return
+	var id := int(floor(_trusted_now() / CV.TIDE_PERIOD))
+	if _tide_told == id:
+		return
+	_tide_told = id
+	var mins := int(_tide_left() / 60.0)
+	_notify("events", "SPIN TIDE — spins refill twice as fast for %dh %dm" % [mins / 60, mins % 60], "🌊")
+
 # Spins that regenerated over `elapsed` seconds. Shared by the cold load and
 # the resume so the two can never drift apart.
 #
@@ -1878,7 +2038,12 @@ func _credit_time_away(elapsed: float) -> void:
 		# out the instant the player spent down to 49.
 		_regen_accum = 0.0
 		return
-	_regen_accum += elapsed
+	# The Tide, on the catch-up path, measured against the span that actually
+	# elapsed rather than against whether it happens to be live right now. A
+	# player who slept through the window gets it; one who reopens the app
+	# thirty seconds into it does not get four hours of it. See CV.tide_overlap.
+	var now := _now()
+	_regen_accum += elapsed + CV.tide_overlap(now - elapsed, now) * (CV.TIDE_MULT - 1.0)
 	var steps := int(_regen_accum / SPIN_REGEN_SECS)
 	_regen_accum -= float(steps) * SPIN_REGEN_SECS
 	var regen := steps * SPIN_REGEN_AMOUNT
@@ -3550,19 +3715,140 @@ func _intro_build_card() -> void:
 	later.pressed.connect(func() -> void: _close_popup())
 	vbox.add_child(later)
 
+
+# =============================================================================
+#  The streak, computed
+# =============================================================================
+
+# What the streak WOULD become if the bonus were claimed right now.
+#
+# Never stored between claims -- derived from `daily_last` every time it is
+# asked. A stored "is the streak alive" flag would have to be maintained by
+# something that runs while the game is shut, and nothing does.
+
+# The seven rungs, with today lit and the ones behind it ticked.
+#
+# Drawn because a ladder nobody can see is not a ladder -- the reason to come
+# back tomorrow is that tomorrow is visibly worth more than today, and a player
+# who only ever sees one number has no way to know that.
+#
+# Past day seven the row stops being a ladder and becomes a receipt: every rung
+# is behind them and the streak count is the thing on display.
+func _streak_ladder(parent: VBoxContainer, day: int) -> void:
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 6)
+	parent.add_child(row)
+	for i in STREAK_TOP:
+		var n := i + 1
+		var done: bool = day > n
+		var here: bool = day == n or (day > STREAK_TOP and n == STREAK_TOP)
+		var pip := PanelContainer.new()
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = Lagoon.KELP if done else (Lagoon.BRASS if here else Lagoon.HULL)
+		sb.set_corner_radius_all(8)
+		sb.set_border_width_all(3)
+		sb.border_color = Lagoon.BRASS_HI if here else Lagoon.BRASS_LO
+		pip.add_theme_stylebox_override("panel", sb)
+		pip.custom_minimum_size = Vector2(58, 62)
+		row.add_child(pip)
+		var col := VBoxContainer.new()
+		col.alignment = BoxContainer.ALIGNMENT_CENTER
+		col.add_theme_constant_override("separation", -1)
+		pip.add_child(col)
+		var top := Lagoon.label("\u2713" if done else str(n), UI.F_TINY,
+			Lagoon.SAND if (done or here) else Lagoon.INK_FAINT, true)
+		top.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		col.add_child(top)
+		# Spins rather than coins on the pip: the numbers are one or two digits
+		# all the way up the ladder, where the coin figures are five and six on
+		# a late island and cannot be read at 58 units wide.
+		var amt := Lagoon.label("+%d" % STREAK_SPINS[i], UI.F_TINY,
+			Lagoon.SAND if (done or here) else Lagoon.INK_SOFT, true)
+		amt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		col.add_child(amt)
+
+	if day > STREAK_TOP:
+		var held := _popup_row_label(
+			"Day %d. The rewards hold at day %d — the run is the record."
+				% [day, STREAK_TOP], UI.F_CAPTION)
+		held.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		held.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		held.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		parent.add_child(held)
+	elif day < STREAK_TOP:
+		var soon := _popup_row_label("Day %d pays %s coins, %d spins and a card."
+			% [STREAK_TOP, _fmt_compact(_streak_coins(STREAK_TOP)), STREAK_SPINS[STREAK_TOP - 1]],
+			UI.F_CAPTION)
+		soon.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		soon.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		soon.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		parent.add_child(soon)
+
+func _streak_next() -> int:
+	if daily_last <= 0.0:
+		return 1
+	var late := _trusted_now() - daily_last - DAILY_COOLDOWN
+	return streak_days + 1 if late <= STREAK_GRACE else 1
+
+# True when a streak the player already had has run out of time. Drives the one
+# honest line in the dialog: "your 12 days ended".
+func _streak_broken() -> bool:
+	return streak_days > 0 and daily_last > 0.0 \
+		and _trusted_now() - daily_last - DAILY_COOLDOWN > STREAK_GRACE
+
+# The rung day N pays. Clamped at both ends: below 1 because a hostile save can
+# say anything, and at STREAK_TOP because the ladder holds rather than cycles.
+func _streak_tier(day: int) -> int:
+	return clampi(day, 1, STREAK_TOP) - 1
+
+func _streak_coins(day: int) -> int:
+	return _scaled(STREAK_COINS[_streak_tier(day)])
+
+func _streak_spins(day: int) -> int:
+	return STREAK_SPINS[_streak_tier(day)]
+
+# Day seven and every day after it carries a card. It is the only reward in the
+# game that arrives for nothing but turning up, which is exactly what a streak
+# is being paid for.
+func _streak_has_card(day: int) -> bool:
+	return day >= STREAK_TOP
+
+# When the streak dies, if it is not renewed. What the notification counts down
+# to, and the only deadline in the game that is about losing something the
+# player built rather than something the shop is selling.
+func _streak_deadline() -> float:
+	return daily_last + DAILY_COOLDOWN + STREAK_GRACE
+
 func _open_daily() -> void:
 	var vbox := _open_popup("Daily Bonus")
 	var gift := _emoji_label("🎁", 74)
 	gift.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(gift)
 	FX.pulse_forever(gift, 1.1, 1.0)
+	# The streak, said before anything else, because it is what the dialog is
+	# now for. A broken one is named rather than quietly zeroed -- a number that
+	# vanishes with no explanation reads as a bug, and the sting of losing it is
+	# the entire mechanism.
+	var day := _streak_next()
+	if _streak_broken():
+		var lost := _popup_row_label("Your %d-day streak ended." % streak_days, UI.F_BODY)
+		lost.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		lost.add_theme_color_override("font_color", Lagoon.CORAL_LO)
+		vbox.add_child(lost)
+	var run := _popup_row_label("DAY  %d" % day, UI.F_TITLE)
+	run.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(run)
+	_streak_ladder(vbox, day)
+
 	if _daily_ready():
 		var info := _popup_row_label("Your daily reward is ready!")
 		info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		vbox.add_child(info)
 		var claim := Button.new()
-		var daily_coins := _scaled(DAILY_BONUS_COINS)
-		claim.text = "CLAIM  +%s coins, +%d spins" % [_fmt_compact(daily_coins), DAILY_BONUS_SPINS]
+		var daily_coins := _streak_coins(day)
+		var daily_spins := _streak_spins(day)
+		claim.text = "CLAIM  +%s coins, +%d spins" % [_fmt_compact(daily_coins), daily_spins]
 		claim.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
 		_candy_button(claim, Color(0.45, 0.75, 0.35))
 		FX.press_feedback(claim)
@@ -3577,16 +3863,39 @@ func _open_daily() -> void:
 			if not _daily_ready():
 				return
 			claim.disabled = true
+			# The streak is banked BEFORE daily_last moves. _streak_next reads
+			# daily_last to decide whether the run survived, so stamping the
+			# clock first makes every claim look like it landed on time and the
+			# streak could never break.
+			streak_days = day
 			daily_last = _trusted_now()
 			coins += daily_coins
 			# rewards always add — the cap only limits time-based regen
-			spins += DAILY_BONUS_SPINS
+			spins += daily_spins
+			# Day seven's card, drawn the way a chest draws one so it lands on
+			# the shelf and counts towards the set.
+			#
+			# _grant_chest_card returns the card and shows nothing, so the
+			# arrival has to be announced here -- the ladder promised "and a
+			# card" and a reward that is never seen to land is a reward the
+			# player will tell you they did not get.
+			var streak_card := {}
+			if _streak_has_card(day):
+				streak_card = _grant_chest_card(1)
 			_mission_add("daily_gift")
 			Sfx.play("jackpot", -3.0)
 			FX.confetti(self, 36)
 			FX.flash(self)
 			FX.fly_coins(self, Vector2(360, 620), _hud_labels[0]["coins"].global_position, 8)
 			_close_popup()
+			if not streak_card.is_empty():
+				_after(0.9, func() -> void:
+					var star := int(streak_card.get("stars", 1))
+					_banner("Day %d card:  %s %s" % [day,
+						String(streak_card.get("emoji", "\U01F0CF")),
+						String(streak_card.get("name", "card"))],
+						CV.STAR_COLORS[clampi(star - 1, 0, CV.MAX_STAR - 1)])
+				)
 			_update_badges()
 			_refresh()
 			_save_game()
@@ -3597,6 +3906,17 @@ func _open_daily() -> void:
 		var info := _popup_row_label("Next bonus in  %s" % _countdown_text(left))
 		info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		vbox.add_child(info)
+		# What is at stake, and the window to do it in. A player who has built
+		# a run deserves to know how long it lives without them, and it is a
+		# whole day rather than a cliff at midnight.
+		if streak_days > 0:
+			var keep := _popup_row_label(
+				"Come back within %d hours of that to keep day %d."
+					% [int(STREAK_GRACE / 3600.0), streak_days + 1], UI.F_CAPTION)
+			keep.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			keep.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			keep.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+			vbox.add_child(keep)
 
 func _claim_mission(period: String, m: Dictionary) -> void:
 	if not _mission_ready(period, m):
@@ -3725,7 +4045,86 @@ func _time_ago(ts: float) -> String:
 # holds as many entries as the log has, and you leave it the same way you leave
 # the shop.
 
+# The debt list, above the notification log because it is the part that is
+# still open. A notification is something that happened; a grudge is something
+# outstanding, and the two do not belong in one undifferentiated stream -- which
+# is what the alerts page was before this.
+#
+# Nothing here is a button. There is no "revenge" control to press, because
+# raiding is not something the player can decide to do -- it takes a hammer or
+# a raccoon triple. What the list buys is the KNOWING: the next time the reels
+# send you somewhere, two times in three it is one of these names, and now you
+# recognise it when it comes up.
+func _fill_grudges(vb: VBoxContainer) -> void:
+	if grudges.is_empty():
+		return
+	var head := HBoxContainer.new()
+	head.alignment = BoxContainer.ALIGNMENT_CENTER
+	head.add_theme_constant_override("separation", 10)
+	vb.add_child(head)
+	head.add_child(Lagoon.chip("%d  OWE  YOU" % grudges.size(), Lagoon.CORAL_LO, UI.F_CAPTION))
+
+	for g in grudges:
+		var card := _tinted_card(vb, Lagoon.CORAL_LO, false)
+		var pad := MarginContainer.new()
+		for m in [["margin_left", 14], ["margin_right", 14], ["margin_top", 12], ["margin_bottom", 12]]:
+			pad.add_theme_constant_override(m[0], m[1])
+		card.add_child(pad)
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 14)
+		pad.add_child(row)
+
+		var tok := Lagoon.token(String(g.get("emoji", "🏴")), 72.0, Lagoon.CORAL)
+		tok.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(tok)
+
+		var col := VBoxContainer.new()
+		col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		col.add_theme_constant_override("separation", 3)
+		row.add_child(col)
+
+		var who := Label.new()
+		who.text = String(g.get("name", ""))
+		who.add_theme_font_size_override("font_size", UI.F_LABEL)
+		who.add_theme_color_override("font_color", Lagoon.INK)
+		col.add_child(who)
+
+		var hits := int(g.get("hits", 1))
+		var took := int(g.get("coins", 0))
+		var what: String
+		if took > 0 and hits > 1:
+			what = "%d raids · %s coins taken" % [hits, _fmt_compact(took)]
+		elif took > 0:
+			what = "%s coins taken" % _fmt_compact(took)
+		elif hits > 1:
+			what = "%d huts knocked down" % hits
+		else:
+			what = "Knocked a hut down"
+		var line := Label.new()
+		line.text = what
+		line.add_theme_font_size_override("font_size", UI.F_CAPTION)
+		line.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		line.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		col.add_child(line)
+
+		var when := Label.new()
+		when.text = _time_ago(float(g.get("at", 0.0)))
+		when.add_theme_font_size_override("font_size", UI.F_TINY)
+		when.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+		col.add_child(when)
+
+	var note := _popup_row_label(
+		"Raid one of them back and the debt clears. The reels pick from this list first.",
+		UI.F_CAPTION)
+	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+	vb.add_child(note)
+	vb.add_child(Lagoon.divider())
+
 func _fill_alerts(vb: VBoxContainer) -> void:
+	_fill_grudges(vb)
 	if notif_log.is_empty():
 		var card := _page_card(vb)
 		var bell := _emoji_label("\U01F514", 72)
@@ -9604,6 +10003,7 @@ func _build_village_page() -> void:
 	_village_stage.add_child(village)
 	village.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	village.upgrade_requested.connect(_on_upgrade_requested)
+	slot.target_tapped.connect(_open_pick_target)
 	for slot_dict in village.get("_slots"):
 		# Building is the whole point of this page, so its buttons are kelp
 		# ("spend, and something good happens") rather than neutral glass --
@@ -10154,6 +10554,11 @@ func _offline_raids() -> void:
 	if events.is_empty():
 		return
 	for ev in events:
+		# A grudge is for something TAKEN. A blocked raid is a win -- the shield
+		# did its job -- and filing it here would pack the list with people who
+		# cost the player nothing, which is how a grudge list turns back into a
+		# log nobody reads.
+		var who := {"name": String(ev.get("npc", "")), "emoji": String(ev.get("emoji", "🏴"))}
 		match String(ev.get("kind", "")):
 			"blocked":
 				shields = maxi(0, shields - 1)
@@ -10161,12 +10566,14 @@ func _offline_raids() -> void:
 				var b := int(ev.get("building", -1))
 				if b >= 0 and b < buildings.size():
 					buildings[b] = maxi(0, int(buildings[b]) - 1)
+				_add_grudge(who, "smash", 0)
 			"steal":
 				# Clamped against the live wallet. The figure was quoted
 				# against the balance at bedtime, and a transaction Apple
 				# delivered overnight can have moved it since.
 				var take := mini(maxi(0, _i(ev.get("coins", 0))), coins)
 				coins -= take
+				_add_grudge(who, "steal", take)
 				# The rival is looked up by name rather than held by
 				# reference: the pool is restocked between sessions, and a
 				# rival who has rotated out simply keeps what they took.
@@ -10218,6 +10625,37 @@ func _alert_plan(from: float) -> Array:
 			"id": "free_gift", "at": shop_free_last + CV.SHOP_FREE_COOLDOWN,
 			"title": "Your daily gift is ready 🎁",
 			"body": "Coins, spins and a card, waiting in the shop.",
+		})
+		# THE ONE NOTIFICATION IN THIS GAME THAT IS ABOUT LOSING SOMETHING THE
+		# PLAYER BUILT, rather than something the shop is selling or something
+		# that has already happened. It is fired with three hours left, not at
+		# the deadline: a warning that arrives as the thing expires is a
+		# report, and there is nothing to be done about a report.
+		#
+		# Only from day three. A one-day streak is not something anybody is
+		# protecting, and a notification mourning it teaches the player that
+		# these can be ignored.
+		if streak_days >= 3:
+			out.append({
+				"id": "streak", "at": _streak_deadline() - 3.0 * 3600.0,
+				"title": "Your %d-day streak ends today ⚠️" % streak_days,
+				"body": "Claim the daily bonus in the next 3 hours to keep it.",
+			})
+	# The Tide OPENING, which is the one row in this plan that is an invitation
+	# rather than a report. Everything else here says what has happened or is
+	# about to stop; this says four free hours start now, and it is the only
+	# reason to schedule a notification for a moment nothing is being lost.
+	#
+	# Same honesty rule as every other row: the window is derived from the
+	# global clock, so the time this promises is the time the game will be in
+	# when it is opened, with nothing in the save to drift out of step.
+	if bool(notif_types.get("events", true)):
+		var opens := CV.tide_starts(from)
+		out.append({
+			"id": "tide", "at": opens,
+			"title": "Spin Tide 🌊",
+			"body": "Spins refill twice as fast for the next %d hours."
+				% int(CV.TIDE_WINDOW / 3600.0),
 		})
 	out.append_array(_event_alerts(from))
 	return out
@@ -10297,6 +10735,74 @@ func _ask_for_alerts() -> void:
 	no.pressed.connect(func() -> void: _close_popup())
 	vbox.add_child(no)
 
+# =============================================================================
+#  The grudge list
+# =============================================================================
+
+# Somebody took something. Remember who, and what.
+#
+# A repeat offender is ONE entry that grows, not eight copies of the same face:
+# a list of "Boris, Boris, Boris, Boris" is a log, and a log is not a grudge.
+# The tally is what makes the name worth going after.
+#
+# `who` is whatever shape the caller has -- a local rival, or the `by` block
+# straight off unseen_raids, which is the same shape. Only the display fields
+# are kept; the vault and the buildings would be stale within the hour.
+func _add_grudge(who: Dictionary, kind: String, taken: int) -> void:
+	var name := String(who.get("name", "")).strip_edges()
+	if name == "":
+		return
+	for g in grudges:
+		if String(g.get("name", "")) == name:
+			g["hits"] = int(g.get("hits", 1)) + 1
+			g["coins"] = int(g.get("coins", 0)) + maxi(0, taken)
+			g["kind"] = kind
+			g["at"] = _now()
+			grudges.erase(g)
+			grudges.push_front(g)
+			return
+	grudges.push_front({
+		"name": name,
+		"emoji": String(who.get("emoji", "🏴")),
+		"kind": kind,
+		"coins": maxi(0, taken),
+		"hits": 1,
+		"at": _now(),
+	})
+	while grudges.size() > GRUDGE_MAX:
+		grudges.pop_back()
+
+# Settled. Called when a raid the PLAYER launched lands on somebody.
+#
+# Returns what was owed, so the caller can say so -- a grudge that clears
+# silently is a list that empties itself, which is not the same feeling at all.
+func _settle_grudge(name: String) -> Dictionary:
+	for g in grudges:
+		if String(g.get("name", "")) == name:
+			grudges.erase(g)
+			return g
+	return {}
+
+func _grudge_names() -> Array:
+	var out := []
+	for g in grudges:
+		out.append(String(g.get("name", "")))
+	return out
+
+# The rival to point the next raid at, if one is owed and the dice agree.
+# Looked up in the live pool, because a grudge entry carries a face and a name
+# and deliberately not a vault -- what they are worth is decided now, not when
+# they robbed you.
+func _grudge_target() -> Dictionary:
+	if grudges.is_empty() or randf() > GRUDGE_TARGET_ODDS:
+		return {}
+	var wanted := _grudge_names()
+	var pool := []
+	for n in npcs:
+		if wanted.has(String(n.get("name", ""))):
+			pool.append(n)
+	return {} if pool.is_empty() else pool.pick_random()
+
 func _maybe_revenge() -> void:
 	if not revenge_pending:
 		return
@@ -10316,6 +10822,7 @@ func _maybe_revenge() -> void:
 	else:
 		var stolen: int = mini(_scaled(500), int(coins * 0.1))
 		coins -= stolen
+		_add_grudge(npc, mode, stolen)
 		Sfx.play("attack", -4.0)
 		FX.shake(slot_page, 10.0, 6)
 		var hit_txt: String
@@ -10338,6 +10845,175 @@ func _maybe_revenge() -> void:
 # Tops the pool back up to strength with rivals you have not met yet, and
 # retires anyone there is nothing left to take: a flattened island with an
 # empty vault is not an opponent, it is a chore.
+
+# =============================================================================
+#  Choosing who to rob
+# =============================================================================
+#
+# The audit scored "sense of control" 3 out of 5, and the missing piece was
+# this: the game decided who you raided and you watched. matchmaking.gd is
+# documented as theatre -- the sweep is a shuffle of faces over a rival that
+# was locked in before the reels moved.
+#
+# WHY THE CHOICE IS HERE AND NOT AFTER THE SPIN. The card above the wheel is a
+# promise, and the promise is load-bearing: "what the card promised is what the
+# search finds, every time". A chooser that opens when the hammers land would
+# be the machine renegotiating a bet already placed. Opened from the card,
+# before a single spin is staked, the promise is untouched -- the player simply
+# gets to decide what it says.
+#
+# THREE, AND THEY ARE THREE DIFFERENT ARGUMENTS, not three samples:
+#
+#   the vault   -- the richest island in the pool
+#   the debt    -- somebody who has taken from you and not paid for it
+#   the soft one -- no shield, so an attack cannot be swatted away
+#
+# A shield is the whole trade. It blocks an attack outright and pays nothing,
+# so the fat vault with a shield on it is a real gamble against the undefended
+# one next to it -- and which is right depends on whether the reels hand you
+# hammers or raccoons, which nobody knows yet. That is a decision rather than
+# a preference.
+# Each candidate carries the reason it is on the list, decided by the SEAT it
+# filled rather than read back off the rival afterwards.
+#
+# Derived reasons collapse: the richest island in the pool is often also an
+# undefended one, and a chooser showing "NO SHIELD" twice has three cards and
+# two arguments. What the player needs is one distinct reason per row.
+func _rival_choices() -> Array:
+	if npcs.size() < 3:
+		_stock_rivals()
+	if npcs.is_empty():
+		return []
+	var picked := []
+	var names := []
+
+	var add := func(n: Dictionary, tag: String, tint: Color) -> void:
+		if n.is_empty() or names.has(String(n.get("name", ""))) or picked.size() >= 3:
+			return
+		names.append(String(n.get("name", "")))
+		picked.append({"npc": n, "tag": tag, "tint": tint})
+
+	# The debt first: the only seat with a story attached, and the only one
+	# whose reason is about the player rather than about the target.
+	var owed := _grudge_names()
+	for n in npcs:
+		if owed.has(String(n.get("name", ""))):
+			add.call(n, "OWES YOU", Lagoon.CORAL_LO)
+			break
+
+	var richest := {}
+	for n in npcs:
+		if names.has(String(n.get("name", ""))):
+			continue
+		if richest.is_empty() or int(n.get("coins", 0)) > int(richest.get("coins", 0)):
+			richest = n
+	add.call(richest, "RICHEST VAULT", Lagoon.BRASS_MID)
+
+	# The undefended one, which is only a distinct offer if the fat vault was
+	# NOT already undefended. When it was, this seat goes to the best shielded
+	# island instead -- the gamble, which is the argument the row is for.
+	var soft := {}
+	var hard := {}
+	for n in npcs:
+		if names.has(String(n.get("name", ""))):
+			continue
+		if bool(n.get("shield", false)):
+			if hard.is_empty() or int(n.get("coins", 0)) > int(hard.get("coins", 0)):
+				hard = n
+		elif soft.is_empty() or int(n.get("coins", 0)) > int(soft.get("coins", 0)):
+			soft = n
+	if bool(richest.get("shield", false)):
+		add.call(soft, "NO SHIELD", Lagoon.KELP_LO)
+		add.call(hard, "SHIELDED", Color(0.42, 0.66, 0.88))
+	else:
+		add.call(hard, "SHIELDED", Color(0.42, 0.66, 0.88))
+		add.call(soft, "NO SHIELD", Lagoon.KELP_LO)
+
+	# Whatever is left, if the pool could not supply three distinct arguments.
+	for n in npcs:
+		add.call(n, "SHIELDED" if bool(n.get("shield", false)) else "NO SHIELD",
+			Color(0.42, 0.66, 0.88) if bool(n.get("shield", false)) else Lagoon.KELP_LO)
+	return picked
+
+func _open_pick_target() -> void:
+	if _raiding() or _popup != null or slot == null or slot.is_spinning():
+		return
+	var choices := _rival_choices()
+	if choices.is_empty():
+		return
+	var vbox := _open_popup("Pick Your Mark")
+
+	var lead := _popup_row_label(
+		"Whoever is on the card is who the raccoons sail to. A shield blocks a hammer — it does nothing against a raid on the vault.",
+		UI.F_CAPTION)
+	lead.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lead.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lead.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	vbox.add_child(lead)
+
+	for entry in choices:
+		var here: Dictionary = entry["npc"]
+		var label := String(entry["tag"])
+		var tint: Color = entry["tint"]
+		var chosen: bool = String(here.get("name", "")) == String(next_target.get("name", ""))
+		var card := _tinted_card(vbox, tint, chosen)
+		var btn := Button.new()
+		btn.flat = true
+		btn.custom_minimum_size = Vector2(0, 96)
+		btn.mouse_filter = Control.MOUSE_FILTER_STOP
+		card.add_child(btn)
+		var pad := MarginContainer.new()
+		for m in [["margin_left", 14], ["margin_right", 14], ["margin_top", 10], ["margin_bottom", 10]]:
+			pad.add_theme_constant_override(m[0], m[1])
+		pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		card.add_child(pad)
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 14)
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		pad.add_child(row)
+
+		var tok := Lagoon.token(String(here.get("emoji", "\U01F3F4")), 68.0, tint)
+		tok.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		tok.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(tok)
+
+		var col := VBoxContainer.new()
+		col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		col.add_theme_constant_override("separation", 2)
+		col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(col)
+		var who := Lagoon.label(String(here.get("name", "")), UI.F_LABEL, Lagoon.INK, true)
+		col.add_child(who)
+		var why := Lagoon.label(label, UI.F_TINY, tint, true)
+		col.add_child(why)
+
+		# Quoted exactly as the raid will pay it -- their vault, the island
+		# curve and the stake currently on the BET button -- because a figure
+		# on a chooser that does not match the figure on the card is the same
+		# lie twice.
+		var pot := Lagoon.title(_fmt_compact(int(round(int(here.get("coins", 0))
+			* _economy_mult())) * slot.bet), UI.F_SUBHEAD, Lagoon.SAND,
+			Lagoon.BRASS_LO.darkened(0.3))
+		pot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		pot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(pot)
+
+		btn.pressed.connect(func() -> void:
+			next_target = here
+			if slot != null:
+				slot.set_target(next_target, _economy_mult(), _owes_me(next_target))
+			Sfx.play("pop", -8.0)
+			_close_popup()
+			_save_game()
+		)
+
+	var note := _popup_row_label("Tap the card above the wheel any time to change your mind.", UI.F_TINY)
+	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	note.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+	vbox.add_child(note)
+
 func _stock_rivals() -> void:
 	var keep := []
 	for n in npcs:
@@ -10395,11 +11071,23 @@ func _pick_next_target() -> void:
 	# exactly the dictionary the local pool produces, so nothing downstream --
 	# the card, the search, the island, the payout -- can tell the difference,
 	# and nothing downstream is allowed to.
+	# SOMEBODY WHO OWES YOU COMES FIRST, two times in three.
+	#
+	# Ahead of the server's pick on purpose. A fresh stranger is the better
+	# offer by every measure except the one that matters here: the player has
+	# a reason to want this particular island, and handing them a stranger
+	# instead is the game forgetting what happened to them overnight.
+	var owed := _grudge_target()
+	if not owed.is_empty():
+		next_target = owed
+		if slot != null:
+			slot.set_target(next_target, _economy_mult(), true)
+		return
 	if not _server_rival.is_empty():
 		next_target = _server_rival
 		_server_rival = {}
 		if slot != null:
-			slot.set_target(next_target, _economy_mult())
+			slot.set_target(next_target, _economy_mult(), _owes_me(next_target))
 		return
 	if npcs.is_empty():
 		_stock_rivals()
@@ -10411,7 +11099,13 @@ func _pick_next_target() -> void:
 		if next_target.get("name", "") != last:
 			break
 	if slot != null:
-		slot.set_target(next_target, _economy_mult())
+		slot.set_target(next_target, _economy_mult(), _owes_me(next_target))
+
+# A rival the server handed us may happen to be on the list -- they raided this
+# island and the matchmaker put them back in front of us by chance. The card
+# should still say so.
+func _owes_me(npc: Dictionary) -> bool:
+	return _grudge_names().has(String(npc.get("name", "")))
 
 # Ask the server for somebody, and take whatever it gives -- which may be a
 # person, may be one of the seeded bots, and never says which. That silence is
@@ -10662,6 +11356,11 @@ func _on_visit_finished(result: Dictionary) -> void:
 	_piggy_add(CV.PIGGY_PER_RAID)
 	_raid_target = {}
 	_last_raided = npc
+	# Settled. Held rather than announced here: the raid's own banner ("You
+	# stole 4.2K from Boris") lands a few lines below and two banners on top of
+	# each other is one banner nobody reads. It goes out after, on a delay, so
+	# it arrives as the second beat instead of competing with the first.
+	var owed := _settle_grudge(String(npc.get("name", "")))
 	# The island has already shown the player the figure and multiplied it in
 	# front of them, so what comes back here is final. All that is left is to
 	# put it in the wallet and say whose it was.
@@ -10707,6 +11406,25 @@ func _on_visit_finished(result: Dictionary) -> void:
 			_land_loot(reward)
 		if randf() < 0.35:
 			revenge_pending = true
+	# The second beat: the debt this raid just cleared. Delayed past the haul
+	# banner rather than stacked on it -- and it says what was owed, because a
+	# grudge that clears silently is just a list getting shorter.
+	if not owed.is_empty():
+		_after(1.6, func() -> void:
+			var hits := int(owed.get("hits", 1))
+			var line: String
+			if int(owed.get("coins", 0)) > 0:
+				line = "SETTLED with %s — they took %s off you" % [
+					String(owed.get("name", "")), _fmt_compact(int(owed["coins"]))]
+			elif hits > 1:
+				line = "SETTLED with %s — %d raids repaid" % [String(owed.get("name", "")), hits]
+			else:
+				line = "SETTLED with %s" % String(owed.get("name", ""))
+			Sfx.play("build", -5.0)
+			_banner(line, Lagoon.KELP_HI, String(owed.get("emoji", "🏴")))
+			_update_badges()
+		)
+
 	# The card only names the next rival once this one's result has been read.
 	# Flipping it the instant the island slides away puts a new name under a
 	# banner still crediting the old one, which is the exact confusion the
@@ -11318,7 +12036,11 @@ func _refresh() -> void:
 	if slot != null:
 		# The meter takes the shown figure too, so the pill and the bar under
 		# the reels never disagree about how many spins you are holding.
-		slot.set_meter(shown_spins, SPIN_CAP, SPIN_REGEN_SECS - _regen_accum, SPIN_REGEN_AMOUNT)
+		# The countdown is divided, not the rate: what the player wants off this
+		# label is when the next spins land, and during a Tide that is sooner.
+		slot.set_meter(shown_spins, SPIN_CAP,
+			(SPIN_REGEN_SECS - _regen_accum) / (CV.TIDE_MULT if _tide_live() else 1.0),
+			SPIN_REGEN_AMOUNT, _tide_live())
 		slot.set_target(next_target, _economy_mult())
 
 # =============================================================================
@@ -11699,6 +12421,8 @@ func _save_dict() -> Dictionary:
 		"revenge": revenge_pending,
 		"npcs": npcs,
 		"daily_last": daily_last,
+		"grudges": grudges,
+		"streak_days": streak_days,
 		"intro_spins": intro_spins,
 		"intro_greeted": intro_greeted,
 		"intro_build_tip": intro_build_tip,
@@ -11867,6 +12591,10 @@ func _load_game() -> void:
 	island_level = clampi(_i(data.get("island_level", data.get("village_level", 1)), 1), 1, MAX_ISLAND)
 	revenge_pending = _b(data.get("revenge", false))
 	daily_last = _f(data.get("daily_last", 0.0))
+	# Clamped, not trusted. _streak_tier indexes STREAK_COINS with it, so a
+	# save saying 2,000,000,000 is an out-of-bounds read rather than a big
+	# number -- and a negative one would index from the end of the array.
+	streak_days = maxi(0, _i(data.get("streak_days", 0)))
 	# THE DEFAULTS HERE ARE "ALREADY DONE", WHICH IS THE OPPOSITE OF THE VAR
 	# INITIALISERS, AND THAT IS THE WHOLE MECHANISM.
 	#
@@ -11879,6 +12607,28 @@ func _load_game() -> void:
 	# A genuine first run never gets here -- _load_game returns early on an
 	# empty read -- so it keeps the initialisers, which are the fresh ones. No
 	# migration, no version stamp, and nothing to remove later.
+	# Coerced entry by entry rather than trusted: this list drives a banner, a
+	# page and the raid matcher, and a save that says `grudges` is a string
+	# would take all three down on the next launch.
+	grudges = []
+	var _gr = data.get("grudges", [])
+	if typeof(_gr) == TYPE_ARRAY:
+		for _g in (_gr as Array):
+			if typeof(_g) != TYPE_DICTIONARY:
+				continue
+			var nm := String((_g as Dictionary).get("name", "")).strip_edges()
+			if nm == "":
+				continue
+			grudges.append({
+				"name": nm,
+				"emoji": String((_g as Dictionary).get("emoji", "\U01F3F4")),
+				"kind": String((_g as Dictionary).get("kind", "steal")),
+				"coins": maxi(0, _i((_g as Dictionary).get("coins", 0))),
+				"hits": maxi(1, _i((_g as Dictionary).get("hits", 1))),
+				"at": _f((_g as Dictionary).get("at", 0.0)),
+			})
+		if grudges.size() > GRUDGE_MAX:
+			grudges = grudges.slice(0, GRUDGE_MAX)
 	intro_spins = maxi(0, _i(data.get("intro_spins", INTRO_REEL.size())))
 	intro_greeted = _b(data.get("intro_greeted", true))
 	intro_build_tip = _b(data.get("intro_build_tip", true))
