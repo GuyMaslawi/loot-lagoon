@@ -53,6 +53,37 @@ const CARD := Vector2(438, 96)
 # do not widen it without looking at what lands on the brass.
 const CABINET_INSET := 66.0
 
+# =============================================================================
+#  How much of the cabinet the reel window is allowed to be
+# =============================================================================
+#
+# The window used to be the column's only expanding child, so it swallowed the
+# entire remainder of the machine: every pixel the sign, the meter, the button
+# and the hint did not claim went into three cells. On a tall phone that made
+# the reel face most of the cabinet and left the brass around it a frame one
+# cell wide -- the machine stopped reading as an object with reels in it and
+# started reading as a grid with a rim. Guy, 2026-09-04: bring the spinning
+# part down in height and pull its sides in.
+#
+# HEIGHT IS A SHARE, NOT A NUMBER. The cabinet is however tall the phone leaves
+# it, so a fixed window height is cropped on a short screen and floating on a
+# tall one. The window keeps this fraction of the free space and the rest goes
+# back to the brass, split evenly above and below so the window stays optically
+# centred between the sign and the meter.
+const WINDOW_SHARE := 0.80
+
+# ...and the sides come in by this much on top of the 20 the column already
+# holds off the cabinet wall. Wider than this and the three symbols start to
+# read as small rather than the window as narrow.
+const WINDOW_INSET := 42
+
+# The hero button gets its own gutter for the same reason. It is still the
+# first thing on the page the eye lands on at this size -- past a point extra
+# area stops saying "important" and starts saying "there was nothing else to
+# put here", which is what a full-width 124px slab was doing.
+const SPIN_INSET := 30
+const SPIN_HEIGHT := 104
+
 var spin_button: SpinButton
 var bet_button: Button
 var auto_on := false
@@ -169,10 +200,16 @@ func _build_cabinet() -> void:
 	_ribbon.add_child(_ribbon_label)
 	_ribbon_label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
+	col.add_child(_brass_gap())
+	var frame := MarginContainer.new()
+	frame.add_theme_constant_override("margin_left", WINDOW_INSET)
+	frame.add_theme_constant_override("margin_right", WINDOW_INSET)
+	frame.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	frame.size_flags_stretch_ratio = WINDOW_SHARE
+	col.add_child(frame)
 	var window := PanelContainer.new()
 	window.add_theme_stylebox_override("panel", _window_style())
-	window.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	col.add_child(window)
+	frame.add_child(window)
 	var wpad := MarginContainer.new()
 	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
 		wpad.add_theme_constant_override(m, 9)
@@ -180,18 +217,23 @@ func _build_cabinet() -> void:
 	reels = Reels.new()
 	reels.reel_stopped.connect(_on_reel_stopped)
 	wpad.add_child(reels)
+	col.add_child(_brass_gap())
 
 	col.add_child(_build_meter())
 
+	var spin_frame := MarginContainer.new()
+	spin_frame.add_theme_constant_override("margin_left", SPIN_INSET)
+	spin_frame.add_theme_constant_override("margin_right", SPIN_INSET)
+	col.add_child(spin_frame)
 	spin_button = SpinButton.new()
-	spin_button.custom_minimum_size = Vector2(0, 124)
+	spin_button.custom_minimum_size = Vector2(0, SPIN_HEIGHT)
 	spin_button.pressed.connect(_on_spin_pressed)
 	spin_button.held.connect(func() -> void:
 		if not auto_on:
 			set_auto(true)
 			auto_toggled.emit(true)
 	)
-	col.add_child(spin_button)
+	spin_frame.add_child(spin_button)
 
 	# Printed on the cabinet's own brass, which is a mid tone -- sand on it is
 	# 3.36 : 1 with nothing to separate the two. Given the rim that every other
@@ -218,6 +260,17 @@ func _build_cabinet() -> void:
 		rivet.offset_top += 18.0 if top else -42.0
 		rivet.offset_right = rivet.offset_left + 24.0
 		rivet.offset_bottom = rivet.offset_top + 24.0
+
+# The half of the leftover height the window gave back, above it and below it.
+# Two of these and the window between them come to a whole, so the split is
+# read off WINDOW_SHARE rather than tuned separately -- change the share and
+# the brass follows it.
+func _brass_gap() -> Control:
+	var gap := Control.new()
+	gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	gap.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	gap.size_flags_stretch_ratio = (1.0 - WINDOW_SHARE) * 0.5
+	return gap
 
 # BET on the left, then how many spins you are holding and when the next
 # refill lands -- the two numbers that decide whether you press the button.

@@ -113,7 +113,14 @@ func _reel(path: String, shots: int, gap: float) -> void:
 	get_tree().quit()
 
 func _spin(game: Control) -> void:
-	await get_tree().create_timer(0.3).timeout
+	# Waits out the boot rather than a fixed 0.3s, which is what _open_page and
+	# _raid already do. The slot page does not exist until _run_boot() has built
+	# it, so the old delay called _on_spin_requested() against a null `slot` and
+	# the harness died on "Nonexistent function 'is_spinning' in base 'Nil'" --
+	# a shot of the reels in motion has never actually come out of SPIN=1.
+	while game.get("_boot") != null:
+		await get_tree().process_frame
+	await get_tree().create_timer(0.4).timeout
 	game.call("_on_spin_requested")
 
 func _open_page(game: Control, key: String) -> void:
