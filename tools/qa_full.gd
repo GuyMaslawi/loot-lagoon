@@ -589,11 +589,24 @@ func _t_regen() -> void:
 	_chk("many short absences pay what one long one does", many == one,
 		"%d vs %d" % [many, one])
 
+	# THE TIDE IS PART OF THIS SUM AND THE CHECK USED TO PRETEND IT WAS NOT.
+	#
+	# _credit_time_away deliberately pays the Tide's doubled rate over whatever
+	# part of the absence fell inside a window -- a player who slept through it
+	# gets it. The window is four hours out of every thirty, so a flat
+	# `4 * SPIN_REGEN_AMOUNT` passed for twenty-six hours a day and failed for
+	# four, reporting 24 spins where it wanted 12 and blaming the game for
+	# arithmetic the game had right. The expectation is computed the same way
+	# the credit is instead.
 	m.spins = 0
 	m._regen_accum = 0.0
-	m._credit_time_away(m.SPIN_REGEN_SECS * 4.0)
-	_chk("four regen periods pay four times the regen amount",
-		m.spins == 4 * m.SPIN_REGEN_AMOUNT, "%d spins" % m.spins)
+	var span: float = m.SPIN_REGEN_SECS * 4.0
+	var at: float = m._now()
+	var paid: float = span + CV.tide_overlap(at - span, at) * (CV.TIDE_MULT - 1.0)
+	var want: int = int(paid / m.SPIN_REGEN_SECS) * m.SPIN_REGEN_AMOUNT
+	m._credit_time_away(span)
+	_chk("four regen periods pay four times the regen amount, plus any Tide",
+		m.spins == want, "%d spins, wanted %d" % [m.spins, want])
 
 	m.spins = 0
 	m._regen_accum = 0.0

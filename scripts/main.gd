@@ -902,6 +902,18 @@ func _fake_clan() -> void:
 		for i in arr.size():
 			arr[i] = 2
 
+	# DEMO_CLAN_SOLO=1 is the state EVERY founder sees first, and the fake
+	# above can never reach it: a clan one second old -- one member, nobody
+	# asking, an open door. It is this page's emptiest legal form, which makes
+	# it the one to look at when somebody says the clan page looks empty.
+	if OS.has_environment("DEMO_CLAN_SOLO"):
+		my_clan["members"] = [roster[0]]
+		my_clan["open"] = true
+		gift_budget = {"sent": 0, "give_cap": 5, "got": 0, "receive_cap": 3}
+		clan_news = {"invites": 0, "requests": 0}
+		_clan_fake_invites = []
+		_clan_fake_requests = []
+
 func _shot_give_card() -> void:
 	var members: Array = my_clan.get("members", [])
 	var who: Dictionary = members[1] if members.size() > 1 else {"id": "x", "name": "Dave"}
@@ -4580,18 +4592,39 @@ func _clan_roster_ui(vb: VBoxContainer) -> void:
 	nm.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	title.add_child(nm)
 
-	var got := int(gift_budget.get("got", 0))
-	var rcap := int(gift_budget.get("receive_cap", 3))
-	var sent := int(gift_budget.get("sent", 0))
-	var gcap := int(gift_budget.get("give_cap", 5))
-	var budget := _popup_row_label("Given today  %d/%d      ·      Received  %d/%d"
-		% [sent, gcap, got, rcap], UI.F_CAPTION)
-	budget.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	budget.add_theme_color_override("font_color", Lagoon.INK_SOFT)
-	head.add_child(budget)
-
+	# A CLAN OF ONE IS THE STATE EVERY CLAN STARTS IN, and until this it was the
+	# state the page had nothing to say about. It printed a daily giving budget
+	# nobody could spend and told the founder to tap a clanmate, over a roster
+	# that held only them -- an instruction with nothing on the page to obey it
+	# on, which is what makes four working controls read as an empty screen.
+	#
+	# So the two lines that only mean something in company are held back until
+	# there is company, and the founder is told what to do next instead. The
+	# roster still draws their own row, because a clan that does not show you in
+	# it reads as one you failed to join.
 	var members: Array = my_clan.get("members", [])
+	var alone := members.size() <= 1
+	# Whether this build can recruit at all -- see the migration gate below. A
+	# solo line that says "invite a player by name" on a project without the
+	# INVITE button is the same broken promise one sentence smaller.
+	var can_recruit := _clan_fake or Cloud.clan_extras_ready()
+
+	if not alone:
+		var got := int(gift_budget.get("got", 0))
+		var rcap := int(gift_budget.get("receive_cap", 3))
+		var sent := int(gift_budget.get("sent", 0))
+		var gcap := int(gift_budget.get("give_cap", 5))
+		var budget := _popup_row_label("Given today  %d/%d      ·      Received  %d/%d"
+			% [sent, gcap, got, rcap], UI.F_CAPTION)
+		budget.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		budget.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		head.add_child(budget)
+
+	var solo_line := "Nobody else is here yet. Invite a player by name, or leave the door open and let people find you in the clan list." \
+		if can_recruit else \
+		"Nobody else is here yet. Players browsing the clan list can find you and join."
 	var sub := _popup_row_label(
+		solo_line if alone else
 		"Tap a clanmate to give them one of your spare cards. Gold cards can never be sent.",
 		UI.F_CAPTION)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -4608,7 +4641,7 @@ func _clan_roster_ui(vb: VBoxContainer) -> void:
 	# that refuses is the exact failure the "Clans open soon" card exists to
 	# avoid, and an INVITE button that refuses is the same thing one screen in.
 	# The roster, the browse list and card giving all work regardless.
-	if _clan_fake or Cloud.clan_extras_ready():
+	if can_recruit:
 		# Recruiting. Any member may do it -- see the migration for why the
 		# owner is not made a bottleneck on the only thing that grows a clan.
 		var ask := Button.new()
