@@ -33,6 +33,14 @@ func _ready() -> void:
 			# screen and the island behind it -- without waiting on a triple.
 			if OS.has_environment("RAID"):
 				_raid.call_deferred(game, OS.get_environment("RAID"))
+			# SCORE=<n>[:<tier>] parks the tournament n points under a rung and
+			# then scores a build, which is the only way to watch the whole
+			# sequence Guy asked for -- points flying to the trophy, the trophy
+			# pressing itself, the bar rising and the prize landing. In play it
+			# takes a real seventy-two hour cycle and a couple of thousand
+			# points to arrive at, and it is about six seconds long.
+			if OS.has_environment("SCORE"):
+				_score.call_deferred(game, OS.get_environment("SCORE"))
 		"match":
 			# The search screen on its own, no boot and no reels: MATCH=found
 			# jumps past the sweep so the rival card can be judged at rest.
@@ -59,8 +67,42 @@ func _ready() -> void:
 	# GRANT owns the capture when it is set: the reward fires a fixed moment
 	# after a boot whose length is not fixed, so a SHOT_DELAY measured from
 	# start-up lands wherever it likes. _grant shoots from the grant instead.
-	if OS.has_environment("SHOT") and not OS.has_environment("GRANT"):
+	# SCORE owns it for the same reason.
+	if OS.has_environment("SHOT") and not OS.has_environment("GRANT") \
+			and not OS.has_environment("SCORE"):
 		_shoot.call_deferred()
+
+# A tournament rung being crossed, from the outside. SCORE=<n>[:<tier>] parks
+# the score n points under rung `tier` -- the last rung is the interesting one,
+# because taking it rolls the whole track over underneath the prize that is
+# still landing.
+func _score(game: Control, spec: String) -> void:
+	while game.get("_boot") != null:
+		await get_tree().process_frame
+	await get_tree().create_timer(1.6).timeout
+	var parts := spec.split(":")
+	var under := int(parts[0])
+	var caps: Dictionary = game.get_script().get_script_constant_map()
+	var tiers: Array = caps.get("TOURNEY_TIERS", [])
+	var tier := clampi(int(parts[1]) if parts.size() > 1 else 0, 0, tiers.size() - 1)
+	var at: int = int((tiers[tier] as Dictionary)["at"]) if not tiers.is_empty() else 2500
+	game.set("tourney_id", game.call("_tourney_now_id"))
+	game.set("tourney_lap", 0)
+	game.set("tourney_lap_base", 0)
+	# Every rung below the one being crossed is already taken, or the board opens
+	# on three unclaimed rungs and the auto-claim is not the only thing moving.
+	var taken := []
+	for i in tier:
+		taken.append(i)
+	game.set("tourney_claimed", taken)
+	game.set("tourney_points", maxi(0, at - under))
+	game.call("_refresh")
+	await get_tree().process_frame
+	game.call("_tourney_add", "build", 1, Vector2(360, 700))
+	if OS.has_environment("SHOT"):
+		await _reel(OS.get_environment("SHOT"),
+			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 9,
+			float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.22)
 
 func _land(m: Control) -> void:
 	await get_tree().create_timer(0.45).timeout
@@ -97,6 +139,45 @@ func _grant(game: Control, spec: String) -> void:
 			game.call("_grant_shields", n, Vector2(360, 760))
 		"spins":
 			game.call("_grant_spins", n, Vector2(360, 760))
+		# GRANT=cards:3 draws a handful and shows the chest dialog they arrive
+		# in -- the NEW badge on each first copy, and the stars leaving those
+		# cards for the pill at the top. In play it costs a chest.
+		"cards":
+			# A shelf with holes in it, or every draw comes back a spare and the
+			# dialog has nothing new on it to look at.
+			var owned: Dictionary = game.get("col_owned")
+			var fresh_map: Dictionary = game.get("col_new")
+			for id in owned:
+				var arr: Array = owned[id]
+				for i in arr.size():
+					arr[i] = false
+				# The unseen markers go with them. A previous run of this hook
+				# leaves them on disk, and a badge on a set whose cards have just
+				# been un-owned is a state the game itself cannot produce.
+				var farr: Array = fresh_map.get(id, [])
+				for i in farr.size():
+					farr[i] = false
+			game.call("_refresh")
+			await get_tree().process_frame
+			var cards := []
+			for _i in n:
+				cards.append(game.call("_grant_chest_card", 2))
+			# GRANT=cards:6:shelf and :set skip the dialog and go and look at
+			# where the badge lands afterwards -- the shelf tile that says how
+			# many arrived, and the card in the grid wearing the tab.
+			var where := str(parts[2]) if parts.size() > 2 else ""
+			if where == "":
+				game.call("_show_chest_result", cards, "Chest Opened!")
+				return
+			if where == "set":
+				for c in cards:
+					if not bool((c as Dictionary).get("dup", true)):
+						game.set("col_open", str((c as Dictionary).get("set_id", "")))
+						break
+			# _goto fills the page on its way in. Filling it again here draws a
+			# SECOND copy -- and the NEW badges are spent by the first draw, so
+			# the shot came back with none of the thing it was taken to look at.
+			game.call("_goto", (game.get("pages") as Dictionary)["collections"])
 	if OS.has_environment("SHOT"):
 		await _reel(OS.get_environment("SHOT"),
 			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 9,

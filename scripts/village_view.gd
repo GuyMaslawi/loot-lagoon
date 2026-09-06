@@ -143,6 +143,12 @@ func set_island(level: int) -> void:
 func is_constructing(index: int) -> bool:
 	return _constructing.has(index)
 
+# Is anything on the island mid-build? A scaffold runs for 2.2 seconds and pays
+# out in a callback at the end of it, so anything that wants to take the screen
+# has to wait for the hut to finish going up first.
+func any_constructing() -> bool:
+	return not _constructing.is_empty()
+
 func refresh(buildings: Array, coins: int, costs: Array) -> void:
 	for i in _slots.size():
 		if _constructing.has(i):

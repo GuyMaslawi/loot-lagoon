@@ -1,28 +1,49 @@
 class_name FX
 extends RefCounted
 
+# One flying object, however the game happens to have art for it.
+#
+# NOT EVERY SYMBOL HAS A TEXTURE, and the two flight helpers below used to
+# disagree about that. `fly_coins` fell back to an emoji; `deliver` handed the
+# TextureRect a null and flew an invisible square from one side of the screen
+# to the other. Stars are the case that exposed it -- there is no
+# symbols/star.png and there does not need to be -- so both go through here and
+# a missing texture is a drawn character rather than nothing at all.
+static func symbol_node(symbol: String, emoji: String, px: float) -> Control:
+	var t := CV.symbol_tex(symbol)
+	if t != null:
+		var tr := TextureRect.new()
+		tr.texture = t
+		tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		tr.size = Vector2(px, px)
+		return tr
+	var l := Label.new()
+	l.text = emoji if emoji != "" else CV.SYMBOL_EMOJI.get(symbol, "\u2b50")
+	l.add_theme_font_override("font", CV.emoji_font())
+	# The glyph fills a box the caller sized for a texture, so the point size is
+	# taken off that box rather than fixed -- otherwise a 76px delivery and a
+	# 44px flight are the same drawing at the same size and only one of them is
+	# the size it asked for.
+	l.add_theme_font_size_override("font_size", int(px * 0.68))
+	l.size = Vector2(px, px)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	return l
+
 # Flies a handful of one symbol from a point on screen to the counter it pays
 # into. `symbol` picks which: coins to the purse, bolts to the spin meter.
+#
+# `z` is for the flights that happen while a modal is up. A popup sits at
+# z_index 120, so a reward flying to the top bar from inside an open dialog has
+# to be told to draw over it or the player watches nothing at all leave the
+# card they just opened.
 static func fly_coins(parent: Control, from: Vector2, to: Vector2, count: int,
-		symbol := "coin", emoji := "🪙") -> void:
-	var t := CV.symbol_tex(symbol)
+		symbol := "coin", emoji := "🪙", z := 100) -> void:
 	for i in count:
-		var node: Control
-		if t != null:
-			var tr := TextureRect.new()
-			tr.texture = t
-			tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-			tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-			tr.size = Vector2(44, 44)
-			node = tr
-		else:
-			var l := Label.new()
-			l.text = emoji
-			l.add_theme_font_override("font", CV.emoji_font())
-			l.add_theme_font_size_override("font_size", 30)
-			node = l
+		var node := symbol_node(symbol, emoji, 44.0)
 		node.position = from + Vector2(randf_range(-40, 40), randf_range(-30, 30))
-		node.z_index = 100
+		node.z_index = z
 		node.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		parent.add_child(node)
 		var tw := parent.create_tween()
@@ -213,8 +234,10 @@ static func smoke(parent: Control, pos: Vector2, count := 9, rise := 210.0,
 
 # An expanding shockwave ring. Drawn as a hollow rounded box so it costs one
 # node and no shader; at these radii the corner rounding is a circle.
+# `z` for the same reason fly_coins has one: a shockwave fired from inside an
+# open dialog has to be told to draw over it.
 static func ring(parent: Control, center: Vector2, color: Color, to_r: float,
-		dur := 0.45, thickness := 9.0, from_r := 10.0) -> void:
+		dur := 0.45, thickness := 9.0, from_r := 10.0, z := 94) -> void:
 	var r := Panel.new()
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(color.r, color.g, color.b, 0.0)
@@ -223,7 +246,7 @@ static func ring(parent: Control, center: Vector2, color: Color, to_r: float,
 	sb.set_corner_radius_all(int(to_r))
 	r.add_theme_stylebox_override("panel", sb)
 	r.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	r.z_index = 94
+	r.z_index = z
 	r.size = Vector2(from_r, from_r) * 2.0
 	r.position = center - r.size * 0.5
 	parent.add_child(r)
@@ -273,19 +296,15 @@ static func throw_arc(node: Control, from: Vector2, to: Vector2, height := 240.0
 # eye is already tracking the object; done at either end it reads as two
 # objects rather than one changing.
 static func deliver(parent: Control, from: Vector2, to: Vector2, symbol: String,
-		count: int, on_land: Callable, becomes := "", arc := 190.0, gap := 0.17) -> void:
+		count: int, on_land: Callable, becomes := "", arc := 190.0, gap := 0.17,
+		emoji := "", z := 101) -> void:
 	if count <= 0 or parent == null or not is_instance_valid(parent):
 		return
-	var tex := CV.symbol_tex(symbol)
 	var after: Texture2D = CV.symbol_tex(becomes) if becomes != "" else null
 	for i in count:
-		var tr := TextureRect.new()
-		tr.texture = tex
-		tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-		tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-		tr.size = Vector2(76, 76)
+		var tr := symbol_node(symbol, emoji, 76.0)
 		tr.pivot_offset = tr.size * 0.5
-		tr.z_index = 101
+		tr.z_index = z
 		tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		tr.modulate.a = 0.0
 		parent.add_child(tr)
@@ -312,9 +331,9 @@ static func deliver(parent: Control, from: Vector2, to: Vector2, symbol: String,
 				# into the counter rather than as being thrown small.
 				var k: float = lerpf(1.0, 0.42, (u - 0.55) / 0.45)
 				tr.scale = Vector2(k, k)
-			if after != null and not turned[0] and u >= 0.5:
+			if after != null and not turned[0] and u >= 0.5 and tr is TextureRect:
 				turned[0] = true
-				tr.texture = after
+				(tr as TextureRect).texture = after
 				tr.scale = Vector2(1.35, 1.35)
 				ring(parent, p, Color(0.72, 0.94, 1.0), 62.0, 0.36, 7.0, 10.0)
 				Sfx.play("pop", -13.0)

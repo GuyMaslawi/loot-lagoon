@@ -1849,7 +1849,10 @@ func _t_intro() -> void:
 	m.coins = 999999
 	m._maybe_intro_build()
 	await get_tree().process_frame
-	_chk("then fires once the coins are there", m._popup != null and m.intro_build_tip)
+	_chk("then fires once the coins are there", m._popup != null and m.intro_build_tip,
+		"popup=%s tip=%s stars=%d spins=%d coins=%d cost=%d raiding=%s login=%s" % [
+			str(m._popup != null), str(m.intro_build_tip), m.stars, m.intro_spins,
+			m.coins, int(m._star_costs()[0]), str(m._raiding()), str(m._login_layer != null)])
 	m._close_popup(true)
 	m._maybe_intro_build()
 	_chk("and never a second time", m._popup == null)

@@ -447,6 +447,12 @@ var _popup_close: Button = null
 var _popup_panel: Control = null
 var _journey_layer: Control
 var _badges := {}
+# Every page's copy of each rail disc, its badge and (the trophy's) its score
+# plaque. Keyed the same way `_badges` is; see the note in _side_button for why
+# one node per key was not enough.
+var _rail_badges := {}
+var _rail_discs := {}
+var _rail_counts := {}
 var profile := {}
 var _login_layer: Control
 var _village_bg: TextureRect
@@ -505,6 +511,13 @@ var col_owned := {}
 # stapled to it; the spares are kept now because they are the raw material the
 # boxes are opened with.
 var col_dupes := {}
+# set id -> [bool, bool, ...], which cards have arrived and not yet been looked
+# at in the collection. Saved, because the badge is the whole point: a card that
+# landed in a chest at eleven at night is still news the next morning, and a
+# marker that dies with the process would only ever mark cards the player was
+# already watching arrive. Cleared per set by opening that set's page, which is
+# the only place the badge can actually be seen -- see _fill_collection_detail.
+var col_new := {}
 var col_claimed := {}
 var col_mega_claimed := false
 var col_deadline := 0.0
@@ -976,12 +989,9 @@ func _capture_page(key: String) -> void:
 			# harness does not have. Same fake Cloud state qa_layout uses.
 			"clan":    _shot_clan()
 			"give":    _shot_give()
-		# DEMO_VIEW_TRACK pages the reward card without a finger. The arrows are
-		# the only way there in the game, so every track but the live one was
-		# unreachable from a harness.
-		if OS.has_environment("DEMO_VIEW_TRACK") and _tourney_card_holder != null:
-			_tourney_view_lap = clampi(int(OS.get_environment("DEMO_VIEW_TRACK")), 0, TOURNEY_TRACKS - 1)
-			_tourney_track_card(_tourney_card_holder)
+		# DEMO_VIEW_TRACK is gone with the arrows it drove. A harness that wants
+		# a later track sets `tourney_lap` before opening the board, which is
+		# also the only state the board can now be in.
 		# Long enough for FX.pop_in and the progress bar's fill tween to land;
 		# a shot taken mid-tween measures the animation, not the layout.
 		await get_tree().create_timer(1.6).timeout
@@ -1488,21 +1498,31 @@ func _check_apple_revoked() -> void:
 	_banner("Sign in with Apple was turned off for Loot Lagoon — sign in again to keep backing up.",
 			Color(0.95, 0.55, 0.3))
 
-# Held up while the server is being asked what it has.
+# What rank this device held at the moment the server was asked, or -1 when no
+# claim is outstanding.
 #
-# Without this the player watches their island be wrong. A fresh install shows
-# island 1 with island-1 prices, and some seconds later -- once claim_player has
-# answered -- it is replaced by the island they actually own. Nothing is lost
-# from the real island, because push_save refuses a save carrying less rank than
-# the one it holds. What IS lost is whatever they earned on the fresh one while
-# waiting, and the confusing part is that they were never told any of it was
-# provisional.
-var _restoring := false
+# The ask happens in the background: nothing is held up, no screen is drawn, and
+# the player carries on. That is the point, and it costs this one variable.
+# A fresh install signing in shows island 1 for the second or so the request is
+# in flight, and the player can spin in that second -- which used to be
+# impossible, because a held screen sat over the game.
+#
+# Those spins are the problem. _reconcile decides "nothing here to lose" by
+# reading rank_stars, and a single spin lifts it off zero, which turns the
+# silent restore into a "Two islands" chooser asking a fresh install to choose
+# between its real island and three spins it has just done. So the decision is
+# made against the rank as it was when the question was asked, not as it is when
+# the answer lands.
+var _claim_rank := -1
 
 func _cloud_claim() -> void:
 	if not Cloud.linked():
 		return
-	_open_restoring()
+	# Only the first claim in flight takes the snapshot. _after_boot can claim a
+	# restored session at the same moment session_ready fires for a fresh one,
+	# and the baseline that matters is the earlier of the two.
+	if _claim_rank < 0:
+		_claim_rank = rank_stars
 	# The chosen face, not the default one. claim_player only writes emoji when
 	# it is creating the row, so this is the single moment a player who picked a
 	# face before signing in would have had it replaced by the fallback.
@@ -1523,7 +1543,8 @@ func _cloud_claim() -> void:
 # What the server had. `is_new` means it had nothing and has just been given
 # what was on this device, so there is nothing to reconcile.
 func _on_cloud_signed_in(_who: Dictionary, is_new: bool, remote: Dictionary) -> void:
-	_close_restoring()
+	var since := _claim_rank
+	_claim_rank = -1
 	# The clan disc's badge has to be right on the page the player lands on, not
 	# only once they have wandered onto the clan page -- an invitation nobody is
 	# told about is an invitation that expires by being forgotten.
@@ -1531,7 +1552,7 @@ func _on_cloud_signed_in(_who: Dictionary, is_new: bool, remote: Dictionary) -> 
 	if is_new or remote.is_empty():
 		_flush_save()
 		return
-	_reconcile(remote)
+	_reconcile(remote, since)
 
 # cloud.gd ends the session by itself when the refresh token is gone for good --
 # revoked in Settings, password changed, the account deleted from another device.
@@ -1553,45 +1574,17 @@ func _on_cloud_signed_out() -> void:
 func _on_cloud_sign_in_failed(reason: String) -> void:
 	# Was silent until now, which meant a sign-in that failed looked exactly
 	# like one that worked and did nothing.
-	_close_restoring()
+	_claim_rank = -1
 	_banner("Couldn't sign in: %s" % reason, Color(0.95, 0.4, 0.4))
-
-# A held screen rather than a spinner in a corner, because the point is that the
-# island underneath is not yet the player's own and must not be played on.
-func _open_restoring() -> void:
-	if _restoring:
-		return
-	_restoring = true
-	var box := _open_popup("One moment")
-	var e := _emoji_label("🏝️", 56)
-	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	box.add_child(e)
-	var body := _popup_row_label("Fetching your island…", UI.F_CAPTION)
-	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	box.add_child(body)
-	# A server that never answers must not cost the player the game. After this
-	# they are let through to play locally; the island still arrives whenever
-	# the request lands, and the reconcile at that point is the same one that
-	# runs on every launch.
-	get_tree().create_timer(12.0).timeout.connect(func() -> void:
-		if _restoring:
-			_close_restoring()
-			_banner("Couldn't reach your saved island — playing offline.",
-					Color(0.95, 0.55, 0.3))
-	)
-
-func _close_restoring() -> void:
-	if not _restoring:
-		return
-	_restoring = false
-	_close_popup(true)
 
 # push_save refused: the server holds an island further along than this one.
 func _on_cloud_save_rejected(_stored_rank: int, remote: Dictionary) -> void:
 	if remote.is_empty():
 		return
-	_reconcile(remote)
+	# Not _claim_rank: a rejection can arrive hours into a session, long after
+	# the claim it belongs to, and the rank that matters there is the one the
+	# player is standing on right now.
+	_reconcile(remote, rank_stars)
 
 # Which island wins, and the rule is rank_stars for the reason main.gd already
 # relies on everywhere else: nothing in the game subtracts from it. Between two
@@ -1602,13 +1595,16 @@ func _on_cloud_save_rejected(_stored_rank: int, remote: Dictionary) -> void:
 # as a guest, then signed into an account that already had one. Rank cannot tell
 # those apart from a stale device, so anything with real progress on both sides
 # stops and asks rather than quietly throwing an evening away.
-func _reconcile(remote: Dictionary) -> void:
+# `since` is the rank this device held when the question went out -- see
+# _claim_rank. It is only ever used to answer "was there anything here before we
+# asked", never to compare against the server.
+func _reconcile(remote: Dictionary, since: int) -> void:
 	var theirs := int(remote.get("rank_stars", 0))
 	if theirs <= rank_stars:
 		# Ours is the same or further on. Push over it.
 		_flush_save()
 		return
-	if rank_stars == 0:
+	if since <= 0:
 		# Nothing here to lose -- a fresh install signing in. This is the whole
 		# point of the feature, and stopping to ask would be theatre.
 		_adopt_remote(remote)
@@ -1616,6 +1612,14 @@ func _reconcile(remote: Dictionary) -> void:
 	_ask_which_island(remote)
 
 func _adopt_remote(remote: Dictionary) -> void:
+	# The island lands on the server's schedule now that nothing waits for it,
+	# so it can arrive mid-spin. Swapping the save out from under a spin that is
+	# still resolving would let that spin's payout be written onto an island it
+	# was never played on, so this waits for the machine to come to rest. Idle
+	# is the ordinary case and falls straight through.
+	if slot != null and (slot.is_spinning() or _raiding()):
+		get_tree().create_timer(0.5).timeout.connect(_adopt_remote.bind(remote))
+		return
 	if not _write_save(remote):
 		_banner("Couldn't restore your island — check your free space.", Color(0.95, 0.4, 0.4))
 		return
@@ -3118,9 +3122,15 @@ func _add_side_rail(page: Control, top: float) -> void:
 	_side_rail_lane(page, top, false, [
 			["bell",   "Alerts",     "alerts", func() -> void: _goto(pages["alerts"])],
 			["clan",   "Clan",       "clan",   func() -> void: _goto(pages["clan"])]])
+	# The trophy is the one disc that carries a number, and the reason is that
+	# the tournament is the only event in the game whose progress is invisible
+	# from the outside. A daily is ready or it is not; the piggy fills where you
+	# can see it. A raid scoring 36 points changed nothing on screen at all --
+	# Guy, 2026-09-05: the player "should not have to go in" to find out where
+	# he stands. So the score rides under the trophy and the points fly to it.
 	_side_rail_lane(page, top, true, [
 			["gift",   "Daily",      "daily",  _open_daily],
-			["trophy", "Tournament", "ranks",  _open_tourney],
+			["trophy", "Tournament", "ranks",  _open_tourney, true],
 			["piggy",  "Piggy Bank", "piggy",  _open_piggy]])
 
 # One lane. The run grows downward from its top, so adding a button lengthens
@@ -3143,7 +3153,8 @@ func _side_rail_lane(page: Control, top: float, right: bool, specs: Array) -> vo
 	rail.offset_bottom = top
 
 	for spec in specs:
-		_side_button(rail, str(spec[0]), str(spec[1]), str(spec[2]), spec[3])
+		_side_button(rail, str(spec[0]), str(spec[1]), str(spec[2]), spec[3],
+			spec.size() > 4 and bool(spec[4]))
 
 # The disc every event button is made of, and the numbers that place the row
 # it now sits in. The long note that used to live here explained how to fit two
@@ -3210,7 +3221,7 @@ func side_rail_top() -> float:
 func island_rail_top() -> float:
 	return maxf(hud_top() + 70.0, safe_top()) + 14.0
 
-func _side_button(container: BoxContainer, icon_kind: String, caption: String, badge_key: String, action: Callable) -> void:
+func _side_button(container: BoxContainer, icon_kind: String, caption: String, badge_key: String, action: Callable, counter := false) -> void:
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 1)
 	box.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
@@ -3327,9 +3338,70 @@ func _side_button(container: BoxContainer, icon_kind: String, caption: String, b
 	badge.add_child(bang)
 	bang.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_badges[badge_key] = badge
+	# EVERY COPY, NOT THE LAST ONE BUILT.
+	#
+	# The rail is added to two pages -- the machine and the island -- so each of
+	# these keys is written twice and `_badges` kept whichever page was built
+	# second. _update_badges then lit the island's bell, the island's trophy and
+	# the island's clan disc and left the spin page's, which is the page the
+	# player is on nearly all the time, with no dot on anything at all. The dict
+	# still holds one node, because everything that reads a badge reads a label
+	# off it and they are identical; what changed is that the dot is now put out
+	# on all of them.
+	if not _rail_badges.has(badge_key):
+		_rail_badges[badge_key] = []
+		_rail_discs[badge_key] = []
+	_rail_badges[badge_key].append(badge)
+	_rail_discs[badge_key].append(btn)
 
 	# No caption. It is what pays for the discs being able to sit at the edge at
 	# all -- see _add_side_rail.
+	#
+	# A NUMBER IS NOT A CAPTION. What was rejected there was a word repeating
+	# what the drawing already says; this is a fact that exists nowhere else on
+	# the screen, and it is the only reason the trophy is worth glancing at
+	# between raids. It hangs off the bottom of the disc as a small brass
+	# plaque, the same object the machine's marquee is made of, so it reads as
+	# part of the button rather than as a stray label floating under it.
+	if counter:
+		var plate := PanelContainer.new()
+		plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		plate.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		# Fixed to the lane's width and clipped inside it. The rail's offsets pin
+		# the column at SIDE_DISC, so a plaque allowed to size itself to
+		# "128.4K" would push out of the lane and, on the right-hand rail, off
+		# the glass.
+		plate.custom_minimum_size = Vector2(SIDE_DISC, 30)
+		var psb := StyleBoxFlat.new()
+		psb.bg_color = Lagoon.ABYSS
+		psb.set_corner_radius_all(15)
+		psb.set_border_width_all(3)
+		psb.border_color = Lagoon.BRASS
+		psb.content_margin_left = 6.0
+		psb.content_margin_right = 6.0
+		psb.content_margin_top = 1.0
+		psb.content_margin_bottom = 1.0
+		psb.shadow_size = 6
+		psb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.40)
+		psb.shadow_offset = Vector2(0, 3)
+		plate.add_theme_stylebox_override("panel", psb)
+		# Over the disc's own shadow rather than under it, and lifted into the
+		# rim so the two are one object.
+		plate.z_index = 1
+		# Pulled up into the disc's rim rather than hung below it. At the box's
+		# default separation the plaque floated a hairline under the button and
+		# read as two objects; overlapping makes it the button's own base, and
+		# it costs the rail 22 units of run rather than 31.
+		box.add_theme_constant_override("separation", -9)
+		box.add_child(plate)
+		var num := Lagoon.title("0", UI.F_TINY, Color(1.0, 0.87, 0.45), Lagoon.ABYSS)
+		num.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		num.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		num.clip_text = true
+		plate.add_child(num)
+		_rail_counts[badge_key] = _rail_counts.get(badge_key, [])
+		_rail_counts[badge_key].append(plate)
+		plate.set_meta("value", num)
 
 func _update_badges() -> void:
 	if _badges.is_empty():
@@ -3364,6 +3436,7 @@ func _update_badges() -> void:
 		_badges["collections"].visible = any_col or col_season_new
 	if _badges.has("ranks"):
 		_badges["ranks"].visible = _tourney_claimable()
+	_update_tourney_score()
 	if _badges.has("clan"):
 		# The count, not a dot. An invitation and a stack of six people knocking
 		# on your clan's door are different amounts of errand, and the disc is
@@ -3381,6 +3454,48 @@ func _update_badges() -> void:
 			bl.text = str(mini(unread, 9)) if unread > 0 else "!"
 	if _badges.has("shop_free"):
 		_badges["shop_free"].visible = _shop_free_ready() or _piggy_full() or not _active_offer().is_empty()
+	# ...and then out to the other pages. Everything above decides one badge;
+	# this copies the decision onto every rail that carries the same key, which
+	# is what makes the dot appear on the page the player is actually standing
+	# on. See _side_button.
+	for key in _rail_badges:
+		var master = _badges.get(key, null)
+		# Validity first, THEN the type test: `is` against a freed instance is
+		# not a question Godot answers quietly.
+		if not is_instance_valid(master) or not (master is Panel):
+			continue
+		var mlabel := master.get_child(0) as Label
+		for other in _rail_badges[key]:
+			if other == master or not is_instance_valid(other):
+				continue
+			other.visible = master.visible
+			var olabel := other.get_child(0) as Label
+			if olabel != null and mlabel != null:
+				olabel.text = mlabel.text
+
+# The number under the trophy. Kept in one place because three things move it:
+# a raid or a build scoring, the cycle rolling over, and a save arriving from
+# the cloud -- and all three go through _update_badges already.
+func _update_tourney_score() -> void:
+	if _rail_counts.is_empty():
+		return
+	# _hud_shown, so the plaque behaves like every other counter in the game:
+	# the points are banked the moment the raid lands and the digits wait for
+	# the token to arrive. See _tourney_add.
+	#
+	# ITS OWN FORMAT, NOT _fmt_compact. That one only starts abbreviating at a
+	# hundred thousand, which is right for coins and wrong here: four tracks add
+	# up to about 29,700, so a heavy player's plaque would spend the back half
+	# of every cycle printing six digits and a comma into a box 88 units wide,
+	# clipped. Five characters is the most this ever draws.
+	var pts := _hud_shown("tourney", tourney_points)
+	var text := _fmt(pts) if pts < 10_000 else "%.1fK" % (float(pts) / 1000.0)
+	for plate in _rail_counts.get("ranks", []):
+		if not is_instance_valid(plate):
+			continue
+		var l = plate.get_meta("value", null)
+		if l is Label:
+			(l as Label).text = text
 
 func _daily_ready() -> bool:
 	daily_last = _trusted_stamp(daily_last)
@@ -3427,9 +3542,12 @@ func _award_stars(n: int, from_global := Vector2.ZERO) -> void:
 # _on_upgrade_requested, where the gap between the two is a scaffold animation
 # the app may not survive.
 func _star_flight(n: int, from_global := Vector2.ZERO) -> void:
-	if n <= 0 or _hud_labels.is_empty() or not _hud_labels[0].has("stars"):
+	if n <= 0 or _hud_labels.is_empty():
 		return
-	var to: Vector2 = _hud_labels[0]["stars"].global_position
+	# _hud_at, not _hud_labels[0]: every page carries its own topbar and all but
+	# one of them are hidden, so a star earned by building flew at the spin
+	# page's pill while the player was standing on the island.
+	var to: Vector2 = _hud_at("stars")
 	var src := from_global if from_global != Vector2.ZERO else Vector2(view_size().x * 0.5, view_size().y * 0.45)
 	FX.fly_coins(self, src, to, clampi(n, 3, 10), "star", "\u2b50")
 	Sfx.play("levelup", -10.0)
@@ -7474,14 +7592,26 @@ func _grant_chest_card(tier: int, forced_star := 0) -> Dictionary:
 		return {"emoji": it[0], "name": it[1], "set": chosen["name"], "stars": star,
 			"dup": true, "refund": refund, "held": _dupe_count(chosen["id"], idx)}
 	owned[idx] = true
+	_mark_new(chosen["id"], idx)
 	# A first copy is a first copy wherever it came from: the same stars a spin
 	# drop would have paid, banked to rank as well as to the wallet. The caller
 	# totals the flight and the sound for the whole handful, so this one is
 	# silent on purpose.
 	_earn_stars(star)
-	return {"emoji": it[0], "name": it[1], "set": chosen["name"], "stars": star, "dup": false}
+	return {"emoji": it[0], "name": it[1], "set": chosen["name"], "stars": star,
+		"dup": false, "set_id": chosen["id"], "idx": idx}
 
 func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := "", completed_sets: Array = []) -> void:
+	# What the handful was worth to your standing, counted before anything is
+	# drawn -- because the pill at the top of the screen has to be holding the
+	# OLD number by the time the first tile appears. The stars were banked in
+	# _grant_chest_card; see _hud_lag for why the digits wait anyway.
+	var rank_gain := 0
+	for c in cards:
+		if not c.get("dup", false):
+			rank_gain += int(c.get("stars", 0))
+	_hud_hold("stars", rank_gain)
+	_refresh()
 	var vbox := _open_popup(title)
 	if bonus_text != "":
 		var b := _popup_row_label(bonus_text, UI.F_LABEL)
@@ -7497,6 +7627,9 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 	grid.add_theme_constant_override("h_separation", 10)
 	grid.add_theme_constant_override("v_separation", 10)
 	center.add_child(grid)
+	# [tile, stars] for each first copy, so the flight below knows where each
+	# card is standing when it pays out.
+	var fresh := []
 	for ci in sorted.size():
 		var card: Dictionary = sorted[ci]
 		var stars := int(card.get("stars", 1))
@@ -7519,15 +7652,20 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 		nm.clip_text = true
 		colv.add_child(nm)
 		colv.add_child(_star_row(stars, UI.F_TINY))
+		# The row stays even when it has nothing to say, so a grid holding one
+		# spare and two first copies does not come out with one tile taller than
+		# its neighbours.
 		var status := Label.new()
+		status.add_theme_font_size_override("font_size", UI.F_TINY)
+		status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		if card["dup"]:
 			status.text = "SPARE  x%d" % int(card.get("held", 1))
 			status.add_theme_color_override("font_color", Lagoon.INK_FAINT)
 		else:
-			status.text = "NEW!"
-			status.add_theme_color_override("font_color", Lagoon.KELP_LO)
-		status.add_theme_font_size_override("font_size", UI.F_TINY)
-		status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			# The word is on the badge now. Eleven-point green under the card's
+			# own name is not how you say "you have never had this one".
+			_pin_new_badge(tile)
+			fresh.append([tile, stars])
 		colv.add_child(status)
 		# staggered reveal, rarest first
 		tile.modulate.a = 0.0
@@ -7549,10 +7687,6 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 	# than passed in, so a chest bought with money, a box bought with stars and
 	# the free gift all say it the same way -- and so the spares are visibly
 	# the reason the number is not higher.
-	var rank_gain := 0
-	for c in cards:
-		if not c.get("dup", false):
-			rank_gain += int(c.get("stars", 0))
 	if rank_gain > 0:
 		var gain := _popup_row_label("\u2b50  +%d world rank" % rank_gain, UI.F_LABEL)
 		gain.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -7567,6 +7701,54 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 	FX.press_feedback(ok)
 	ok.pressed.connect(func() -> void: _close_popup())
 	vbox.add_child(ok)
+
+	_star_harvest(fresh, rank_gain)
+
+# THE STARS COME OFF THE CARD THEY WERE EARNED ON.
+#
+# Guy, 2026-09-05: "an animation of the stars of the new object I got, from
+# there to the total stars at the top, in the same style." The rank line on this
+# dialog already said "+7 world rank", and the pill at the top of the screen
+# already held the number -- but nothing joined them, so the sentence "this card
+# is worth two of that number" was never said out loud. A five-star pull and a
+# one-star pull produced the same event.
+#
+# One star per star, out of the tile that paid it. The counter is held until
+# each lands, which is the rule every other reward in this game follows and the
+# only reason an arc is worth drawing at all -- see FX.deliver.
+func _star_harvest(fresh: Array, rank_gain: int) -> void:
+	if rank_gain <= 0 or fresh.is_empty():
+		_settle_hud("stars")
+		return
+	# After the staggered reveal has finished, or the stars leave tiles that
+	# have not faded in yet -- and before that the tiles have no position at
+	# all, because the dialog has not been laid out.
+	var lead := 0.34 + 0.07 * float(fresh.size())
+	_after(lead, func() -> void:
+		var to := _hud_at("stars")
+		for entry in fresh:
+			# Read untyped and CHECKED BEFORE it is typed. A `var x: Control =`
+			# against a freed instance raises on the assignment itself, so the
+			# is_instance_valid guard under it never runs -- and COLLECT! pressed
+			# inside the fraction of a second before the first star leaves is
+			# enough to free every tile in this list.
+			var node = entry[0]
+			if not is_instance_valid(node):
+				continue
+			var tile := node as Control
+			var from: Vector2 = tile.global_position + tile.size * 0.5
+			FX.deliver(self, from, to, "star", int(entry[1]), func(_i: int) -> void:
+				_hud_land("stars", 1, Color(1.0, 0.87, 0.45))
+				Sfx.play("pop", -14.0)
+			# 130, over the dialog. The popup sits at z_index 120 and the pill
+			# these are flying to is behind it, so at the default the whole
+			# flight happens underneath the card it came out of.
+			, "", 200.0, 0.13, "\u2b50", 130)
+		Sfx.play("levelup", -10.0))
+	# The backstop, on main rather than on the popup: COLLECT! can be pressed
+	# while the last star is still in the air, and a rank counter left one short
+	# of the save survives every reopen of the page.
+	_after(lead + 0.14 * float(rank_gain) + 1.4, func() -> void: _settle_hud("stars"))
 
 func _fill_quests(vb: VBoxContainer) -> void:
 	_ensure_missions()
@@ -8265,6 +8447,7 @@ func _ensure_collections() -> void:
 		var had_a_season := col_season >= 0
 		col_owned = {}
 		col_dupes = {}
+		col_new = {}
 		col_claimed = {}
 		col_mega_claimed = false
 		col_season = idx
@@ -8288,15 +8471,23 @@ func _ensure_collections() -> void:
 		var n: int = (c["items"] as Array).size()
 		var raw_owned = col_owned.get(id, [])
 		var raw_dupes = col_dupes.get(id, [])
+		var raw_new = col_new.get(id, [])
 		var arr: Array = raw_owned if typeof(raw_owned) == TYPE_ARRAY else []
 		var dup: Array = raw_dupes if typeof(raw_dupes) == TYPE_ARRAY else []
+		var fresh: Array = raw_new if typeof(raw_new) == TYPE_ARRAY else []
 		var norm := []
 		var dnorm := []
+		var nnorm := []
 		for i in n:
 			norm.append(_b(arr[i]) if i < arr.size() else false)
 			dnorm.append(maxi(0, _i(dup[i])) if i < dup.size() else 0)
+			# A card can only be news if it is also owned. Anything else is a
+			# badge on an empty socket, which a hand-edited save is the only way
+			# to produce and is worth costing nothing to rule out.
+			nnorm.append(bool(norm[i]) and (_b(fresh[i]) if i < fresh.size() else false))
 		col_owned[id] = norm
 		col_dupes[id] = dnorm
+		col_new[id] = nnorm
 		col_claimed[id] = _b(col_claimed.get(id, false))
 	# Sets the build no longer has have no business keeping a slot; leaving
 	# them means a renamed collection quietly doubles the save every season.
@@ -8304,7 +8495,39 @@ func _ensure_collections() -> void:
 		if not CV.COLLECTIONS.any(func(c): return c["id"] == key):
 			col_owned.erase(key)
 			col_dupes.erase(key)
+			col_new.erase(key)
 			col_claimed.erase(key)
+
+# A first copy of card `idx` is news until its set has been opened.
+func _mark_new(id: String, idx: int) -> void:
+	var arr: Array = col_new.get(id, [])
+	if idx >= 0 and idx < arr.size():
+		arr[idx] = true
+
+func _is_new_card(id: String, idx: int) -> bool:
+	var arr: Array = col_new.get(id, [])
+	return idx >= 0 and idx < arr.size() and bool(arr[idx])
+
+func _set_new_count(c: Dictionary) -> int:
+	var n := 0
+	for v in col_new.get(c["id"], []):
+		if v:
+			n += 1
+	return n
+
+# Seeing the set is what spends the badge, the same rule the season ribbon
+# follows: the shelf tile and the chest dialog both advertise it, but neither of
+# them is the card, and a marker cleared by anything short of looking at the
+# card is a marker that was never shown.
+func _clear_new(id: String) -> void:
+	var arr: Array = col_new.get(id, [])
+	var had := false
+	for i in arr.size():
+		if arr[i]:
+			arr[i] = false
+			had = true
+	if had:
+		_save_game()
 
 # One spare copy of card `idx` in set `id` goes onto the pile.
 func _add_dupe(id: String, idx: int) -> void:
@@ -8477,6 +8700,7 @@ func _on_cloud_gifts(gifts: Array) -> void:
 			_add_dupe(set_id, idx)
 		else:
 			owned[idx] = true
+			_mark_new(set_id, idx)
 			_award_stars(int((c["items"] as Array)[idx][2]))
 		landed.append({"name": String((c["items"] as Array)[idx][1]),
 			"emoji": String((c["items"] as Array)[idx][0]),
@@ -8611,8 +8835,14 @@ func _maybe_drop_card() -> void:
 			Color(0.75, 0.78, 0.9), it[0])
 	else:
 		owned[idx] = true
+		_mark_new(chosen["id"], idx)
 		Sfx.play("levelup", -8.0)
-		_award_stars(int(it[2]))
+		# From the banner that is about to name the card, not from the middle of
+		# the screen. The banner IS where the card appears on this path -- there
+		# is no dialog -- so that is where its stars have to come from, or the
+		# rank goes up for no visible reason. See _banner for the 150..210 band.
+		_award_stars(int(it[2]),
+			Vector2(view_size().x * 0.5, 180.0 + safe_top()))
 		if _collection_complete(chosen) and not col_claimed.get(chosen["id"], false):
 			_banner("%s complete!  Claim your reward in Collections" % chosen["name"], Color(1.0, 0.85, 0.3), chosen["icon"])
 		else:
@@ -8641,9 +8871,103 @@ func _diff_chip(diff: String, on_colour := false) -> Control:
 		c.add_theme_stylebox_override("panel", sb)
 	return c
 
+# =============================================================================
+#  NEW
+# =============================================================================
+#
+# Guy, 2026-09-05: when a new card arrives it should carry "a New badge,
+# something cool like that". Which it never has -- a first copy said "NEW!" in
+# eleven-point green under its own name, in the same slot and the same weight
+# the word "SPARE" used, so the two outcomes a chest has were told apart by
+# reading. The thing a card collection is FOR is the moment a hole in the set
+# fills, and that moment had the quietest typography on the screen.
+#
+# So it is an object instead: a coral tab knocked off square, rimmed in the pale
+# metal, with the game's own shine running across it. Tilted because a tilted
+# label is a sticker somebody put there and a level one is part of the layout --
+# this is meant to read as applied to the card, not printed on it.
+const _NEW_TILT := -9.0
+
+func _new_badge(text := "NEW", font_size := UI.F_TINY) -> Control:
+	var p := PanelContainer.new()
+	p.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Lagoon.CORAL
+	sb.set_corner_radius_all(10)
+	sb.set_border_width_all(3)
+	# The pale metal, not white: white on coral is the one edge in this palette
+	# that reads as a cut-out sticker rather than a badge with a rim.
+	sb.border_color = Color(1.0, 0.93, 0.74)
+	sb.content_margin_left = 11.0
+	sb.content_margin_right = 11.0
+	sb.content_margin_top = 2.0
+	sb.content_margin_bottom = 2.0
+	sb.shadow_size = 9
+	sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.45)
+	sb.shadow_offset = Vector2(0, 3)
+	p.add_theme_stylebox_override("panel", sb)
+	var l := Lagoon.title(text, font_size, Color.WHITE, Lagoon.HULL)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	p.add_child(l)
+	# The shine is a full-rect child of a PanelContainer, which lays every child
+	# out to its own rect -- so it covers the tab exactly, with no measuring.
+	p.add_child(_shine_overlay(Color(1.0, 0.96, 0.86)))
+	# Rotation is about the pivot, and a Control's pivot starts at its top left
+	# corner -- so a tab tilted before it has been laid out swings out of its own
+	# card. Re-centred whenever the badge is resized, which is also the frame it
+	# first gets a size on.
+	p.rotation = deg_to_rad(_NEW_TILT)
+	p.resized.connect(func() -> void: p.pivot_offset = p.size * 0.5)
+	p.pivot_offset = p.size * 0.5
+	return p
+
+# The badge hung off a corner of a card, sized by its own text.
+#
+# A Control wrapper for the same reason the spare tag has one: a card tile is a
+# PanelContainer and a container overwrites the anchors of anything it lays out,
+# so a chip parented straight to it stretches to the full width and lands across
+# the artwork. The shelf tile is a Button and would not need the wrapper, but
+# one shape that works on both is worth more than two that each work on one.
+#
+# `bottom` is for the shelf, where BOTH top corners are already spoken for --
+# the spare pile on the left, CLAIM! or the tick on the right.
+func _pin_new_badge(card: Control, bottom := false, text := "NEW") -> void:
+	var overlay := Control.new()
+	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	card.add_child(overlay)
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var tab := _new_badge(text)
+	overlay.add_child(tab)
+	# Cornered and grown rather than sized: the tab is as wide as "NEW" or as
+	# "3 NEW" needs, whichever it was handed, and neither is measured here.
+	tab.anchor_left = 0.0
+	tab.anchor_right = 0.0
+	tab.grow_horizontal = Control.GROW_DIRECTION_END
+	if bottom:
+		# INSIDE the bottom edge, not hanging off it. The shelf tile hands this
+		# its emblem well rather than the whole tile, so the tab sits on the
+		# artwork -- a sticker on the picture. Hung off the edge instead it
+		# lands on the set's name, which wraps to two lines on half of them.
+		tab.anchor_top = 1.0
+		tab.anchor_bottom = 1.0
+		tab.offset_left = 8.0
+		tab.offset_right = 8.0
+		tab.offset_top = -8.0
+		tab.offset_bottom = -8.0
+		tab.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	else:
+		tab.anchor_top = 0.0
+		tab.anchor_bottom = 0.0
+		tab.offset_left = 4.0
+		tab.offset_right = 4.0
+		tab.offset_top = -8.0
+		tab.offset_bottom = -8.0
+		tab.grow_vertical = Control.GROW_DIRECTION_END
+
 # `big` is the set's own page, where a card gets a third of the width instead
 # of a fifth and can afford to be looked at rather than counted.
-func _collection_item_card(emoji: String, iname: String, owned: bool, rarity := 0, big := false, spare := 0) -> Control:
+func _collection_item_card(emoji: String, iname: String, owned: bool, rarity := 0, big := false, spare := 0, is_new := false) -> Control:
 	# Owned cards are brass-rimmed glass; unowned ones are the same glass with
 	# the metal drained out of them, so a set reads as "partly collected" at a
 	# glance rather than as two unrelated card designs.
@@ -8755,6 +9079,11 @@ func _collection_item_card(emoji: String, iname: String, owned: bool, rarity := 
 		tag.offset_bottom = 6.0
 		tag.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 		tag.grow_vertical = Control.GROW_DIRECTION_END
+	# Opposite corner to the spare count, because a card can be both: a fifth
+	# Seashell is a spare, but the first one you ever pulled is news with a pile
+	# already behind it.
+	if is_new:
+		_pin_new_badge(p)
 	return p
 
 # The one way into the Card Boxes, and the only place the spare-card rule is
@@ -9110,6 +9439,20 @@ func _collection_tile(c: Dictionary) -> Control:
 	col.add_child(well)
 	well.add_child(_collection_fan(c))
 
+	# Cards that have arrived in this set and not been looked at. Without it the
+	# badge is only ever seen by a player who happens to open the right set --
+	# the shelf is the page they land on, and it was the one screen that could
+	# not say where the new card went.
+	#
+	# On the WELL, not on the tile, and that is the only corner free. Both of
+	# the tile's top corners are spoken for -- the spare pile on the left, the
+	# difficulty chip and the CLAIM flag on the right -- and its bottom two are
+	# the progress track, which is a control with a number written on it. The
+	# well is the one surface here that is a picture.
+	var fresh_n := _set_new_count(c)
+	if fresh_n > 0:
+		_pin_new_badge(well, true, "NEW" if fresh_n == 1 else "%d NEW" % fresh_n)
+
 	# F_LABEL, not F_CAPTION. 13pt on the smallest supported phone for the one
 	# line that says which set this is, under an emblem that was itself too
 	# small to identify it, is the whole of "you can barely see it".
@@ -9316,7 +9659,11 @@ func _fill_collection_detail(vb: VBoxContainer, c: Dictionary) -> void:
 	for i in items.size():
 		var it: Array = items[i]
 		grid.add_child(_collection_item_card(it[0], it[1], i < owned.size() and owned[i],
-			int(it[2]), true, _dupe_count(id, i)))
+			int(it[2]), true, _dupe_count(id, i), _is_new_card(id, i)))
+	# Spent AFTER the grid has been built off it. The badges on screen are the
+	# ones this page was asked to draw; clearing first would draw a page with
+	# nothing new on it, which is the one state this marker exists to avoid.
+	_clear_new(id)
 	_boxes_dock_clearance(vb)
 
 # =============================================================================
@@ -9902,7 +10249,7 @@ func _tourney_sync() -> void:
 	tourney_lap = 0
 	tourney_lap_base = 0
 
-func _tourney_add(kind: String, bet := 1) -> void:
+func _tourney_add(kind: String, bet := 1, from_global := Vector2.ZERO) -> void:
 	_tourney_sync()
 	var gained := 0
 	match kind:
@@ -9923,15 +10270,204 @@ func _tourney_add(kind: String, bet := 1) -> void:
 		var at := tourney_lap_base + _tourney_tier_at(i)
 		if before < at and tourney_points >= at:
 			crossed = i
+	# THE SCORE LEAVES THE RAID AND ARRIVES AT THE TROPHY.
+	#
+	# Held before it is flown, so the plaque still reads the old number while
+	# the tokens are in the air -- the same rule the coin, shield and star
+	# counters follow, and the reason any of this is worth animating: a number
+	# that has already changed by the time the player looks up has not been
+	# shown arriving, it has just been shown.
+	_hud_hold("tourney", gained)
+	_update_tourney_score()
+	_tourney_score_flight(gained, from_global)
 	if crossed >= 0:
-		_banner("Tournament reward %d unlocked — tap the trophy!" % (crossed + 1),
-			Color(1.0, 0.85, 0.3))
+		# The rung is armed rather than announced. A banner saying "tap the
+		# trophy" asks the player to go and look for their own reward, which is
+		# the errand this now runs for them -- see _tourney_auto_show.
+		_tourney_show_tier = crossed
+		# FROM THE LAST RUNG, NOT FROM WHERE THE SCORE STOOD A SECOND AGO.
+		#
+		# The honest answer -- the ratio the bar was at before this raid -- makes
+		# a rise of about two per cent of the width: a build is 60 points and the
+		# track is 2,500, so the thing Guy asked to see happen was a nudge you
+		# would have to be told about. Starting at the rung BELOW the one being
+		# taken is a climb worth watching that still ends exactly on the pip, and
+		# it never overstates progress: crossing rung N means rung N-1 was
+		# already behind you, so this always starts at or below where the score
+		# really was.
+		var top_at := float(maxi(1, _tourney_tier_at(TOURNEY_TIERS.size() - 1)))
+		var from_at := 0.0 if crossed == 0 else float(_tourney_tier_at(crossed - 1))
+		_tourney_show_from = clampf(from_at / top_at, 0.0, 1.0)
+		_tourney_show_tries = 0
+		# After the tokens land, not on top of them, and after whatever banner
+		# the raid itself is putting up.
+		_after(1.9, _tourney_auto_show)
 		_update_badges()
 	# Debounced inside Cloud, so a run of raids sends one number rather than
 	# one per hammer. Ignored entirely when nobody is signed in -- the board
 	# falls back to the islands on this phone, which is also what a player
 	# without an account is raiding.
 	Cloud.note_tourney(tourney_id, tourney_points)
+
+# =============================================================================
+#  The trophy tells you where you are
+# =============================================================================
+#
+# Guy, 2026-09-05: when an action scores, "show him every time that something
+# moves with an animation towards the trophy, and under the icon will be his
+# points, so he does not have to go in."
+#
+# Three pieces. The tokens that fly (here), the plaque they land on
+# (_update_tourney_score, and the counter is held until they arrive), and the
+# window that opens itself when the flight has just carried the score over a
+# rung (_tourney_auto_show).
+
+# Whichever copy of the trophy is on the page the player is standing on. The
+# rail is built once per page and all but one of them are hidden, so this is
+# the same problem -- and the same answer -- as _hud_chip.
+func _tourney_disc() -> Control:
+	for b in _rail_discs.get("ranks", []):
+		if is_instance_valid(b) and (b as Control).is_visible_in_tree():
+			return b
+	return null
+
+# One token has arrived: let the plaque show that much of the gain, and thump
+# it. Called once per token, so a 90-point build ticks the number up in stages
+# rather than swapping one string for another.
+func _tourney_land(points: int) -> void:
+	if points <= 0:
+		return
+	_hud_lag["tourney"] = maxi(0, int(_hud_lag.get("tourney", 0)) - points)
+	_update_tourney_score()
+	Sfx.play("pop", -18.0)
+	for plate in _rail_counts.get("ranks", []):
+		if is_instance_valid(plate) and (plate as Control).is_visible_in_tree():
+			FX.counter_pop(plate)
+
+# Gold pips, thrown from wherever the points were earned to the trophy.
+#
+# Drawn with the game's own spark glyph rather than an emoji: this is the one
+# flight in the game that is not carrying a thing the player owns -- there is no
+# "point" object anywhere else -- so it has to read as energy going somewhere,
+# which is what a spark is for.
+func _tourney_score_flight(gained: int, from_global := Vector2.ZERO) -> void:
+	var disc := _tourney_disc()
+	if disc == null:
+		# Nothing on screen to fly to -- a raid settled from the shop, say. The
+		# number still has to come off the hold or the plaque stays short of the
+		# save for the rest of the session.
+		_tourney_land(gained)
+		return
+	var to: Vector2 = disc.global_position + disc.size * 0.5
+	var src := from_global if from_global != Vector2.ZERO \
+		else Vector2(view_size().x * 0.5, view_size().y * 0.42)
+	# Enough tokens to read as a handful, few enough that a bet-x5 steal is not
+	# a fifteen-token parade. The gain is split across them so every one of them
+	# is worth something when it lands.
+	var n := clampi(int(round(sqrt(float(gained)))), 3, 7)
+	var per := gained / n
+	Sfx.play("pop", -14.0)
+	for i in n:
+		var pip := Glyph.new()
+		pip.kind = "spark"
+		pip.tint = Color(1.0, 0.86, 0.38)
+		pip.size = Vector2(40, 40)
+		pip.pivot_offset = Vector2(20, 20)
+		pip.z_index = 118
+		pip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		pip.modulate.a = 0.0
+		add_child(pip)
+		var start := src + Vector2(randf_range(-46, 46), randf_range(-34, 34))
+		pip.position = start - Vector2(20, 20)
+		# The last token carries the remainder, so the plaque ends on the exact
+		# number the save holds however the division fell.
+		var worth := per if i < n - 1 else gained - per * (n - 1)
+		var arc := randf_range(120.0, 210.0)
+		var tw := create_tween()
+		tw.tween_interval(float(i) * 0.07)
+		tw.tween_callback(func() -> void:
+			pip.modulate.a = 1.0
+			pip.scale = Vector2(0.5, 0.5))
+		tw.tween_property(pip, "scale", Vector2.ONE, 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		tw.tween_method(func(u: float) -> void:
+			if not is_instance_valid(pip):
+				return
+			var q := start.lerp(to, u)
+			q.y -= sin(u * PI) * arc
+			pip.position = q - Vector2(20, 20)
+			if u > 0.6:
+				var k: float = lerpf(1.0, 0.45, (u - 0.6) / 0.4)
+				pip.scale = Vector2(k, k)
+		, 0.0, 1.0, 0.62).set_trans(Tween.TRANS_SINE)
+		tw.tween_callback(func() -> void:
+			pip.queue_free()
+			_tourney_land(worth))
+
+# The trophy presses itself and the board comes up.
+#
+# Guarded the way _tourney_result_dialog is: a rung crossed on the last hammer
+# of a raid must not take the screen out from under the raid, the voyage, the
+# boot sequence or another modal. It waits for a quiet moment instead, and
+# gives up after a minute or so -- at which point the dot on the trophy is
+# still there and the player can open it themselves, which is where this
+# feature started.
+var _tourney_show_tier := -1
+var _tourney_show_from := -1.0
+var _tourney_show_tries := 0
+
+func _tourney_auto_show() -> void:
+	if _tourney_show_tier < 0:
+		return
+	var busy: bool = _raiding() or _popup != null or _journey_layer != null or _boot != null
+	if not busy and slot != null and is_instance_valid(slot):
+		busy = slot.is_spinning()
+	# A hut still going up. The build that scored these points runs a 2.2s
+	# scaffold and pays its stars -- and possibly an island-complete dialog --
+	# in a callback at the END of it, so a board that opened at 1.9s would be
+	# taken down again by the dialog behind it half a second later.
+	if not busy and village != null and is_instance_valid(village):
+		busy = village.any_constructing()
+	if busy:
+		# Twelve tries at two seconds. A raid is over by the time it scores and a
+		# scaffold is 2.2s, so anything still busy after twenty-four seconds is
+		# a player doing something else entirely -- and a reward window is only
+		# worth opening while it is still about the thing that earned it.
+		_tourney_show_tries += 1
+		if _tourney_show_tries > 12:
+			_tourney_show_tier = -1
+			return
+		_after(2.0, _tourney_auto_show)
+		return
+	# Taken by hand in the meantime, or the cycle turned under it.
+	if not _tourney_claimable() or tourney_claimed.has(_tourney_show_tier):
+		_tourney_show_tier = -1
+		return
+	# NO TROPHY ON SCREEN MEANS DROP IT, not wait for one.
+	#
+	# Waiting was tried and it is wrong twice over. The player has walked off to
+	# the shop or the card shelf, and a board that ambushes them there is not
+	# "the thing you just did opened a window" -- it is a window. And because
+	# the wait had to be bounded in seconds rather than in events, the board
+	# could arrive a full minute after the raid that earned it, by which point
+	# it is about something the player has stopped thinking about. The dot is
+	# on the trophy either way, and tapping it plays the same sequence.
+	var disc := _tourney_disc()
+	if disc == null:
+		_tourney_show_tier = -1
+		return
+	# The press itself, which is the whole reason this is not simply
+	# _open_tourney() on a timer. A window that appears has interrupted you; a
+	# window that opens after you have watched the button go down is a
+	# consequence of the thing you just did.
+	Sfx.play("pop", -6.0)
+	FX.ring(self, disc.global_position + disc.size * 0.5,
+		Color(1.0, 0.87, 0.45), 96.0, 0.42, 8.0, 30.0)
+	disc.pivot_offset = disc.size * 0.5
+	var tw := disc.create_tween()
+	tw.tween_property(disc, "scale", Vector2(0.84, 0.84), 0.11).set_trans(Tween.TRANS_SINE)
+	tw.tween_property(disc, "scale", Vector2(1.12, 1.12), 0.13).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(disc, "scale", Vector2.ONE, 0.10)
+	tw.tween_callback(_open_tourney)
 
 func _tourney_claimable() -> bool:
 	_tourney_sync()
@@ -10027,26 +10563,36 @@ static func _tourney_left_text(secs: float) -> String:
 # reads how far off the next one is without doing arithmetic -- which is the
 # entire job of this widget and the reason it is not a table.
 #
-# IT PAGES. Guy's note on build 71 was that the bar was "odd" because it only
-# ever showed the track he was standing on: a track he had already cleared left
-# no trace, and the one coming next was a rumour. Four tracks with nothing to
-# compare against is not a ladder, it is a bar that keeps resetting. The arrows
-# walk all four; it opens on the live one, and a track that is not the live one
-# is drawn in the state it is actually in -- full and claimed behind, empty and
-# locked ahead.
-var _tourney_view_lap := 0
+# IT DOES NOT PAGE ANY MORE. It did, on build 71, because a bar that silently
+# resets four times in a cycle reads as broken -- so two arrows walked all four
+# tracks and a track you were not on was drawn in the state it was really in.
+#
+# Guy, 2026-09-05: "cancel the navigation of the other tracks in the tournament,
+# there is no need to see that." He is right, and the reason the paging looked
+# necessary is gone. The bar no longer resets behind the player's back: it fills
+# in front of them and hands over the reward on the spot, so the thing the
+# arrows were compensating for -- a widget that changed while nobody was
+# watching -- is the thing that no longer happens. What is left is one track,
+# the one you are on, and the heading says which of the four it is.
 var _tourney_card_holder: VBoxContainer = null
+# Where the prize lands. The dialog's own column rather than the track card's,
+# because the card is torn down and rebuilt the moment the reward is taken and
+# the tray has to survive that.
+var _tourney_tray_host: VBoxContainer = null
 
 func _tourney_board(vbox: VBoxContainer) -> void:
 	_tourney_sync()
-	_tourney_view_lap = mini(tourney_lap, TOURNEY_TRACKS - 1)
 	var holder := VBoxContainer.new()
 	holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	vbox.add_child(holder)
 	_tourney_card_holder = holder
+	_tourney_tray_host = vbox
 	_tourney_track_card(holder)
 
-func _tourney_track_card(holder: VBoxContainer) -> void:
+# `anim` is off for the redraw that follows a claim: the bar has just been
+# watched filling to the rung, and replaying it from zero the instant the prize
+# lands undoes the thing the player was looking at.
+func _tourney_track_card(holder: VBoxContainer, anim := true) -> void:
 	# Detached before it is freed. queue_free() runs at the end of the frame, so
 	# adding the replacement first leaves two cards stacked in the VBox for one
 	# layout pass -- which the popup then sizes itself against.
@@ -10054,9 +10600,9 @@ func _tourney_track_card(holder: VBoxContainer) -> void:
 		holder.remove_child(c)
 		c.queue_free()
 
-	var lap := _tourney_view_lap
-	var live: bool = lap == tourney_lap and not _tourney_done()
-	var behind: bool = lap < tourney_lap or _tourney_done()
+	var lap := mini(tourney_lap, TOURNEY_TRACKS - 1)
+	var live: bool = not _tourney_done()
+	var behind: bool = _tourney_done()
 	var top := _tourney_tier_at(TOURNEY_TIERS.size() - 1, lap)
 
 	var card := PanelContainer.new()
@@ -10090,18 +10636,15 @@ func _tourney_track_card(holder: VBoxContainer) -> void:
 	head.add_theme_constant_override("separation", 4)
 	col.add_child(head)
 
-	# The arrows sit either side of the heading rather than under the bar, so
-	# "which track am I looking at" and "how do I look at another one" are one
-	# object instead of two.
-	head.add_child(_tourney_step_button(holder, -1, lap > 0))
+	# "Which track am I on", and that is all. It used to be a pager; the arrows
+	# either side of it are gone.
 	var head_text := "TOURNAMENT"
-	if _tourney_done() and lap == TOURNEY_TRACKS - 1:
+	if _tourney_done():
 		head_text = "ALL TRACKS CLEARED"
 	else:
 		head_text = "TRACK %d OF %d" % [lap + 1, TOURNEY_TRACKS]
 	var title := Lagoon.title(head_text, UI.F_CAPTION, Color(1.0, 0.87, 0.45), Lagoon.ABYSS)
 	head.add_child(title)
-	head.add_child(_tourney_step_button(holder, 1, lap < TOURNEY_TRACKS - 1))
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	head.add_child(spacer)
@@ -10121,19 +10664,10 @@ func _tourney_track_card(holder: VBoxContainer) -> void:
 	# ranks is a different number and it is on the standing line underneath.
 	var haul: Array = _tourney_haul()
 	var score_text := "%s / %s pts" % [_fmt_compact(_tourney_lap_points()), _fmt_compact(top)]
-	if _tourney_done() and lap == TOURNEY_TRACKS - 1:
+	if _tourney_done():
 		score_text = "%s spins + %d cards taken" % [_fmt_compact(int(haul[0])), int(haul[1])]
 	elif behind:
 		score_text = "Cleared  ·  %s pts" % _fmt_compact(top)
-	elif not live:
-		# The CUMULATIVE score that opens this track, not the track's own top
-		# rung. They are different numbers and the wrong one was on screen:
-		# track 3's rungs run to 8,100, but you get to it by clearing tracks 1
-		# and 2 first, which is 7,000 points of work before its first pip.
-		var opens := 0
-		for l in lap:
-			opens += _tourney_tier_at(TOURNEY_TIERS.size() - 1, l)
-		score_text = "Opens at %s pts this cycle" % _fmt_compact(opens)
 	var score := Lagoon.title(score_text, UI.F_SUBHEAD, Color(1.0, 0.87, 0.45), Lagoon.ABYSS)
 	col.add_child(score)
 
@@ -10182,19 +10716,41 @@ func _tourney_track_card(holder: VBoxContainer) -> void:
 	fill.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	fill.anchor_right = 0.0
 	fill.offset_right = 0.0
+	var pips := []
+	for i in TOURNEY_TIERS.size():
+		pips.append(_tourney_pip(host, i, float(_tourney_tier_at(i, lap)) / float(maxi(1, top)), lap))
+
 	# Grown rather than snapped on the live track, so opening the board after a
 	# raid shows the ground you gained instead of presenting it as though it was
-	# always there. A track you are only inspecting is drawn at rest.
-	if live:
+	# always there.
+	#
+	# AND WHEN THE BOARD OPENED ITSELF, IT GROWS FROM WHERE THE SCORE WAS.
+	# `_tourney_show_tier` is set by the raid or the build that carried the
+	# score over a rung, along with the ratio the bar stood at before it did --
+	# so what the player watches is the ground THAT ACTION gained, ending on the
+	# pip, rather than a bar sweeping up from nothing to a place it had mostly
+	# already reached. The reward is taken at the end of it; see
+	# _tourney_auto_claim.
+	var show_tier := _tourney_show_tier if live and anim else -1
+	if show_tier >= 0 and (show_tier >= pips.size() or tourney_claimed.has(show_tier)):
+		show_tier = -1
+	_tourney_show_tier = -1
+	if show_tier >= 0:
+		fill.anchor_right = clampf(_tourney_show_from, 0.0, ratio)
+		var bar := fill.create_tween()
+		bar.tween_interval(0.42)
+		bar.tween_property(fill, "anchor_right", ratio, 0.85) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		bar.parallel().tween_callback(func() -> void: Sfx.play("pop", -16.0))
+		bar.tween_callback(func() -> void:
+			_tourney_auto_claim(holder, show_tier, pips[show_tier]))
+	elif live and anim:
 		fill.create_tween().tween_property(fill, "anchor_right", ratio, 0.55) \
 			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	else:
 		fill.anchor_right = ratio
 
-	for i in TOURNEY_TIERS.size():
-		_tourney_pip(host, i, float(_tourney_tier_at(i, lap)) / float(maxi(1, top)), lap)
-
-	if _tourney_done() and lap == TOURNEY_TRACKS - 1:
+	if _tourney_done():
 		var done_l := _popup_row_label(
 			"Nothing left to claim — keep scoring for your place on the board.",
 			UI.F_CAPTION)
@@ -10203,43 +10759,107 @@ func _tourney_track_card(holder: VBoxContainer) -> void:
 		done_l.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 		col.add_child(done_l)
 
-# One of the two arrows. Kept in the layout when there is nowhere to go rather
-# than hidden, so the heading does not shuffle sideways as the player pages.
-func _tourney_step_button(holder: VBoxContainer, step: int, usable: bool) -> Button:
-	var b := Button.new()
-	b.text = "\u2039" if step < 0 else "\u203a"
-	b.focus_mode = Control.FOCUS_NONE
-	b.custom_minimum_size = Vector2(40, 40)
-	b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	b.add_theme_font_override("font", Lagoon.display_font())
-	b.add_theme_font_size_override("font_size", UI.F_SUBHEAD)
-	# A disc, not a bare chevron. Flat, a single "\u203a" in the display face over pale
-	# glass is a hairline -- it reads as a rendering artefact rather than as
-	# something to press, which on a screen Guy had already called "odd" is the
-	# last thing it should look like. The unusable one keeps its footprint so
-	# the heading does not shuffle sideways as the player pages.
-	for state in ["normal", "hover", "pressed", "disabled"]:
-		var sb := StyleBoxFlat.new()
-		sb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b,
-			0.06 if not usable else (0.42 if state == "pressed" else 0.28))
-		sb.set_corner_radius_all(20)
-		sb.set_border_width_all(2)
-		sb.border_color = Color(1.0, 0.87, 0.45, 0.75) if usable else Color(1, 1, 1, 0.10)
-		b.add_theme_stylebox_override(state, sb)
-	for c in ["font_color", "font_hover_color", "font_pressed_color"]:
-		b.add_theme_color_override(c, Color(1.0, 0.9, 0.55) if usable else Color(1, 1, 1, 0.15))
-	if not usable:
-		b.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		return b
-	FX.press_feedback(b)
-	b.pressed.connect(func() -> void:
-		_tourney_view_lap = clampi(_tourney_view_lap + step, 0, TOURNEY_TRACKS - 1)
-		Sfx.play("pop", -12.0)
-		_tourney_track_card(holder)
-	)
-	return b
+# THE PRIZE JUMPS OUT OF THE RUNG AND INTO THE WINDOW.
+#
+# Guy's sequence, in order: the trophy presses itself, the window opens, the bar
+# rises to the rung, and "the prize jumps into the window on its own". This is
+# the last beat of it, and the reason it is worth the code is that a reward you
+# have to find a button for is an errand. The rung the bar has just reached
+# lights, opens, and throws what it owes into a tray that grows underneath it.
+#
+# The tray goes in the DIALOG's column, not the track card's, because the claim
+# below rebuilds the card -- and on the last rung of a track it rebuilds it as a
+# different track entirely.
+func _tourney_auto_claim(holder: VBoxContainer, tier: int, pip: Control) -> void:
+	if _popup == null or not is_instance_valid(pip) \
+			or _tourney_tray_host == null or not is_instance_valid(_tourney_tray_host):
+		return
+	# Re-checked against the save rather than trusted from the tween that fired
+	# it: nearly a second of bar animation is long enough for the cycle to roll
+	# over or for the rung to have been taken another way.
+	if _tourney_done() or tourney_claimed.has(tier) or _tourney_lap_points() < _tourney_tier_at(tier):
+		return
+	var got_spins := _tourney_tier_spins(tier)
+	var got_cards := _tourney_tier_cards(tier)
+	var at: Vector2 = pip.global_position + pip.size * 0.5
 
-func _tourney_pip(host: Control, tier: int, at_ratio: float, lap: int) -> void:
+	Sfx.play("levelup", -6.0)
+	# Over the dialog, not under it -- this one goes off inside an open popup.
+	FX.ring(self, at, Color(1.0, 0.87, 0.45), 104.0, 0.48, 9.0, 24.0, 130)
+	FX.counter_pop(pip)
+
+	var tray := HBoxContainer.new()
+	tray.alignment = BoxContainer.ALIGNMENT_CENTER
+	tray.add_theme_constant_override("separation", 26)
+	_tourney_tray_host.add_child(tray)
+	# Directly under the track card, so the prize lands where it came from
+	# rather than at the bottom of the standings.
+	_tourney_tray_host.move_child(tray, holder.get_index() + 1)
+
+	# THE CELL IS DRAWN WITH A GLYPH; THE THING THAT FLIES IS A SYMBOL.
+	#
+	# They are two different sets and only one of them has textures on disk.
+	# "wheel" and "cards" are icon-set names -- Glyph draws them -- and asking
+	# CV.symbol_tex for either gets nothing, so a spin prize thrown as "wheel"
+	# arrives as whatever the emoji fallback happens to be. Spins fly as the
+	# bolt every other spin reward in the game flies as; a card has no symbol at
+	# all and flies as the card face.
+	var cells := []
+	for spec in [["wheel", got_spins, "bolt", ""], ["cards", got_cards, "", "\U01F0CF"]]:
+		if int(spec[1]) <= 0:
+			continue
+		var cell := VBoxContainer.new()
+		cell.add_theme_constant_override("separation", 0)
+		# Present in the layout from the start but invisible, so the dialog does
+		# not resize under the player's eyes as each prize arrives.
+		cell.modulate.a = 0.0
+		tray.add_child(cell)
+		var g := Glyph.new()
+		g.kind = str(spec[0])
+		g.custom_minimum_size = Vector2(64, 64)
+		g.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		cell.add_child(g)
+		var n := Lagoon.title("+%d" % int(spec[1]), UI.F_LABEL,
+			Color(1.0, 0.87, 0.45), Lagoon.ABYSS)
+		n.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		cell.add_child(n)
+		cells.append([cell, str(spec[2]), str(spec[3])])
+
+	# One frame of layout before anything is thrown at a cell, or every prize
+	# flies to the tray's origin -- which, before the dialog has re-sorted, is
+	# the top left corner of the screen. The RUNG is re-read here for the same
+	# reason: adding a row to the dialog grows it, and a centred dialog that has
+	# grown has moved every pip on it since `at` above was taken.
+	_after(0.06, func() -> void:
+		if _popup == null or not is_instance_valid(pip):
+			return
+		var src: Vector2 = pip.global_position + pip.size * 0.5
+		for ci in cells.size():
+			# Untyped first; see the note in _star_harvest.
+			var node = cells[ci][0]
+			if not is_instance_valid(node):
+				continue
+			var cell := node as Control
+			var dest: Vector2 = cell.global_position + cell.size * 0.5
+			FX.deliver(self, src, dest, str(cells[ci][1]), 1, func(_i: int) -> void:
+				if not is_instance_valid(cell):
+					return
+				cell.modulate.a = 1.0
+				FX.pop_in(cell, 0.28)
+				Sfx.play("pop", -8.0)
+			, "", 130.0, 0.17, str(cells[ci][2]), 130)
+		# Banked once the last of it has landed -- 0.90s is FX.deliver's own
+		# flight. _tourney_claim is what actually pays; it also puts the banner
+		# up, opens the next track when this was the last rung, and takes the
+		# dot off the trophy.
+		_after(1.0, func() -> void:
+			_tourney_claim(tier)
+			if _popup != null and is_instance_valid(holder):
+				# Redrawn without the fill animation: the bar has just been
+				# watched arriving and replaying it would undo that.
+				_tourney_track_card(holder, false)))
+
+func _tourney_pip(host: Control, tier: int, at_ratio: float, lap: int) -> Button:
 	var need := _tourney_tier_at(tier, lap)
 	var pip_spins := _tourney_tier_spins(tier, lap)
 	var pip_cards := _tourney_tier_cards(tier, lap)
@@ -10292,6 +10912,8 @@ func _tourney_pip(host: Control, tier: int, at_ratio: float, lap: int) -> void:
 		reward += " + %d card%s" % [pip_cards, "" if pip_cards == 1 else "s"]
 	pip.pressed.connect(func() -> void:
 		if ready:
+			# By hand, which is still the path when the auto-show was skipped
+			# because the player was mid-raid at the moment they crossed.
 			_tourney_claim(tier)
 			_close_popup()
 			_open_tourney()
@@ -10309,6 +10931,7 @@ func _tourney_pip(host: Control, tier: int, at_ratio: float, lap: int) -> void:
 		beat.tween_property(pip, "scale", Vector2(1.12, 1.12), 0.45).set_trans(Tween.TRANS_SINE)
 		beat.tween_property(pip, "scale", Vector2.ONE, 0.45).set_trans(Tween.TRANS_SINE)
 		pip.pivot_offset = Vector2(27, 27)
+	return pip
 
 # The little label a tapped rung puts up. One at a time, above the bar, gone on
 # its own -- a phone has no hover, so this is the whole of what `tooltip_text`
@@ -11345,6 +11968,10 @@ func _add_topbar(page: Control) -> void:
 	st_root.tooltip_text = "Stars — your world rank. Earned by building and by every new card; never spent."
 	right_grp.add_child(st_root)
 	labels["stars"] = st["value"]
+	# The pill as well as the number, for the same reason coins and shields have
+	# one: stars are delivered now -- a new card's rating flies out of the card
+	# and lands here -- and a delivery has to have something to thump.
+	labels["stars_chip"] = st_root
 	# The number and the table it decides are the same fact, so the capsule is
 	# the way to the leaderboard from every page. The Ranks button only ever
 	# existed on the slot screen, which left the island and the collections --
@@ -12771,7 +13398,14 @@ func _on_upgrade_requested(index: int) -> void:
 	# and the level are here: two seconds of construction animation is long
 	# enough for iOS to kill the app, and the tournament should not be the one
 	# part of the purchase that gets lost.
-	_tourney_add("build")
+	#
+	# Off the hut, though, not off the middle of the screen -- the same point
+	# the stars leave from in the callback below, because they are two halves of
+	# one payout and a build that pays its rank from the plot and its tournament
+	# points from thin air reads as two unrelated events.
+	var built_rect: Rect2 = CV.SLOT_RECTS[index]
+	_tourney_add("build", 1, village.global_position
+		+ (built_rect.position + built_rect.size * 0.4) * village.scale)
 	_update_badges()
 	_save_game()
 	# start_construction before the refresh, not after: it is what marks the
@@ -12780,8 +13414,8 @@ func _on_upgrade_requested(index: int) -> void:
 	village.start_construction(index, buildings[index], func() -> void:
 		# Only the celebration is left: the stars flying to the counter they
 		# were already added to, and the check for a finished island.
-		var slot_rect: Rect2 = CV.SLOT_RECTS[index]
-		_star_flight(gained, village.global_position + (slot_rect.position + slot_rect.size * 0.4) * village.scale)
+		_star_flight(gained, village.global_position
+			+ (built_rect.position + built_rect.size * 0.4) * village.scale)
 		_check_island_complete()
 		_refresh()
 		_save_game()
@@ -13271,7 +13905,10 @@ func _refresh() -> void:
 		if labels.has("spins"):
 			labels["spins"].text = ("%d/%d" % [shown_spins, SPIN_CAP]) if shown_spins <= SPIN_CAP else str(shown_spins)
 		labels["shields"].text = str(shown_shields)
-		labels["stars"].text = _fmt_compact(rank_stars)
+		# Held like the others: a card's stars are banked the moment the card is
+		# drawn, but the number does not move until the star reaches the pill.
+		labels["stars"].text = _fmt_compact(_hud_shown("stars", rank_stars))
+	_update_tourney_score()
 	village.refresh(buildings, coins, _star_costs())
 	if slot != null:
 		# The meter takes the shown figure too, so the pill and the bar under
@@ -13670,6 +14307,7 @@ func _save_dict() -> Dictionary:
 		"muted": muted,
 		"missions3": mission_state,
 		"col_owned": col_owned,
+		"col_new": col_new,
 		"col_dupes": col_dupes,
 		"col_claimed": col_claimed,
 		"col_mega": col_mega_claimed,
@@ -13889,6 +14527,11 @@ func _load_game() -> void:
 	var ld = data.get("col_dupes", {})
 	if typeof(ld) == TYPE_DICTIONARY:
 		col_dupes = ld
+	# Absent on every save written before the badge existed, which is the right
+	# answer for them: nothing an older save holds is news any more.
+	var ln = data.get("col_new", {})
+	if typeof(ln) == TYPE_DICTIONARY:
+		col_new = ln
 	var lc = data.get("col_claimed", {})
 	if typeof(lc) == TYPE_DICTIONARY:
 		col_claimed = lc
