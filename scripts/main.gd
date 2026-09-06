@@ -572,8 +572,48 @@ var _preview_island := false
 # worse than no splash -- the wordmark has to have time to be read.
 const BOOT_MIN_SECS := 2.0
 
+# How long the title screen will hold for the server before it stops waiting.
+#
+# The point of asking here rather than after the splash is that the bar is the
+# one moment in the app where waiting is the thing the player is already doing.
+# Everything the island is built out of -- the art, the reels, the village, the
+# quest board -- is made AFTER this answer lands, so it is made out of the right
+# island the first time and nothing swaps under the player later.
+#
+# It is a ceiling, not a wait: the ordinary answer arrives in well under a
+# second, inside the two seconds the wordmark holds for anyway, so on a normal
+# launch this costs nothing at all. cloud.gd's own HTTP timeout is 20 seconds,
+# which is the right number for a request and a wrong one for a splash. The
+# claim is not cancelled when the ceiling is hit -- it lands whenever it lands,
+# down the same path it used before any of this existed.
+#
+# Four, and the arithmetic is the reason. The ceiling is spent BEFORE the pages
+# are built, so a radio that accepts the connection and then says nothing costs
+# four seconds plus the two the rest of boot takes; six is already a long time
+# to be looking at a splash. Four still covers two round trips -- a token
+# refresh and then the claim -- on a link slow enough to need them. Measured:
+# against a socket that accepts and never answers, boot lands at 6.0s.
+const BOOT_CLOUD_SECS := 4.0
+
 var _boot: Boot
 var _preloaded: Array = []
+# False until _after_boot. Not `_boot == null`, which goes false a fade early.
+var _booted := false
+# What the server said while the title screen was still up.
+#
+# A banner drawn behind a splash at z 300 is a banner nobody reads, and a raid
+# replay that starts before there are pages to replay it onto has nowhere to
+# land. So they queue here and are let out in arrival order once the game is
+# actually on screen.
+var _boot_mail: Array[Callable] = []
+
+# True when the caller should stop and let boot finish: the work has been kept
+# and will be run again, as-is, the moment the player can see it.
+func _hold_for_boot(cb: Callable) -> bool:
+	if _booted:
+		return false
+	_boot_mail.append(cb)
+	return true
 
 func _ready() -> void:
 	randomize()
@@ -595,12 +635,14 @@ func _ready() -> void:
 # happen.
 func _run_boot() -> void:
 	var started := Time.get_ticks_msec()
-	await _boot_step(0.14, "Reading your logbook", _boot_load)
+	await _boot_step(0.12, "Reading your logbook", _boot_load)
+	# Second, and before a single page is built. See BOOT_CLOUD_SECS.
+	await _boot_cloud(0.30)
 	_boot.set_island(CV.island_palette(island_level), CV.island_bg_tex(island_level))
-	await _boot_step(0.34, "Charting %s" % CV.island_name(island_level), _boot_warm_art)
-	await _boot_step(0.58, "Polishing the reels", _build_slot_page)
-	await _boot_step(0.74, "Raising the village", _build_village_page)
-	await _boot_step(0.90, "Stocking shop, cards and quests", _build_menu_pages)
+	await _boot_step(0.46, "Charting %s" % CV.island_name(island_level), _boot_warm_art)
+	await _boot_step(0.64, "Polishing the reels", _build_slot_page)
+	await _boot_step(0.78, "Raising the village", _build_village_page)
+	await _boot_step(0.92, "Stocking shop, cards and quests", _build_menu_pages)
 	await _boot_step(1.00, "Casting off", _boot_finish_build)
 
 	var elapsed := float(Time.get_ticks_msec() - started) / 1000.0
@@ -623,6 +665,33 @@ func _boot_step(ratio: float, label: String, work: Callable) -> void:
 	work.call()
 	await _boot.advance(ratio)
 
+# The one step that waits on something this device does not control.
+#
+# It is its own function rather than a _boot_step because the work does not
+# return -- it answers on a signal, or it does not answer at all -- so the bar
+# is held by a deadline instead of by a call stack.
+func _boot_cloud(ratio: float) -> void:
+	_wire_cloud()
+	# Revocation first. An Apple ID this app no longer has permission to use is
+	# a session there is no point claiming with, and asking now means the rest
+	# of boot is built on the island this device holds rather than on one that
+	# is about to be signed out from under it.
+	_check_apple_revoked()
+	# Nobody signed in, or no cloud in this build. The bar still moves: a step
+	# that is skipped should look like a step that was quick, not like a stall.
+	if not Cloud.linked():
+		await _boot.advance(ratio)
+		return
+	_boot.set_status("Signalling the mainland")
+	await get_tree().process_frame
+	_boot_waiting = true
+	_cloud_claim()
+	var deadline := Time.get_ticks_msec() + int(BOOT_CLOUD_SECS * 1000.0)
+	while _boot_waiting and Time.get_ticks_msec() < deadline:
+		await get_tree().process_frame
+	_boot_waiting = false
+	await _boot.advance(ratio)
+
 func _boot_load() -> void:
 	_load_game()
 	if OS.has_environment("DEMO_ISLAND"):
@@ -630,12 +699,21 @@ func _boot_load() -> void:
 		if preview >= 1:
 			island_level = preview
 			_preview_island = true
-	_stock_rivals()
-	_ensure_missions()
-	_ensure_collections()
+	_seed_session()
 	if muted:
 		AudioServer.set_bus_mute(0, true)
 	_load_profile()
+
+# The parts of a session that are derived from the save rather than stored in
+# it: which rivals are on the board, which quest periods are current, which
+# collection season it is. Run once at boot -- and again whenever the save
+# underneath is replaced, which is what an island arriving from the server is.
+# Without the second call an adopted island keeps the previous one's rivals and
+# a quest board belonging to a different week.
+func _seed_session() -> void:
+	_stock_rivals()
+	_ensure_missions()
+	_ensure_collections()
 
 # Pulls the textures the first screens will ask for through the loader now,
 # while there is a progress bar accounting for the time, and keeps a reference
@@ -678,6 +756,7 @@ func _boot_finish_build() -> void:
 # Everything that addresses the player waits until the title screen is gone --
 # a toast or a sign-in sheet fading up behind a splash is one nobody reads.
 func _after_boot() -> void:
+	_booted = true
 	# Connected here rather than in _ready: a transaction interrupted on a
 	# previous launch is replayed the instant IAP starts popping events, and it
 	# has to land on a game whose pages already exist.
@@ -687,21 +766,14 @@ func _after_boot() -> void:
 	IAP.products_loaded.connect(_on_products_loaded)
 	IAP.begin()
 
-	# Same reasoning as IAP above: an island adopted from the server repaints
-	# pages, and those pages have to exist by the time it lands.
-	Cloud.session_ready.connect(_cloud_claim)
-	Cloud.signed_in.connect(_on_cloud_signed_in)
-	Cloud.save_rejected.connect(_on_cloud_save_rejected)
-	Cloud.raids_arrived.connect(_on_cloud_raids)
-	Cloud.gifts_arrived.connect(_on_cloud_gifts)
-	Cloud.link_result.connect(_on_cloud_link_result)
-	Cloud.sign_in_failed.connect(_on_cloud_sign_in_failed)
-	Cloud.signed_out.connect(_on_cloud_signed_out)
-	# A session that survived from a previous launch still has to claim, because
-	# claiming is also how the game asks what happened while it was closed.
-	_check_apple_revoked()
-	if Cloud.linked():
-		_cloud_claim()
+	# Everything the server said while the splash was up, in the order it said
+	# it. See _boot_mail: the claim itself was answered during the bar, but the
+	# raids and gifts that follow it arrive a round trip later and can land
+	# anywhere in the second half of boot.
+	var mail := _boot_mail
+	_boot_mail = []
+	for cb in mail:
+		cb.call()
 	# A tournament that ended while the game was shut. The session is already
 	# restored by now -- Cloud reads it in its own _ready -- so this asks the
 	# league where the player finished rather than guessing from the phone.
@@ -1514,6 +1586,21 @@ func _check_apple_revoked() -> void:
 # made against the rank as it was when the question was asked, not as it is when
 # the answer lands.
 var _claim_rank := -1
+# Set while the boot bar is holding for claim_player, and cleared by whichever
+# of signed_in / sign_in_failed answers it. See _boot_cloud.
+var _boot_waiting := false
+
+# Connected from _boot_cloud rather than from _after_boot, because the boot bar
+# is now the first thing that claims and it cannot hear the answer otherwise.
+func _wire_cloud() -> void:
+	Cloud.session_ready.connect(_cloud_claim)
+	Cloud.signed_in.connect(_on_cloud_signed_in)
+	Cloud.save_rejected.connect(_on_cloud_save_rejected)
+	Cloud.raids_arrived.connect(_on_cloud_raids)
+	Cloud.gifts_arrived.connect(_on_cloud_gifts)
+	Cloud.link_result.connect(_on_cloud_link_result)
+	Cloud.sign_in_failed.connect(_on_cloud_sign_in_failed)
+	Cloud.signed_out.connect(_on_cloud_signed_out)
 
 func _cloud_claim() -> void:
 	if not Cloud.linked():
@@ -1545,6 +1632,7 @@ func _cloud_claim() -> void:
 func _on_cloud_signed_in(_who: Dictionary, is_new: bool, remote: Dictionary) -> void:
 	var since := _claim_rank
 	_claim_rank = -1
+	_boot_waiting = false
 	# The clan disc's badge has to be right on the page the player lands on, not
 	# only once they have wandered onto the clan page -- an invitation nobody is
 	# told about is an invitation that expires by being forgotten.
@@ -1575,6 +1663,7 @@ func _on_cloud_sign_in_failed(reason: String) -> void:
 	# Was silent until now, which meant a sign-in that failed looked exactly
 	# like one that worked and did nothing.
 	_claim_rank = -1
+	_boot_waiting = false
 	_banner("Couldn't sign in: %s" % reason, Color(0.95, 0.4, 0.4))
 
 # push_save refused: the server holds an island further along than this one.
@@ -1624,10 +1713,20 @@ func _adopt_remote(remote: Dictionary) -> void:
 		_banner("Couldn't restore your island — check your free space.", Color(0.95, 0.4, 0.4))
 		return
 	_load_game()
+	_seed_session()
+	# The ordinary case now: this arrived during the boot bar, before there was
+	# a page to repaint or a player to tell. Every page is about to be built out
+	# of this island, and nobody ever saw the one it replaced -- so a "your
+	# island is back" banner would be announcing something that never went away.
+	if _hold_for_boot(_refresh):
+		return
 	_refresh()
 	_banner("Your island is back.", Color(0.5, 0.9, 0.6), "🏝️")
 
 func _ask_which_island(remote: Dictionary) -> void:
+	# A question asked behind the splash is a question nobody is looking at.
+	if _hold_for_boot(_ask_which_island.bind(remote)):
+		return
 	var box := _open_popup("Two islands")
 	var head := _popup_row_label(
 		"This account already has an island. Only one can be kept — the other is gone.",
@@ -1723,6 +1822,11 @@ var applied_raids: Array = []
 const APPLIED_RAIDS_KEEP := 200
 
 func _on_cloud_raids(raids: Array) -> void:
+	# Fired a round trip after the claim, so it can land at any point in the
+	# second half of boot -- onto pages that do not exist and behind a splash
+	# that would swallow the banner naming the person who robbed you.
+	if _hold_for_boot(_on_cloud_raids.bind(raids)):
+		return
 	var ids := []
 	var fresh := []
 	var taken := 0
@@ -8669,6 +8773,9 @@ func _gift_refusal(res: Dictionary) -> String:
 # Cards other people gave this island while it was shut. Shaped on
 # _offline_raids, which is the proven half of this pattern.
 func _on_cloud_gifts(gifts: Array) -> void:
+	# Same timing as the raids above, and the same reason.
+	if _hold_for_boot(_on_cloud_gifts.bind(gifts)):
+		return
 	var ids := []
 	var landed := []
 	for g in gifts:
@@ -8743,6 +8850,9 @@ func _refresh_gift_budget() -> void:
 # in the game to make one of them slightly fresher.
 func _refresh_clan_news() -> void:
 	if _clan_fake or not Cloud.linked() or not Cloud.clan_extras_ready():
+		return
+	# It repaints a badge on the nav, which boot has not built yet.
+	if _hold_for_boot(_refresh_clan_news):
 		return
 	Cloud.clan_news(func(res: Dictionary) -> void:
 		if res.is_empty():
@@ -14141,6 +14251,11 @@ func _after(secs: float, what: Callable) -> void:
 	tw.tween_callback(what)
 
 func _banner(text: String, color: Color, emoji := "") -> void:
+	# The splash sits at z 300 and this at 110, so a banner raised during boot
+	# would live and expire entirely behind the title screen. Held instead, and
+	# raised the moment the game is on screen.
+	if _hold_for_boot(_banner.bind(text, color, emoji)):
+		return
 	var box := HBoxContainer.new()
 	box.alignment = BoxContainer.ALIGNMENT_CENTER
 	box.add_theme_constant_override("separation", 10)
