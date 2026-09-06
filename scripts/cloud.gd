@@ -181,6 +181,20 @@ func state() -> String:
 
 
 func _set_state(s: String) -> void:
+	# "HELD" IS A DECISION, NOT A PHASE, so nothing else is allowed to paint
+	# over it. Every other state here describes what the last request did;
+	# "held" describes what this device has stopped doing on purpose, and it
+	# stays true until main.gd says otherwise.
+	#
+	# Without this guard the label was wrong on the ordinary boot path, not in
+	# some corner: _load_game holds the device at step 0.12 of boot, and the
+	# claim at step 0.30 ends with an unconditional _set_state("synced"). The
+	# Options page then said "☁ Backed up" in green, permanently, on a phone
+	# that was dropping every push -- while the strip at the top of the same
+	# screen said backing up was paused. The two read the same fact from
+	# different places and only one of them was right.
+	if _push_blocked and s != "held":
+		return
 	if s == _state:
 		return
 	_state = s
@@ -487,6 +501,16 @@ func block_push(blocked: bool) -> void:
 		# up" or the settings line would sit on "Backing up…" for ever.
 		_dirty = false
 		_set_state("held")
+		return
+	# Released. The state has to be moved off "held" HERE, because _set_state
+	# refuses every other caller while the block is on and would go on refusing
+	# them after it came off -- leaving the label stuck on the one word that is
+	# no longer true. "synced" would be a claim about the server that nothing
+	# has checked, so this says only what is known: there is a session and it is
+	# not backed up yet. The next push settles it either way.
+	_set_state("syncing" if linked() else "off")
+	if linked():
+		_dirty = true
 
 
 func _push() -> void:

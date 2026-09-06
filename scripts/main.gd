@@ -2870,7 +2870,16 @@ func _backup_age_line() -> String:
 	var at := Cloud.synced_at()
 	if at <= 0.0:
 		return ""
-	var secs := int(maxf(0.0, _now() - at))
+	# BOTH SIDES OFF THE SAME CLOCK. `_now()` is the high-water mark this file
+	# keeps so a wound-back device cannot re-collect a daily, and it is persisted
+	# in the save -- so on a phone whose clock was ever set forward and back, it
+	# stays permanently ahead of real time. `Cloud._synced_at` is stamped with
+	# the raw system clock. Subtracting one from the other reported "Last backed
+	# up 1 day ago" about a push that had landed ten seconds earlier, which is
+	# alarming and wrong on exactly the screen a worried player goes to check.
+	# The high-water rule is about cooldowns somebody can farm; an age display
+	# is not one, so this reads the same clock Cloud stamped with.
+	var secs := int(maxf(0.0, Time.get_unix_time_from_system() - at))
 	if secs < 120:
 		return ""
 	var how := ""
@@ -2902,6 +2911,19 @@ func _must_update(g: Dictionary) -> void:
 	# second popup builder that would then have to be kept in step with this one.
 	if is_instance_valid(_popup_close):
 		_popup_close.hide()
+	# ABOVE THE SIGN-IN SHEET, and this is not tidiness. _after_boot calls the
+	# gate and then puts _show_login() up synchronously, so on a first launch the
+	# login layer (z 200, opaque, full rect) is already a child by the time the
+	# gate answers a few hundred milliseconds later. Drawing obeys z_index and
+	# Godot's input picking does NOT -- it walks the tree in reverse -- so at the
+	# popup's usual z 120 the modal was invisible underneath the login screen
+	# while still swallowing every tap meant for it. The player would have seen a
+	# sign-in page where no button worked at all.
+	if is_instance_valid(_popup):
+		_popup.z_index = 310
+	# Nothing may take this down: not another dialog, and not the interrupted
+	# purchase IAP replays during these same seconds. See _popup_locked.
+	_popup_locked = true
 	var note := _s(g.get("note", ""), "")
 	var head := _popup_row_label(note if note != ""
 		else "This version of Loot Lagoon is too old to play safely. Update to carry on.",
@@ -4084,6 +4106,16 @@ func _period_claimable(period: String) -> bool:
 # --- popups ---
 
 func _open_popup(title: String) -> VBoxContainer:
+	# Nothing opens over a locked modal. `_close_popup` already refuses to take
+	# it down, so without this the line below would leave the locked popup in
+	# the tree -- still drawing, still eating every tap -- while `_popup` moved
+	# on to point at the new one, and the game would be wedged behind a dialog
+	# nothing had a handle on any more. Callers get a container that is not in
+	# the tree: they fill it, it is never shown, and it goes when they do.
+	if _popup_locked:
+		var detached := VBoxContainer.new()
+		detached.queue_free()
+		return detached
 	_close_popup(true)
 	_popup = Control.new()
 	_popup.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -4183,8 +4215,18 @@ func _open_popup(title: String) -> VBoxContainer:
 	Sfx.play("pop", -8.0)
 	return vbox
 
+# Set only by the forced-update modal, which is the one dialog in this game that
+# is not the player's to dismiss. Everything else in the file closes the current
+# popup as a matter of course -- `_on_purchase_ok`, `_on_purchase_fail` and
+# `_on_purchase_cancel` all open with a bare `_close_popup()`, and IAP replays an
+# interrupted transaction during boot, in the same seconds the gate answers. One
+# outstanding purchase and the un-dismissable modal faded away on its own.
+var _popup_locked := false
+
 func _close_popup(instant := false) -> void:
 	if _popup == null:
+		return
+	if _popup_locked:
 		return
 	var p := _popup
 	_popup = null
@@ -9042,12 +9084,17 @@ func _dupe_card_count() -> int:
 		total += int(row["count"])
 	return total
 
+# Bounded for the same reason _collection_owned_count is, and it has to agree
+# with it exactly: one decides whether the CLAIM button is drawn and the other
+# decides whether pressing it does anything. A set that is complete by one and
+# incomplete by the other is a button that refuses itself.
 func _collection_complete(c: Dictionary) -> bool:
 	var owned: Array = col_owned.get(c["id"], [])
-	if owned.is_empty():
+	var n: int = (c["items"] as Array).size()
+	if owned.is_empty() or owned.size() < n:
 		return false
-	for v in owned:
-		if not v:
+	for i in n:
+		if not owned[i]:
 			return false
 	return true
 
@@ -9611,10 +9658,26 @@ func _collection_by_id(id: String) -> Dictionary:
 			return c
 	return {}
 
+# BOUNDED BY THE SET THIS BUILD HAS, not by the length of the stored array.
+#
+# They were the same number until saves started carrying a tail. A save written
+# by a later build can hold more cards in a set than this build knows about, and
+# `_ensure_collections` now deliberately keeps that tail rather than deleting
+# somebody's card -- so the array can be longer than `items`, and counting the
+# whole of it counts cards that are not on this build's shelf.
+#
+# Both directions were broken by that. Counting a kept `true` past the end gave
+# "7 / 6 cards", a progress bar past its own maximum, and `owned == items.size()`
+# false for a set that IS complete -- so the CLAIM button never appeared and the
+# reward was unreachable. Counting a kept `false` did the mirror: the count hit
+# the target, the button lit up, and `_collection_complete` -- which walks the
+# stored array -- refused it, giving a button that did nothing every time it was
+# pressed. See the note on `keep` in _ensure_collections.
 func _collection_owned_count(c: Dictionary) -> int:
+	var owned: Array = col_owned.get(c["id"], [])
 	var n := 0
-	for v in col_owned.get(c["id"], []):
-		if v:
+	for i in mini(owned.size(), (c["items"] as Array).size()):
+		if owned[i]:
 			n += 1
 	return n
 
@@ -14966,7 +15029,24 @@ func _read_save() -> Dictionary:
 # with it. Called for the file on disk and again for anything adopted out of the
 # cloud, because the cloud copy is exactly where a newer build's save arrives.
 func _adopt_schema(data: Dictionary) -> void:
-	save_schema_seen = maxi(save_schema_seen, _i(data.get("schema", 0)))
+	# ASSIGNED FROM THE SAVE BEING ADOPTED, NOT RAISED TO THE HIGHEST EVER SEEN.
+	#
+	# `maxi` looks like the careful choice and is the opposite. The stamp
+	# describes ONE file -- the one this call is adopting -- and the whole point
+	# of `_adopt_remote` is that the file underneath can be replaced mid-session
+	# by an island off the server. Raising and never lowering made the flag a
+	# one-way latch with nothing anywhere to release it: a phone that had once
+	# read a future save, and then restored an ordinary island through the "Two
+	# islands" dialog, stayed held for ever. It never pushed again, the season
+	# rollover was skipped at every turn, and the next autosave stamped the
+	# future number onto a save that no longer contained anything from the
+	# future -- so the next launch read it back and re-armed the latch. The only
+	# way out was an app update that happened to raise SAVE_SCHEMA.
+	#
+	# The file on disk is authoritative here, and it is written by `_write_save`
+	# atomically before this is ever called, so there is no half-state to
+	# protect against by remembering a higher number than the file carries.
+	save_schema_seen = _i(data.get("schema", 0))
 	# CLEARED FIRST, and rebuilt from what was just read. `_save_dict` merges
 	# the extras into its own output, so asking it for the owned key set while
 	# the previous set is still loaded reports them as owned -- and the branch
@@ -14986,6 +15066,10 @@ func _adopt_schema(data: Dictionary) -> void:
 		if not mine.has(k):
 			_save_extra[k] = data[k]
 	if save_schema_seen <= SAVE_SCHEMA:
+		# Cleared, not just "not set". This is the release half of the latch and
+		# it is the whole reason the branch has an else at all.
+		save_is_from_future = false
+		Cloud.block_push(false)
 		return
 	# A save from the future. The game plays on -- there is nothing wrong with
 	# the island and refusing to open it would be the data loss, not the cure --

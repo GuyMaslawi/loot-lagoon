@@ -32,6 +32,9 @@ func _ready() -> void:
 	_t_future_save_keeps_a_grown_set()
 	_t_future_save_keeps_its_stamp_across_a_save()
 	_t_an_ordinary_save_is_untouched()
+	_t_the_latch_lets_go()
+	_t_held_survives_a_claim()
+	_t_a_grown_set_still_claims()
 	print("QA-SCHEMA: %s" % ("ALL PASS" if fails == 0 else "%d FAILURES" % fails))
 	get_tree().quit(1 if fails > 0 else 0)
 
@@ -160,4 +163,98 @@ func _t_an_ordinary_save_is_untouched() -> void:
 	unstamped.erase("schema")
 	m._adopt_schema(unstamped)
 	_chk("and neither is one with no stamp at all", not m.save_is_from_future)
+	_reset()
+
+# --- the release half of the latch ------------------------------------------
+#
+# Found by an adversarial review of the first version of this feature, which
+# only ever ARMED. `save_schema_seen` was raised with maxi and nothing anywhere
+# lowered it, so a phone that had once read a future save and then restored an
+# ordinary island through the "Two islands" dialog stayed held for ever: never
+# pushed again, season rollover skipped at every turn, and the next autosave
+# stamped the future number onto a save that no longer had anything future in
+# it -- which the next launch read back and re-armed on. The only exit was an
+# app update that happened to raise SAVE_SCHEMA.
+func _t_the_latch_lets_go() -> void:
+	print("a future save, and then an ordinary one adopted over it")
+	_reset()
+	m._adopt_schema(_future_save())
+	_chk("arms on the future save", m.save_is_from_future and Cloud.push_blocked())
+	# Exactly what _adopt_remote does: the file underneath is replaced, then
+	# _load_game re-reads it. No _reset() here -- that is the whole point.
+	var ordinary: Dictionary = m._save_dict()
+	ordinary["schema"] = m.SAVE_SCHEMA
+	ordinary.erase("a_field_from_the_future")
+	m._adopt_schema(ordinary)
+	_chk("and lets go when the island underneath is one it understands",
+		not m.save_is_from_future)
+	_chk("so the device starts backing up again", not Cloud.push_blocked())
+	_chk("and stops stamping a number it cannot write",
+		int((m._save_dict() as Dictionary)["schema"]) == m.SAVE_SCHEMA,
+		"schema=%s" % str((m._save_dict() as Dictionary)["schema"]))
+	_chk("and the sync label is no longer stuck on held", Cloud.state() != "held",
+		Cloud.state())
+	_reset()
+
+# The claim that runs at boot ends with an unconditional _set_state("synced"),
+# and boot holds the device BEFORE it. So the Options card said "Backed up" in
+# green on a phone dropping every push, while the strip on the same screen said
+# backing up was paused.
+func _t_held_survives_a_claim() -> void:
+	print("the sync label on a held device")
+	_reset()
+	m._adopt_schema(_future_save())
+	_chk("says held once the guard is armed", Cloud.state() == "held", Cloud.state())
+	Cloud._set_state("synced")
+	_chk("and nothing else can paint over it", Cloud.state() == "held", Cloud.state())
+	_reset()
+
+# The tail this feature keeps made two counters disagree: one walked the stored
+# array, the other compared against the set size. Complete-but-longer gave a set
+# with no CLAIM button at all; incomplete-but-longer gave a button that refused
+# itself on every press.
+func _t_a_grown_set_still_claims() -> void:
+	print("a set that grew by one card, on the build that does not have it")
+	_reset()
+	var c: Dictionary = CV.COLLECTIONS[0]
+	var id: String = c["id"]
+	var n: int = (c["items"] as Array).size()
+	m._adopt_schema(_future_save())
+
+	# Every card this build knows owned, plus a kept tail entry that is NOT.
+	var all_but_new := []
+	for i in n:
+		all_but_new.append(true)
+	all_but_new.append(false)
+	m.col_owned = {id: all_but_new}
+	m.col_dupes = {}
+	m.col_new = {}
+	m.col_claimed = {}
+	m._ensure_collections()
+	_chk("counts only the cards this build has", m._collection_owned_count(c) == n,
+		"%d of %d" % [m._collection_owned_count(c), n])
+	# The two have to agree, or the button is drawn by one and refused by the
+	# other. This is the case that produced a dead CLAIM button.
+	_chk("and agrees with the completeness test", m._collection_complete(c),
+		"complete=%s" % str(m._collection_complete(c)))
+
+	# The mirror: the new card owned too, which used to read "10 / 9 cards" and
+	# hide the claim button on a set that was finished.
+	var all_owned := []
+	for i in n + 1:
+		all_owned.append(true)
+	m.col_owned = {id: all_owned}
+	m._ensure_collections()
+	_chk("never counts past the end of the set", m._collection_owned_count(c) == n,
+		"%d of %d" % [m._collection_owned_count(c), n])
+	_chk("and still reads as complete", m._collection_complete(c))
+
+	# And a genuinely unfinished set is still unfinished -- the bound must not
+	# have turned the test into "always true".
+	var missing_one := []
+	for i in n:
+		missing_one.append(i != 0)
+	m.col_owned = {id: missing_one}
+	m._ensure_collections()
+	_chk("but an unfinished set is still unfinished", not m._collection_complete(c))
 	_reset()
