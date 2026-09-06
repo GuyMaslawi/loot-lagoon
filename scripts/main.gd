@@ -4,6 +4,59 @@ const SAVE_PATH := "user://coinvillage_save.json"
 # Scratch file and previous-good copy. See _write_save.
 const SAVE_TMP := "user://coinvillage_save.json.tmp"
 const SAVE_BAK := "user://coinvillage_save.json.bak"
+
+# =============================================================================
+#  What shape this build writes a save in
+# =============================================================================
+#
+# BUMP THIS WHEN A RELEASE ADDS A SAVED FIELD OR CHANGES A COLLECTION SET, and
+# not otherwise. It is not the build number and must not be: most builds do not
+# touch the save at all, and a stamp that moved every release would make every
+# older build look dangerous when almost none of them are.
+#
+# What it is for: this game had no version marker of any kind in the save, and
+# two things in this file delete data they do not recognise. `_save_dict` is a
+# hand-written whitelist, so a key it has never heard of is dropped on the next
+# write. `_sanitize_collections` erases any card set the running build does not
+# have, and truncates a set's array to the length it knows. Both are correct
+# defences against a hand-edited file and both are catastrophic against a save
+# written by NEXT month's build -- which is a completely ordinary thing to meet,
+# because the cloud hands one device the save another device wrote.
+#
+# Nobody had to do anything wrong for that to bite: install on a second phone,
+# don't update it, open the game once. The old build loads the new save, drops
+# what it does not know, writes it back to disk and pushes it to the server --
+# and push_save takes it, because its only check is that rank_stars has not
+# gone backwards, and deleting a card collection does not lower rank_stars.
+#
+# So a save now says which shape it is in, and a build that meets a number
+# higher than its own stops being a writer: it preserves what it cannot read
+# (see `_save_extra`), it keeps the sets it does not recognise, and it does not
+# push. See `save_is_from_future`.
+#
+# 1 -- the first stamped shape. Everything written before this is unstamped and
+#      reads as 0, which is correctly "older than me" for every build from here.
+const SAVE_SCHEMA := 1
+
+# The stamp on the save this session loaded. 0 for a save written before stamps
+# existed, which is the overwhelmingly common case on the first launch after
+# this ships and is not a fault.
+var save_schema_seen := 0
+
+# True when the save on disk was written by a build newer than this one. The
+# game plays normally; it just stops writing anywhere the newer build can see.
+var save_is_from_future := false
+
+# Every top-level key the loaded save carried that `_save_dict` does not
+# produce, kept verbatim and written back out on every save.
+#
+# This is the cheap half of the fix and it works even when the stamps agree --
+# a build that is merely a few keys behind now round-trips them losslessly
+# instead of quietly deleting them. It is capped in the only way that matters:
+# these are keys a FUTURE build wrote, so the ceiling on how many there can be
+# is however many fields that build added, and a save whose keys are garbage
+# has already been through `_read_save`'s JSON parse.
+var _save_extra := {}
 const SPIN_CAP := 50
 # The furthest the island counter is allowed to go. Nothing in the art needs a
 # ceiling -- themes, palettes and building textures all wrap with % -- and the
@@ -747,6 +800,7 @@ func _boot_finish_build() -> void:
 		pages[demo_page].visible = true
 		_current_page = pages[demo_page]
 	_build_nav()
+	_build_status_strip()
 	if pages.has(demo_page):
 		_fill_page(demo_page)
 	_apply_island_theme()
@@ -774,6 +828,7 @@ func _after_boot() -> void:
 	_boot_mail = []
 	for cb in mail:
 		cb.call()
+	_check_client_gate()
 	# A tournament that ended while the game was shut. The session is already
 	# restored by now -- Cloud reads it in its own _ready -- so this asks the
 	# league where the player finished rather than guessing from the phone.
@@ -2709,6 +2764,264 @@ func content_bottom() -> float:
 # reaches this line leaves nothing bare behind the bar.
 func nav_slab_top() -> float:
 	return content_bottom() + (NAV_ROOT_H - NAV_BAR_H)
+
+# =============================================================================
+#  The standing-problem strip
+# =============================================================================
+#
+# One line under the HUD bar that appears only when something is true that the
+# player would otherwise have to guess at, and says the reassuring half of it
+# rather than only the alarming half.
+#
+# WHAT IT IS NOT: a modal, and not a reason to stop playing. The first sketch of
+# this feature was a full-screen "no internet" dialog that held until the
+# connection came back, on the belief that spins played offline are not saved
+# and would have to be given back somehow. That belief is wrong and it is worth
+# writing down where the code can be checked against it: `_write_save` puts the
+# save on disk, atomically, with a backup rotation, and `Cloud.note_save` is
+# only OFFERED the result afterwards -- see the end of `_flush_save`. Nothing is
+# lost by playing in a tunnel. The cloud copy is what survives losing the phone,
+# not what survives the next launch.
+#
+# So the honest thing to say is "you are offline and your island is safe", and
+# the honest place to say it is a strip you can ignore. What genuinely needs
+# blocking -- a clan, a gift, a purchase -- is blocked at the button, in
+# `_needs_network`, at the moment it is pressed.
+#
+# WHY IT HANGS ABOVE THE NAV BAR AND NOT UNDER THE HUD BAR, which is where it
+# was first put and where it looks like it belongs.
+#
+# There is no free rectangle at the top. `slot_band_top()` leaves eighteen units
+# of air under the bar, which is almost enough -- but the island page hangs its
+# nameplate and both disc rails off `island_rail_top()`, which is only fourteen
+# units down, and a strip in that gap lands on the nameplate's top rim and on
+# the two discs beside it. Measured, not guessed: the first version of this
+# shipped into that gap and the island page showed the seam.
+#
+# Moving the content down instead is not available. The pages are built once at
+# boot and there is no resize or relayout path in this file, so a strip that
+# pushed anything would need the slot cabinet and the island rebuilt every time
+# a radio flapped.
+#
+# The band above the nav bar is free on both pages: the cabinet stops well short
+# of it and the island page has only scenery there. The raised SPIN disc hangs
+# in that gap, so this sits at a LOWER z than the nav and the disc rides over
+# it -- and the text is offset off-centre so the disc never covers a word.
+const STATUS_STRIP_H := 30.0
+
+var _status_strip: Control
+var _status_strip_label: Label
+# Latched so the "you have gone offline" toast fires on the EDGE rather than on
+# every repaint. A radio that flaps for a minute is one message, not thirty.
+var _was_reachable := true
+
+# =============================================================================
+#  The build floor
+# =============================================================================
+#
+# The rule this settles, because it was a real question and the answer is not
+# "always force an update": a game that demands a new binary on every release
+# has to reach a server to find out, so on the two occasions it matters most --
+# a plane, a tunnel -- it either blocks a game that works perfectly or waves
+# everybody through and protects nothing. Most releases here move a button.
+#
+# So the floor is off by default and lives on the server, where it can be
+# raised for a build that has already shipped. See the migration: the whole
+# point is that the build which turns out to be dangerous is never the build
+# that can be told about it.
+#
+# FAILS OPEN, EVERY TIME. No network, migration not applied, nonsense in the
+# answer -- all of them mean play on. A version gate that fails closed is an app
+# that bricks itself the afternoon the database is busy, which is a worse
+# outage than the one it prevents.
+const STORE_IOS := "itms-apps://apps.apple.com/app/id6803260415"
+const STORE_ANDROID := "market://details?id=com.guymaslawi.lootlagoon"
+
+# Latched: the "there is an update" line is worth saying once per launch, not
+# once per resume. The blocking modal has no latch, because a build under the
+# floor is under it every time it is looked at.
+var _update_nagged := false
+
+func _check_client_gate() -> void:
+	var mine := int(BuildID.read().get("build", 0))
+	# A build with no stamp is the editor or a desktop run -- `BuildID.label()`
+	# calls it "dev" -- and gating a development build on a production floor
+	# would lock the game shut on the machine it is written on.
+	if mine <= 0:
+		return
+	Cloud.client_gate(mine, func(g: Dictionary) -> void:
+		if g.is_empty():
+			return
+		if mine < _i(g.get("min_build", 0)):
+			_must_update(g)
+			return
+		if not _update_nagged and mine < _i(g.get("latest_build", 0)):
+			_update_nagged = true
+			_banner("There's a new version of Loot Lagoon.", Color(0.6, 0.85, 1.0), "🔄")
+	)
+
+# " Last backed up 3 hours ago." or nothing at all.
+#
+# Nothing is the right answer twice over: an install that has never reached the
+# server has no age to report, and a backup that landed a moment ago does not
+# need a sentence about it. Only silence or a real number -- never "unknown",
+# which reads as a fault when it means "you have not signed in".
+func _backup_age_line() -> String:
+	var at := Cloud.synced_at()
+	if at <= 0.0:
+		return ""
+	var secs := int(maxf(0.0, _now() - at))
+	if secs < 120:
+		return ""
+	var how := ""
+	if secs < 3600:
+		how = "%d minutes" % (secs / 60)
+	elif secs < 86400:
+		var h := secs / 3600
+		how = "1 hour" if h == 1 else "%d hours" % h
+	else:
+		var d := secs / 86400
+		how = "1 day" if d == 1 else "%d days" % d
+	return "\nLast backed up %s ago." % how
+
+func _store_url(g: Dictionary) -> String:
+	var override := ""
+	match OS.get_name():
+		"Android": override = _s(g.get("store_android", ""), "")
+		"iOS": override = _s(g.get("store_ios", ""), "")
+	if override != "":
+		return override
+	return STORE_ANDROID if OS.get_name() == "Android" else STORE_IOS
+
+func _must_update(g: Dictionary) -> void:
+	if _hold_for_boot(_must_update.bind(g)):
+		return
+	var vb := _open_popup("Update needed")
+	# The one modal in the game with no way out. _open_popup builds its corner
+	# X unconditionally, so this takes it away rather than reaching for a
+	# second popup builder that would then have to be kept in step with this one.
+	if is_instance_valid(_popup_close):
+		_popup_close.hide()
+	var note := _s(g.get("note", ""), "")
+	var head := _popup_row_label(note if note != ""
+		else "This version of Loot Lagoon is too old to play safely. Update to carry on.",
+		UI.F_LABEL)
+	head.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(head)
+	# Said plainly, because "update needed" on a game holding two years of play
+	# reads as a threat to it. Nothing is being taken: the save is on the phone
+	# and the update is what lets this device write to the island again.
+	var calm := _popup_row_label(
+		"Your island is safe on this phone and on your account. Updating is what lets this device back it up again.",
+		UI.F_CAPTION)
+	calm.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	calm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	calm.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	vb.add_child(calm)
+	var go := Button.new()
+	go.text = "UPDATE"
+	go.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	_candy_button(go, Color(0.28, 0.68, 0.34))
+	FX.press_feedback(go)
+	go.pressed.connect(func() -> void: OS.shell_open(_store_url(g)))
+	vb.add_child(go)
+
+func _build_status_strip() -> void:
+	var strip := PanelContainer.new()
+	# Under the nav bar's 50 on purpose: the raised SPIN disc belongs to the nav
+	# and has to ride over this, not be cut in half by it.
+	strip.z_index = 40
+	strip.visible = false
+	# It carries no button, so it must not eat taps meant for what is behind it.
+	strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.82)
+	sb.corner_radius_top_left = 14
+	sb.corner_radius_top_right = 14
+	sb.corner_radius_bottom_left = 14
+	sb.corner_radius_bottom_right = 14
+	sb.content_margin_left = 14
+	sb.content_margin_right = 14
+	sb.content_margin_top = 3
+	sb.content_margin_bottom = 3
+	sb.border_width_bottom = 2
+	sb.border_color = Color(0.95, 0.72, 0.35, 0.75)
+	strip.add_theme_stylebox_override("panel", sb)
+	add_child(strip)
+
+	var lbl := Label.new()
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lbl.add_theme_font_size_override("font_size", UI.F_TINY)
+	lbl.add_theme_color_override("font_color", Color(1.0, 0.88, 0.66))
+	strip.add_child(lbl)
+
+	_status_strip = strip
+	_status_strip_label = lbl
+	_place_status_strip()
+	Cloud.reachable_changed.connect(_on_reachable_changed)
+	Cloud.sync_state_changed.connect(func(_s: String) -> void: _refresh_status_strip())
+	_refresh_status_strip()
+
+func _place_status_strip() -> void:
+	if not is_instance_valid(_status_strip):
+		return
+	_status_strip.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	# `content_bottom()` and not `nav_slab_top()`. The slab's top edge is not the
+	# top of the nav: the raised SPIN disc hangs above it, dead centre, and a
+	# strip resting on the slab has the disc sitting in the middle of its text.
+	# `content_bottom()` is the line the pages themselves stop at, which is
+	# above the disc as well as above the glass -- so this is the lowest band on
+	# the screen that belongs to nobody.
+	var bottom := content_bottom() - 6.0
+	_status_strip.offset_top = bottom - STATUS_STRIP_H
+	_status_strip.offset_bottom = bottom
+	_status_strip.offset_left = 24.0
+	_status_strip.offset_right = -24.0
+
+# What the player is currently owed an explanation for, most serious first, or
+# "" when there is nothing to say. One strip, one line: two standing problems at
+# once is a stack of chrome, and the more serious one is the one that matters.
+func _status_strip_text() -> String:
+	# DEMO_STATUS=offline|future puts the strip on screen without a radio to
+	# switch off. It is the only way to look at the thing this feature is, and
+	# the state it draws is unreachable on a desktop run -- there is no session,
+	# so `Cloud.linked()` is false and the strip is correctly silent.
+	# KEPT SHORT ENOUGH TO FIT ON ONE LINE ON THE NARROWEST PHONE, because the
+	# strip lives in the eighteen units of air between the HUD bar and the
+	# cabinet and cannot grow into a second line without landing on the machine.
+	# The full sentence for both of these is on the Options page, where there is
+	# room for it, and the offline one is also spoken once by a toast.
+	match OS.get_environment("DEMO_STATUS"):
+		"offline": return "Offline — saved on this phone"
+		"future":  return "Backing up paused — update the game"
+	if save_is_from_future:
+		return "Backing up paused — update the game"
+	if Cloud.linked() and not Cloud.reachable():
+		return "Offline — saved on this phone"
+	return ""
+
+func _refresh_status_strip() -> void:
+	if not (is_instance_valid(_status_strip) and is_instance_valid(_status_strip_label)):
+		return
+	var text := _status_strip_text()
+	_status_strip.visible = text != ""
+	if text != "":
+		_status_strip_label.text = text
+
+func _on_reachable_changed(ok: bool) -> void:
+	_refresh_status_strip()
+	if ok == _was_reachable:
+		return
+	_was_reachable = ok
+	# The strip is the standing statement; this is the one-off. Only on the way
+	# DOWN -- coming back online is not news to somebody who was told their
+	# island was safe, and a "you are online again" toast on every lift-doors
+	# moment is the kind of chatter that teaches people to ignore toasts.
+	if not ok and Cloud.linked():
+		_show_toast("Offline — spins still count, your island is saved here", "📡")
 
 func _build_nav() -> void:
 	var nav_root := Control.new()
@@ -4676,6 +4989,13 @@ func _clan_join_ui(vb: VBoxContainer) -> void:
 	_candy_button(make, Color(0.28, 0.68, 0.34))
 	FX.press_feedback(make)
 	make.pressed.connect(func() -> void:
+		# Checked before the name is, so the offline answer is the same sentence
+		# wherever it comes from rather than a length complaint about a request
+		# that was never going to be sent.
+		var why := []
+		if _needs_network(why):
+			_banner(str(why[0]), Lagoon.CORAL_LO)
+			return
 		var want := name_row.text.strip_edges()
 		if want.length() < 3:
 			_banner("A clan name needs at least three characters.", Lagoon.CORAL_LO)
@@ -8229,7 +8549,20 @@ func _fill_options(vb: VBoxContainer) -> void:
 					sync.text = "☁ Backing up…"
 					sync.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 				"error":
-					sync.text = "☁ Can't reach the server — your island is safe on this device and will back up when you're online."
+					# WITH HOW STALE IT IS, which is the only part of being
+					# offline that a player can act on. "Can't reach the server"
+					# is the same sentence after ten seconds and after two days,
+					# and those are very different situations for somebody about
+					# to hand the phone to a child on a long flight.
+					sync.text = "☁ Can't reach the server — your island is safe on this device and will back up when you're online.%s" % _backup_age_line()
+					sync.add_theme_color_override("font_color", Color(0.95, 0.55, 0.3))
+				"held":
+					# Not a failure and not a retry. This device has read a save
+					# written by a newer build and has taken itself out of the
+					# writing seat on purpose -- saying "can't reach the server"
+					# here would send somebody to check their wifi for a problem
+					# that is an App Store update away. See SAVE_SCHEMA.
+					sync.text = "☁ Backing up is paused — this island was played on a newer version of the game. Update Loot Lagoon and it resumes; nothing is lost in the meantime."
 					sync.add_theme_color_override("font_color", Color(0.95, 0.55, 0.3))
 				_:
 					sync.text = "☁ Not backed up — sign in to keep your island if you lose this phone."
@@ -8547,7 +8880,13 @@ func _ensure_collections() -> void:
 	# re-armed a fresh month from whenever the player happened to open the app,
 	# so no two players were ever collecting the same set.
 	var idx := CV.season_index(now)
-	if col_season != idx:
+	# The season index is computed from the clock and from constants in cv.gd,
+	# so a build whose season table has moved on disagrees about which season it
+	# is -- and this wipe is keyed on that disagreement. On a save from a newer
+	# build that is not a rollover, it is two builds arguing, and the wipe
+	# settles the argument by deleting the player's shelf. The newer build puts
+	# the season right the moment the phone is updated; until then, keep it.
+	if col_season != idx and not save_is_from_future:
 		var had_a_season := col_season >= 0
 		col_owned = {}
 		col_dupes = {}
@@ -8582,7 +8921,17 @@ func _ensure_collections() -> void:
 		var norm := []
 		var dnorm := []
 		var nnorm := []
-		for i in n:
+		# Past the end of what this build knows, when the save came from a build
+		# that knows more. A set that GREW in a later release -- one extra card
+		# in an existing collection -- would otherwise be trimmed back here, and
+		# the trimmed copy written straight to disk and pushed: the newer
+		# build's card, deleted by a phone that never displayed it. Kept beyond
+		# `n` instead. Nothing downstream reads past `c["items"]`, so the tail
+		# is inert on this build and intact for the one that comes back to it.
+		var keep := n
+		if save_is_from_future:
+			keep = maxi(n, maxi(arr.size(), maxi(dup.size(), fresh.size())))
+		for i in keep:
 			norm.append(_b(arr[i]) if i < arr.size() else false)
 			dnorm.append(maxi(0, _i(dup[i])) if i < dup.size() else 0)
 			# A card can only be news if it is also owned. Anything else is a
@@ -8595,6 +8944,15 @@ func _ensure_collections() -> void:
 		col_claimed[id] = _b(col_claimed.get(id, false))
 	# Sets the build no longer has have no business keeping a slot; leaving
 	# them means a renamed collection quietly doubles the save every season.
+	#
+	# UNLESS THE SAVE IS AHEAD OF THIS BUILD, in which case "a set I do not
+	# have" does not mean "a set that was retired" -- it means a set that has
+	# not reached this phone yet, and erasing it deletes a card collection the
+	# player earned on a device that had the release. That is the single worst
+	# thing an out-of-date build could do to this save, and it needed no
+	# tampering to happen: install, don't update, open once.
+	if save_is_from_future:
+		return
 	for key in col_owned.keys():
 		if not CV.COLLECTIONS.any(func(c): return c["id"] == key):
 			col_owned.erase(key)
@@ -8727,6 +9085,10 @@ const APPLIED_GIFTS_KEEP := 200
 func _send_card(to_id: String, to_name: String, set_id: String, idx: int) -> void:
 	var c := _collection_by_id(set_id)
 	if c.is_empty() or idx < 0 or idx >= (c["items"] as Array).size():
+		return
+	var why := []
+	if _needs_network(why):
+		_banner(str(why[0]), Lagoon.CORAL_LO)
 		return
 	var stars := int((c["items"] as Array)[idx][2])
 	# Checked here as well as on the server, not INSTEAD of it: this one is so
@@ -8880,6 +9242,20 @@ var _clan_fake := false
 var _clan_fake_invites: Array = []
 var _clan_fake_requests: Array = []
 
+# True when this action needs a server that is not there. The pair of questions
+# has to be asked in this order and both have to be asked: `linked()` is about
+# whether the player has an account, `reachable()` is about whether the radio
+# works, and using either one alone is what produced the bug this comment is
+# under. `why` is filled with the sentence to show them.
+func _needs_network(why: Array) -> bool:
+	if not Cloud.linked():
+		why.append("Sign in to use this.")
+		return true
+	if not Cloud.reachable():
+		why.append("You're offline — this one needs a connection. Everything else keeps working.")
+		return true
+	return false
+
 func _refresh_clan(then := Callable()) -> void:
 	if _clan_fake:
 		if then.is_valid():
@@ -8891,6 +9267,23 @@ func _refresh_clan(then := Callable()) -> void:
 			then.call()
 		return
 	Cloud.my_clan(func(res: Dictionary) -> void:
+		# AN EMPTY ANSWER IS NOT "YOU HAVE NO CLAN" UNLESS A SERVER SAID SO.
+		#
+		# `my_clan` returns {} for a 200 with no clan and for a request that
+		# never left the phone, and this line used to write both into `my_clan`
+		# -- so a clan member in a tunnel opened the tab and was shown the
+		# recruiting page, with an empty browse list and a CREATE button that
+		# could only fail. It read as having been thrown out of their own clan.
+		#
+		# Keeping the last roster is right even though it may be minutes stale:
+		# the page is a list of names, staleness costs nothing, and the strip at
+		# the top of the screen is already saying the connection is down.
+		if res.is_empty() and not Cloud.reachable():
+			if then.is_valid():
+				then.call()
+			elif _current_page == pages.get("clan"):
+				_fill_page("clan")
+			return
 		my_clan = res
 		if then.is_valid():
 			then.call()
@@ -14379,7 +14772,27 @@ func _save_game() -> void:
 # copy of this literal would be a save that is missing whatever was added to the
 # other one.
 func _save_dict() -> Dictionary:
-	return {
+	# The fields a newer build wrote go down FIRST, so that every key this build
+	# actually owns overwrites them rather than the other way round. Getting
+	# this order backwards would let a stale copy of `coins` win over the one
+	# the player just earned, which is a far worse bug than the one the
+	# preservation is here to fix.
+	var d := _save_extra.duplicate(true)
+	d.merge({
+		# THE HIGHER OF THE TWO, WHICH IS NOT THE OBVIOUS CHOICE. Stamping what
+		# this build writes would be the honest description of the file -- and
+		# it would erase the only evidence that a newer build ever touched it.
+		# The very first autosave after adopting a newer save would lower the
+		# stamp back to ours, and the NEXT launch would read a save that looks
+		# native, take the "safe to tidy" path through the collection
+		# normaliser, and delete the sets this whole mechanism exists to keep.
+		# The mark has to outlive the session that noticed it.
+		#
+		# It is safe to overstate it because the stamp is only ever compared
+		# against SAVE_SCHEMA, and a build that meets its own number carries on
+		# exactly as before. The copy on the server never sees this: a save from
+		# the future does not get pushed at all.
+		"schema": maxi(SAVE_SCHEMA, save_schema_seen),
 		"coins": coins,
 		# A SPIN IN FLIGHT IS NOT A SPIN SPENT. The stake comes off `spins` the
 		# instant the button is pressed and the outcome lands a second or two
@@ -14453,7 +14866,8 @@ func _save_dict() -> Dictionary:
 		# Which raids have already been applied. See _on_cloud_raids: without
 		# this in the save, a failed ack replays the raid on every launch.
 		"applied_raids": applied_raids,
-	}
+	}, true)
+	return d
 
 func _flush_save() -> void:
 	if _preview_island or _boot != null:
@@ -14548,6 +14962,37 @@ func _read_save() -> Dictionary:
 		push_warning("Save at %s is unreadable; falling back." % path)
 	return {}
 
+# Reads the shape stamp off a save and decides what this build is allowed to do
+# with it. Called for the file on disk and again for anything adopted out of the
+# cloud, because the cloud copy is exactly where a newer build's save arrives.
+func _adopt_schema(data: Dictionary) -> void:
+	save_schema_seen = maxi(save_schema_seen, _i(data.get("schema", 0)))
+	# CLEARED FIRST, and rebuilt from what was just read. `_save_dict` merges
+	# the extras into its own output, so asking it for the owned key set while
+	# the previous set is still loaded reports them as owned -- and the branch
+	# below would then never refresh them. That matters on the second call: a
+	# cloud island adopted mid-session would keep the values off the file it
+	# replaced. The file is authoritative and it already contains the extras,
+	# because every save writes them back out.
+	_save_extra = {}
+	# Which keys this build owns, asked of the one function that knows. Derived
+	# rather than listed: a second hand-maintained list of the same field names
+	# is a list that goes stale the first time somebody adds a field.
+	var mine := {}
+	var owned := _save_dict()
+	for k in owned.keys():
+		mine[k] = true
+	for k in data.keys():
+		if not mine.has(k):
+			_save_extra[k] = data[k]
+	if save_schema_seen <= SAVE_SCHEMA:
+		return
+	# A save from the future. The game plays on -- there is nothing wrong with
+	# the island and refusing to open it would be the data loss, not the cure --
+	# but this device stops writing anywhere the newer build will read.
+	save_is_from_future = true
+	Cloud.block_push(true)
+
 func _load_game() -> void:
 	var data := _read_save()
 	if data.is_empty():
@@ -14555,6 +15000,10 @@ func _load_game() -> void:
 		# nothing to guard: a first run must be allowed to rotate normally.
 		_load_ok = true
 		return
+	# BEFORE ANY FIELD IS READ. Everything below this line either drops what it
+	# does not recognise or clamps it, and both are the wrong response to a save
+	# written by a build that is ahead of this one. See SAVE_SCHEMA.
+	_adopt_schema(data)
 	# First, before any other line in this function: _now() answers with the
 	# high-water mark, and every cooldown, deadline and elapsed-time figure
 	# below is measured against it. Restored one statement too late and the

@@ -101,6 +101,47 @@ var _fails := 0
 
 var _state := "off"
 
+# =============================================================================
+#  Is there a network at all
+# =============================================================================
+#
+# `linked()` means "there is a session on this device", which is a completely
+# different question and was being asked in its place. A phone in a tunnel is
+# still linked -- the session is a file -- so every caller that used `linked()`
+# to decide whether the server would answer was really asking whether the
+# player had ever signed in. The clan page is what that cost: `my_clan` came
+# back empty because nothing came back at all, and the page read the empty
+# answer as "you are not in a clan" and offered to make one.
+#
+# This is the other half of that question, and it is answered by the only thing
+# that actually knows: whether the last request reached a server. _post reports
+# every completion here -- an HTTP status of any kind means the network is
+# there, and RESULT_SUCCESS failing means it is not.
+#
+# IT STARTS TRUE, and that is deliberate. Nothing has failed yet, and a game
+# that opens by telling the player they are offline before it has tried is
+# worse than one that finds out a second later.
+signal reachable_changed(ok: bool)
+
+var _reachable := true
+
+func reachable() -> bool:
+	return _reachable
+
+# Unix time of the last push the server accepted, 0 if this install has never
+# had one. main.gd uses it to say how far behind the backup is, which is the
+# one thing about being offline that is actually worth a player's attention.
+var _synced_at := 0.0
+
+func synced_at() -> float:
+	return _synced_at
+
+func _note_transport(ok: bool) -> void:
+	if _reachable == ok:
+		return
+	_reachable = ok
+	reachable_changed.emit(ok)
+
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
@@ -342,6 +383,8 @@ func claim(local: Dictionary, name: String, emoji: String,
 		var p = body.get("player", {})
 		_player = p if typeof(p) == TYPE_DICTIONARY else {}
 		_save_session()
+		# The claim carried the save, so the server holds this island as of now.
+		_synced_at = _now()
 		_set_state("synced")
 		var remote = body.get("save", null)
 		signed_in.emit(_player.duplicate(true), bool(body.get("is_new", false)),
@@ -410,7 +453,46 @@ func _process(_delta: float) -> void:
 		_push()
 
 
+# =============================================================================
+#  The brake an older build pulls on itself
+# =============================================================================
+#
+# push_save on the server checks one thing: that `rank_stars` has not gone
+# backwards. That is the right check for two phones playing the same island and
+# a useless one for two BUILDS, because the way an old build damages a new
+# save does not move rank_stars at all -- main.gd's `_save_dict` is a whitelist
+# of keys and its collection normaliser deletes any set the build does not know
+# about. An island played once on last month's build comes back with this
+# season's cards gone and its star count untouched, so the server takes it.
+#
+# There is no version negotiation to do here and no merge worth attempting. The
+# only safe answer, once main.gd has seen a save stamped by a build newer than
+# itself, is for this device to stop being a writer: it keeps playing off the
+# copy on disk, and the copy on the server stays whatever the newer build left.
+#
+# Set by main.gd, never decided here -- this file does not know the shape of a
+# save and must not start guessing at it.
+var _push_blocked := false
+
+func push_blocked() -> bool:
+	return _push_blocked
+
+func block_push(blocked: bool) -> void:
+	if _push_blocked == blocked:
+		return
+	_push_blocked = blocked
+	if blocked:
+		# Not "error": nothing failed and there is nothing to retry. The state
+		# main.gd paints from has to be able to say "deliberately not backing
+		# up" or the settings line would sit on "Backing up…" for ever.
+		_dirty = false
+		_set_state("held")
+
+
 func _push() -> void:
+	if _push_blocked:
+		_dirty = false
+		return
 	if _pending.is_empty():
 		_dirty = false
 		return
@@ -438,6 +520,7 @@ func _push() -> void:
 					remote if typeof(remote) == TYPE_DICTIONARY else {})
 			return
 		_dirty = false
+		_synced_at = _now()
 		_set_state("synced")
 	)
 
@@ -852,6 +935,37 @@ func report_player(player_id: String, reason: String, then: Callable) -> void:
 		func(code: int, _b) -> void: then.call(code == 200))
 
 
+# =============================================================================
+#  Which builds are still allowed to play
+# =============================================================================
+#
+# Answers {min_build, latest_build}. A build below `min_build` is one that can
+# damage something -- today that means a save shape it does not understand --
+# and it gets a modal it cannot dismiss. A build below `latest_build` is merely
+# behind, and gets a line it can wave away.
+#
+# THE DEFAULT ON THE SERVER IS ZERO, so this gate is off until somebody raises
+# it, and raising it needs no new build on anybody's phone. That is the whole
+# reason it lives in a table rather than in a constant here: the build that
+# turns out to be broken is never the build that can be told about it.
+#
+# Deliberately callable by anon. The floor is about the shape of the save on
+# disk, which a player who has never signed in has as much of as anybody, and a
+# gate that only catches signed-in players is a gate with a hole in it.
+#
+# Every failure -- no network, migration not applied, malformed answer -- comes
+# back as an empty dictionary and main.gd reads that as "play on". A version
+# gate that fails CLOSED is an app that bricks itself the day the server has a
+# bad afternoon, which is a worse outage than the one it was built to prevent.
+func client_gate(build: int, then: Callable) -> void:
+	if not configured():
+		then.call({})
+		return
+	_rpc("client_gate", {"p_build": build}, func(code: int, body) -> void:
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+
 # Crash reports, faults and feature counters, batched. See diag.gd for what is
 # in them and why none of it identifies anybody.
 #
@@ -1186,9 +1300,17 @@ func _post(path: String, body: Variant, then: Callable, authed: bool) -> void:
 			http.queue_free()
 			if result != HTTPRequest.RESULT_SUCCESS:
 				# No connection, DNS failure, timeout. Not distinguished,
-				# because there is nothing different to do about any of them.
+				# because there is nothing different to do about any of them
+				# -- except to say that the network is down, which is the one
+				# thing every caller downstream needs and none of them could
+				# tell from a `then.call(0, null)` that also means "refused".
+				_note_transport(false)
 				then.call(0, null)
 				return
+			# A status of any kind -- including a 404 or a 401 -- means a
+			# server answered, so the radio is working. Reachability is not
+			# the same question as permission.
+			_note_transport(true)
 			var text := raw.get_string_from_utf8()
 			var parsed = JSON.parse_string(text) if text != "" else null
 			then.call(code, parsed)
@@ -1197,6 +1319,7 @@ func _post(path: String, body: Variant, then: Callable, authed: bool) -> void:
 	var err := http.request(_url + path, headers, HTTPClient.METHOD_POST, JSON.stringify(body))
 	if err != OK:
 		http.queue_free()
+		_note_transport(false)
 		then.call(0, null)
 
 
