@@ -100,6 +100,22 @@ func apply_palette(p: Dictionary) -> void:
 static func _v3(c: Color) -> Vector3:
 	return Vector3(c.r, c.g, c.b)
 
+# What the face says. SPIN nearly always; STOP for as long as an auto run is
+# going, because for that whole time this button does not start anything --
+# it ends it. The swap is a beat rather than a text assignment: the word is
+# the only thing on the control that changes, so with no motion on it the
+# player's own tap looks like it missed.
+func set_label(text: String) -> void:
+	if _label == null or _label.text == text:
+		return
+	_label.text = text
+	_label.pivot_offset = _label.size * 0.5
+	var tw := _label.create_tween()
+	tw.tween_property(_label, "scale", Vector2(1.16, 1.16), 0.09) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(_label, "scale", Vector2.ONE, 0.16) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
 func _layout() -> void:
 	_vis.position = Vector2(-PAD, -PAD)
 	_vis.size = size + Vector2(PAD * 2.0, PAD * 2.0)

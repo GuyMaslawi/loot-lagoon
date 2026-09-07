@@ -209,10 +209,21 @@ func _ready() -> void:
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(sub)
 
+	# HE COMES TO THE ROBBERY AS WELL AS TO THE FIGHT.
+	#
+	# Guy, off build 101: "on a steal I do not see the raccoon at all, the way I
+	# do on an attack -- I need whoever comes to rob to do something, an
+	# animation there too."
+	#
+	# The attack got a performer and the steal never did, and the split was an
+	# accident of which one was built second rather than a decision. It also had
+	# the story backwards: an attack is a hammer thrown at a building, and a
+	# STEAL is the one thing in this game that a raccoon is actually for. The
+	# screen that needed him most was the screen he was missing from.
+	_add_raccoon()
 	if mode == "steal":
 		_setup_chests()
 	else:
-		_add_raccoon()
 		_setup_targets()
 
 func _flat_button(btn: Button) -> void:
@@ -285,14 +296,34 @@ func _on_chest(btn: Button, amount: int) -> void:
 	if amount > 0:
 		_stolen += amount
 		Sfx.play("coins", -4.0)
+		# He hauls it in, and the coins come to HIM before they go anywhere
+		# else -- a robbery where the money leaves the chest and flies past the
+		# robber to a counter is a robbery he is not in.
+		_set_act("grab")
+		_after_act("sneak", 0.62)
 		FX.rise_label(_stage, pos, "+%s" % UI.fmt_compact(amount), Lagoon.BRASS_HI, 38)
-		FX.fly_coins(_stage, btn.position + btn.size * 0.5, Vector2(90, 40), 5)
+		# To his paw, not to a corner of the frame. It used to be a fixed
+		# Vector2(90, 40) -- the top left of the island, which is nothing and
+		# belongs to nobody -- so the gold left the chest and went off the edge
+		# of the story. It goes where the hands that came for it are.
+		FX.fly_coins(_stage, btn.position + btn.size * 0.5, _paw(), 5)
 		FX.burst(_stage, btn.position + btn.size * 0.5, Color(1.0, 0.8, 0.3), 10)
 		_loot_label.text = "Loot  %s" % UI.fmt_compact(_stolen)
 		FX.pop_in(_loot_label, 0.26)
 	else:
 		FX.rise_label(_stage, pos, "Empty!", Color(0.85, 0.85, 0.85), 30)
+		# The sulk the attack uses when a shield eats the hammer. An empty
+		# chest is the same event -- he went for it and got nothing.
+		_set_act("boo")
+		_after_act("sneak", 0.85)
 	if _picks_left == 0:
+		# The last chest is shut and he knows how he did. Set rather than
+		# guarded, and timed to land after this chest's own grab or sulk: this
+		# is the end of the raid, so there is nothing left for it to interrupt.
+		var end := create_tween()
+		end.tween_interval(0.72)
+		end.tween_callback(func() -> void:
+			_set_act("cheer" if _stolen > 0 else "boo"))
 		var tw := create_tween()
 		tw.tween_interval(0.55)
 		tw.tween_callback(func() -> void:
@@ -358,21 +389,45 @@ func _add_raccoon() -> void:
 		_rac_holder.add_child(flat)
 		flat.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
-	# He runs on from off the left edge rather than being there from frame one:
-	# the island has just slid in, and somebody arriving on it is the cheapest
-	# possible way to say whose turn it is.
+	# He arrives rather than being there from frame one: the island has just slid
+	# in, and somebody walking onto it is the cheapest possible way to say whose
+	# turn it is.
+	#
+	# HOW he arrives is the difference between the two raids, and it is the only
+	# thing about him that is. An attack is announced -- he runs on hard and
+	# overshoots, because he is not hiding from anybody. A steal is not: he
+	# creeps, slower, easing to a stop with no overshoot at all, and _set_act
+	# below has him low and looking over his shoulder the whole time he is there.
+	# Same rig, same mark, opposite intent.
+	var sneak: bool = mode == "steal"
+	_set_act("sneak" if sneak else "idle")
 	_rac_holder.position = RAC_POS - Vector2(320, 0)
 	shade.modulate.a = 0.0
 	var tw := _rac_holder.create_tween()
 	tw.set_parallel(true)
-	tw.tween_property(_rac_holder, "position", RAC_POS, 0.5) \
-		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT).set_delay(0.15)
+	if sneak:
+		tw.tween_property(_rac_holder, "position", RAC_POS, 1.05) \
+			.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT).set_delay(0.15)
+	else:
+		tw.tween_property(_rac_holder, "position", RAC_POS, 0.5) \
+			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT).set_delay(0.15)
 	tw.tween_property(shade, "modulate:a", 1.0, 0.4).set_delay(0.25)
 	tw.chain().tween_callback(func() -> void: _entered = true)
 
 func _set_act(act: String) -> void:
 	_act = act
 	_act_t = 0.0
+
+# Back to a resting act once a one-shot has played out. Checked against what
+# is running rather than set blind, so two chests opened in quick succession
+# cannot have the first one's timer drop the second one's grab.
+func _after_act(act: String, secs: float) -> void:
+	var was := _act
+	var tw := create_tween()
+	tw.tween_interval(secs)
+	tw.tween_callback(func() -> void:
+		if _act == was:
+			_set_act(act))
 
 # The performance, written once a frame. MascotRig owns everything involuntary
 # on top of this -- breathing, blinking, the tail and ears arriving late -- so
@@ -402,6 +457,61 @@ func _process(delta: float) -> void:
 			_rac.squash = Vector2.ZERO
 			_rac.head_turn = 0.0
 			_rac.mood = 0.0
+		"sneak":
+			# The whole steal, in a stance. Low over the ground, weight forward,
+			# both paws up in front of him, and his head sweeping the island for
+			# whoever lives here -- which is the thing the attack's idle never has
+			# to do, because an attack is not hiding from anyone.
+			#
+			# The two clocks are deliberately out of phase and deliberately not
+			# harmonics of each other: the tiptoe runs at 2.6 and the head sweep
+			# at 0.62, so the pattern does not repeat inside the time anybody
+			# spends on this screen. A loop you can see the seam of reads as a
+			# cycle playing, not as somebody being careful.
+			var creep := sin(t * 2.6)
+			var scan := sin(t * 0.62)
+			# Paws up and forward, the near one leading. Small amplitudes: a sneak
+			# is held tension, and arms swinging through the same arc the idle
+			# uses would read as a stroll.
+			_rac.arm = Vector2(-0.34 + 0.07 * creep, -0.62 - 0.07 * creep)
+			# Tiptoe. One foot is always the planted one, so the legs alternate
+			# around a crouch rather than swinging past each other.
+			_rac.leg = Vector2(0.20 + 0.10 * creep, 0.20 - 0.10 * creep)
+			# Crouched and drifting a little on the spot -- he is not walking, but
+			# nothing standing this still is trying not to be seen.
+			_rac.body = Vector2(7.0 * creep, 20.0)
+			_rac.squash = Vector2(0.09, -0.11)
+			# Looking where the chests are, and then behind him.
+			_rac.look = Vector2(0.55 + 0.45 * scan, 0.12)
+			_rac.head_turn = 0.20 * scan
+			_rac.mouth = 0.0
+			# A shade under neutral. Not the attack's scowl -- concentration.
+			_rac.mood = -0.12
+		"grab":
+			# A chest just came open with something in it. He lunges at it with
+			# both paws and hauls back, which is the whole verb of this raid
+			# performed from a standing start -- he cannot go to the chest,
+			# because the player is the one choosing which chest.
+			#
+			# Out fast and back slow: 0.16s of reach against 0.34s of haul. A
+			# symmetrical grab reads as a wave.
+			var out := clampf(t / 0.16, 0.0, 1.0)
+			var back := clampf((t - 0.16) / 0.34, 0.0, 1.0)
+			var reach_u: float = out - back
+			# Negative on the right arm swings it toward the huts, the same sign
+			# the throw uses.
+			_rac.arm = Vector2(-0.30 - 0.55 * reach_u, -0.60 - 1.35 * reach_u)
+			_rac.leg = Vector2(0.20 - 0.30 * reach_u, 0.20 + 0.26 * reach_u)
+			# He goes out over his toes and then rocks back onto his heels with
+			# the haul, so the pull has a body behind it.
+			_rac.body = Vector2(58.0 * out - 78.0 * back, 20.0 - 16.0 * reach_u)
+			_rac.squash = Vector2(0.09 - 0.14 * reach_u, -0.11 + 0.16 * reach_u)
+			_rac.look = Vector2(1.0, -0.15)
+			_rac.mouth = clampf(0.35 + 0.65 * reach_u, 0.0, 1.0)
+			_rac.head_turn = -0.12 * reach_u
+			# The grin arrives with the haul rather than with the reach: he is
+			# pleased once it is his, not while he is stretching for it.
+			_rac.mood = clampf(0.25 + 0.75 * back * (1.0 - back * 0.4), 0.0, 1.0)
 		"wind":
 			# Weight goes back onto the heels and the throwing arm cocks behind
 			# his ear. Squared easing so the load builds instead of snapping.

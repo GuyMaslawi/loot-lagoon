@@ -63,8 +63,16 @@ func _t_which() -> void:
 # =============================================================================
 
 # The number that decides whether this reads as an event or as the way spins
-# are. Held on every matching pair it would be 40%; held on the four worth
-# waiting for it should land near a quarter.
+# are. Held on every matching pair it would be 33%; held on the four worth
+# waiting for it should land near a fifth -- about one spin in five.
+#
+# BOTH BANDS MOVED DOWN ON 2026-09-07 and neither is a slackened test. The
+# forced-triple rate went from 30% to 22% (see main.gd's TRIPLE_WEIGHTS), which
+# takes every pair with it: 40% -> 33% unfiltered, 26% -> 21% on the four that
+# hold. The near-miss is suspense rather than a prize -- it hands out nothing
+# either way -- so it was not the target of that change, it is its wake. One in
+# five is still often enough that a player learns what the third reel slowing
+# down means, which is the only thing this rate has to buy.
 func _t_rate() -> void:
 	var n := 40000
 	var hold := 0
@@ -79,8 +87,8 @@ func _t_rate() -> void:
 	var pair_pct := 100.0 * float(pair) / float(n)
 	print("    any matching pair:  %.1f%%   (unfiltered, for comparison)" % pair_pct)
 	print("    holds:              %.1f%%   (~1 spin in %.1f)" % [pct, 100.0 / maxf(pct, 0.01)])
-	_ok(pct > 22.0 and pct < 30.0, "hold rate in 22-30%% (got %.1f%%)" % pct)
-	_ok(pair_pct > 37.0 and pair_pct < 43.0, "pair rate near 40%% (got %.1f%%)" % pair_pct)
+	_ok(pct > 18.0 and pct < 24.0, "hold rate in 18-24%% (got %.1f%%)" % pct)
+	_ok(pair_pct > 30.0 and pair_pct < 36.0, "pair rate near 33%% (got %.1f%%)" % pair_pct)
 
 # =============================================================================
 #  3. the outcome is untouched   <-- the one that matters
@@ -220,19 +228,26 @@ func _trace(result: Array) -> Dictionary:
 #  the machine's own roll, copied rather than called
 # =============================================================================
 
-# main.gd's _roll is a private method on a Control that boots the whole game.
-# The odds it uses are the thing under test here, so a copy that drifts would
-# be a real problem -- qa_full already asserts the live triple rate against the
-# reels, which is what catches that.
+# main.gd's _roll is a private method on a Control that boots the whole game,
+# so the shape of the draw is reproduced here -- but THE NUMBERS ARE THE LIVE
+# ONES, read off main.gd rather than typed out again.
+#
+# They used to be typed out again, and on 2026-09-07 the table was retuned and
+# this copy was not. The harness went on measuring the old design and passing,
+# which is the one failure mode a harness has no defence against. A constant
+# lifted off the file under test cannot go stale; a constant transcribed from
+# it always eventually does.
+const MAIN := preload("res://scripts/main.gd")
+
 func _roll() -> Array:
-	if randf() < 0.3:
-		var w := {"hammer": 25, "steal": 22, "coin": 14, "bag": 9, "gem": 12, "shield": 12, "bolt": 6}
+	if randf() < MAIN.TRIPLE_RATE:
+		var w: Dictionary = MAIN.TRIPLE_WEIGHTS
 		var total := 0
 		for v in w.values():
-			total += v
+			total += int(v)
 		var pick := randi_range(1, total)
 		for key in w:
-			pick -= w[key]
+			pick -= int(w[key])
 			if pick <= 0:
 				return [key, key, key]
 	return [CV.SYMBOLS.pick_random(), CV.SYMBOLS.pick_random(), CV.SYMBOLS.pick_random()]

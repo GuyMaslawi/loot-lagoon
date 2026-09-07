@@ -19,6 +19,28 @@ func _ready() -> void:
 	print("QA-SECURITY: %s" % ("ALL PASS" if fails == 0 else "%d FAILURES" % fails))
 	get_tree().quit(1 if fails > 0 else 0)
 
+# WAIT FOR THE CONDITION, NOT FOR A DURATION.
+#
+# Both raid tests slept a flat 3.0s and then poked the game. main.gd holds
+# every message that addresses the player until `_booted`, and `_booted` is set
+# after the splash DISMISSES -- which is not a fixed length: Boot plays the
+# mascot out if he got as far as standing up during the load and cuts straight
+# to a 0.45s fade if he did not. So the same code finishes booting at 2.4s or
+# at 3.4s depending on how quickly the machine got through the load, and a 3.0s
+# sleep sat exactly between the two.
+#
+# When it lost the race the raid was filed in `_boot_mail` instead of applied,
+# and the harness reported it as the dedupe having eaten a genuine raid -- a
+# security failure, in the file that exists to catch security failures, caused
+# entirely by the harness. qa_full and qa_flows sleep 4.0s and were never
+# caught; that is luck, not a design. This waits for the flag.
+func _await_boot(game: Control) -> void:
+	var t0 := Time.get_ticks_msec()
+	while not bool(game.get("_booted")):
+		if Time.get_ticks_msec() - t0 > 15000:
+			_chk("the game finished booting", false, "gave up after 15s")
+			return
+		await get_tree().process_frame
 func _chk(name: String, ok: bool, detail := "") -> void:
 	print("  [%s] %s %s" % ["ok" if ok else "FAIL", name, detail])
 	if not ok:
@@ -155,7 +177,7 @@ func _t_raid_applied_once() -> void:
 	print("raids: an ack that never landed")
 	var m: Control = load("res://scripts/main.gd").new()
 	add_child(m)
-	await get_tree().create_timer(3.0).timeout
+	await _await_boot(m)
 	m.coins = 100000
 	m.applied_raids = []
 	var raid := [{"id": "raid-1", "mode": "steal", "coins": 5000}]
@@ -176,7 +198,7 @@ func _t_raid_applied_once() -> void:
 	m._flush_save()
 	var m2: Control = load("res://scripts/main.gd").new()
 	add_child(m2)
-	await get_tree().create_timer(3.0).timeout
+	await _await_boot(m2)
 	_chk("the applied list survives the launch",
 		 m2.applied_raids.has("raid-1") and m2.applied_raids.has("raid-2"),
 		 str(m2.applied_raids))

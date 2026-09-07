@@ -771,9 +771,10 @@ func _t_roll_distribution() -> void:
 		if r[0] == r[1] and r[1] == r[2]:
 			triples += 1
 	_chk("the reels only ever land on real symbols", off_strip == "", off_strip)
-	# 30% forced triples, plus the ones a free draw lands on by chance:
-	# 0.7 * (1/7)^2 = 1.43%.
-	var want := 0.30 + 0.70 / 49.0
+	# The forced rate, plus the ones a free draw lands on by chance:
+	# (1 - rate) * (1/7)^2. Read off the table rather than written down, so
+	# retuning the odds cannot leave this asserting the old design.
+	var want: float = m.TRIPLE_RATE + (1.0 - m.TRIPLE_RATE) / 49.0
 	var got := float(triples) / float(n)
 	_chk("the triple rate matches the design", absf(got - want) < 0.006,
 		"%.3f%% vs %.3f%%" % [got * 100.0, want * 100.0])
@@ -788,6 +789,14 @@ func _t_roll_distribution() -> void:
 			spread_ok = false
 	_chk("no symbol is starved or dominant", spread_ok, line)
 
+# One symbol's share of all spins, off the live table: the forced draw picks it
+# by weight, and a free draw lands on three of it by chance.
+func _triple_odds(symbol: String) -> float:
+	var total := 0.0
+	for w in m.TRIPLE_WEIGHTS.values():
+		total += float(w)
+	var forced: float = m.TRIPLE_RATE * float(m.TRIPLE_WEIGHTS[symbol]) / total
+	return forced + (1.0 - m.TRIPLE_RATE) / 343.0
 # =============================================================================
 #  10. card drops
 # =============================================================================
@@ -1261,18 +1270,27 @@ func _t_tourney() -> void:
 	_chk("and its rewards are bigger", m._tourney_tier_spins(0) > int(m.TOURNEY_TIERS[0]["spins"]),
 		"%d vs %d" % [m._tourney_tier_spins(0), int(m.TOURNEY_TIERS[0]["spins"])])
 	# The property that stops the track being a way to farm the thing the shop
-	# sells. A spin is worth 2.20 points at the real reel odds whatever the bet
+	# sells. A spin is worth ~2.20 points at the real reel odds whatever the bet
 	# is (a x5 pull scores five times as much and costs five spins), so a point
 	# costs 1/2.20 of a spin to earn. No track may pay that much back.
-	const SPINS_PER_POINT := 1.0 / 2.20
+	#
+	# Derived from the live table rather than typed, because it is the product of
+	# two things that have both moved: the triple odds and the per-raid score.
+	# Typed, it went stale the moment either changed -- and stale in the loose
+	# direction, which is the direction a bound must never go stale in.
+	var per_spin: float = float(m.TP_ATTACK) * _triple_odds("hammer") \
+		+ float(m.TP_STEAL) * _triple_odds("steal")
+	_chk("a spin is still worth about the 2.2 points the track was built on",
+		absf(per_spin - 2.20) < 0.25, "%.2f points a spin" % per_spin)
+	var spins_per_point := 1.0 / per_spin
 	for lap in 4:
 		var pay := 0
 		for i in m.TOURNEY_TIERS.size():
 			pay += m._tourney_tier_spins(i, lap)
 		var work: int = m._tourney_tier_at(m.TOURNEY_TIERS.size() - 1, lap)
 		_chk("track %d pays back less than the spins it costs to fill" % (lap + 1),
-			float(pay) / float(work) < SPINS_PER_POINT,
-			"%.3f paid vs %.3f spent, per point" % [float(pay) / float(work), SPINS_PER_POINT])
+			float(pay) / float(work) < spins_per_point,
+			"%.3f paid vs %.3f spent, per point" % [float(pay) / float(work), spins_per_point])
 	_chk("and every track pays less per point than the one before it",
 		m._tourney_tier_spins(3, 1) * m._tourney_tier_at(3, 0)
 			< m._tourney_tier_spins(3, 0) * m._tourney_tier_at(3, 1))
@@ -2508,7 +2526,16 @@ func _t_client_gate() -> void:
 	# The two things that used to take it down.
 	m._close_popup(true)
 	_chk("an ordinary close request is refused", m._popup != null)
-	var stolen := m._open_popup("Something Else")
+	# TYPED, NOT INFERRED, and the difference is that this file would not load.
+	#
+	# `m` is a Control, so GDScript cannot see main.gd's own methods on it and a
+	# call through it is a Variant. `:=` off a Variant is a hard parse error, and
+	# a parse error takes the WHOLE harness down -- every section, not this one.
+	# It shipped that way with the modal-gate tests and nothing noticed, because
+	# a suite that fails to load prints two lines and exits, which looks nothing
+	# like a failing test. Every other call through `m` in this file either has an
+	# explicit type or is used inline; these two were the only `:=`.
+	var stolen: VBoxContainer = m._open_popup("Something Else")
 	_chk("and another dialog cannot replace it", m._popup != null and m._popup_locked)
 	_chk("...while the caller still gets a container to fill rather than a crash",
 		stolen != null)
@@ -2520,7 +2547,15 @@ func _t_client_gate() -> void:
 	_chk("and it comes down once the latch is released", m._popup == null)
 
 	# The store link has to name the right shop or the button is a dead end.
-	var url := m._store_url({})
+	var url: String = m._store_url({})
 	_chk("the update button has somewhere to go", url != "", url)
-	_chk("and the server can override it without a new build",
-		m._store_url({"store_ios": "x://a", "store_android": "x://a"}) == "x://a")
+	# Both shipping platforms, named explicitly. This used to ask the running
+	# machine -- which for a harness is macOS, a platform the game does not ship
+	# to and whose answer is therefore the compiled-in fallback for both keys.
+	for spec in [["iOS", "store_ios"], ["Android", "store_android"]]:
+		var got: String = m._store_url({str(spec[1]): "x://a"}, str(spec[0]))
+		_chk("the server can override the %s link without a new build" % spec[0],
+			got == "x://a", got)
+		var other: String = m._store_url({str(spec[1]): "x://a"},
+			"Android" if spec[0] == "iOS" else "iOS")
+		_chk("...and it does not leak onto the other store", other != "x://a", other)

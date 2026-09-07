@@ -257,9 +257,12 @@ func _build_cabinet() -> void:
 	spin_button.custom_minimum_size = Vector2(0, SPIN_HEIGHT)
 	spin_button.pressed.connect(_on_spin_pressed)
 	spin_button.held.connect(func() -> void:
-		if not auto_on:
-			set_auto(true)
-			auto_toggled.emit(true)
+		# Hold to start, hold to stop. Without the second half a long press
+		# during a run did nothing whatever -- `held` swallows the release that
+		# follows it, so a deliberate gesture on the one control on the page got
+		# no spin, no stop and no answer.
+		set_auto(not auto_on)
+		auto_toggled.emit(auto_on)
 	)
 	spin_frame.add_child(spin_button)
 
@@ -568,18 +571,32 @@ func bet_steps() -> Array:
 			out.append(int(b))
 	return out
 
-# Called whenever the meter moves, so a rung that has just become affordable
-# turns up without waiting for the page to be rebuilt -- and, more importantly,
-# so a bet the player can no longer pay is stepped back down instead of sitting
-# there failing.
+# THE MACHINE NEVER LOWERS A BET THE PLAYER CHOSE.
+#
+# Guy, off build 101: "if I am betting x100 and my spin count has gone down, do
+# not lower my bet automatically -- that is my choice, even if I am down to my
+# last 100 spins."
+#
+# It used to step down to the highest rung the meter still unlocked, every time
+# `set_meter` ran, which is after every spin. So the one decision the player
+# makes on this machine -- how much they are playing for -- was being taken off
+# them by the thing their own bet had caused. Betting big lowers the meter;
+# lowering the meter lowered the bet; so a player who deliberately went to x100
+# found the machine walking them back down to x50, x25, x10 while they were
+# looking at the reels. Playing for the last of your spins at the top rung is a
+# decision, and going out on it is the point of making it.
+#
+# `bet_steps()` still gates which rungs the BUTTON offers, so the ladder is
+# unchanged for anybody climbing it: a rung you have never been able to afford
+# is still not on the list. This is only about coming back down, and a bet the
+# meter cannot cover is answered where it should be -- at the press, by the
+# out-of-spins offer -- rather than by editing the wager beforehand.
+#
+# Kept as a call site rather than deleted, because `set_meter` runs on every
+# spin and the next person to want a rung repriced will look here first.
 func _clamp_bet() -> void:
-	var steps := bet_steps()
-	if not steps.has(bet):
-		var best := 1
-		for b in steps:
-			if int(b) <= bet:
-				best = int(b)
-		bet = best
+	if bet < 1:
+		bet = 1
 		_style_bet()
 
 func _style_bet() -> void:
@@ -806,6 +823,19 @@ func _set_sign(text: String, ink: Color) -> void:
 
 func set_auto(on: bool) -> void:
 	auto_on = on
+	# The word on the face, not only the line under it. A button reading SPIN
+	# that stops spinning is the trap the hint line was talking its way out of;
+	# the label is where a control says what it does.
+	spin_button.set_label("STOP" if on else "SPIN")
+	# The button's live-ness is decided here as well as in start_spin, because
+	# a run can be switched on or off at any point inside a spin. On: it is the
+	# stop control and has to be pressable. Off, mid-spin: it is the spin
+	# control again, and a spin control that answers during a spin is a press
+	# the machine has to eat.
+	if is_spinning():
+		spin_button.disabled = not on
+	elif on:
+		spin_button.disabled = false
 	_hint.text = "Auto  spin  on  —  tap  to  stop" if on else "Hold  for  auto  spin"
 	# White at rest, not sand. This line lands on the cabinet's brass frame and
 	# art_label defaults to white for exactly that reason -- but this override
@@ -817,7 +847,21 @@ func is_spinning() -> bool:
 
 func start_spin(result: Array) -> void:
 	_result = result
-	spin_button.disabled = true
+	# THE STOP BUTTON DOES NOT GREY OUT WHILE THE REELS ARE TURNING.
+	#
+	# Guy, off build 101: while the machine is on auto, "make sure he can press
+	# the red button to cancel it." He could not. The hero button has answered
+	# an auto run with `set_auto(false)` since the day auto existed -- but it
+	# was disabled for the whole of every spin, and on an auto run the gap
+	# between one spin and the next is a fraction of a second. The one control
+	# that cancels the run was unpressable for nearly all of it, so the only
+	# way out was to sit and wait for a window.
+	#
+	# During an auto run it is not the spin control at all -- it is the stop
+	# control, and a stop control that goes dead while the thing it stops is
+	# happening is not a control. The bet button still locks: that one really
+	# would be renegotiating a wager already placed.
+	spin_button.disabled = not auto_on
 	bet_button.disabled = true
 	reels.start_spin(result)
 

@@ -86,10 +86,22 @@ func _ready() -> void:
 			and not OS.has_environment("GOTO"):
 		_shoot.call_deferred()
 
-# A tournament rung being crossed, from the outside. SCORE=<n>[:<tier>] parks
-# the score n points under rung `tier` -- the last rung is the interesting one,
-# because taking it rolls the whole track over underneath the prize that is
-# still landing.
+# A tournament rung being crossed, from the outside.
+#
+# SCORE=<n>[:<tier>[:<bet>]] parks the score n points under rung `tier` and
+# then scores. Two shapes worth shooting:
+#
+#   SCORE=20:3      one rung, and it is the LAST one -- taking it rolls the
+#                   whole track over underneath a prize that is still landing.
+#   SCORE=20:0:100  a steal at bet x100, which is 2,000 points in one action
+#                   and clears three rungs of a fresh track from a standing
+#                   start. This is the case Guy described off build 101 and
+#                   the only way to see the prizes arrive AGGREGATED -- one
+#                   spin tile carrying the sum, one tile per card, and a
+#                   heading that counts the rungs.
+#
+# With no bet it scores a build, which is 60 flat and therefore always exactly
+# one rung.
 func _score(game: Control, spec: String) -> void:
 	while game.get("_boot") != null:
 		await get_tree().process_frame
@@ -112,7 +124,13 @@ func _score(game: Control, spec: String) -> void:
 	game.set("tourney_points", maxi(0, at - under))
 	game.call("_refresh")
 	await get_tree().process_frame
-	game.call("_tourney_add", "build", 1, Vector2(360, 700))
+	# A steal at the given bet, or a build when there is none. The bet is what
+	# makes one action worth enough to vault more than one rung.
+	var bet := int(parts[2]) if parts.size() > 2 else 0
+	if bet > 0:
+		game.call("_tourney_add", "steal", bet, Vector2(360, 700))
+	else:
+		game.call("_tourney_add", "build", 1, Vector2(360, 700))
 	if OS.has_environment("SHOT"):
 		await _reel(OS.get_environment("SHOT"),
 			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 9,
@@ -266,6 +284,15 @@ func _spin(game: Control) -> void:
 	while game.get("_boot") != null:
 		await get_tree().process_frame
 	await get_tree().create_timer(0.4).timeout
+	# AUTO=1 turns the run on first, which is the only way to shoot the hero
+	# button in its other state. During an auto run it is the STOP control and
+	# has to stay live for the whole spin -- both of which are invisible in a
+	# still of the button at rest, and neither of which can be reached from a
+	# harness without holding a finger on it for 0.55s.
+	if OS.has_environment("AUTO"):
+		var slot: Node = game.get("slot")
+		slot.call("set_auto", true)
+		game.set("auto_spin", true)
 	game.call("_on_spin_requested")
 
 func _open_page(game: Control, key: String) -> void:
