@@ -106,7 +106,21 @@ func _dress_the_set(game: Control) -> void:
 		for k in mini(want, order.size()):
 			owned[order[k]] = true
 
+	# THE ISLAND HAS TO BE REPAINTED, not just set.
+	#
+	# `island_level` is read during boot to build the slot marquee, the village
+	# artwork and every page's backdrop tint, and none of them look at it again.
+	# Seeding the number alone gave a set where the wallet said 248K on island 3
+	# while the reels were still captioned GREEN MEADOWS and lit in island 1's
+	# palette -- and the shots disagreed with EACH OTHER, because whichever page
+	# was rebuilt after the seed picked the new value up and the others did not.
+	# Inconsistency across five images is worse in a store listing than any one
+	# of them being plain.
+	game._apply_island_theme()
 	game._refresh()
+	# `pages` does not hold the two world pages -- the reels and the island are
+	# `slot_page` and `village_page` -- so a page key that is not in it is not a
+	# mistake and must not be treated as one.
 	var key := OS.get_environment("SHOT")
 	if game.pages.has(key):
 		game._fill_page(key)
