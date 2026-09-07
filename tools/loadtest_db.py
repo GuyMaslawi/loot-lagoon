@@ -299,19 +299,45 @@ _BAG = [op for op, w in MIX for _ in range(w)]
 def worker(client, stats, deadline, victims, rank):
     mine = client.call("select public.current_player()")
     mine = str(mine[0]) if mine else None
-    targets = [v for v in victims if str(v) != mine] or victims
+
+    # RAID THE RIVAL THE SERVER JUST OFFERED, which is what the game does.
+    #
+    # This used to raid a victim drawn at random from a list, and since
+    # 20260831190000_raid_offers_and_column_grants.sql that is not a raid at
+    # all: `record_raid` requires an open `raid_offers` row for that exact
+    # (attacker, victim) pair, minted by `find_target`, and refuses anything
+    # else with 'no open raid offer for that island'. Measured at 18,662
+    # failures out of 18,862 calls -- 99% -- so the 20% of the mix that is
+    # meant to be the heaviest WRITE in the game was timing how fast Postgres
+    # can raise an exception. `timed()` swallows it into an error counter, so
+    # the phase reported a throughput figure the whole time.
+    #
+    # cloud.gd's own order is find_target -> show the rival -> record_raid on
+    # that rival, so holding the offer here is the shape as well as the fix.
+    offer = {"id": None, "mode": "steal"}
     while time.perf_counter() < deadline:
         op = random.choice(_BAG)
         if op == "find_target":
-            timed(stats, op, client.call,
-                  "select public.find_target(%s)",
-                  (random.choice(["steal", "attack"]),))
+            mode = random.choice(["steal", "attack"])
+            r = timed(stats, op, client.call,
+                      "select public.find_target(%s)", (mode,))
+            if r and r[0] and isinstance(r[0], dict) and r[0].get("id"):
+                offer = {"id": r[0]["id"], "mode": mode}
         elif op == "record_raid":
-            v = random.choice(targets)
-            timed(stats, op, client.call,
-                  "select public.record_raid(%s, %s, %s, %s)",
-                  (v, random.choice(["steal", "attack"]),
-                   random.randint(100, 50000), random.randint(0, 4)))
+            if not offer["id"]:
+                # Nothing offered yet. Ask, rather than raiding a stranger --
+                # a search always precedes a raid on a real device too.
+                mode = random.choice(["steal", "attack"])
+                r = timed(stats, "find_target", client.call,
+                          "select public.find_target(%s)", (mode,))
+                if r and r[0] and isinstance(r[0], dict) and r[0].get("id"):
+                    offer = {"id": r[0]["id"], "mode": mode}
+            if offer["id"]:
+                timed(stats, op, client.call,
+                      "select public.record_raid(%s, %s, %s, %s)",
+                      (offer["id"], offer["mode"],
+                       random.randint(100, 50000), random.randint(0, 4)))
+                offer = {"id": None, "mode": "steal"}
         elif op == "push_save":
             # rank_stars only ever rises -- that is the merge rule the server
             # trusts, so the load has to respect it or every push is 'stale'.
@@ -339,6 +365,13 @@ def worker(client, stats, deadline, victims, rank):
 
 def phase_steady(dsn, clients, levels, seconds):
     print(f"\n=> PHASE B  steady state -- the real RPC mix, {seconds}s a level")
+    # READ THE record_raid ERROR COUNT AS A PASS, NOT A FAULT -- once it says
+    # 'already raided that island today' or 'too many raids in one hour'.
+    # Those are the game's own anti-griefing rules, and a load generator that
+    # raids thousands of times a minute is exactly what they exist to refuse.
+    # What was NOT a pass was the message this used to print, 'no open raid
+    # offer for that island': that one meant the call had no precondition and
+    # the raid path was never being exercised at all.
     with psycopg.connect(dsn, autocommit=True) as c, c.cursor() as cur:
         cur.execute("select id from public.players where deleted_at is null "
                     "limit 500")
@@ -394,8 +427,6 @@ def phase_contention(dsn, clients):
                        (SAVE, base + i, 5))
             except Exception:
                 pass
-            with psycopg.connect(dsn, autocommit=True) as c2, c2.cursor() as cur2:
-                pass
 
     with ThreadPoolExecutor(max_workers=8) as ex:
         for i, d in enumerate(devices):
@@ -444,16 +475,49 @@ def phase_contention(dsn, clients):
           f"one name: {len(winners)} told they won, {holders} actually hold it")
 
     # 3. A raid must be delivered exactly once. Many acks, no loss, no replay.
-    attacker = clients[uids[1]]
+    #
+    # FORTY ATTACKERS, not one attacker forty times. `record_raid` has refused
+    # a repeat against the same island within 24 hours since
+    # 20260831190000_raid_offers_and_column_grants.sql, and it refuses by
+    # RAISING -- so the original loop threw `InsufficientPrivilege: already
+    # raided that island today` out of an unguarded call and took the whole
+    # process down on the second iteration. Everything after it in phase C, and
+    # the whole of phase D, had not run since that migration landed. It reads
+    # as a crash in the harness rather than as a test that has expired, which
+    # is why it sat there.
     with psycopg.connect(dsn, autocommit=True) as c, c.cursor() as cur:
         cur.execute("select set_config('request.jwt.claim.sub', %s, false)",
                     (str(uids[2]),))
         cur.execute("select public.current_player()")
         target = cur.fetchone()[0]
         cur.execute("delete from public.raids where victim = %s", (target,))
-    for i in range(40):
-        attacker.call("select public.record_raid(%s, %s, %s)",
-                      (target, "steal", 100 + i))
+    raiders = [u for u in uids[3:] if u != uids[2]][:40]
+    # The offer each of them would have been holding. record_raid consumes a
+    # raid_offers row and refuses without one, and find_target mints offers
+    # against whoever IT picks -- which will not be this victim out of 110,000
+    # islands. Minting them directly is the only way to aim the test, and it
+    # is exactly the row a search that happened to land here would have left.
+    with psycopg.connect(dsn, autocommit=True) as c, c.cursor() as cur:
+        cur.execute("""
+            insert into public.raid_offers (attacker, victim)
+            select pi.player_id, %s
+              from public.player_identities pi
+             where pi.auth_uid = any(%s)""", (target, [str(u) for u in raiders]))
+        # A steal needs something in the vault, and phase B may have emptied it.
+        cur.execute("update public.players set vault_coins = 5000000, "
+                    "shields = 0 where id = %s", (target,))
+    landed = 0
+    errs = {}
+    for u in raiders:
+        try:
+            clients[u].call("select public.record_raid(%s, %s, %s)",
+                            (target, "steal", 100 + landed))
+            landed += 1
+        except Exception as e:
+            errs[str(e).split("\n")[0][:70]] = errs.get(
+                str(e).split("\n")[0][:70], 0) + 1
+    if errs:
+        print(f"     (record_raid refusals: {errs})")
     victim_devices = [Client(dsn, uids[2]) for _ in range(6)]
     acked = []
 
@@ -476,11 +540,12 @@ def phase_contention(dsn, clients):
         left = cur.fetchone()[0]
         cur.execute("select count(*) from public.raids where victim = %s", (target,))
         total = cur.fetchone()[0]
-    good = left == 0 and total == 40
+    good = left == 0 and total == landed and landed > 0
     ok = ok and good
-    print(f"   [{'ok' if good else 'FAIL'}] 40 raids, six devices draining at "
-          f"once: {total} recorded, {left} left unseen, "
-          f"{len(acked)} ack calls ({len(set(acked))} distinct)")
+    print(f"   [{'ok' if good else 'FAIL'}] {landed} raids from {landed} "
+          f"attackers, six devices draining at once: {total} recorded, "
+          f"{left} left unseen, {len(acked)} ack calls "
+          f"({len(set(acked))} distinct)")
     for d in victim_devices:
         d.close()
 
@@ -991,6 +1056,64 @@ def phase_clans(dsn, pool, uids):
     ok = ok and good
     print(f"   [{'ok' if good else 'FAIL'}] ten left while thirty joined: the "
           f"counter says {counted}, the roster holds {actual}")
+
+    # DELETING AN ACCOUNT IS A DEPARTURE. Until 20260907190000 it was not:
+    # delete_account soft-deletes the island and a soft delete fires no
+    # cascade, so the clan_members row stayed, `clans.members` never came down,
+    # and the seat was gone for good. A clan reached thirty with fewer than
+    # thirty real people in it and could never be joined again.
+    quitters = got_in[10:16]
+    seats_before = admin(dsn, "select members from public.clans where id = %s",
+                         (clan,))[0][0]
+    for uid in quitters:
+        try:
+            pool.call(uid, "select public.delete_account()")
+        except Exception:
+            pass
+    counted = admin(dsn, "select members from public.clans where id = %s",
+                    (clan,))[0][0]
+    living = admin(dsn, """select count(*) from public.clan_members m
+                             join public.players p on p.id = m.player_id
+                            where m.clan_id = %s and p.deleted_at is null""",
+                   (clan,))[0][0]
+    ghosts = admin(dsn, """select count(*) from public.clan_members m
+                             join public.players p on p.id = m.player_id
+                            where m.clan_id = %s and p.deleted_at is not null""",
+                   (clan,))[0][0]
+    good = counted == living and ghosts == 0
+    ok = ok and good
+    print(f"   [{'ok' if good else 'FAIL'}] {len(quitters)} members deleted "
+          f"their accounts: seats {seats_before} -> {counted}, {living} living "
+          f"members, {ghosts} ghosts still holding a seat")
+
+    # AND THE OWNER LEAVING MUST NOT STRAND THE CLAN. `clans.owner` gates the
+    # door switch and the whole join-request queue, and nothing used to
+    # reassign it -- so an owner who left or deleted their account took the
+    # controls with them permanently.
+    owner_now = admin(dsn, "select owner from public.clans where id = %s",
+                      (clan,))[0][0]
+    try:
+        pool.call(owner, "select public.delete_account()")
+    except Exception:
+        pass
+    row = admin(dsn, """select c.owner, c.members,
+                               (select count(*) from public.clan_members m
+                                 where m.clan_id = c.id) roster
+                          from public.clans c where c.id = %s""", (clan,))
+    if not row:
+        good = True   # disbanded, which is correct if nobody was left
+        print("   [ok] the owner deleting their account disbanded an empty clan")
+    else:
+        new_owner, mem, roster = row[0]
+        alive = admin(dsn, """select count(*) from public.players
+                               where id = %s and deleted_at is null""",
+                      (new_owner,))[0][0]
+        good = alive == 1 and new_owner != owner_now and mem == roster
+        ok = ok and good
+        print(f"   [{'ok' if good else 'FAIL'}] the owner deleted their "
+              f"account: the clan was handed to a living member "
+              f"({'yes' if alive else 'NO -- a ghost owns it'}), "
+              f"{mem} seats for {roster} on the roster")
 
     # Nobody may hold two seats. The unique key on clan_members is what makes
     # this true; it is checked because a lost one is silent.

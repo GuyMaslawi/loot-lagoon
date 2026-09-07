@@ -5231,9 +5231,9 @@ func _deliver_streak_card(day: int, card: Dictionary, from: Vector2) -> void:
 			FX.counter_pop(tab as Control, tint)
 		Sfx.play("pop", -6.0)
 		_banner("Day %d card:  %s %s" % [day,
-			String(card.get("emoji", "\U0001F0CF")),
+			String(card.get("emoji", "\U01F0CF")),
 			String(card.get("name", "card"))], tint),
-		"", 250.0, 0.0, String(card.get("emoji", "\U0001F0CF")), 130)
+		"", 250.0, 0.0, String(card.get("emoji", "\U01F0CF")), 130)
 
 func _claim_mission(period: String, m: Dictionary) -> void:
 	if not _mission_ready(period, m):
@@ -9901,8 +9901,14 @@ func _on_cloud_gifts(gifts: Array) -> void:
 		# dropped rather than applied -- the same call the raid path makes.
 		if gid == "" or applied_gifts.has(gid):
 			continue
-		var set_id := String(g.get("set", ""))
-		var idx := int(g.get("idx", -1))
+		# `.get(key, default)` hands back the default only when the key is
+		# ABSENT. A key that is present and null returns the null, and
+		# String(null) and int(null) are both hard runtime errors -- which end
+		# the whole function, not the iteration.
+		var raw_set: Variant = g.get("set")
+		var raw_idx: Variant = g.get("idx")
+		var set_id := str(raw_set) if raw_set != null else ""
+		var idx := int(raw_idx) if typeof(raw_idx) in [TYPE_INT, TYPE_FLOAT] else -1
 		var c := _collection_by_id(set_id)
 		if c.is_empty() or idx < 0 or idx >= (c["items"] as Array).size():
 			continue
@@ -9922,9 +9928,26 @@ func _on_cloud_gifts(gifts: Array) -> void:
 			owned[idx] = true
 			_mark_new(set_id, idx)
 			_award_stars(int((c["items"] as Array)[idx][2]))
+		# THE GIVER, WHO MAY HAVE DELETED THEIR ACCOUNT. `unseen_gifts` builds
+		# `by` from public_player(from_player), and public_player answers NULL
+		# for a deleted island -- a soft delete, so the gift row and its
+		# foreign key both survive and the card is still delivered. `by` then
+		# arrives as JSON null, and `null as Dictionary` is null, so the .get()
+		# on it ended the function here.
+		#
+		# That was not merely a lost banner. The abort landed AFTER
+		# `applied_gifts.append(gid)` but BEFORE `Cloud.ack_gifts(ids)` and
+		# `_flush_save()`, so nothing reached disk and nothing was acked: the
+		# server sent the same gift again on the next launch and the stars were
+		# awarded again, every launch, for as long as the gift existed. Stars
+		# are rank_stars, and rank_stars is the key the cloud save merges on.
+		#
+		# _on_cloud_raids has guarded exactly this since it started reading
+		# `by`; this is that guard, on the twin that did not get it.
+		var by: Dictionary = g.get("by") if typeof(g.get("by")) == TYPE_DICTIONARY else {}
 		landed.append({"name": String((c["items"] as Array)[idx][1]),
 			"emoji": String((c["items"] as Array)[idx][0]),
-			"from": String(((g.get("by", {}) as Dictionary)).get("name", "a clanmate"))})
+			"from": str(by.get("name", "a clanmate"))})
 	if ids.is_empty():
 		return
 	if applied_gifts.size() > APPLIED_GIFTS_KEEP:

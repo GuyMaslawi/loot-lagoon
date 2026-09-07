@@ -95,6 +95,25 @@ func _t_long_lock() -> void:
 # --- the regen remainder is no longer thrown away ----------------------------
 func _t_regen_is_whole() -> void:
 	print("short hops pay like long ones")
+	# PARK THE CLOCK OUTSIDE A SPIN TIDE FIRST, or this test measures the time
+	# of day. `_credit_time_away` doubles the refill across any part of the
+	# absence that overlaps a Tide window -- correctly, and qa_full asserts it
+	# -- and 22 minutes at 2x is 66 spins, which the 50-spin meter caps. Both
+	# halves then read 50, the equality under test holds vacuously, and the
+	# exact figure it is pinned to (33) fails.
+	#
+	# It is not the wall clock at launch that decides it either, which is what
+	# made this hard to see: `clock_hw` is a high-water mark that every earlier
+	# test in this file pushes forward -- _t_long_lock alone adds three hours --
+	# so the fake clock walks into the 4-hours-in-30 window on its own, from a
+	# real start time that was nowhere near one. The failure therefore moves
+	# with what ran before it, which reads exactly like contamination from
+	# another harness rather than like a clock this test never pinned.
+	#
+	# Parked just past the START of the next window, so the whole 44 minutes
+	# this test spends is inside the 26 quiet hours that follow.
+	var period := CV.TIDE_PERIOD
+	m.clock_hw = (floor(m._now() / period) + 1.0) * period + CV.TIDE_WINDOW + 60.0
 	_quiet()
 	m.spins = 0
 	m._regen_accum = 0.0
