@@ -1586,6 +1586,7 @@ func _start_login(id: String) -> void:
 # network call failed, the name is gone for good and the account is called
 # "Islander" for the rest of its life.
 func _on_login(p: Dictionary) -> void:
+	Diag.milestone("signed_in")
 	# An empty name from Apple on a later sign-in is Apple being Apple, not a
 	# player who deleted their name. Keep what is already stored.
 	if str(p.get("name", "")) == "" and str(profile.get("name", "")) != "":
@@ -2435,6 +2436,12 @@ func _goto(target: Control) -> void:
 	var page_name := _page_name(target)
 	Diag.at(page_name)
 	Diag.note("page:" + page_name)
+	# The FIRST time this install ever opened each page, as its own funnel step.
+	# The counter above says how often; this says how many players ever got
+	# here at all, which for the card shelf is the single most useful number in
+	# the pipeline -- the collection is the strongest long hook in the game and
+	# nothing leads a new player to it.
+	Diag.milestone("saw:" + page_name)
 	_update_nav()
 	_update_shell()
 	_refresh()
@@ -4504,6 +4511,7 @@ func _page_note(text: String, size := UI.F_CAPTION) -> Label:
 func _open_intro() -> void:
 	intro_greeted = true
 	_save_game()
+	Diag.milestone("ftue_card")
 	var vbox := _open_popup("Welcome Aboard")
 	var lead := _popup_row_label("Three things, and then the reels are yours.", UI.F_BODY)
 	lead.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -8237,6 +8245,12 @@ func _offer_out_of_spins(bet := 1) -> void:
 	var live := _active_offer()
 	var pack: Dictionary = live if not live.is_empty() else _default_spin_pack()
 	var short := bet > 1 and spins > 0
+	# THE MOMENT THE SESSION ENDS FOR MOST PLAYERS, and until now the one thing
+	# the pipeline could not see. Only the real wall counts: `short` is a bet
+	# the meter cannot cover, which is a different event and not a wall.
+	if not short:
+		Diag.note("spins_empty")
+		Diag.milestone("first_spins_empty")
 	var vbox := _open_popup("Not Enough Spins" if short else "Out of Spins")
 
 	# What the wall actually is. A player holding four spins at bet x5 is not out
@@ -8611,6 +8625,7 @@ func _pack_sub(pack: Dictionary) -> String:
 # for coins that never landed.
 func _on_purchase_ok(product_id: String) -> void:
 	Diag.note("purchase")
+	Diag.milestone("first_purchase")
 	_close_popup()
 	var short := product_id.trim_prefix(IAP.PREFIX)
 	if short == String(CV.PIGGY_PACK["id"]):
@@ -9734,10 +9749,15 @@ func _ensure_collections() -> void:
 			col_claimed.erase(key)
 
 # A first copy of card `idx` is news until its set has been opened.
+# Every first copy of a card goes through here -- chest draw, reel drop and clan
+# gift alike -- which makes it the one place the funnel can ask "did this player
+# ever actually get a card" without three call sites to keep in step.
 func _mark_new(id: String, idx: int) -> void:
 	var arr: Array = col_new.get(id, [])
 	if idx >= 0 and idx < arr.size():
 		arr[idx] = true
+	Diag.note("card_new")
+	Diag.milestone("first_card")
 
 func _is_new_card(id: String, idx: int) -> bool:
 	var arr: Array = col_new.get(id, [])
@@ -14294,6 +14314,7 @@ func _on_spin_finished(result: Array) -> void:
 	# an attack triple calls _start_visit synchronously a few lines down.
 	_stake_pending = 0
 	Diag.note("spin")
+	Diag.milestone("first_spin")
 	var bet := _last_bet
 	var gain := 0
 	var triple: bool = result[0] == result[1] and result[1] == result[2]
@@ -15104,6 +15125,13 @@ func _start_visit(mode: String) -> void:
 	# owner left to dismiss it.
 	if _raiding():
 		return
+	# COUNTED HERE AND NOT IN _report_raid, WHICH IS WHERE THESE TWO USED TO BE.
+	# That function returns early on `not Cloud.linked()`, so every raid a guest
+	# ever made went uncounted -- the same blindness as the flush gate in
+	# diag.gd, in the counters rather than in the transport. It also skipped an
+	# attack a shield turned away, which is a raid the player made and watched.
+	Diag.note("raid:" + mode)
+	Diag.milestone("first_raid")
 	if mode == "steal":
 		if next_target.is_empty():
 			_pick_next_target()
@@ -15208,7 +15236,6 @@ func _report_raid(npc: Dictionary, mode: String, result: Dictionary) -> void:
 		return
 	if mode == "steal":
 		Cloud.record_raid(id, "steal", int(result.get("stolen", 0)))
-		Diag.note("raid:steal")
 		return
 	# A shield turned it away, so nothing on the other island changed and there
 	# is nothing for its owner to apply. Recording it would put an event in
@@ -15217,7 +15244,6 @@ func _report_raid(npc: Dictionary, mode: String, result: Dictionary) -> void:
 		return
 	# island_visit calls the hut it hit "target"; the server calls it "hut".
 	Cloud.record_raid(id, "attack", 0, int(result.get("target", -1)))
-	Diag.note("raid:attack")
 
 # The search hands back the rival it was given, and that is the island we sail
 # to -- _raid_target, not next_target, which by now is free to move on.
@@ -15459,6 +15485,8 @@ func _on_upgrade_requested(index: int) -> void:
 	var gained: int = buildings[index]
 	_earn_stars(gained)
 	_mission_add("builds")
+	Diag.note("build")
+	Diag.milestone("first_build")
 	# Here rather than in the scaffold callback, for the same reason the coins
 	# and the level are here: two seconds of construction animation is long
 	# enough for iOS to kill the app, and the tournament should not be the one
@@ -15884,6 +15912,14 @@ func _start_island_journey(from_level: int) -> void:
 	tw.tween_callback(func() -> void:
 		layer.queue_free()
 		_journey_layer = null
+		Diag.note("island")
+		# Finishing the first island is the end of the tutorial in everything
+		# but name: it is the first time the loop has closed all the way round.
+		#
+		# ABOVE the lap branch, which returns: a crossing into a new lap is
+		# still a crossing, and counting it below would have quietly dropped
+		# island 91 and every hundred-and-eightieth after it.
+		Diag.milestone("first_island")
 		# The one arrival that is not another island. A banner is the right
 		# weight for "you are on island 12 now" and much too light for "the
 		# chart has run out" -- see _open_new_world.

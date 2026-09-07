@@ -942,6 +942,120 @@ begin
             not has_function_privilege('anon', 'public.unseen_gifts()', 'execute'));
     end;
 
+    -- =========================================================================
+    --  Diagnostics: the guest door, and the funnel
+    -- =========================================================================
+    --
+    -- The point of these is that the guest door is the first unauthenticated
+    -- write in the schema. Its budgets are the only thing standing between it
+    -- and the rest of the table, so they are tested rather than trusted.
+    declare
+        frank uuid := gen_random_uuid();
+        p_frank uuid;
+        ev jsonb := '[{"kind":"milestone","detail":{"name":"first_spin","since_install_s":42}}]'::jsonb;
+        wrote integer;
+    begin
+        insert into auth.users (id, email) values (frank, 'frank@example.com');
+        insert into auth.identities (user_id, provider) values (frank, 'google');
+        perform pg_temp.be(frank);
+        perform public.claim_player('{}'::jsonb, 'Frank', '🦀', 1, 0, 0, 0, '{0,0,0,0,0}');
+        p_frank := public.current_player();
+
+        -- --- the signed-in door still attaches the player --------------------
+        perform pg_temp.ck('a signed-in player still files against their island',
+            public.report_diagnostics('inst-frank', 'iOS', '18.0', 'iPhone', 107, ev) = 1);
+        perform pg_temp.ck('...and the row carries the player',
+            exists (select 1 from public.diagnostics
+                     where player = p_frank and kind = 'milestone'));
+
+        -- --- milestone is a kind now -----------------------------------------
+        perform pg_temp.ck('milestone survives the kind constraint',
+            (select count(*) from public.diagnostics where kind = 'milestone') = 1);
+
+        -- --- the guest door ---------------------------------------------------
+        perform pg_temp.be(null);
+        wrote := public.report_diagnostics_guest('inst-guest', 'Android', '14', 'Pixel', 107, ev);
+        perform pg_temp.ck('A GUEST CAN FILE AT ALL -- the hole this closes', wrote = 1);
+        perform pg_temp.ck('and the guest row has no player',
+            exists (select 1 from public.diagnostics
+                     where install_id = 'inst-guest' and player is null));
+
+        -- An install id is the only handle a guest row has. Without one the row
+        -- can be neither rate limited nor learned from.
+        perform pg_temp.ck('a guest with no install id is refused',
+            public.report_diagnostics_guest('', 'Android', '14', 'Pixel', 107, ev) = 0);
+        perform pg_temp.ck('...and wrote nothing',
+            not exists (select 1 from public.diagnostics where install_id = ''));
+
+        -- --- the per-install ceiling -----------------------------------------
+        insert into public.diagnostics (player, install_id, kind, detail)
+        select null, 'inst-flood', 'usage', '{}'::jsonb from generate_series(1, 40);
+        perform pg_temp.ck('ONE INSTALL CANNOT EXCEED ITS HOURLY BUDGET',
+            public.report_diagnostics_guest('inst-flood', 'Android', '14', 'Pixel', 107, ev) = 0);
+
+        -- ...and the cap is per install, so one noisy install does not silence
+        -- everybody else. That is the property the global ceiling below is
+        -- deliberately allowed to break, and only under a real flood.
+        perform pg_temp.ck('while a different install is unaffected',
+            public.report_diagnostics_guest('inst-quiet', 'Android', '14', 'Pixel', 107, ev) = 1);
+
+        -- --- kinds and sizes --------------------------------------------------
+        perform pg_temp.ck('a made-up kind is skipped, not fatal',
+            public.report_diagnostics_guest('inst-kinds', 'iOS', '18', 'iPhone', 107,
+                '[{"kind":"nonsense","detail":{}},{"kind":"crash","detail":{}}]'::jsonb) = 1);
+        perform pg_temp.ck('an oversized detail is skipped',
+            public.report_diagnostics_guest('inst-big', 'iOS', '18', 'iPhone', 107,
+                jsonb_build_array(jsonb_build_object(
+                    'kind', 'error', 'detail', repeat('x', 5000)))) = 0);
+        perform pg_temp.ck('a non-array batch is refused',
+            public.report_diagnostics_guest('inst-bad', 'iOS', '18', 'iPhone', 107,
+                '{"kind":"crash"}'::jsonb) = 0);
+
+        -- --- grants -----------------------------------------------------------
+        perform pg_temp.ck('ANON CAN REACH THE GUEST DOOR AND ONLY THE GUEST DOOR',
+            has_function_privilege('anon',
+                'public.report_diagnostics_guest(text, text, text, text, integer, jsonb)',
+                'execute'));
+        perform pg_temp.ck('anon still cannot reach the signed-in one',
+            not has_function_privilege('anon',
+                'public.report_diagnostics(text, text, text, text, integer, jsonb)',
+                'execute'));
+        perform pg_temp.ck('and anon cannot prune the table it can write to',
+            not has_function_privilege('anon',
+                'public.prune_diagnostics(integer, integer)', 'execute'));
+
+        -- --- the read side ----------------------------------------------------
+        -- Views are for a human in the SQL editor; nothing in the game reads
+        -- them and no role should be able to.
+        perform pg_temp.ck('the funnel counts the milestone that was filed',
+            (select installs from public.diag_funnel where milestone = 'first_spin') >= 1);
+        perform pg_temp.ck('...and knows how long it took',
+            (select median_secs from public.diag_funnel where milestone = 'first_spin') = 42);
+        perform pg_temp.ck('every install that spoke is in diag_installs',
+            (select count(*) from public.diag_installs where install_id = 'inst-guest') = 1);
+        perform pg_temp.ck('retention counts a cohort for today',
+            (select installs from public.diag_retention where cohort = current_date) > 0);
+        perform pg_temp.ck('and marks it not yet mature for D7',
+            not (select mature_d7 from public.diag_retention where cohort = current_date));
+        perform pg_temp.ck('anon cannot read the funnel',
+            not has_table_privilege('anon', 'public.diag_funnel', 'select'));
+        perform pg_temp.ck('nor a signed-in player',
+            not has_table_privilege('authenticated', 'public.diag_retention', 'select'));
+
+        -- --- the global circuit breaker ---------------------------------------
+        -- Last, because it fills the table: 50,000 anon rows in the hour, which
+        -- is the ceiling. Everything above had to run before the breaker trips.
+        insert into public.diagnostics (player, install_id, kind, detail)
+        select null, 'inst-storm-' || g, 'usage', '{}'::jsonb from generate_series(1, 50000) g;
+        perform pg_temp.ck('A ROTATING FLOOD TRIPS THE GLOBAL CEILING',
+            public.report_diagnostics_guest('inst-brand-new', 'iOS', '18', 'iPhone', 107, ev) = 0);
+        -- The failure mode that makes the trade acceptable: guests go quiet,
+        -- signed-in reporting is on its own budget and does not notice.
+        perform pg_temp.be(frank);
+        perform pg_temp.ck('...while a signed-in player still files through it',
+            public.report_diagnostics('inst-frank', 'iOS', '18.0', 'iPhone', 107, ev) = 1);
+    end;
+
     raise notice 'ALL FUNCTIONAL TESTS PASSED';
 end;
 $$;

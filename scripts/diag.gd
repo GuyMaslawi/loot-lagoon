@@ -82,6 +82,19 @@ const ROLL_GAP := 180.0
 const BACKLOG_LEAD := 20.0
 
 var _install := ""
+
+# When this install first ran. The clock behind every number in the funnel:
+# a milestone is worth reading as "eleven minutes in", not as a wall time.
+#
+# Zero for an install that predates this field, and the funnel view treats a
+# zero as unknown rather than as instant -- see the note on milestone().
+var _install_at := 0.0
+
+# The milestones this install has already filed, as a set. On disk, because
+# "once, ever" has to survive a relaunch or the funnel counts launches instead
+# of players.
+var _milestones := {}
+
 var _queue: Array = []
 
 # Feature counters for the session in progress, flushed as one row rather than
@@ -156,6 +169,39 @@ func note(feature: String, times: int = 1) -> void:
 	if feature == "":
 		return
 	_counts[feature] = int(_counts.get(feature, 0)) + times
+
+
+# A player reached something, for the first and only time on this install.
+#
+# THIS IS THE ONE KIND THAT IS NOT ABOUT THE APP MISBEHAVING, and it is what a
+# funnel is made of. `note()` counts how often something happened and is
+# summed per session; this records that it happened AT ALL, once, with how long
+# it took -- which is the only way to answer "how many people who install this
+# ever meet a raid", the question the whole pipeline existed not to answer.
+#
+# Called freely from the call site. The gate is here, not there, so main.gd
+# never has to hold a flag for it -- a milestone fired on every spin costs one
+# dictionary lookup after the first.
+#
+# `since_install_s` is -1 rather than 0 when the install predates _install_at.
+# Zero is a real, meaningful value here (a milestone in the first second is
+# exactly what first_open is), so the unknown has to look different from it or
+# the median in diag_funnel is quietly dragged towards zero by old installs.
+func milestone(name: String) -> void:
+	if name == "" or _milestones.has(name):
+		return
+	_milestones[name] = true
+	_push({
+		"kind": "milestone",
+		"detail": {
+			"name": name,
+			"since_install_s": int(_now() - _install_at) if _install_at > 0.0 else -1,
+		},
+	})
+	# Written through rather than left for the next save. A milestone that is
+	# filed but not remembered is filed again on the next launch, and the one
+	# guarantee this whole kind rests on is that it is once.
+	_save_state()
 
 
 # The game noticed something wrong and carried on. Not a crash: the cases worth
@@ -270,13 +316,24 @@ func _process(_delta: float) -> void:
 	flush()
 
 
-# Sends what is queued, if there is anywhere to send it. A queue that cannot go
-# anywhere is not an error and is not retried on a shorter timer: it waits on
-# disk, and a sign-in three days later carries it.
+# Sends what is queued, if there is anywhere to send it.
+#
+# THE linked() TEST USED TO BE HERE AND IT WAS THE WHOLE HOLE. A guest has no
+# session, so every guest queued events on disk for ever and the note under this
+# function -- "a sign-in three days later carries it" -- described a sign-in
+# that, for most players, never comes. Guest mode is the default path and is
+# advertised as a full game; the closed test worked around it by paying 25
+# testers to sign in, which does not scale to the public.
+#
+# Cloud picks the door now: a device with a session uses the authenticated
+# function, one without uses the guest one. That choice must NOT be made here,
+# because "signed in" is a fact about a session that this file would have to
+# re-derive and could get wrong in exactly one direction -- filing a signed-in
+# player'"'"'s rows as anonymous and losing the attribution.
 func flush() -> void:
 	if _in_flight or _queue.is_empty():
 		return
-	if not Cloud.configured() or not Cloud.linked():
+	if not Cloud.configured():
 		return
 	_last_flush = _now()
 	_in_flight = true
@@ -308,6 +365,11 @@ func _load_state() -> void:
 			if typeof(parsed) == TYPE_DICTIONARY:
 				var d: Dictionary = parsed
 				_install = String(d.get("install", ""))
+				_install_at = float(d.get("install_at", 0.0))
+				var m = d.get("milestones", {})
+				if typeof(m) == TYPE_DICTIONARY:
+					for k in (m as Dictionary):
+						_milestones[String(k)] = true
 				var q = d.get("queue", [])
 				if typeof(q) == TYPE_ARRAY:
 					for e in (q as Array):
@@ -317,14 +379,25 @@ func _load_state() -> void:
 		# Not a device id and not derived from one: a fresh reinstall is a
 		# different install and is supposed to look like one.
 		_install = "%d-%d" % [int(_now()), randi()]
+		_install_at = _now()
 		_save_state()
+		# THE ONLY MILESTONE FIRED FROM IN HERE, and it has to be: it is the
+		# denominator. Every percentage in diag_funnel is "of installs", and an
+		# install that is never recorded is one the funnel silently divides by
+		# nothing. This is the one moment the game can be certain it is new.
+		milestone("first_open")
 
 
 func _save_state() -> void:
 	var f := FileAccess.open(STATE_TMP, FileAccess.WRITE)
 	if f == null:
 		return
-	f.store_string(JSON.stringify({"install": _install, "queue": _queue}))
+	f.store_string(JSON.stringify({
+		"install": _install,
+		"install_at": _install_at,
+		"milestones": _milestones,
+		"queue": _queue,
+	}))
 	f.close()
 	var d := DirAccess.open("user://")
 	if d == null:

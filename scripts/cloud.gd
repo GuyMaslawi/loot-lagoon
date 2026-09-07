@@ -998,19 +998,42 @@ func client_gate(build: int, then: Callable) -> void:
 # about the game, and a diagnostics pipeline that retries hard enough to matter
 # has become part of the problem it was installed to watch. One attempt, and
 # `then(false)` means the caller should keep them for later -- or not.
+# TWO DOORS, AND WHICH ONE IS CHOSEN HERE RATHER THAN BY THE CALLER.
+#
+# A signed-in device files through report_diagnostics, which attaches the
+# player and cascades on account deletion. A guest files through
+# report_diagnostics_guest, which writes a row with a null player and is rate
+# limited per install and globally -- see the migration for what that trade is
+# and why it was taken.
+#
+# THE ORDER OF THIS TEST IS LOAD-BEARING. linked() is true as soon as an access
+# token has been read off disk, which happens in _ready() before anything can
+# flush, so a signed-in player never takes the guest door by accident on a slow
+# start. Reversing it -- trying the guest door first, or falling back to it on a
+# failure -- would file a signed-in player'"'"'s rows anonymously and lose the one
+# attribution the authenticated table exists for. A guest who signs in later
+# keeps the guest rows they already filed, which is correct: they were a guest
+# when they filed them.
 func report_diagnostics(install: String, platform: String, os_version: String,
 		model: String, build: int, events: Array, then: Callable) -> void:
-	if not linked() or events.is_empty():
+	if not configured() or events.is_empty():
 		then.call(false)
 		return
-	_rpc("report_diagnostics", {
+	var args := {
 		"p_install":  install,
 		"p_platform": platform,
 		"p_os":       os_version,
 		"p_model":    model,
 		"p_build":    build,
 		"p_events":   events,
-	}, func(code: int, _b) -> void: then.call(code == 200))
+	}
+	var done := func(code: int, _b) -> void: then.call(code == 200)
+	if linked():
+		_rpc("report_diagnostics", args, done)
+		return
+	# Straight to _post rather than through _rpc: _rpc refreshes a token first,
+	# and there is no token here to refresh.
+	_post("/rest/v1/rpc/report_diagnostics_guest", args, done, false)
 
 
 func leaderboard(then: Callable) -> void:
