@@ -19,13 +19,23 @@ Phases:
   B  steady state      -- the real RPC mix, at rising concurrency
   C  contention        -- races the schema is supposed to settle
   D  scale             -- the same reads against a table with many islands
+  E  tournament        -- brackets, placings and the league-size cache
+  F  clans             -- four doors into one thirty-seat room
+  G  gifts             -- the daily caps under a stampede
+
+Phases A-D give every virtual player its own connection and stop being honest
+somewhere under a thousand. Phases E-G go through a bounded pool with the JWT
+claim swapped per call, which is what PostgREST does, so they scale to the
+population the game is actually being asked about.
 
 Usage: tools/loadtest_db.py [--players N] [--seconds S] [--levels 1,8,32,...]
 """
 
 import argparse
+import contextlib
 import json
 import os
+import queue
 import random
 import shutil
 import statistics
@@ -72,15 +82,23 @@ class Pg:
         self.work = tempfile.mkdtemp(prefix="lootlagoon-load-")
         self.data = os.path.join(self.work, "data")
 
-    def start(self):
+    def start(self, max_conns=200):
         run([os.path.join(PG, "initdb"), "-D", self.data, "-U", "postgres",
              "--auth=trust"])
         # Tuned like a small managed instance rather than a laptop default, so
         # the numbers mean something: Supabase's free tier is 60 connections
         # and shared buffers in the same order.
+        #
+        # max_conns is SIZED FROM THE RUN rather than fixed at 200, because a
+        # fixed 200 is one short of what `--players 200` -- the default -- asks
+        # for: phase A holds a connection per client and then wants one more for
+        # the admin count at the end, and Postgres answers "sorry, too many
+        # clients already" from inside a `with psycopg.connect(...)` that reads
+        # as a schema failure rather than as running out of sockets. The tool's
+        # own default invocation could not finish phase A.
         run([os.path.join(PG, "pg_ctl"), "-D", self.data,
              "-o", f"-k {self.work} -c listen_addresses='' "
-                   f"-c max_connections=200 -c shared_buffers=256MB "
+                   f"-c max_connections={max_conns} -c shared_buffers=256MB "
                    f"-c work_mem=8MB -c track_io_timing=on "
                    f"-c log_min_duration_statement=2000",
              "-l", os.path.join(self.work, "log"), "-w", "start"])
@@ -599,12 +617,491 @@ def _rows_scanned(plan):
     return n
 
 
+# --- a pooled client, because 10,000 players do not get 10,000 connections ----
+#
+# Phases A-D give every virtual player its own connection, which is honest at
+# 200 and impossible at 10,000: Postgres is configured for 200 and Supabase's
+# free tier for 60. Modelling it as a connection each would not merely fail to
+# start, it would measure the wrong thing -- PostgREST puts every request
+# through a small pool and sets `request.jwt.claim.sub` per request, so a
+# bounded pool with the claim swapped around each call IS production.
+#
+# That makes "10,000 concurrent players" mean what it means on a real server:
+# ten thousand identities with work in flight, funnelled through the pool the
+# database actually has. The queue depth is the interesting number, not the
+# socket count.
+class Pool:
+    def __init__(self, dsn, size):
+        self.dsn = dsn
+        self.size = size
+        self._free = queue.Queue()
+        self._all = []
+        for _ in range(size):
+            c = psycopg.connect(dsn, autocommit=True)
+            self._all.append(c)
+            self._free.put(c)
+
+    @contextlib.contextmanager
+    def _lease(self, uid):
+        c = self._free.get()
+        try:
+            with c.cursor() as cur:
+                cur.execute("reset role")
+                cur.execute(
+                    "select set_config('request.jwt.claim.sub', %s, false)",
+                    (str(uid),))
+                cur.execute("set role authenticated")
+            yield c
+        finally:
+            # RESET ROLE always returns to the session user, so a call that
+            # raised cannot leave the next borrower wearing somebody else's
+            # role -- which would be a cross-account read in the test harness
+            # itself, and would look exactly like an RLS hole in the schema.
+            try:
+                with c.cursor() as cur:
+                    cur.execute("reset role")
+            except Exception:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+                c = psycopg.connect(self.dsn, autocommit=True)
+            self._free.put(c)
+
+    def call(self, uid, sql, args=()):
+        with self._lease(uid) as c, c.cursor() as cur:
+            cur.execute(sql, args)
+            try:
+                return cur.fetchone()
+            except psycopg.ProgrammingError:
+                return None
+
+    def close(self):
+        for c in self._all:
+            try:
+                c.close()
+            except Exception:
+                pass
+
+
+def admin(dsn, sql, args=()):
+    with psycopg.connect(dsn, autocommit=True) as c, c.cursor() as cur:
+        cur.execute(sql, args)
+        try:
+            return cur.fetchall()
+        except psycopg.ProgrammingError:
+            return None
+
+
+def bulk_signup(dsn, pool, uids, stats, workers):
+    """claim_player for everybody, through the pool."""
+    def one(uid):
+        timed(stats, "claim_player", pool.call, uid,
+              "select public.claim_player(%s::jsonb, %s, %s, %s, %s, %s, %s, %s)",
+              (SAVE, f"Player{uuid.uuid4().hex[:10]}", "🙂",
+               random.randint(0, 20000), random.randint(1, 30),
+               random.randint(0, 10 ** 6), random.randint(0, 3), [3, 3, 3, 3, 3]))
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(one, uids))
+
+
+# --- phase E: the tournament, which phases A-D never touched -----------------
+#
+# The tournament is the newest write path and the only zero-sum one in the
+# game, and it was invisible to this file until now. Three things are being
+# asked:
+#
+#   1. does `tourney_report` stay monotonic within a cycle when the same
+#      account reports from several devices at once,
+#   2. does the bracket the BOARD draws match the field `tourney_result`
+#      counts -- the two disagreeing is the entire defect the brackets
+#      migration exists to close, and it is a disagreement that only appears
+#      at a population no test has ever built, and
+#   3. does the league-size cache stay off the read path as the league grows.
+def phase_tourney(dsn, pool, uids, seconds, workers):
+    print(f"\n=> PHASE E  the tournament -- {len(uids):,} players scoring at once")
+    stats = Stats()
+    ok = True
+
+    now_id = admin(dsn, "select public.tourney_now_id()")[0][0]
+
+    # Everybody reports, repeatedly, the way a player scoring during a spin
+    # session does. Points rise, so within-cycle monotonicity is testable.
+    best = {}
+    lock = threading.Lock()
+
+    # Held back deliberately: signed in, in a bracket, and yet to score a point
+    # this cycle. That is not an exotic state -- it is everybody, for the first
+    # hours of every cycle, and anybody who opens the app after one ended
+    # without having played it.
+    watchers = list(uids[-20:]) if len(uids) > 400 else []
+    uids = [u for u in uids if u not in set(watchers)]
+
+    # EVERY player reports, not just the first `workers` of them. The obvious
+    # shape -- ex.map(score, uids) where score() loops until a deadline -- gives
+    # the whole window to the first `workers` uids and runs the other 9,900
+    # after it has expired, doing nothing. The bracket checks below then sample
+    # players who never scored and measure a different thing entirely.
+    #
+    # So: one deterministic pass where everybody reports once, then a timed
+    # storm over random uids, which is what a population actually looks like.
+    def report_once(uid):
+        pts = random.randint(1, 400)
+        with lock:
+            best[uid] = max(best.get(uid, 0), pts)
+        timed(stats, "tourney_report", pool.call, uid,
+              "select public.tourney_report(%s, %s)", (now_id, pts))
+
+    t = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(report_once, uids))
+
+    deadline = time.perf_counter() + seconds
+
+    def storm(_seat):
+        while time.perf_counter() < deadline:
+            uid = random.choice(uids)
+            with lock:
+                pts = best.get(uid, 0) + random.randint(1, 120)
+                best[uid] = pts
+            timed(stats, "tourney_report", pool.call, uid,
+                  "select public.tourney_report(%s, %s)", (now_id, pts))
+            if random.random() < 0.25:
+                timed(stats, "tourney_board", pool.call, uid,
+                      "select public.tourney_board(30)")
+            if random.random() < 0.10:
+                timed(stats, "tourney_result", pool.call, uid,
+                      "select public.tourney_result(%s)", (now_id,))
+            if random.random() < 0.05:
+                timed(stats, "tourney_progress", pool.call, uid,
+                      "select public.tourney_progress()")
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(storm, range(workers)))
+    elapsed = time.perf_counter() - t
+    stats.report(f"{len(uids):,} players, {workers} pooled connections", elapsed)
+
+    # 1. Monotonic within the cycle: the stored score is the highest reported.
+    stored = dict(admin(dsn, """select p.id, p.tourney_points
+                                  from public.players p
+                                 where p.tourney_id = %s""", (now_id,)) or [])
+    ident = dict(admin(dsn, """select i.auth_uid, i.player_id
+                                 from public.player_identities i""") or [])
+    bad = 0
+    for uid, want in best.items():
+        pid = ident.get(uid)
+        if pid is None:
+            continue
+        got = stored.get(pid)
+        if got is None or got < want:
+            bad += 1
+    good = bad == 0
+    ok = ok and good
+    print(f"   [{'ok' if good else 'FAIL'}] every stored score is the highest "
+          f"its player reported ({len(best):,} players, {bad} short)")
+
+    # 2. The board and the placing must be drawn over the SAME field. This is
+    #    the check the brackets migration was written to make true, and it can
+    #    only fail at a population -- at a dozen testers the two agree by
+    #    accident because everybody fits.
+    sample = random.sample(list(uids), min(60, len(uids)))
+    field_off = []
+    place_off = []
+    fields = []
+    for uid in sample:
+        b = pool.call(uid, "select public.tourney_board(100)")
+        r = pool.call(uid, "select public.tourney_result(%s)", (now_id,))
+        if not b or not r or b[0] is None or r[0] is None:
+            continue
+        board, res = b[0], r[0]
+        fields.append(res["field"])
+        if len(board) != res["field"]:
+            field_off.append((len(board), res["field"]))
+        above = sum(1 for row in board if row["points"] > res["points"])
+        if above + 1 != res["place"]:
+            place_off.append((above + 1, res["place"]))
+    good = not field_off
+    ok = ok and good
+    worst = max(fields) if fields else 0
+    print(f"   [{'ok' if good else 'FAIL'}] the board and the placing count the "
+          f"same field for {len(sample)} sampled players "
+          f"({len(field_off)} disagree, biggest bracket {worst})")
+    if field_off:
+        print(f"     ! first five (board rows vs result field): {field_off[:5]}")
+    # The PLACING is deliberately not asserted mid-cycle. The board scores a bot
+    # at `tourney_progress()` -- how far through the three days it is -- and
+    # tourney_result scores the same bot at 1.0, its finished total, because
+    # result is only ever asked about a cycle that has ended. So the two rank
+    # bots differently while a cycle is running, by design, and an assertion
+    # here would be measuring the clock. Reported, not failed.
+    print(f"   (placing differs for {len(place_off)}/{len(sample)} mid-cycle, "
+          f"which is bot pacing rather than a disagreement)")
+
+    # 2b. THE PLAYER WHO HAS NOT SCORED YET. The board draws them -- it has an
+    #     explicit `or p.id = v_me` so a player always finds themselves on it --
+    #     and tourney_result must count them in the same field, or the placing
+    #     is computed against a field the player is not in and can come out one
+    #     bigger than it. "#12 of 11" is not a rounding difference; it is the
+    #     board and the placing being two different competitions, which is the
+    #     defect the brackets migration exists to close.
+    bad_watch = []
+    for uid in watchers:
+        b = pool.call(uid, "select public.tourney_board(100)")
+        r = pool.call(uid, "select public.tourney_result(%s)", (now_id,))
+        if not b or not r or b[0] is None or r[0] is None:
+            continue
+        board, res = b[0], r[0]
+        if len(board) != res["field"] or res["place"] > res["field"]:
+            bad_watch.append((len(board), res["field"], res["place"]))
+    good = not bad_watch
+    ok = ok and good
+    print(f"   [{'ok' if good else 'FAIL'}] a player yet to score this cycle is "
+          f"counted in their own field ({len(bad_watch)}/{len(watchers)} are "
+          f"placed outside it)")
+    if bad_watch:
+        print(f"     ! first five (board rows, result field, result place): "
+              f"{bad_watch[:5]}")
+
+    # 3. A bracket is meant to be a group. Report what the population actually
+    #    produced rather than asserting a number the design may have moved.
+    rows = admin(dsn, """
+        select public.tourney_league(island_level) lg, count(*)
+          from public.players where deleted_at is null group by 1 order by 1""")
+    sizes = admin(dsn, "select league, members from public.tourney_leagues order by 1")
+    print(f"   leagues by population: "
+          + ", ".join(f"L{lg}:{n:,}" for lg, n in (rows or [])))
+    print(f"   cached member counts:  "
+          + ", ".join(f"L{lg}:{n:,}" for lg, n in (sizes or []))
+          + ("  (empty -- nothing reported)" if not sizes else ""))
+    for lg, n in (sizes or []):
+        sl = admin(dsn, "select public.tourney_slices(%s)", (lg,))[0][0]
+        print(f"     L{lg}: {n:,} members / {sl} slices "
+              f"= {n / max(sl, 1):.0f} to a bracket")
+
+    # 4. The read path must not count the league. If tourney_board scanned the
+    #    league, its plan would show the whole band; it must show a range.
+    with psycopg.connect(dsn, autocommit=True) as c, c.cursor() as cur:
+        cur.execute("select set_config('request.jwt.claim.sub', %s, false)",
+                    (str(sample[0]),))
+        cur.execute("explain (analyze, format json) select public.tourney_board(30)")
+        plan = cur.fetchone()[0][0]
+        print(f"   tourney_board at this population: "
+              f"{plan['Execution Time']:.1f}ms")
+    return ok, stats
+
+
+# --- phase F: clans, and the cap that has to hold under a stampede -----------
+#
+# The 30-member cap is enforced by a read of `clans.members` under a row lock
+# and a write back. That is correct only if every path that admits a member
+# takes the same lock -- and there are FOUR of them (join, accept an invite,
+# answer a request, and create). A cap that holds against one door and not the
+# others is not a cap.
+def phase_clans(dsn, pool, uids):
+    print("\n=> PHASE F  clans -- four doors into one thirty-seat room")
+    ok = True
+    cap = admin(dsn, "select public.clan_max_members()")[0][0]
+
+    # A clan, and then far more applicants than seats, all at once.
+    owner = uids[0]
+    r = pool.call(owner, "select public.create_clan(%s, %s)",
+                  ("Stampede Bay", "🏴"))
+    made = r[0] if r else None
+    if not made or not made.get("ok"):
+        print(f"   [FAIL] could not create the clan under test: {made}")
+        return False
+    clan = made["clan"]["id"]
+    pool.call(owner, "select public.set_clan_open(true)")
+
+    applicants = list(uids[1:1 + cap * 8])
+    got_in = []
+    lock = threading.Lock()
+
+    def rush(uid):
+        try:
+            res = pool.call(uid, "select public.join_clan(%s)", (clan,))
+            if res and res[0] and res[0].get("ok"):
+                with lock:
+                    got_in.append(uid)
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=min(64, len(applicants))) as ex:
+        list(ex.map(rush, applicants))
+
+    counted = admin(dsn, "select members from public.clans where id = %s",
+                    (clan,))[0][0]
+    actual = admin(dsn, "select count(*) from public.clan_members where clan_id = %s",
+                   (clan,))[0][0]
+    good = actual <= cap and counted == actual
+    ok = ok and good
+    print(f"   [{'ok' if good else 'FAIL'}] {len(applicants)} applicants raced "
+          f"for {cap} seats: {len(got_in)} told yes, {actual} actually seated, "
+          f"the counter says {counted}")
+
+    # The same name, from many accounts, in the same moment.
+    freshmen = list(uids[1 + cap * 8:1 + cap * 8 + 40])
+    winners = []
+
+    def name_rush(uid):
+        try:
+            res = pool.call(uid, "select public.create_clan(%s, %s)",
+                            ("Same Name Crew", "🏴"))
+            if res and res[0] and res[0].get("ok"):
+                with lock:
+                    winners.append(uid)
+        except Exception:
+            pass
+
+    with ThreadPoolExecutor(max_workers=min(40, len(freshmen))) as ex:
+        list(ex.map(name_rush, freshmen))
+    holders = admin(dsn, """select count(*) from public.clans
+                             where lower(name) = lower(%s)""",
+                    ("Same Name Crew",))[0][0]
+    good = holders == 1 and len(winners) == 1
+    ok = ok and good
+    print(f"   [{'ok' if good else 'FAIL'}] {len(freshmen)} clients raced for "
+          f"one clan name: {len(winners)} told they won, {holders} exist")
+
+    # Leaving and joining at the same time must not drift the counter. This is
+    # the one that goes wrong quietly -- `members` is a denormalised count and
+    # a lost update leaves a clan that says 29 with 30 people in it, or one
+    # that says 30 with 12 and can never be joined again.
+    leavers = got_in[:10]
+    newcomers = list(uids[1 + cap * 8 + 40:1 + cap * 8 + 70])
+
+    def churn(uid, leaving):
+        try:
+            if leaving:
+                pool.call(uid, "select public.leave_clan()")
+            else:
+                pool.call(uid, "select public.join_clan(%s)", (clan,))
+        except Exception:
+            pass
+
+    jobs = [(u, True) for u in leavers] + [(u, False) for u in newcomers]
+    random.shuffle(jobs)
+    with ThreadPoolExecutor(max_workers=32) as ex:
+        list(ex.map(lambda j: churn(*j), jobs))
+    counted = admin(dsn, "select members from public.clans where id = %s",
+                    (clan,))[0][0]
+    actual = admin(dsn, "select count(*) from public.clan_members where clan_id = %s",
+                   (clan,))[0][0]
+    good = counted == actual and actual <= cap
+    ok = ok and good
+    print(f"   [{'ok' if good else 'FAIL'}] ten left while thirty joined: the "
+          f"counter says {counted}, the roster holds {actual}")
+
+    # Nobody may hold two seats. The unique key on clan_members is what makes
+    # this true; it is checked because a lost one is silent.
+    dupes = admin(dsn, """select count(*) from (
+                            select player_id from public.clan_members
+                             group by 1 having count(*) > 1) t""")[0][0]
+    good = dupes == 0
+    ok = ok and good
+    print(f"   [{'ok' if good else 'FAIL'}] no player sits in two clans "
+          f"({dupes} do)")
+    return ok
+
+
+# --- phase G: gifts, and the caps that stop one modified client servicing all -
+def phase_gifts(dsn, pool, uids):
+    print("\n=> PHASE G  card gifts -- the daily caps under a stampede")
+    ok = True
+    give_cap = admin(dsn, "select public.gift_give_cap()")[0][0]
+    recv_cap = admin(dsn, "select public.gift_receive_cap()")[0][0]
+
+    # A clan of givers and one receiver, all pushing at once.
+    crew = list(uids[400:436])
+    host = crew[0]
+    r = pool.call(host, "select public.create_clan(%s, %s)", ("Gift Harbour", "🎁"))
+    if not r or not r[0] or not r[0].get("ok"):
+        print(f"   [FAIL] could not create the gifting clan: {r[0] if r else None}")
+        return False
+    clan = r[0]["clan"]["id"]
+    pool.call(host, "select public.set_clan_open(true)")
+    for uid in crew[1:]:
+        pool.call(uid, "select public.join_clan(%s)", (clan,))
+
+    ids = {u: admin(dsn, """select i.player_id from public.player_identities i
+                             where i.auth_uid = %s""", (u,))[0][0] for u in crew}
+    target = ids[crew[1]]
+
+    def spam(uid):
+        for i in range(12):
+            try:
+                pool.call(uid, "select public.send_card(%s, %s, %s, %s)",
+                          (target, "pirate", i % 8, 1 + i % 4))
+            except Exception:
+                pass
+
+    senders = [u for u in crew if ids[u] != target]
+    with ThreadPoolExecutor(max_workers=min(32, len(senders))) as ex:
+        list(ex.map(spam, senders))
+
+    got = admin(dsn, """select count(*) from public.card_gifts
+                         where to_player = %s
+                           and created_at > now() - interval '24 hours'""",
+                (target,))[0][0]
+    good = got <= recv_cap
+    ok = ok and good
+    print(f"   [{'ok' if good else 'FAIL'}] {len(senders)} clanmates pushed "
+          f"{len(senders) * 12} gifts at one inbox with a cap of {recv_cap}: "
+          f"{got} landed")
+
+    over = admin(dsn, """select count(*) from (
+                           select from_player from public.card_gifts
+                            where created_at > now() - interval '24 hours'
+                            group by 1 having count(*) > %s) t""",
+                 (give_cap,))[0][0]
+    good = over == 0
+    ok = ok and good
+    print(f"   [{'ok' if good else 'FAIL'}] no sender got past the give cap of "
+          f"{give_cap} ({over} did)")
+
+    # A five-star card is not sendable, and that is a table constraint as well
+    # as a branch -- so it holds even against a replaced function.
+    res = pool.call(crew[2], "select public.send_card(%s, %s, %s, %s)",
+                    (target, "pirate", 0, 5))
+    good = res and res[0] and res[0].get("ok") is False
+    ok = ok and good
+    print(f"   [{'ok' if good else 'FAIL'}] a five-star card is refused "
+          f"({res[0] if res else None})")
+
+    # Self-send, which Guy asked for by name.
+    res = pool.call(crew[1], "select public.send_card(%s, %s, %s, %s)",
+                    (target, "pirate", 0, 2))
+    good = res and res[0] and res[0].get("reason") == "self"
+    ok = ok and good
+    print(f"   [{'ok' if good else 'FAIL'}] a self-send is refused "
+          f"({res[0] if res else None})")
+
+    # Across clans, which is the whole point of the clan check.
+    outsider = uids[500]
+    res = pool.call(outsider, "select public.send_card(%s, %s, %s, %s)",
+                    (target, "pirate", 0, 2))
+    good = res and res[0] and res[0].get("reason") == "not_clanmates"
+    ok = ok and good
+    print(f"   [{'ok' if good else 'FAIL'}] a stranger cannot gift into a clan "
+          f"({res[0] if res else None})")
+    return ok
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--players", type=int, default=200)
     ap.add_argument("--seconds", type=int, default=12)
     ap.add_argument("--levels", default="1,8,32,64,128")
     ap.add_argument("--sizes", default="1000,25000,100000")
+    # The population phases E-G drive. Kept separate from --players because
+    # A-D take a connection each and cannot go here; this is the number the
+    # question "does it hold at ten thousand" is actually about.
+    ap.add_argument("--social", type=int, default=0,
+                    help="run phases E-G with this many pooled players")
+    ap.add_argument("--pool", type=int, default=96,
+                    help="connections phases E-G share, as PostgREST would")
+    ap.add_argument("--skip-abcd", action="store_true",
+                    help="only the pooled phases")
     args = ap.parse_args()
 
     levels = [int(x) for x in args.levels.split(",")]
@@ -613,29 +1110,87 @@ def main():
     print("=> booting a throwaway Postgres and applying the real migrations")
     pg = Pg()
     ok = True
+    b, d = [], []
+    social = None
+    # Phase A holds one connection per client for the whole run, phases E-G
+    # hold the pool, and several checks open an admin connection alongside
+    # both. Sized for all three at once with headroom, never below 200.
+    need = 200
+    if not args.skip_abcd:
+        need = max(need, args.players + max(levels) + 64)
+    if args.social:
+        need = max(need, (0 if args.skip_abcd else args.players) + args.pool + 64)
     try:
-        pg.start()
+        pg.start(max_conns=need)
+        print(f"   postgres sized for {need} connections")
         dsn = pg.dsn()
         apply_schema(dsn)
-        uids = make_auth_users(dsn, args.players)
-        clients, a_ok = phase_signup(dsn, uids)
-        ok = ok and a_ok
-        b = phase_steady(dsn, clients, levels, args.seconds)
-        ok = phase_contention(dsn, clients) and ok
-        d = phase_scale(dsn, clients, sizes, args.seconds)
+
+        if not args.skip_abcd:
+            uids = make_auth_users(dsn, args.players)
+            clients, a_ok = phase_signup(dsn, uids)
+            ok = ok and a_ok
+            b = phase_steady(dsn, clients, levels, args.seconds)
+            ok = phase_contention(dsn, clients) and ok
+            d = phase_scale(dsn, clients, sizes, args.seconds)
+            for c in clients.values():
+                c.close()
+
+        if args.social:
+            n = args.social
+            print(f"\n=> pooled population -- {n:,} players through "
+                  f"{args.pool} connections")
+            pool = Pool(dsn, args.pool)
+            try:
+                puids = make_auth_users(dsn, n)
+                sign = Stats()
+                t = time.perf_counter()
+                bulk_signup(dsn, pool, puids, sign, args.pool)
+                el = time.perf_counter() - t
+                sign.report(f"{n:,} first-time sign-ins through the pool", el)
+                made = admin(dsn, "select count(*) from public.players "
+                                  "where is_bot = false and deleted_at is null"
+                             )[0][0]
+                dupes = admin(dsn, """select count(*) from (
+                                        select public.normalize_name(display_name) nm
+                                          from public.players
+                                         where deleted_at is null and is_bot = false
+                                         group by 1 having count(*) > 1) t""")[0][0]
+                good = dupes == 0
+                ok = ok and good
+                print(f"   [{'ok' if good else 'FAIL'}] {made:,} islands now "
+                      f"exist, {dupes} duplicate names under the unique index")
+
+                e_ok, e_stats = phase_tourney(dsn, pool, puids, args.seconds,
+                                              args.pool)
+                ok = e_ok and ok
+                ok = phase_clans(dsn, pool, puids) and ok
+                ok = phase_gifts(dsn, pool, puids) and ok
+                social = (n, made, e_stats)
+            finally:
+                pool.close()
 
         print("\n=> SUMMARY")
-        print("   throughput against concurrency:")
-        for n, tps, p95, errs in b:
-            worst = max(p95.items(), key=lambda kv: kv[1]) if p95 else ("-", 0)
-            print(f"     {n:>4} clients  {tps:>8.0f} calls/s   "
-                  f"slowest p95: {worst[0]} {worst[1]:.0f}ms   errors {errs}")
-        print("   read latency against world size:")
-        for size, ft, lb in d:
-            print(f"     {size:>8,} islands   find_target p95 {ft:>7.1f}ms   "
-                  f"leaderboard p95 {lb:>7.1f}ms")
-        for c in clients.values():
-            c.close()
+        if b:
+            print("   throughput against concurrency:")
+            for n, tps, p95, errs in b:
+                worst = max(p95.items(), key=lambda kv: kv[1]) if p95 else ("-", 0)
+                print(f"     {n:>4} clients  {tps:>8.0f} calls/s   "
+                      f"slowest p95: {worst[0]} {worst[1]:.0f}ms   errors {errs}")
+        if d:
+            print("   read latency against world size:")
+            for size, ft, lb in d:
+                print(f"     {size:>8,} islands   find_target p95 {ft:>7.1f}ms   "
+                      f"leaderboard p95 {lb:>7.1f}ms")
+        if social:
+            n, made, st = social
+            print(f"   pooled population: {n:,} players, {made:,} islands, "
+                  f"{args.pool} connections")
+            for op in sorted(st.lat):
+                v = sorted(st.lat[op])
+                print(f"     {op:<18} n={len(v):>7}  p50 {pct(v,50):>6.1f}ms  "
+                      f"p95 {pct(v,95):>7.1f}ms  p99 {pct(v,99):>7.1f}ms  "
+                      f"errors {st.err[op]}")
     finally:
         pg.stop()
     print(f"\nLOAD TEST: {'ALL CORRECTNESS CHECKS PASS' if ok else 'FAILURES ABOVE'}")

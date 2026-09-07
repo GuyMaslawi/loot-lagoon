@@ -1309,6 +1309,43 @@ func _t_tourney() -> void:
 	_chk("all four tracks stay out of reach without buying spins",
 		reachable_free < float(top), "%.0f reachable vs %d needed" % [reachable_free, top])
 	m.tourney_build_pts = 0
+
+	# --- THE BOT FIELD IS THE FLOOR, IN EVERY LEAGUE -------------------------
+	# The client mirrors the SQL for the signed-out board, so both sides of this
+	# have to agree AND both have to satisfy the property the bots exist for.
+	# Derived from the live constants: a human's cycle total does not vary with
+	# island (a raid is TP x bet at an island-independent triple rate, and the
+	# build term is a flat cap), and the expected top of twelve uniform draws on
+	# [0, span) is span*12/13.
+	var casual_cycle: float = 450.0 * per_spin_raid + float(m.TOURNEY_BUILD_CAP)
+	var worst_league := 0
+	for league in range(1, 11):
+		var span: int = m.TOURNEY_BOT_BASE + m.TOURNEY_BOT_SLOPE * mini(3 * league, 30)
+		if float(span) * 12.0 / 13.0 >= casual_cycle:
+			worst_league = league
+	_chk("a casual player passes the whole bot field in every league",
+		worst_league == 0,
+		"breaks first in league %d" % worst_league if worst_league > 0 else "")
+	var span_1: int = m.TOURNEY_BOT_BASE + m.TOURNEY_BOT_SLOPE * 3
+	var span_10: int = m.TOURNEY_BOT_BASE + m.TOURNEY_BOT_SLOPE * 30
+	_chk("the top league is a harder room than the first, but only just",
+		span_10 > span_1 and float(span_10) / float(span_1) < 2.0,
+		"%d vs %d" % [span_10, span_1])
+	# The bots must stay under the first reward rung of the first track, or a
+	# board of NPCs would be handing out the impression that the track is
+	# already beaten before the player has taken a rung.
+	_chk("the whole field finishes under the top rung of track one",
+		span_10 < int(m.TOURNEY_TIERS[m.TOURNEY_TIERS.size() - 1]["at"]),
+		"%d vs %d" % [span_10, int(m.TOURNEY_TIERS[m.TOURNEY_TIERS.size() - 1]["at"])])
+	# A bot arriving over the cycle rather than sitting on its finish, mirrored.
+	m.island_level = 10
+	var mid: int = m._local_tourney_points("Barnaby", 7, 0.3)
+	var fin: int = m._local_tourney_points("Barnaby", 7, 1.0)
+	_chk("the signed-out board climbs over the cycle too", mid < fin and mid >= 0,
+		"%d at 30%%, %d at the buzzer" % [mid, fin])
+	_chk("and its field is bounded by the same span the SQL uses",
+		fin < m.TOURNEY_BOT_BASE + m.TOURNEY_BOT_SLOPE * 10, str(fin))
+
 	# _tourney_sync above rolled a cycle with a score on it, which parks a debt.
 	# Left standing it would hand the placing-prize tests a cycle they never ran.
 	m.tourney_owed_id = -1

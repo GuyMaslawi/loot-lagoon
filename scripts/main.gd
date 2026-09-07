@@ -12850,8 +12850,36 @@ func _tip_prize(row: HBoxContainer, kind: String, text: String, ink: Color) -> v
 # while the game is shut -- is looking at a race that has already been run. The
 # exponent is per rival and stable, so some are out fast and others finish
 # strong rather than the whole field moving in lockstep.
+# WHAT A BOT FINISHES ON, and the pair must match
+# 20260907190000_tourney_bot_scale.sql exactly -- this is the signed-out board
+# and the SQL is the signed-in one, and a player who signs in must not watch the
+# field change shape underneath them.
+#
+# 750 + 20, not 700 + 60, since 2026-09-07. The steep slope assumed a player's
+# tournament score grows with their island. IT DOES NOT AND NEVER DID: a raid is
+# `TP x bet`, the triple rate is identical on every island, and since build 103
+# the build term is a flat cap -- so a cycle total depends only on spins played
+# and is the same number in league 1 as in league 10 (casual 1,294 / regular
+# 2,620 / heavy 5,604).
+#
+# Against a flat human score the old slope broke the one property bots are for.
+# "They are the floor, not the ceiling -- somebody playing properly passes all
+# of them" was true in leagues 1-3 and false in the other seven: the top of
+# twelve draws was 101% of a casual player's cycle by league 4 and 178% by
+# league 10, so a casual player in the top league finished below eight bots on a
+# board whose whole job is to be climbable.
+#
+# The tilt survives because progression is an ENGAGEMENT proxy even though it is
+# not an economy one -- somebody on island 28 has been at this for weeks and
+# probably plays more per day. Gentle, therefore, not steep. League 1 barely
+# moves (812 -> 748, so a first tournament stays winnable) and league 10 comes
+# back from 2,308 to 1,246, just under a casual cycle, so the invariant holds in
+# all ten. See the migration for the full table.
+const TOURNEY_BOT_BASE := 750
+const TOURNEY_BOT_SLOPE := 20
+
 func _local_tourney_points(who: String, cycle: int, progress := 1.0) -> int:
-	var span := 700 + 60 * clampi(island_level, 1, 30)
+	var span := TOURNEY_BOT_BASE + TOURNEY_BOT_SLOPE * clampi(island_level, 1, 30)
 	var finish := absi(hash("%s:%d" % [who, cycle])) % span
 	var pace := 0.55 + 1.2 * float(absi(hash(who + ":pace")) % 1000) / 1000.0
 	return int(round(float(finish) * pow(clampf(progress, 0.0, 1.0), pace)))

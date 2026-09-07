@@ -290,9 +290,27 @@ begin
                and public.tourney_league(p.island_level) = v_league
                and p.tourney_slot >= v_range[1]
                and p.tourney_slot <  v_range[2]
+               -- `or p.id = v_me` is not decoration. tourney_board has the
+               -- same clause so that a player always finds themselves on the
+               -- board, including on the morning of a cycle before they have
+               -- scored anything -- and if this filter does not carry it too,
+               -- the placing is computed over a field the player is not in.
+               -- v_above does not fall when they are left out, so `place` can
+               -- come out one HIGHER than `field`, and the end-of-tournament
+               -- dialog reads "#22 of 21".
+               --
+               -- Reachable without anybody doing anything strange: a player
+               -- who earned points with no connection for the whole cycle has
+               -- a local score to be told about and no server row for it, so
+               -- neither tourney_id nor tourney_prev_id matches. Measured at
+               -- 20/20 in tools/loadtest_db.py phase E before this line.
+               --
+               -- The two filters are now identical, which is the point of the
+               -- file: the board and the placing are one competition.
                and (p.is_bot
                     or p.tourney_id = p_tourney_id
-                    or p.tourney_prev_id = p_tourney_id)) t;
+                    or p.tourney_prev_id = p_tourney_id
+                    or p.id = v_me)) t;
 
     return jsonb_build_object(
         'tourney_id', p_tourney_id,

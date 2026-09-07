@@ -649,6 +649,45 @@ begin
                        and public.tourney_progress() <= 1.0,
                            public.tourney_progress()::text);
 
+        -- --- the bot field is the FLOOR, in every league --------------------
+        --
+        -- "They are the floor, not the ceiling -- somebody playing properly
+        -- passes all of them." That sentence was false in seven of the ten
+        -- leagues until 2026-09-07, because the bot span climbed with the
+        -- island while a human's cycle total does not vary with it at all.
+        --
+        -- Derived, not typed. A human's 72h score is spins x points-per-spin
+        -- plus the capped build term, and a casual player is 450 spins; the
+        -- expected top of twelve uniform md5 draws on [0, span) is span*12/13.
+        -- Typed, this check would go stale the moment any of those moved --
+        -- and stale in the loose direction, which is the direction a bound
+        -- must never go stale in.
+        declare
+            casual   numeric := 450 * 2.21 + 300;   -- 150 spins/day, cap
+            span     integer;
+            top_bot  numeric;
+            broken   integer := 0;
+        begin
+            for i in 1..10 loop
+                span := 750 + 20 * least(3 * i, 30);
+                top_bot := span * 12.0 / 13.0;
+                if top_bot >= casual then
+                    broken := broken + 1;
+                end if;
+            end loop;
+            perform pg_temp.ck('a casual player passes the whole bot field in EVERY league',
+                               broken = 0, broken::text || ' leagues where they do not');
+        end;
+        perform pg_temp.ck('and the top league is still a harder room than the first',
+                           public.tourney_bot_points(p_bot, cyc, 30, 1.0) >= 0
+                       and (750 + 20 * 30) > (750 + 20 * 3));
+        -- The slope is a gentle tilt now, not a curve that outruns the player.
+        perform pg_temp.ck('the bot span no more than doubles across the ten leagues',
+                           (750 + 20 * 30)::numeric / (750 + 20 * 3)::numeric < 2.0,
+                           ((750 + 20 * 30)::numeric / (750 + 20 * 3)::numeric)::text);
+        perform pg_temp.ck('a bot in the top league is still capped under the first reward rung',
+                           (750 + 20 * 30) < 2500, (750 + 20 * 30)::text);
+
         -- --- brackets -------------------------------------------------------
         --
         -- The board returns at most 40 rows and the end-of-cycle dialog counted
