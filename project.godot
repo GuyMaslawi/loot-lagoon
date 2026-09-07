@@ -42,6 +42,37 @@ window/handheld/orientation=1
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 
+[importer_defaults]
+
+; EVERY TEXTURE IN THE GAME IS STORED LOSSY, AND THIS LINE IS THE ONLY PLACE
+; THAT SAYS SO.
+;
+; Godot's default is compress/mode=0 -- lossless -- and nothing had ever changed
+; it, so the island art alone was 63.8 MB of a 74 MB texture budget: 86% of the
+; whole game, in a .pck of 86 MB and an .ipa of 112 MB. That was not thirty
+; islands being too many. It was thirty islands stored as if they were going to
+; be edited again.
+;
+; Measured on island_01 and then on all thirty: WebP at 0.85 is 7.8x smaller.
+; Per island set 2.13 MB -> 0.29 MB, the island art 63.8 MB -> 8.7 MB, all
+; textures 74 MB -> 19.1 MB. Checked by eye on islands 1, 12 and 30 -- 30 is
+; Golden Capital, which is wall-to-wall gold gradients and fine architecture and
+; is the worst case in the game for banding. No visible artefacts on any of them.
+;
+; WHY IT IS HERE AND NOT IN THE .import FILES. `*.import` is gitignored (see
+; .gitignore line 3), so per-file settings live on one machine and nowhere else
+; -- the shipped app size would have depended on who ran ship.sh. A fresh clone
+; regenerates every .import from this block, so this is the setting, and it is
+; the only copy of it.
+;
+; If a specific texture ever needs to be lossless again -- a sharp UI glyph, a
+; QR code, anything with hard 1px edges -- override it on that file in the
+; editor's Import dock rather than lowering this.
+texture={
+"compress/mode": 1,
+"compress/lossy_quality": 0.85
+}
+
 [rendering]
 
 renderer/rendering_method="forward_plus"
