@@ -585,12 +585,23 @@ func _clamp_bet() -> void:
 func _style_bet() -> void:
 	bet_button.text = "BET  x%d" % bet
 	Lagoon.button(bet_button, BET_KINDS[mini(BETS.find(bet), BET_KINDS.size() - 1)], 26)
-	_style_pot()
 
+# THE POT IS THE VAULT, NOT THE VAULT TIMES THE BET.
+#
+# It used to be quoted pre-multiplied by the stake, so the card promised what a
+# raid at the current bet would pay. Guy, 2026-09-07: "there is no need to
+# compute the number times the current bet -- that is done later in the steal
+# itself." The card was doing the raid's arithmetic a spin early, and it cost
+# the one thing the card is for: the number under a rival's name jumped every
+# time the bet button was tapped, with nothing about that rival having changed.
+#
+# The multiplier still applies -- `_raid_stake` is where the loot is counted and
+# the chests still pay the multiplied figure. It is simply applied once, at the
+# raid, instead of twice on two different screens.
 func _style_pot() -> void:
 	if _card_coins == null:
 		return
-	_card_coins.text = _fmt(int(round(_target_coins * _target_mult)) * bet)
+	_card_coins.text = _fmt(int(round(_target_coins * _target_mult)))
 
 # =============================================================================
 #  State from main.gd
@@ -606,10 +617,8 @@ func set_island(level: int) -> void:
 
 # Who the raccoons would send you to, and what is in their vault.
 #
-# The pot is quoted the way the raid will actually pay it -- their vault times
-# the island curve times the stake you are playing -- so raising the bet visibly
-# raises what is on the table, and the number you read here is the number that
-# comes out of the chests.
+# The pot is their vault on this island's curve, and nothing else -- see
+# _style_pot for why the stake is no longer folded into it here.
 # `owes` is set when this rival is on main.gd's grudge list -- they have taken
 # something off this island and not paid for it. The card says so, because the
 # card is the only place the player sees who is next BEFORE they commit a spin

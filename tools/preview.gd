@@ -41,6 +41,19 @@ func _ready() -> void:
 			# points to arrive at, and it is about six seconds long.
 			if OS.has_environment("SCORE"):
 				_score.call_deferred(game, OS.get_environment("SCORE"))
+			# CLAIM=daily opens the daily bonus and presses its button, which
+			# is the only way to watch the prizes leave the card: in play it
+			# needs a save whose 24 hours happen to be up, and the flights are
+			# about two seconds long. SHOTS/SHOT_GAP over this is how the
+			# sequence gets judged as motion rather than as a still.
+			if OS.has_environment("CLAIM"):
+				_claim.call_deferred(game, OS.get_environment("CLAIM"))
+			# GOTO=<page> plays the page change itself, which is the only way
+			# to see what main.gd's shell is for: the bar and the side discs
+			# have to hold still while the page under them slides. A still of
+			# either end of the transition proves nothing about the middle.
+			if OS.has_environment("GOTO"):
+				_goto_reel.call_deferred(game, OS.get_environment("GOTO"))
 		"match":
 			# The search screen on its own, no boot and no reels: MATCH=found
 			# jumps past the sweep so the rival card can be judged at rest.
@@ -67,9 +80,10 @@ func _ready() -> void:
 	# GRANT owns the capture when it is set: the reward fires a fixed moment
 	# after a boot whose length is not fixed, so a SHOT_DELAY measured from
 	# start-up lands wherever it likes. _grant shoots from the grant instead.
-	# SCORE owns it for the same reason.
+	# SCORE and CLAIM own it for the same reason.
 	if OS.has_environment("SHOT") and not OS.has_environment("GRANT") \
-			and not OS.has_environment("SCORE"):
+			and not OS.has_environment("SCORE") and not OS.has_environment("CLAIM") \
+			and not OS.has_environment("GOTO"):
 		_shoot.call_deferred()
 
 # A tournament rung being crossed, from the outside. SCORE=<n>[:<tier>] parks
@@ -103,6 +117,56 @@ func _score(game: Control, spec: String) -> void:
 		await _reel(OS.get_environment("SHOT"),
 			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 9,
 			float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.22)
+
+func _goto_reel(game: Control, key: String) -> void:
+	while game.get("_boot") != null:
+		await get_tree().process_frame
+	await get_tree().create_timer(1.4).timeout
+	if key == "island":
+		game.call("_goto", game.get("village_page"))
+	elif key == "spin":
+		game.call("_goto", game.get("slot_page"))
+	else:
+		game.call("_goto", (game.get("pages") as Dictionary)[key])
+	if OS.has_environment("SHOT"):
+		await _reel(OS.get_environment("SHOT"),
+			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 6,
+			float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.08)
+
+func _claim(game: Control, what: String) -> void:
+	while game.get("_boot") != null:
+		await get_tree().process_frame
+	await get_tree().create_timer(1.6).timeout
+	if what == "daily":
+		# DAY=<n> picks the rung. Day seven is the interesting one -- it is the
+		# only claim that carries a card, so it is the only one with three
+		# things flying to three different places.
+		var day := int(OS.get_environment("DAY")) if OS.has_environment("DAY") else 1
+		game.set("streak_days", maxi(0, day - 1))
+		game.set("daily_last", 0.0 if day <= 1 else game.call("_trusted_now") - game.DAILY_COOLDOWN)
+		game.call("_open_daily")
+	await get_tree().create_timer(0.5).timeout
+	var btn := _find_button(game.get("_popup"), "CLAIM")
+	if btn == null:
+		print("  claim: no button found")
+		get_tree().quit()
+		return
+	btn.emit_signal("pressed")
+	if OS.has_environment("SHOT"):
+		await _reel(OS.get_environment("SHOT"),
+			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 10,
+			float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.22)
+
+func _find_button(node: Node, starts: String) -> Button:
+	if node == null:
+		return null
+	for c in node.get_children():
+		if c is Button and (c as Button).text.begins_with(starts):
+			return c as Button
+		var found := _find_button(c, starts)
+		if found != null:
+			return found
+	return null
 
 func _land(m: Control) -> void:
 	await get_tree().create_timer(0.45).timeout
@@ -210,6 +274,13 @@ func _open_page(game: Control, key: String) -> void:
 	while game.get("_boot") != null:
 		await get_tree().process_frame
 	await get_tree().process_frame
+	# DAY=<n> parks the streak so the daily bonus can be looked at on a rung
+	# other than the first. Day one is the only state a fresh save can show, and
+	# it is the one rung with no ticked tiles behind it.
+	if OS.has_environment("DAY"):
+		var d := int(OS.get_environment("DAY"))
+		game.set("streak_days", maxi(0, d - 1))
+		game.set("daily_last", 0.0 if d <= 1 else game.call("_trusted_now") - game.DAILY_COOLDOWN)
 	if key.begins_with("popup:"):
 		# PIGGY=full|empty|<n> pins the bank before the screen opens. The three
 		# faces are the point of that drawing and two of them are otherwise

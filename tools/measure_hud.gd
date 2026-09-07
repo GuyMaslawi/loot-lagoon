@@ -104,8 +104,16 @@ func _ready() -> void:
 	get_tree().quit(0 if clears else 1)
 
 # The bar is the HBoxContainer holding [left group][gap][right group].
+#
+# It lives on the SHELL now, not on a page. There used to be one per page and
+# this walked the slot page's children to find that page's copy; since
+# 2026-09-07 there is exactly one bar, built over every page -- see
+# main.gd's _build_shell.
 func _find_bar(m: Control) -> Control:
-	for c in m.slot_page.get_children():
+	var shell: Control = m.get("_shell")
+	if shell == null:
+		return null
+	for c in shell.get_children():
 		if c is HBoxContainer and c.get_child_count() >= 3:
 			return c
 	return null

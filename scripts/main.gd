@@ -799,6 +799,9 @@ func _boot_finish_build() -> void:
 		slot_page.visible = false
 		pages[demo_page].visible = true
 		_current_page = pages[demo_page]
+	# Before the nav bar, and after every page exists: the shell is drawn over
+	# all of them and its top bar is what _refresh and _update_badges write into.
+	_build_shell()
 	_build_nav()
 	_build_status_strip()
 	if pages.has(demo_page):
@@ -2111,13 +2114,20 @@ func _process(delta: float) -> void:
 			slot.set_meter(_hud_shown("spins", spins), SPIN_CAP,
 				(SPIN_REGEN_SECS - _regen_accum) / (CV.TIDE_MULT if _tide_live() else 1.0),
 				SPIN_REGEN_AMOUNT, _tide_live())
-		if _shop_free_ready() or _piggy_full() or not _active_offer().is_empty():
-			# the gift, the piggy or an offer may have come due while playing
-			if _badges.has("shop_free") and not _badges["shop_free"].visible:
-				_update_badges()
-				if _current_page == pages.get("shop"):
-					_fill_page("shop")
-		elif _shop_gift_timer_label != null and is_instance_valid(_shop_gift_timer_label):
+		# BOTH DIRECTIONS, NOT JUST ON. This only ever asked whether the dot
+		# should come up, so a gift claimed or an offer running out with the
+		# game open left the Shop tab flagged until something unrelated
+		# happened to call _update_badges.
+		var dot_due := _shop_badge_due()
+		if _badges.has("shop_free") and _badges["shop_free"].visible != dot_due:
+			_update_badges()
+			if _current_page == pages.get("shop"):
+				_fill_page("shop")
+		# The countdown on the shop's gift card, which only exists while the
+		# gift is NOT ready. It used to hang off the `else` of the test above,
+		# so a live offer or a full piggy froze it mid-count.
+		if not _shop_free_ready() and _shop_gift_timer_label != null \
+				and is_instance_valid(_shop_gift_timer_label):
 			_shop_gift_timer_label.text = "⏳  Next gift in  %s" % _shop_free_countdown_text()
 		_offer_tick()
 		if _offer_timer_label != null and is_instance_valid(_offer_timer_label):
@@ -2398,6 +2408,7 @@ func _goto(target: Control) -> void:
 	Diag.at(page_name)
 	Diag.note("page:" + page_name)
 	_update_nav()
+	_update_shell()
 	_refresh()
 
 # Into the shop, aimed at a shelf.
@@ -2792,11 +2803,12 @@ func nav_slab_top() -> float:
 # was first put and where it looks like it belongs.
 #
 # There is no free rectangle at the top. `slot_band_top()` leaves eighteen units
-# of air under the bar, which is almost enough -- but the island page hangs its
-# nameplate and both disc rails off `island_rail_top()`, which is only fourteen
-# units down, and a strip in that gap lands on the nameplate's top rim and on
-# the two discs beside it. Measured, not guessed: the first version of this
-# shipped into that gap and the island page showed the seam.
+# of air under the bar, which is almost enough -- but the island's nameplate and
+# both disc rails hang off `rail_top()`, only fourteen units down, and a strip
+# in that gap lands on the nameplate's top rim and on the two discs beside it.
+# Measured, not guessed: the first version of this shipped into that gap and the
+# island page showed the seam. The rails are shell chrome now and sit at that
+# height on every page, so the gap is spoken for everywhere, not just here.
 #
 # Moving the content down instead is not available. The pages are built once at
 # boot and there is no resize or relayout path in this file, so a strip that
@@ -3045,6 +3057,86 @@ func _on_reachable_changed(ok: bool) -> void:
 	if not ok and Cloud.linked():
 		_show_toast("Offline — spins still count, your island is saved here", "📡")
 
+# =============================================================================
+#  The shell -- the chrome that does not move
+# =============================================================================
+#
+# THE TOP BAR AND THE SIDE DISCS ARE ONE OBJECT NOW, BUILT ONCE, OVER EVERY PAGE.
+#
+# They used to be built per page: `_add_topbar` ran nine times and
+# `_add_side_rail` twice, so every page carried its own copy and every copy slid
+# off the screen with the page that owned it. Guy, 2026-09-07, off his own
+# phone: "I want the navigation in the game to be about the content -- the icons
+# at the sides and the whole top menu should stay the same one without being
+# swapped. Only what is on the current page changes; everything around it stays,
+# whether you swipe or use the bar at the bottom."
+#
+# Two things were wrong and they were the same thing twice:
+#
+#   * The bar visibly travelled. Nine identical bars sliding a screen-width each
+#     is a cross-fade of an object with itself, and on a phone that does not
+#     read as a page turning -- it reads as the counters jumping.
+#   * The two rails hung at DIFFERENT heights, the island's 130 units above the
+#     machine's, so swiping between the two world pages moved the discs as well
+#     as replacing them. See rail_top(), which is now the only answer.
+#
+# z 40: the layer the offline strip already uses. Above the pages, below the nav
+# bar's 50, and a long way below the raid overlays at 118+ and any dialog at 120
+# -- all of which are meant to cover the chrome and still do.
+var _shell: Control
+var _shell_rails: Array[Control] = []
+
+func _build_shell() -> void:
+	_shell = Control.new()
+	_shell.z_index = 40
+	# Chrome laid over the pages, so the layer itself must not eat the taps and
+	# drags belonging to what is underneath it. Its own buttons still take theirs.
+	_shell.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_shell)
+	_shell.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_add_topbar(_shell)
+	_add_side_rail(_shell, rail_top())
+	_update_shell(true)
+
+# The discs belong to the two pages with room for them -- the machine and the
+# island. A menu page's cards run to 16 units of each edge, which is the lane,
+# so on those the rails go out.
+#
+# THEY FADE, THEY DO NOT MOVE, and they are never rebuilt. That is the whole
+# distinction the shell exists to make: chrome that is not wanted here is chrome
+# that is turned off, not chrome that is thrown across the screen.
+func _update_shell(instant := false) -> void:
+	var want := 1.0 if (_current_page == slot_page or _current_page == village_page) else 0.0
+	for rail in _shell_rails:
+		if not is_instance_valid(rail):
+			continue
+		# THE LAST FADE IS KILLED BEFORE A NEW ONE STARTS, and it is not
+		# housekeeping. Godot lets two tweens run on one node quite happily, so
+		# a quick shop -> spin left the outgoing fade's "hide it" callback still
+		# in flight: it fired a sixth of a second later, on a rail that had
+		# already been brought back, and the discs disappeared off the machine
+		# until the next page change put them right.
+		# has_meta first: set_meta(key, null) REMOVES the key in Godot 4, and
+		# get_meta with a default still raises on a key that is not there.
+		var prev: Variant = rail.get_meta("fade") if rail.has_meta("fade") else null
+		if prev is Tween and (prev as Tween).is_valid():
+			(prev as Tween).kill()
+		rail.set_meta("fade", null)
+		if instant or is_equal_approx(rail.modulate.a, want):
+			rail.modulate.a = want
+			rail.visible = want > 0.0
+			continue
+		rail.visible = true
+		var tw := rail.create_tween()
+		tw.tween_property(rail, "modulate:a", want, 0.16)
+		if want == 0.0:
+			# Hidden at the end, not merely transparent. Godot does not gate
+			# input on modulate, so a disc faded to nothing still takes the tap
+			# -- five dead spots over the shop's top shelf that nothing on the
+			# page could explain.
+			tw.tween_callback(func() -> void: rail.visible = false)
+		rail.set_meta("fade", tw)
+
 func _build_nav() -> void:
 	var nav_root := Control.new()
 	nav_root.z_index = 50
@@ -3239,7 +3331,10 @@ void fragment() {
 	# alert badges live on the nav tabs
 	_badges["missions"] = _nav_badge(_nav_tabs["quests"]["button"])
 	_badges["collections"] = _nav_badge(_nav_tabs["collections"]["button"])
-	_badges["shop_free"] = _nav_badge(_nav_tabs["shop"]["button"], "1")
+	# "!", not "1". The dot stands for "there is something here", the same as
+	# every other badge in the game; a digit reads as a count, and this one was
+	# counting nothing -- see _update_badges.
+	_badges["shop_free"] = _nav_badge(_nav_tabs["shop"]["button"])
 
 	_update_nav()
 
@@ -3345,7 +3440,9 @@ func _build_slot_page() -> void:
 	# scattered ones cut down to three in the first place.
 	var decor_ids := ["coin", "gem", "coin"]
 	var lane: float = SlotView.CABINET_INSET
-	var decor_top := side_rail_top() + 200.0
+	# Below the last disc on the longer lane: three discs and two gaps is 292
+	# from rail_top(), and the trophy's plaque hangs under the third.
+	var decor_top := rail_top() + 320.0
 	var decor_span := maxf(160.0, content_bottom() - 150.0 - decor_top)
 	for i in decor_ids.size():
 		var t := CV.symbol_tex(decor_ids[i])
@@ -3415,8 +3512,6 @@ void fragment() {
 
 	_pick_next_target()
 
-	_add_topbar(slot_page)
-	_add_side_rail(slot_page, side_rail_top())
 
 # The SPIN page backdrop. Instead of one fixed slot-room painting, it layers
 # the island's own artwork -- blurred, dimmed and tinted so it reads as a lit
@@ -3553,33 +3648,33 @@ void fragment() {
 # it hangs them off the chrome instead (island_rail_top) -- which is the "raise
 # them a bit" half of the note above, and worth about 130 units. Both lanes are
 # clear of the island's nameplate, which is 420 wide and centred.
-func _add_side_rail(page: Control, top: float) -> void:
+func _add_side_rail(parent: Control, top: float) -> void:
 	# Left: the chrome. Right: the three that light up.
 	# Settings left this lane for the top bar on 2026-09-03; alerts holds the
 	# left on its own rather than being shuffled across, because which side a
 	# player last found the bell on is worth more than a tidy count.
-	_side_rail_lane(page, top, false, [
+	_shell_rails.append(_side_rail_lane(parent, top, false, [
 			["bell",   "Alerts",     "alerts", func() -> void: _goto(pages["alerts"])],
-			["clan",   "Clan",       "clan",   func() -> void: _goto(pages["clan"])]])
+			["clan",   "Clan",       "clan",   func() -> void: _goto(pages["clan"])]]))
 	# The trophy is the one disc that carries a number, and the reason is that
 	# the tournament is the only event in the game whose progress is invisible
 	# from the outside. A daily is ready or it is not; the piggy fills where you
 	# can see it. A raid scoring 36 points changed nothing on screen at all --
 	# Guy, 2026-09-05: the player "should not have to go in" to find out where
 	# he stands. So the score rides under the trophy and the points fly to it.
-	_side_rail_lane(page, top, true, [
+	_shell_rails.append(_side_rail_lane(parent, top, true, [
 			["gift",   "Daily",      "daily",  _open_daily],
 			["trophy", "Tournament", "ranks",  _open_tourney, true],
-			["piggy",  "Piggy Bank", "piggy",  _open_piggy]])
+			["piggy",  "Piggy Bank", "piggy",  _open_piggy]]))
 
 # One lane. The run grows downward from its top, so adding a button lengthens
 # the rail rather than re-centring the ones above it.
-func _side_rail_lane(page: Control, top: float, right: bool, specs: Array) -> void:
+func _side_rail_lane(parent: Control, top: float, right: bool, specs: Array) -> Control:
 	var rail := VBoxContainer.new()
 	rail.add_theme_constant_override("separation", int(SIDE_RAIL_GAP))
 	rail.alignment = BoxContainer.ALIGNMENT_BEGIN
 	rail.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	page.add_child(rail)
+	parent.add_child(rail)
 	rail.set_anchors_and_offsets_preset(
 		Control.PRESET_TOP_RIGHT if right else Control.PRESET_TOP_LEFT)
 	if right:
@@ -3594,6 +3689,7 @@ func _side_rail_lane(page: Control, top: float, right: bool, specs: Array) -> vo
 	for spec in specs:
 		_side_button(rail, str(spec[0]), str(spec[1]), str(spec[2]), spec[3],
 			spec.size() > 4 and bool(spec[4]))
+	return rail
 
 # The disc every event button is made of, and the numbers that place the row
 # it now sits in. The long note that used to live here explained how to fit two
@@ -3635,29 +3731,25 @@ const SIDE_RAIL_GAP := 14.0
 # without the disc's rim landing on the cabinet's frame: 16 + 88 = 104, the rim
 # reaches 108, and the cabinet's inner content starts at 96 + 20 = 116.
 const SIDE_RAIL_INSET := 16.0
-# THE RAIL HANGS BESIDE THE MARQUEE NOW, NOT UNDER IT.
-#
-# 208 was "clear the ribbon vertically", which is what you have to do while the
-# discs are wide enough to reach under it. At CABINET_INSET 96 they are not:
-# the lane is outside the cabinet's padding entirely, so the top disc can sit
-# level with the sign instead of waiting for it to finish. That is the whole of
-# the raise Guy asked for -- 76 units of it -- and it costs the marquee
-# nothing, because the two never share a column.
-#
-# It is still measured from the cabinet's band rather than from the screen, so
-# the rail arrives with the machine on every phone.
-const SIDE_RAIL_DROP := 132.0
-
 func slot_band_top() -> float:
 	return maxf(hud_top() + 70.0 + SLOT_BAND_GAP, safe_top() + SLOT_BAND_INSET_GAP)
 
-func side_rail_top() -> float:
-	return slot_band_top() + SIDE_RAIL_DROP
-
-# The island page's rails, which have no marquee to clear. They hang off
-# whichever of the bar and the cutout ends lower -- the same anchor the island's
-# nameplate uses, so the two arrive at the top of the page together.
-func island_rail_top() -> float:
+# ONE HEIGHT FOR THE RAILS, AND IT DOES NOT MOVE.
+#
+# There used to be two: `side_rail_top()` hung the discs off the cabinet's band
+# on the machine, and `island_rail_top()` hung them 130 units higher on the
+# island, which has no marquee to clear. Both were measured and both were right
+# for their own page -- and that is exactly what Guy caught on his phone,
+# 2026-09-07: the rails are one object now, drawn once over every page, so a
+# swipe between the two world pages cannot move them. See _build_shell.
+#
+# The island's number is the one that survived, because it is the constrained
+# one: the island's two right-hand build plots end at x=670 and x=680 and their
+# Build buttons start at y=510, so a lane of three discs has to begin by 202 to
+# stop clear of them. On the machine that puts the top disc level with the
+# steal-target card rather than with the marquee, in a lane the cabinet does not
+# reach into -- CABINET_INSET is 96 and the rail is 16..104.
+func rail_top() -> float:
 	return maxf(hud_top() + 70.0, safe_top()) + 14.0
 
 func _side_button(container: BoxContainer, icon_kind: String, caption: String, badge_key: String, action: Callable, counter := false) -> void:
@@ -3779,14 +3871,16 @@ func _side_button(container: BoxContainer, icon_kind: String, caption: String, b
 	_badges[badge_key] = badge
 	# EVERY COPY, NOT THE LAST ONE BUILT.
 	#
-	# The rail is added to two pages -- the machine and the island -- so each of
-	# these keys is written twice and `_badges` kept whichever page was built
-	# second. _update_badges then lit the island's bell, the island's trophy and
-	# the island's clan disc and left the spin page's, which is the page the
-	# player is on nearly all the time, with no dot on anything at all. The dict
-	# still holds one node, because everything that reads a badge reads a label
-	# off it and they are identical; what changed is that the dot is now put out
-	# on all of them.
+	# The rail used to be added to two pages -- the machine and the island -- so
+	# each of these keys was written twice and `_badges` kept whichever page was
+	# built second. _update_badges then lit the island's bell, the island's
+	# trophy and the island's clan disc, and left the spin page's, which is the
+	# page the player is on nearly all the time, with no dot on anything at all.
+	#
+	# The shell builds one rail now, so these lists hold one entry each and the
+	# copy loop in _update_badges has nothing to copy to. Both stay: the lists
+	# are what makes the bug impossible to reintroduce by adding a second rail
+	# somewhere, and they cost one array walk over five keys.
 	if not _rail_badges.has(badge_key):
 		_rail_badges[badge_key] = []
 		_rail_discs[badge_key] = []
@@ -3891,8 +3985,27 @@ func _update_badges() -> void:
 		var bl := _badges["alerts"].get_child(0) as Label
 		if bl != null:
 			bl.text = str(mini(unread, 9)) if unread > 0 else "!"
+	# THE SHOP DOT SAYS "SOMETHING IS FREE, OR SOMETHING IS ABOUT TO GO".
+	#
+	# It used to light for a live offer of any age and for a full piggy bank,
+	# and it wore a "1" -- so the Shop tab carried a numbered alert badge for
+	# two hours out of every seven, counting nothing. Guy, 2026-09-07, off his
+	# own phone: "the shop button shows one notification for no reason -- make
+	# sure the shop only shows the daily gift being available, or a really
+	# special deal that happens to be running and is about to end."
+	#
+	# So it is two things now. The free gift, which is there to be collected and
+	# costs nothing. And the last stretch of a timed offer, which is the only
+	# window where the player losing it is news -- an offer that has just opened
+	# is announced once by its own notification and then left alone, because a
+	# badge that stands for two hours is wallpaper by the second hour.
+	#
+	# The piggy did not lose its signal, it got the right one: the dot moved to
+	# the piggy's own disc on the rail, which is the button that opens it.
 	if _badges.has("shop_free"):
-		_badges["shop_free"].visible = _shop_free_ready() or _piggy_full() or not _active_offer().is_empty()
+		_badges["shop_free"].visible = _shop_badge_due()
+	if _badges.has("piggy"):
+		_badges["piggy"].visible = _piggy_full()
 	# ...and then out to the other pages. Everything above decides one badge;
 	# this copies the decision onto every rail that carries the same key, which
 	# is what makes the dot appear on the page the player is actually standing
@@ -4105,7 +4218,10 @@ func _period_claimable(period: String) -> bool:
 
 # --- popups ---
 
-func _open_popup(title: String) -> VBoxContainer:
+# `width` is the glass's minimum, and only the daily bonus asks for more than
+# the 580 every other dialog in the game uses: its ladder is seven drawn rungs
+# rather than seven pips, and they do not fit in 532 units of content.
+func _open_popup(title: String, width := 580.0) -> VBoxContainer:
 	# Nothing opens over a locked modal. `_close_popup` already refuses to take
 	# it down, so without this the line below would leave the locked popup in
 	# the tree -- still drawing, still eating every tap -- while `_popup` moved
@@ -4152,7 +4268,7 @@ func _open_popup(title: String) -> VBoxContainer:
 	# Paper. A modal opens over a dimmed page, so what is behind it is deep by
 	# definition -- the same reason the menu cards stopped being glass.
 	panel.add_theme_stylebox_override("panel", Lagoon.sheet(Lagoon.R_PANEL))
-	panel.custom_minimum_size = Vector2(580, 0)
+	panel.custom_minimum_size = Vector2(width, 0)
 	holder.add_child(panel)
 	FX.pop_in(holder, 0.32)
 
@@ -4422,47 +4538,71 @@ func _intro_build_card() -> void:
 # asked. A stored "is the streak alive" flag would have to be maintained by
 # something that runs while the game is shut, and nothing does.
 
-# The seven rungs, with today lit and the ones behind it ticked.
+# =============================================================================
+#  THE LADDER, AND WHAT IT IS DRAWN OUT OF NOW
+# =============================================================================
 #
-# Drawn because a ladder nobody can see is not a ladder -- the reason to come
-# back tomorrow is that tomorrow is visibly worth more than today, and a player
-# who only ever sees one number has no way to know that.
+# It used to be seven 58x62 pips: a day number, a spin count in the smallest
+# type the game has, and three flat fills for done / today / later. Guy,
+# 2026-09-07, off his own phone: "the daily prize that ends every week -- the
+# whole design there does not look impressive at all. Make it big, with big
+# gems, so the prize is SEEN, colourful and pretty and clickable, and so the
+# player really watches his prizes move in animation to their places."
+#
+# Three things changed and they are all the same change: the dialog is about the
+# GOODS now, not about the calendar.
+#
+#   * A rung is a tile with the reel's own artwork on it -- the coin, the bolt,
+#     a card on day seven -- so the ladder is a row of things you can want
+#     rather than a row of numbers you have to read.
+#   * Today's take is a hero above it, at 84px with the figures in display type
+#     and a gem hanging off each shoulder. It is the only part of the dialog
+#     that is about one day rather than about the week.
+#   * Claiming FLIES. Coins arc to the purse, spins to the meter, the card to
+#     the shelf, each counter held until its own delivery lands -- the rule
+#     every other reward in the game already follows and this one never did.
 #
 # Past day seven the row stops being a ladder and becomes a receipt: every rung
 # is behind them and the streak count is the thing on display.
+
+# A rung, and the wide day-seven rung, which is two of them plus the gap. The
+# four across the top row come to 4*136 + 3*12 = 580 in 592 units of content --
+# see _open_popup's `width`, which exists for exactly this measurement.
+# 168 tall, not 150, and the difference is the whole tile: a rung carries a
+# header, 52px of artwork, a coin figure and a spin chip, which comes to 163
+# inside 8px of padding. At 150 the panel lost to its own minimum, and a Control
+# that loses to its minimum does not clip -- it keeps its position and grows, so
+# every tile in the top row hung over the row underneath it.
+const DAILY_TILE := Vector2(136.0, 178.0)
+const DAILY_WIDE := Vector2(284.0, 178.0)
+
+# Which of the three faces a rung wears. Day seven is "today" for every streak
+# that has run past it -- the rewards hold there, so it is still the rung being
+# paid, and painting it "done" would leave the ladder with nothing lit on it.
+func _streak_state(day: int, n: int) -> String:
+	if day == n or (day > STREAK_TOP and n == STREAK_TOP):
+		return "today"
+	return "done" if day > n else "later"
+
 func _streak_ladder(parent: VBoxContainer, day: int) -> void:
-	var row := HBoxContainer.new()
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	row.add_theme_constant_override("separation", 6)
-	parent.add_child(row)
-	for i in STREAK_TOP:
-		var n := i + 1
-		var done: bool = day > n
-		var here: bool = day == n or (day > STREAK_TOP and n == STREAK_TOP)
-		var pip := PanelContainer.new()
-		var sb := StyleBoxFlat.new()
-		sb.bg_color = Lagoon.KELP if done else (Lagoon.BRASS if here else Lagoon.HULL)
-		sb.set_corner_radius_all(8)
-		sb.set_border_width_all(3)
-		sb.border_color = Lagoon.BRASS_HI if here else Lagoon.BRASS_LO
-		pip.add_theme_stylebox_override("panel", sb)
-		pip.custom_minimum_size = Vector2(58, 62)
-		row.add_child(pip)
-		var col := VBoxContainer.new()
-		col.alignment = BoxContainer.ALIGNMENT_CENTER
-		col.add_theme_constant_override("separation", -1)
-		pip.add_child(col)
-		var top := Lagoon.label("\u2713" if done else str(n), UI.F_TINY,
-			Lagoon.SAND if (done or here) else Lagoon.INK_FAINT, true)
-		top.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		col.add_child(top)
-		# Spins rather than coins on the pip: the numbers are one or two digits
-		# all the way up the ladder, where the coin figures are five and six on
-		# a late island and cannot be read at 58 units wide.
-		var amt := Lagoon.label("+%d" % STREAK_SPINS[i], UI.F_TINY,
-			Lagoon.SAND if (done or here) else Lagoon.INK_SOFT, true)
-		amt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		col.add_child(amt)
+	var rows := VBoxContainer.new()
+	rows.add_theme_constant_override("separation", 12)
+	parent.add_child(rows)
+
+	var top := HBoxContainer.new()
+	top.alignment = BoxContainer.ALIGNMENT_CENTER
+	top.add_theme_constant_override("separation", 12)
+	rows.add_child(top)
+	for n in [1, 2, 3, 4]:
+		top.add_child(_streak_tile(n, _streak_state(day, n)))
+
+	var bottom := HBoxContainer.new()
+	bottom.alignment = BoxContainer.ALIGNMENT_CENTER
+	bottom.add_theme_constant_override("separation", 12)
+	rows.add_child(bottom)
+	for n in [5, 6]:
+		bottom.add_child(_streak_tile(n, _streak_state(day, n)))
+	bottom.add_child(_streak_tile(STREAK_TOP, _streak_state(day, STREAK_TOP), true))
 
 	if day > STREAK_TOP:
 		var held := _popup_row_label(
@@ -4472,14 +4612,214 @@ func _streak_ladder(parent: VBoxContainer, day: int) -> void:
 		held.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		held.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 		parent.add_child(held)
-	elif day < STREAK_TOP:
-		var soon := _popup_row_label("Day %d pays %s coins, %d spins and a card."
-			% [STREAK_TOP, _fmt_compact(_streak_coins(STREAK_TOP)), STREAK_SPINS[STREAK_TOP - 1]],
-			UI.F_CAPTION)
-		soon.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		soon.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		soon.add_theme_color_override("font_color", Lagoon.INK_SOFT)
-		parent.add_child(soon)
+
+# One rung.
+#
+# The tile is a Control with the panel anchored inside it rather than a bare
+# PanelContainer, so today's rung can be scaled and pulsed from its own centre
+# without the row re-laying itself out around a node that keeps changing size.
+func _streak_tile(n: int, state: String, wide := false) -> Control:
+	var root := Control.new()
+	root.custom_minimum_size = DAILY_WIDE if wide else DAILY_TILE
+	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var panel := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	match state:
+		# Brass, lit, with the coral rim that means "this one" everywhere else
+		# in the game. It is the only warm tile in the row on purpose.
+		"today":
+			sb.bg_color = Color(0.290, 0.180, 0.055)
+			sb.border_color = Lagoon.CORAL
+			sb.set_border_width_all(5)
+			sb.shadow_color = Color(Lagoon.BRASS.r, Lagoon.BRASS.g, Lagoon.BRASS.b, 0.55)
+			sb.shadow_size = 16
+		# Banked. Kelp is the game's "done" everywhere -- the tick on a mission,
+		# the fill on a progress bar -- and it reads as green rather than as off.
+		"done":
+			sb.bg_color = Lagoon.KELP_LO
+			sb.border_color = Lagoon.KELP_HI
+			sb.set_border_width_all(4)
+			sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.34)
+			sb.shadow_size = 8
+		# Deep water, and DARK deep water. The first cut of this was
+		# LAGOON_DEEP.darkened(0.34) under a gloss band, and tools/qa_contrast
+		# failed five labels on it: the gloss lifts the top of a small tile from
+		# #094859 to #427884, which is precisely the strip the day number sits
+		# in. There is no gloss on a rung now and the face is a stop darker --
+		# a 136-unit tile was never going to say much with a highlight sweep
+		# anyway, and every figure on it clears 4.5 : 1 by a wide margin.
+		_:
+			sb.bg_color = Color(0.043, 0.239, 0.302)
+			sb.border_color = Lagoon.BRASS_LO
+			sb.set_border_width_all(4)
+			sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.30)
+			sb.shadow_size = 8
+	sb.shadow_offset = Vector2(0, 4)
+	sb.set_corner_radius_all(Lagoon.R_CARD)
+	panel.add_theme_stylebox_override("panel", sb)
+	root.add_child(panel)
+	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	if state == "today":
+		panel.add_child(_shine_overlay(Lagoon.BRASS_HI))
+		root.resized.connect(func() -> void: root.pivot_offset = root.size * 0.5)
+		root.pivot_offset = root.custom_minimum_size * 0.5
+		FX.pulse_forever(root, 1.045, 1.5)
+
+	var pad := MarginContainer.new()
+	pad.add_theme_constant_override("margin_left", 8)
+	pad.add_theme_constant_override("margin_right", 8)
+	pad.add_theme_constant_override("margin_top", 8)
+	pad.add_theme_constant_override("margin_bottom", 8)
+	panel.add_child(pad)
+
+	var col := VBoxContainer.new()
+	col.alignment = BoxContainer.ALIGNMENT_CENTER
+	col.add_theme_constant_override("separation", 2)
+	pad.add_child(col)
+
+	# The day, or the tick that replaces it. A rung already taken does not need
+	# to say which day it was -- it needs to say it is behind you.
+	# Near-white on the banked rung, not KELP_HI: mint green on KELP_LO measures
+	# 4.45 : 1, which is a fail by five hundredths and the sort of number that
+	# only ever gets found by measuring it.
+	var head := Lagoon.label(
+		"✓" if state == "done" else ("DAY  %d" % n),
+		UI.F_TINY,
+		Color(0.85, 1.0, 0.90) if state == "done" else (Lagoon.BRASS_HI if state == "today" else Lagoon.SAND),
+		true)
+	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(head)
+
+	var goods := HBoxContainer.new()
+	goods.alignment = BoxContainer.ALIGNMENT_CENTER
+	goods.add_theme_constant_override("separation", 10 if wide else 0)
+	goods.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	col.add_child(goods)
+
+	# 0.75, not 0.62. A rung you have not reached is still a rung you are
+	# supposed to want; at 0.62 the bottom five tiles read as switched off, and
+	# a ladder whose top is greyed out is not advertising anything.
+	var dim := 0.75 if state == "later" else 1.0
+	var art := 60.0
+	goods.add_child(_prize_column("coin", art,
+		_fmt_compact(_streak_coins(n)), Lagoon.BRASS_HI, dim))
+	if wide:
+		goods.add_child(_prize_column("bolt", art,
+			"+%d" % STREAK_SPINS[n - 1], Color(0.72, 0.94, 1.0), dim))
+		# A LIGHTER coral than the hero's, and the difference is measured.
+		# CORAL_HI on the unreached rung's face is 4.28 : 1 -- a fail by two
+		# tenths, which is exactly the size of miss that only ever turns up in
+		# tools/qa_contrast and never in a screenshot. Same hue, same meaning,
+		# one step further up the tint.
+		goods.add_child(_prize_column("cards", art, "CARD",
+			Color(1.0, 0.76, 0.68), dim))
+	else:
+		# Not enough width for a second column at 136, so the spins ride under
+		# the coins as a chip. Both facts, one of them small -- which is the
+		# right order: the coin figure is what climbs up the ladder.
+		var bolts := HBoxContainer.new()
+		bolts.alignment = BoxContainer.ALIGNMENT_CENTER
+		bolts.add_theme_constant_override("separation", 3)
+		col.add_child(bolts)
+		var b := _prize_art("bolt", 24.0)
+		b.modulate.a = dim
+		bolts.add_child(b)
+		bolts.add_child(Lagoon.label("+%d" % STREAK_SPINS[n - 1], UI.F_TINY,
+			Color(0.78, 0.95, 1.0), true))
+	return root
+
+# One drawn prize: the artwork over its figure. Used at 56 on a rung and at 84
+# in the hero, and it is the only place in this dialog a number appears without
+# a picture of the thing it counts sitting on top of it.
+func _prize_column(kind: String, px: float, text: String, ink: Color,
+		alpha := 1.0, size := UI.F_TINY, glow := Color(0, 0, 0, 0)) -> VBoxContainer:
+	var col := VBoxContainer.new()
+	col.alignment = BoxContainer.ALIGNMENT_CENTER
+	col.add_theme_constant_override("separation", 1)
+	col.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	var art := _prize_art(kind, px)
+	# The dim is the ARTWORK's, not the figure's. Fading a number is how a rung
+	# you have not reached yet stops being readable, and a reward you cannot
+	# read is not being advertised to you -- the whole job of the ladder.
+	art.modulate.a = alpha
+	if glow.a > 0.0:
+		# A pool of light under the prize, on a plain Control rather than on the
+		# hero's PanelContainer -- the glow carries its own centred offsets and
+		# a PanelContainer overwrites the rect of every child it holds.
+		var holder := Control.new()
+		holder.custom_minimum_size = Vector2(px, px)
+		holder.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		col.add_child(holder)
+		holder.add_child(_radial_glow(glow, px * 2.1))
+		holder.add_child(art)
+		art.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	else:
+		col.add_child(art)
+	var l := Lagoon.title(text, size, ink, Lagoon.ABYSS)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(l)
+	col.set_meta("art", art)
+	return col
+
+# THE SYMBOLS ARE CROPPED TO THEIR OWN ARTWORK HERE, AND ONLY HERE.
+#
+# Every file in assets/art/symbols was authored with a wide margin: the coin
+# fills 72% of its 512 frame, the bolt 64% of its width, and the gem is worse
+# still -- its bottom fifth is a baked mirror-and-glow plate rather than stone,
+# invisible on the reels' cream strip and a white smear on anything dark. So an
+# 88px box drew a 63px coin and a gem sitting on a puddle.
+#
+# On the strips that margin is padding and it is right. In a dialog whose whole
+# job is to make the prize look like a prize it is a fifth of the size Guy asked
+# for, thrown away. These are the files' own alpha bounding boxes, measured off
+# the PNGs rather than eyeballed, and an AtlasTexture over one is a second view
+# of the file rather than an edit to it -- nothing on the reels moves.
+const SYMBOL_CROP := {
+	"coin": Rect2(78.0, 84.0, 370.0, 364.0),
+	"bolt": Rect2(87.0, 39.0, 329.0, 459.0),
+	"gem":  Rect2(50.0, 79.0, 411.0, 317.0),
+	"bag":  Rect2(26.0, 10.0, 442.0, 475.0),
+}
+
+# The reel's own artwork, sized for a CONTAINER rather than for a flight -- and
+# this is why it does not go through FX.symbol_node. That sets `size`, which a
+# container overwrites on its first layout pass, leaving a TextureRect at its
+# minimum of nothing at all: the prize would have been invisible in every tile
+# on the page.
+#
+# A kind with no texture behind it falls through to Glyph -- `cards` is one, and
+# see the note on FX.deliver about the glyph names and the symbol ids not being
+# the same set. The 40x40 minimum Glyph carries is overwritten below, which is
+# what Glyph.fill does for anchored icons.
+func _prize_art(kind: String, px: float) -> Control:
+	var node: Control
+	var tex := CV.symbol_tex(kind)
+	if tex != null:
+		var tr := TextureRect.new()
+		if SYMBOL_CROP.has(kind):
+			var at := AtlasTexture.new()
+			at.atlas = tex
+			at.region = SYMBOL_CROP[kind]
+			tr.texture = at
+		else:
+			tr.texture = tex
+		tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		# The box stays square whatever shape the art is, so a row of prizes
+		# lines up; KEEP_ASPECT_CENTERED then fills it on the art's long axis.
+		tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		node = tr
+	else:
+		var g := Glyph.new()
+		g.kind = kind
+		node = g
+	node.custom_minimum_size = Vector2(px, px)
+	node.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	node.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	node.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return node
+
 
 func _streak_next() -> int:
 	if daily_last <= 0.0:
@@ -4516,12 +4856,123 @@ func _streak_has_card(day: int) -> bool:
 func _streak_deadline() -> float:
 	return daily_last + DAILY_COOLDOWN + STREAK_GRACE
 
+# The day's own take, drawn at the size of a prize rather than printed on a
+# button label. This is the half of Guy's note that the ladder cannot do: the
+# ladder is about the week, and the hero is about what is in your hand right
+# now, which is the thing the CLAIM button is actually offering.
+#
+# It hands back the art nodes, because the claim flies the goods out of the
+# exact pictures the player has been looking at -- a reward that leaves from the
+# middle of the screen is a counter ticking with extra steps.
+const DAILY_HERO_H := 232.0
+
+func _daily_hero(parent: VBoxContainer, day: int) -> Dictionary:
+	var root := Control.new()
+	root.custom_minimum_size = Vector2(0, DAILY_HERO_H)
+	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(root)
+
+	# The inside of a chest: dark, warm, brass-rimmed, lit from above. It is the
+	# one surface in the game that is allowed to be this dark on paper stock,
+	# and the reason is that gold has to have something to be bright against --
+	# the old dialog printed a gift emoji on cream and the prize had nothing to
+	# out-shine.
+	var panel := PanelContainer.new()
+	var sb := Lagoon.sheet(Lagoon.R_PANEL)
+	sb.bg_color = Color(0.216, 0.128, 0.043)
+	sb.set_border_width_all(5)
+	sb.border_color = Lagoon.BRASS
+	sb.shadow_color = Color(Lagoon.BRASS.r, Lagoon.BRASS.g, Lagoon.BRASS.b, 0.45)
+	sb.shadow_size = 18
+	sb.shadow_offset = Vector2(0, 6)
+	panel.add_theme_stylebox_override("panel", sb)
+	root.add_child(panel)
+	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	# A PanelContainer stretches every child to its own rect, so this is the one
+	# overlay that can be parented straight to it -- a sweep is meant to fill
+	# the card. The radial glows are NOT: they carry their own offsets, which a
+	# PanelContainer would overwrite, so they live inside the prize columns.
+	panel.add_child(_shine_overlay(Lagoon.BRASS_HI))
+	Lagoon.add_gloss(panel, Lagoon.R_PANEL)
+
+	var pad := MarginContainer.new()
+	pad.add_theme_constant_override("margin_left", 16)
+	pad.add_theme_constant_override("margin_right", 16)
+	pad.add_theme_constant_override("margin_top", 12)
+	pad.add_theme_constant_override("margin_bottom", 12)
+	panel.add_child(pad)
+
+	var col := VBoxContainer.new()
+	col.alignment = BoxContainer.ALIGNMENT_CENTER
+	col.add_theme_constant_override("separation", 6)
+	pad.add_child(col)
+
+	var plate_row := CenterContainer.new()
+	col.add_child(plate_row)
+	plate_row.add_child(Lagoon.plaque("DAY  %d" % day, 250.0, 64.0, UI.F_TITLE))
+
+	var goods := HBoxContainer.new()
+	goods.alignment = BoxContainer.ALIGNMENT_CENTER
+	# 34, so the prizes read as separate objects on a table rather than as one
+	# clump in the middle of a wide card, while day seven's three still fit: the
+	# coin figure alone is ~175 units wide at F_TITLE, and 175 + 88 + 110 plus
+	# two gaps comes to 441 of 592.
+	goods.add_theme_constant_override("separation", 34)
+	col.add_child(goods)
+
+	var out := {}
+	var coin_col := _prize_column("coin", 88.0, "+%s" % _fmt_compact(_streak_coins(day)),
+		Lagoon.BRASS_HI, 1.0, UI.F_TITLE, Color(1.0, 0.80, 0.32, 1.0))
+	goods.add_child(coin_col)
+	out["coin"] = coin_col.get_meta("art")
+	var bolt_col := _prize_column("bolt", 88.0, "+%d" % _streak_spins(day),
+		Color(0.78, 0.95, 1.0), 1.0, UI.F_TITLE, Color(0.42, 0.78, 1.0, 1.0))
+	goods.add_child(bolt_col)
+	out["bolt"] = bolt_col.get_meta("art")
+	if _streak_has_card(day):
+		var card_col := _prize_column("cards", 88.0, "CARD",
+			Lagoon.CORAL_HI, 1.0, UI.F_TITLE, Color(1.0, 0.46, 0.36, 1.0))
+		goods.add_child(card_col)
+		out["cards"] = card_col.get_meta("art")
+
+	# THE GEMS GUY ASKED FOR, and they hang off the card rather than standing in
+	# the row. Pinned to the hero's own corners with anchors, so they cost the
+	# goods no width at all and cannot push the row past the glass -- which is
+	# the whole reason they are decoration parented to a plain Control and not a
+	# fourth column in an HBoxContainer.
+	#
+	# THEY SIT IN THE HEADER BAND, BESIDE THE PLAQUE, and that is not where they
+	# started. Level with the goods they were clear on days one to six and ran
+	# straight into them on day seven, which is the only rung with three prizes
+	# on it: the coin figure alone is ~175 units at F_TITLE, so the row spans
+	# 66..525 of 592 and the gems were at 16..132 and 460..576. The plaque is
+	# 250 wide and centred, which leaves both corners of the header empty on
+	# every rung -- the one band on this card whose width does not depend on how
+	# many digits the island's curve has produced.
+	for side in [false, true]:
+		var gem := _prize_art("gem", 100.0)
+		root.add_child(gem)
+		gem.set_anchors_and_offsets_preset(
+			Control.PRESET_TOP_RIGHT if side else Control.PRESET_TOP_LEFT)
+		gem.offset_top = 4.0
+		gem.offset_bottom = 82.0
+		if side:
+			gem.offset_left = -116.0
+			gem.offset_right = -16.0
+		else:
+			gem.offset_left = 16.0
+			gem.offset_right = 116.0
+		# Breathing, not bobbing. FX.float_bob tweens position:y off whatever
+		# position.y reads when it is called -- which for an anchored child is
+		# zero, because nothing has been laid out yet, and the first sort pass
+		# then puts it back. Scale is not a thing layout has an opinion about.
+		FX.pulse_forever(gem, 1.10 if side else 1.08, 2.6 if side else 3.1)
+	return out
+
 func _open_daily() -> void:
-	var vbox := _open_popup("Daily Bonus")
-	var gift := _emoji_label("🎁", 74)
-	gift.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vbox.add_child(gift)
-	FX.pulse_forever(gift, 1.1, 1.0)
+	# Wider than every other dialog in the game: seven drawn rungs do not fit in
+	# 532 units of content. See _open_popup.
+	var vbox := _open_popup("Daily Bonus", 640.0)
 	# The streak, said before anything else, because it is what the dialog is
 	# now for. A broken one is named rather than quietly zeroed -- a number that
 	# vanishes with no explanation reads as a bug, and the sting of losing it is
@@ -4532,22 +4983,21 @@ func _open_daily() -> void:
 		lost.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		lost.add_theme_color_override("font_color", Lagoon.CORAL_LO)
 		vbox.add_child(lost)
-	var run := _popup_row_label("DAY  %d" % day, UI.F_TITLE)
-	run.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vbox.add_child(run)
+	var hero := _daily_hero(vbox, day)
 	_streak_ladder(vbox, day)
 
 	if _daily_ready():
-		var info := _popup_row_label("Your daily reward is ready!")
-		info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		vbox.add_child(info)
 		var claim := Button.new()
-		var daily_coins := _streak_coins(day)
-		var daily_spins := _streak_spins(day)
-		claim.text = "CLAIM  +%s coins, +%d spins" % [_fmt_compact(daily_coins), daily_spins]
-		claim.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
-		_candy_button(claim, Color(0.45, 0.75, 0.35))
+		# The prize is not in the label any more -- it is on the card above, at
+		# 84px, in gold. A button that reads "CLAIM +1,200 coins, +8 spins" is a
+		# receipt with a border round it, and it was the only place the old
+		# dialog said what you were getting.
+		claim.text = "CLAIM  DAY  %d" % day
+		claim.custom_minimum_size = Vector2(0, UI.TAP_COMFY + 14)
+		claim.add_theme_font_size_override("font_size", UI.F_SUBHEAD)
+		_candy_button(claim, Color(0.28, 0.68, 0.34))
 		FX.press_feedback(claim)
+		FX.pulse_forever(claim, 1.035, 1.25)
 		claim.pressed.connect(func() -> void:
 			# Re-checked on the press, not just when the button was drawn.
 			# _close_popup() fades the popup out over 0.16s and Godot does not
@@ -4559,42 +5009,7 @@ func _open_daily() -> void:
 			if not _daily_ready():
 				return
 			claim.disabled = true
-			# The streak is banked BEFORE daily_last moves. _streak_next reads
-			# daily_last to decide whether the run survived, so stamping the
-			# clock first makes every claim look like it landed on time and the
-			# streak could never break.
-			streak_days = day
-			daily_last = _trusted_now()
-			coins += daily_coins
-			# rewards always add — the cap only limits time-based regen
-			spins += daily_spins
-			# Day seven's card, drawn the way a chest draws one so it lands on
-			# the shelf and counts towards the set.
-			#
-			# _grant_chest_card returns the card and shows nothing, so the
-			# arrival has to be announced here -- the ladder promised "and a
-			# card" and a reward that is never seen to land is a reward the
-			# player will tell you they did not get.
-			var streak_card := {}
-			if _streak_has_card(day):
-				streak_card = _grant_chest_card(1)
-			_mission_add("daily_gift")
-			Sfx.play("jackpot", -3.0)
-			FX.confetti(self, 36)
-			FX.flash(self)
-			FX.fly_coins(self, Vector2(360, 620), _hud_labels[0]["coins"].global_position, 8)
-			_close_popup()
-			if not streak_card.is_empty():
-				_after(0.9, func() -> void:
-					var star := int(streak_card.get("stars", 1))
-					_banner("Day %d card:  %s %s" % [day,
-						String(streak_card.get("emoji", "\U01F0CF")),
-						String(streak_card.get("name", "card"))],
-						CV.STAR_COLORS[clampi(star - 1, 0, CV.MAX_STAR - 1)])
-				)
-			_update_badges()
-			_refresh()
-			_save_game()
+			_claim_daily(day, hero)
 		)
 		vbox.add_child(claim)
 	else:
@@ -4613,6 +5028,71 @@ func _open_daily() -> void:
 			keep.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			keep.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 			vbox.add_child(keep)
+
+# The claim, and the reason it is a function of its own rather than four dozen
+# lines inside a lambda: every figure is banked here, and every figure is SHOWN
+# by the flight that carries it. Guy asked to watch his prizes move to their
+# places, and "their places" is three different places -- the purse, the meter
+# and the shelf.
+func _claim_daily(day: int, hero: Dictionary) -> void:
+	# Where each prize is standing RIGHT NOW, read before anything closes. The
+	# popup's nodes are freed on the way out and a typed assignment against a
+	# freed instance raises before any is_instance_valid guard can run, so the
+	# flights are handed points rather than nodes.
+	var fallback := Vector2(view_size().x * 0.5, view_size().y * 0.42)
+	var coin_at := _node_center(hero.get("coin"), fallback)
+	var bolt_at := _node_center(hero.get("bolt"), coin_at)
+	var card_at := _node_center(hero.get("cards"), coin_at)
+
+	# The streak is banked BEFORE daily_last moves. _streak_next reads
+	# daily_last to decide whether the run survived, so stamping the clock
+	# first makes every claim look like it landed on time and the streak
+	# could never break.
+	streak_days = day
+	daily_last = _trusted_now()
+	# Day seven's card, drawn the way a chest draws one so it lands on the shelf
+	# and counts towards the set. _grant_chest_card returns the card and shows
+	# nothing, so its arrival is staged below.
+	var streak_card := {}
+	if _streak_has_card(day):
+		streak_card = _grant_chest_card(1)
+	_mission_add("daily_gift")
+	Sfx.play("jackpot", -3.0)
+	FX.confetti(self, 44)
+	FX.flash(self)
+	_close_popup()
+
+	# z 130, on all three. The popup sits at z 120 and takes 0.16s to fade, so
+	# anything leaving it has to be told to draw over it -- otherwise the one
+	# thing this rewrite exists for happens behind a dissolving sheet of glass.
+	_grant_coins(_streak_coins(day), coin_at, 130)
+	# rewards always add — the cap only limits time-based regen
+	_grant_spins(_streak_spins(day), bolt_at, 130)
+	if not streak_card.is_empty():
+		_deliver_streak_card(day, streak_card, card_at)
+	_update_badges()
+	_refresh()
+	_save_game()
+
+# Day seven's card, flying to the tab that holds it.
+#
+# It rides its own face rather than a generic card symbol -- there is no
+# symbols/cards.png and FX falls back to an emoji anyway, so it may as well be
+# the emoji of the card that was actually drawn. The player watches THAT card go
+# to the Cards tab, the tab thumps, and only then does the banner name it.
+func _deliver_streak_card(day: int, card: Dictionary, from: Vector2) -> void:
+	var star := int(card.get("stars", 1))
+	var tint: Color = CV.STAR_COLORS[clampi(star - 1, 0, CV.MAX_STAR - 1)]
+	var tab: Variant = _nav_tabs.get("collections", {}).get("icon", null)
+	var to := _node_center(tab, Vector2(view_size().x * 0.5, content_bottom() + 60.0))
+	FX.deliver(self, from, to, "", 1, func(_i: int) -> void:
+		if tab is Control and is_instance_valid(tab):
+			FX.counter_pop(tab as Control, tint)
+		Sfx.play("pop", -6.0)
+		_banner("Day %d card:  %s %s" % [day,
+			String(card.get("emoji", "\U0001F0CF")),
+			String(card.get("name", "card"))], tint),
+		"", 250.0, 0.0, String(card.get("emoji", "\U0001F0CF")), 130)
 
 func _claim_mission(period: String, m: Dictionary) -> void:
 	if not _mission_ready(period, m):
@@ -5812,7 +6292,6 @@ func _make_page(key: String, title: String) -> void:
 	if key == "collections":
 		_build_boxes_dock(page)
 
-	_add_topbar(page)
 	pages[key] = page
 	_page_bodies[key] = vb
 
@@ -7479,6 +7958,20 @@ func _active_offer() -> Dictionary:
 func _offer_countdown_text() -> String:
 	var left := maxi(0, int(offer_until - _now()))
 	return "%d:%02d:%02d" % [left / 3600, (left / 60) % 60, left % 60]
+
+# The last half hour of a timed offer -- the only part of one the Shop tab is
+# allowed to flag. CV.OFFER_DURATION is two hours, so this is its final quarter.
+const OFFER_BADGE_LEAD := 1800.0
+
+func _offer_expiring() -> bool:
+	if _active_offer().is_empty():
+		return false
+	return offer_until - _now() <= OFFER_BADGE_LEAD
+
+# One answer, in one place, because two things read it: the badge itself and the
+# once-a-second tick that has to notice it changing in BOTH directions.
+func _shop_badge_due() -> bool:
+	return _shop_free_ready() or _offer_expiring()
 
 # --- contextual offers --------------------------------------------------
 #
@@ -12439,8 +12932,6 @@ func _build_village_page() -> void:
 		# and they grey out on their own when the island's coins run short.
 		_candy_button(slot_dict["button"], Lagoon.KELP)
 
-	_add_topbar(village_page)
-	_add_side_rail(village_page, island_rail_top())
 
 func _add_background(page: Control, bg_id: String, top_color: Color, bottom_color: Color) -> TextureRect:
 	var t := CV.bg_tex(bg_id)
@@ -12477,10 +12968,13 @@ void fragment() {
 # resource is its own object you can point at, coins and spins carry a coral
 # "+" straight to the shop, and the island capsule makes progress a thing you
 # hold alongside the currencies instead of a caption in the corner.
-func _add_topbar(page: Control) -> void:
+#
+# `parent` is the shell and nothing else -- this runs exactly once now. It used
+# to run once per page, and see _build_shell for what that cost.
+func _add_topbar(parent: Control) -> void:
 	var bar := HBoxContainer.new()
 	bar.add_theme_constant_override("separation", 8)
-	page.add_child(bar)
+	parent.add_child(bar)
 	bar.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
 	bar.offset_left = 14.0
 	bar.offset_right = -14.0
@@ -14471,7 +14965,12 @@ func _refresh() -> void:
 	var shown_shields := _hud_shown("shields", shields)
 	for labels in _hud_labels:
 		_style_shield_chip(labels.get("shields_chip"), shown_shields >= SHIELD_CAP)
-		labels["coins"].text = _fmt_compact(coins)
+		# HELD, like every other counter on this bar. It was the one that was
+		# not: the purse printed the truth the instant a reward was banked, so
+		# any coin flight was decoration over a number that had already moved.
+		# Nothing held coins before _grant_coins existed, so this line was
+		# correct and inert until the daily bonus started delivering them.
+		labels["coins"].text = _fmt_compact(_hud_shown("coins", coins))
 		if labels.has("spins"):
 			labels["spins"].text = ("%d/%d" % [shown_spins, SPIN_CAP]) if shown_spins <= SPIN_CAP else str(shown_spins)
 		labels["shields"].text = str(shown_shields)
@@ -14555,10 +15054,14 @@ func _settle_hud(key: String) -> void:
 	_hud_lag.erase(key)
 	_refresh()
 
-# Where the chip a reward is flying to actually is -- the visible topbar, not
-# the first one built. Every page carries its own copy and all but one of them
-# are hidden, so a shield handed out by the shop used to have to fly to a pill
-# on the spin page that nobody was looking at.
+# Where the chip a reward is flying to actually is.
+#
+# There is one top bar now -- it belongs to the shell and is never hidden -- so
+# this walk finds it on the first entry every time. It was written when every
+# page carried its own copy and all but one were hidden, which is how a shield
+# handed out by the shop used to fly to a pill on the spin page that nobody was
+# looking at. Kept as a loop because the visibility test is the invariant: a
+# counter must never be delivered to a chip that is not on screen.
 func _hud_chip(key: String) -> Control:
 	for labels in _hud_labels:
 		var chip = labels.get(key + "_chip")
@@ -14691,7 +15194,10 @@ func _shield_overflow(spare: int, at: Vector2) -> void:
 # past about a dozen the screen reads as noise and the individual landings stop
 # being countable, which is the only thing the flight was for. Each flight
 # carries a share of the total and the remainder rides on the first few.
-func _grant_spins(n: int, from: Vector2) -> void:
+# `z` is for a flight that leaves an open dialog. A popup sits at z 120, so
+# bolts thrown from inside one draw underneath it unless told otherwise -- see
+# FX.deliver. Everything that pays out on the page itself leaves it alone.
+func _grant_spins(n: int, from: Vector2, z := 101) -> void:
 	if n <= 0:
 		return
 	spins += n
@@ -14701,8 +15207,43 @@ func _grant_spins(n: int, from: Vector2) -> void:
 	var extra := n % flights
 	FX.deliver(self, from, _hud_at("spins"), "bolt", flights, func(i: int) -> void:
 		_hud_land("spins", per + (1 if i < extra else 0), Color(0.6, 0.9, 1.0))
-		Sfx.play("pop", -13.0))
+		Sfx.play("pop", -13.0), "", 190.0, 0.17, "", z)
 	_after(float(flights) * 0.17 + 1.6, func() -> void: _settle_hud("spins"))
+
+# The same contract for coins, and it did not exist until now.
+#
+# Every coin reward in this file either added the number and threw FX.fly_coins
+# at the counter afterwards -- decoration over a figure that has already changed
+# -- or did not animate at all. This one holds: the purse does not move until a
+# coin actually arrives in it, which is the rule the shields, the spins, the
+# stars and the tournament score all follow.
+#
+# Nine flights at most. Past about a dozen the screen reads as noise and the
+# individual landings stop being countable, which is the only thing the flight
+# was for -- the same ceiling _grant_spins keeps, for the same reason.
+func _grant_coins(n: int, from: Vector2, z := 101) -> void:
+	if n <= 0:
+		return
+	coins += n
+	_hud_hold("coins", n)
+	var flights := clampi(n / 400, 5, 9)
+	var per := n / flights
+	var extra := n % flights
+	FX.deliver(self, from, _hud_at("coins"), "coin", flights, func(i: int) -> void:
+		_hud_land("coins", per + (1 if i < extra else 0), Color(1.0, 0.85, 0.35))
+		Sfx.play("coins", -14.0), "", 190.0, 0.10, "", z)
+	_after(float(flights) * 0.10 + 1.6, func() -> void: _settle_hud("coins"))
+
+# The middle of a node that may already have been freed, or a point to use when
+# it has. Read untyped and checked before the cast: `var c: Control = x` throws
+# on a freed instance before any guard under it runs -- a popup closing mid-claim
+# frees every node the claim captured.
+func _node_center(node: Variant, fallback: Vector2) -> Vector2:
+	if node is Control and is_instance_valid(node):
+		var c := node as Control
+		if c.is_visible_in_tree():
+			return c.global_position + c.size * 0.5
+	return fallback
 
 # A callback, later, without four lines of tween at every call site.
 func _after(secs: float, what: Callable) -> void:
