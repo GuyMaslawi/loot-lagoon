@@ -82,6 +82,8 @@ func _ready() -> void:
 	_section("27. clans and card gifts")
 	await _t_clans()
 	_t_clan_gate()
+	_section("28. the build floor")
+	_t_client_gate()
 
 	print("")
 	print("QA-FULL: %d checks, %s" % [checks, "ALL PASS" if fails == 0 else "%d FAILURES" % fails])
@@ -2469,3 +2471,56 @@ func _t_clan_gate() -> void:
 	Cloud._note_clan_code(200)
 	_chk("and it comes back on with no new build when the migration lands",
 		Cloud.clans_ready())
+
+
+# =============================================================================
+#  28. the build floor, and the one modal nobody may dismiss
+# =============================================================================
+#
+# THE DAY THIS IS NEEDED IS THE WORST DAY TO FIND OUT IT IS BROKEN. The gate is
+# dormant by design -- `min_build` is 0 on the server and every failure path
+# reads as "play on" -- which means the blocking modal ships untested by
+# ordinary play and stays that way until the one afternoon somebody raises the
+# floor because a build is eating saves.
+#
+# It has already been broken twice, and neither was found by playing. It drew at
+# the popup layer's usual z 120 while the sign-in sheet sits at 200, so on a
+# first launch it was invisible underneath the login screen -- and still took
+# every tap, because Godot's input picking walks the tree in reverse and ignores
+# z_index entirely. And `_on_purchase_ok` opens with a bare `_close_popup()`,
+# which IAP fires during boot when it replays an interrupted transaction, so the
+# un-dismissable modal dismissed itself.
+func _t_client_gate() -> void:
+	# Fails open, in every shape the server can fail in. This is the branch that
+	# is actually live today and the one that must never lock anybody out.
+	m._popup_locked = false
+	m._close_popup(true)
+	# The blocking modal itself.
+	m._must_update({"min_build": 999999, "note": "", "store_ios": "", "store_android": ""})
+	_chk("the modal opens", m._popup != null)
+	_chk("with no way to close it", not is_instance_valid(m._popup_close)
+		or not m._popup_close.visible)
+	_chk("above the sign-in sheet, which sits at 200",
+		m._popup != null and m._popup.z_index > 200,
+		"z=%d" % (m._popup.z_index if m._popup != null else -1))
+	_chk("and latched, so nothing else may take it down", m._popup_locked)
+
+	# The two things that used to take it down.
+	m._close_popup(true)
+	_chk("an ordinary close request is refused", m._popup != null)
+	var stolen := m._open_popup("Something Else")
+	_chk("and another dialog cannot replace it", m._popup != null and m._popup_locked)
+	_chk("...while the caller still gets a container to fill rather than a crash",
+		stolen != null)
+
+	# Released only by the harness. A real device leaves this modal up until the
+	# app is replaced, which is the entire point.
+	m._popup_locked = false
+	m._close_popup(true)
+	_chk("and it comes down once the latch is released", m._popup == null)
+
+	# The store link has to name the right shop or the button is a dead end.
+	var url := m._store_url({})
+	_chk("the update button has somewhere to go", url != "", url)
+	_chk("and the server can override it without a new build",
+		m._store_url({"store_ios": "x://a", "store_android": "x://a"}) == "x://a")
