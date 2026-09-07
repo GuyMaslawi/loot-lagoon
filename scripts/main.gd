@@ -1141,6 +1141,10 @@ func _capture_page(key: String) -> void:
 			"newworld": _open_new_world(31)
 			# The chooser needs rivals; the daily needs a run behind it to draw
 			# the ladder at full width and the "your streak ended" line above it.
+			# The two purchase dialogs, which are the only screens in the game
+			# that a player only ever sees after paying -- so they cannot be
+			# reached by playing and this is the only way to look at them.
+			"pack":    _show_pack_result(CV.BUNDLE_PACKS[0])
 			"mark":    _shot_mark()
 			"streak":  _shot_streak()
 			# The clan roster and the give-card list, which need a session the
@@ -8720,7 +8724,7 @@ func _grant_pack(pack: Dictionary) -> void:
 	FX.confetti(self, 44)
 	FX.flash(self)
 	if cards.is_empty():
-		_banner("Purchase complete — %s!" % pack["name"], Color(0.5, 0.9, 0.5), pack["emoji"])
+		_show_pack_result(pack)
 	else:
 		_show_chest_result(cards, "Chest Opened!", "", completed)
 	_update_badges()
@@ -8812,6 +8816,91 @@ func _grant_chest_card(tier: int, forced_star := 0) -> Dictionary:
 	_earn_stars(star)
 	return {"emoji": it[0], "name": it[1], "set": chosen["name"], "stars": star,
 		"dup": false, "set_id": chosen["id"], "idx": idx}
+
+# A PACK THAT CONTAINS NO CARDS USED TO PAY OUT INTO A TOAST.
+#
+# Every purchase that includes cards ends in `_show_chest_result` -- a dialog,
+# tiles that fade in one after another, the rank line underneath. A spin pack, a
+# coin pack or a bundle of shields got `_banner` instead: a strip that slides in
+# at the top of the screen and is gone in a couple of seconds. So the packs a
+# player is most likely to buy first were the ones that said the least, and on
+# the shop page, where the banner sits above a scrolled list, it is easy to miss
+# entirely -- you pay, something flickers, and the page looks like it did
+# before. Guy hit exactly that on his own phone on 2026-09-07 and read it as the
+# purchase having failed, which is the worst possible thing for a payment to
+# look like.
+#
+# Same dialog furniture as the chest, deliberately: one tile per resource, the
+# same stagger, the same dismiss. What differs is that these tiles show a
+# quantity rather than a card, because that is what was bought.
+func _show_pack_result(pack: Dictionary) -> void:
+	var rows := []
+	var spins_n := int(pack.get("spins", 0))
+	if spins_n > 0:
+		rows.append(["\U01F300", "+%s" % _fmt_compact(spins_n),
+			"SPINS", Color(0.35, 0.75, 1.0)])
+	# The figure the wallet actually moved by, not the catalogue number: a coin
+	# pack is scaled to the island it is bought from, and the top-up settles up
+	# through `coins_exact`. Printing the raw table value here would name a
+	# number the HUD never shows.
+	var coins_n: int = int(pack["coins_exact"]) if pack.has("coins_exact") \
+		else _scaled(int(pack.get("coins", 0)))
+	if coins_n > 0:
+		rows.append(["\U01FA99", "+%s" % _fmt_compact(coins_n),
+			"COINS", Color(1.0, 0.78, 0.25)])
+	var shields_n := int(pack.get("shields", 0))
+	if shields_n > 0:
+		rows.append(["\U0001F6E1", "+%d" % shields_n, "SHIELDS", Lagoon.KELP_LO])
+
+	# Nothing countable in it -- a pack shape this build does not understand.
+	# The banner is still the right answer there: a dialog with no rows is worse
+	# than a line of text.
+	if rows.is_empty():
+		_banner("Purchase complete — %s!" % pack["name"], Color(0.5, 0.9, 0.5),
+			String(pack.get("emoji", "")))
+		return
+
+	var vbox := _open_popup("Purchase complete!")
+	var name_row := _popup_row_label(String(pack.get("name", "")), UI.F_LABEL)
+	name_row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_row.add_theme_color_override("font_color", Lagoon.BRASS_LO)
+	vbox.add_child(name_row)
+
+	var center := CenterContainer.new()
+	vbox.add_child(center)
+	var grid := GridContainer.new()
+	grid.columns = rows.size()
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 10)
+	center.add_child(grid)
+
+	for i in rows.size():
+		var r: Array = rows[i]
+		var tile := _tinted_card(grid, r[3] as Color, true, Lagoon.R_CHIP + 4)
+		tile.custom_minimum_size = Vector2(166, 0)
+		var pad := MarginContainer.new()
+		for mg in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+			pad.add_theme_constant_override(mg, 8)
+		tile.add_child(pad)
+		var colv := VBoxContainer.new()
+		colv.alignment = BoxContainer.ALIGNMENT_CENTER
+		colv.add_theme_constant_override("separation", 2)
+		pad.add_child(colv)
+		var e := _emoji_label(String(r[0]), 40)
+		e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		colv.add_child(e)
+		var amount := Lagoon.label(String(r[1]), UI.F_LABEL, Lagoon.INK, true)
+		amount.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		colv.add_child(amount)
+		var cap := Lagoon.label(String(r[2]), UI.F_TINY, Lagoon.INK_FAINT, true)
+		cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		colv.add_child(cap)
+		# The same staggered reveal the chest tiles get, so the two dialogs
+		# read as one family rather than two features.
+		tile.modulate.a = 0.0
+		var tw := tile.create_tween()
+		tw.tween_interval(0.07 * i)
+		tw.tween_property(tile, "modulate:a", 1.0, 0.22)
 
 func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := "", completed_sets: Array = []) -> void:
 	# What the handful was worth to your standing, counted before anything is

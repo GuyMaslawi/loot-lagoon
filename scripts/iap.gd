@@ -280,7 +280,41 @@ func _emit(kind: String, pid: String, message: String) -> void:
 		return
 	_dispatch(kind, pid, message)
 
+# TRUE ONLY WHERE THE SCENE TREE MAY BE TOUCHED.
+#
+# Godot refuses `add_child`, `get_children` and friends from any thread but the
+# main one -- it does not crash, it prints and returns, which is why the damage
+# shows up as a half-built page rather than as a stack trace.
+func _on_main_thread() -> bool:
+	return OS.get_thread_caller_id() == OS.get_main_thread_id()
+
+# EVERY SIGNAL OUT OF THIS FILE CROSSES ONTO THE MAIN THREAD HERE.
+#
+# StoreKit 2 is async Swift and answers on whatever task it likes; the iOS
+# plugin is a prebuilt xcframework, so there is no promise it hops back first
+# and no source in this repo to check. Whatever thread the receipt lands on is
+# the thread main.gd's `_on_purchase_ok` runs on -- and that grants the pack,
+# opens a dialog and calls `_fill_page("shop")`, which clears the shop body and
+# rebuilds it.
+#
+# The clear is a `remove_child` loop and it goes through. The rebuild is
+# `add_child` and Godot REFUSES it off-thread, one printed error per call. So
+# the player pays, receives everything they bought -- the grant is plain
+# variables and a file, which do not care what thread they are on -- and is
+# left looking at a shop page with a title and nothing under it, until they
+# navigate away and back and it is built again from the main thread. Guy hit
+# exactly this on his own phone on 2026-09-07, on every purchase.
+#
+# Reproduced by `tools/qa_thread.tscn`, which calls the same handler from a
+# worker Thread and catches Godot's refusal inside `_fill_shop`.
+#
+# Deferring here rather than in main.gd is deliberate: this is the one funnel
+# every signal already passes through, on both platforms, so a future consumer
+# of `purchase_succeeded` cannot reintroduce the bug by forgetting to marshal.
 func _dispatch(kind: String, pid: String, message: String) -> void:
+	if not _on_main_thread():
+		_dispatch.call_deferred(kind, pid, message)
+		return
 	match kind:
 		"ok": purchase_succeeded.emit(pid)
 		"cancel": purchase_cancelled.emit(pid)
@@ -293,6 +327,13 @@ func _dispatch(kind: String, pid: String, message: String) -> void:
 # Every field is read defensively. An event we do not recognise must not strand
 # `busy` at true -- that would wedge the store shut for the rest of the session.
 func _on_response(response_name: String, data: Dictionary) -> void:
+	# The iOS plugin's one entry point, marshalled for the same reason as
+	# `_dispatch` -- but this one also covers what happens BEFORE a signal is
+	# emitted: `_on_purchase` writes the granted-transaction ledger to disk and
+	# `_reconcile` walks it. Neither wants to be racing the main thread either.
+	if not _on_main_thread():
+		_on_response.call_deferred(response_name, data)
+		return
 	match response_name:
 		"products": _on_products(data)
 		"purchase": _on_purchase(data)
