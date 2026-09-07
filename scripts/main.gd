@@ -13925,8 +13925,12 @@ func _apply_slot_theme() -> void:
 static func _v3(c: Color) -> Vector3:
 	return Vector3(c.r, c.g, c.b)
 
+# The one place a building's price is decided, and the only caller of
+# cost_curve. Everything else in the game -- payouts, vaults, shop grants,
+# mission targets -- stays on `curve()`. That split is what makes an island past
+# thirty cost more spins than the one before it; see the note on cost_curve.
 func _star_costs() -> Array:
-	var mult := CV.curve(island_level)
+	var mult := CV.cost_curve(island_level)
 	var out := []
 	for c in STAR_COSTS:
 		out.append(int(c * mult))

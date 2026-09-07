@@ -149,10 +149,48 @@ func _t_curve() -> void:
 			rising = false
 	_chk("the curve rises every island up to %d" % CV.ECONOMY_MAX_LEVEL, rising)
 	var flat := true
-	for lvl in [CV.ECONOMY_MAX_LEVEL, 31, 60, 200, m.MAX_ISLAND]:
+	for lvl in [CV.ECONOMY_MAX_LEVEL, CV.ECONOMY_MAX_LEVEL + 1, 200, m.MAX_ISLAND]:
 		if not is_equal_approx(CV.curve(lvl), CV.curve(CV.ECONOMY_MAX_LEVEL)):
 			flat = false
 	_chk("and flattens past it, so nothing walks off int64", flat)
+
+	# The knee, which is the whole of the ninety-island change that anybody
+	# already playing can feel. Islands 1-30 have to be bit-identical to what
+	# they were before the second slope existed, because there are testers
+	# standing on them.
+	var knee_ok := true
+	for lvl in range(1, CV.ECONOMY_KNEE + 1):
+		if not is_equal_approx(CV.curve(lvl), pow(1.6, lvl - 1)):
+			knee_ok = false
+	_chk("every island up to the knee is exactly the old 1.6 curve", knee_ok)
+	_chk("and the slope is gentler past it, or ninety islands overflow int64",
+		CV.curve(CV.ECONOMY_KNEE + 1) / CV.curve(CV.ECONOMY_KNEE) < 1.6)
+
+	# Cost against payout: identical below the knee, diverging above it. This is
+	# the only reason an island past thirty takes longer than one before it.
+	var cost_same := true
+	for lvl in range(1, CV.ECONOMY_KNEE + 1):
+		if not is_equal_approx(CV.cost_curve(lvl), CV.curve(lvl)):
+			cost_same = false
+	_chk("a building costs exactly what it always did up to the knee", cost_same)
+	var diverges := true
+	for lvl in [CV.ECONOMY_KNEE + 1, 45, 60, 75, CV.ECONOMY_MAX_LEVEL]:
+		if CV.cost_curve(lvl) <= CV.curve(lvl):
+			diverges = false
+	_chk("and costs more than the payout curve past it, so progress slows",
+		diverges, "island 90 is %.1fx" % (CV.cost_curve(90) / CV.curve(90)))
+
+	# The reason the second slope exists at all.
+	var top_ok := true
+	var biggest := 0
+	for base in [400, 9000, 250000, 5000000]:
+		var v := CV.scaled(base, CV.ECONOMY_MAX_LEVEL)
+		biggest = maxi(biggest, v)
+		if v <= 0:
+			top_ok = false
+	var top_cost := int(9000.0 * CV.cost_curve(CV.ECONOMY_MAX_LEVEL))
+	_chk("the last island's biggest price is still a positive int64",
+		top_ok and top_cost > 0, "payout %d, building %d" % [biggest, top_cost])
 
 	# The whole reason the curve flattens: a price computed out there has to
 	# still be a price.
@@ -1866,35 +1904,79 @@ func _t_intro() -> void:
 	m._close_popup(true)
 
 # =============================================================================
-#  23. laps -- what island 31 is called
+#  23. laps, and the sixty islands that are no longer a relabelled repeat
 # =============================================================================
 #
-# The islands repeat, on purpose, and the economy flattens at thirty, also on
-# purpose. Neither is under test. What IS under test is that the game says so:
-# a player who reaches island 31 in two and a half weeks and finds Green
-# Meadows again with no acknowledgement reads it as a wiped save.
+# THIS SECTION USED TO ASSERT THE OPPOSITE, and the change is the point. It
+# checked that island 31 was Green Meadows wearing a suffix, because that was
+# the best the game could do with thirty islands: repeat, but say so.
+#
+# There are ninety now. Island 31 is Sunken Bazaar -- its own name, its own five
+# buildings, its own palette -- and the wrap moved out to 91. What it still
+# SHARES with island 1 is the drawings, and that seam is `island_art_index`,
+# which is tested here rather than left to be discovered.
 func _t_laps() -> void:
-	_chk("islands 1-30 are the first lap",
-		CV.island_lap(1) == 1 and CV.island_lap(30) == 1,
-		"%d..%d" % [CV.island_lap(1), CV.island_lap(30)])
-	_chk("31 opens the second", CV.island_lap(31) == 2, str(CV.island_lap(31)))
-	_chk("and 60/61 the boundary after that",
-		CV.island_lap(60) == 2 and CV.island_lap(61) == 3,
-		"%d/%d" % [CV.island_lap(60), CV.island_lap(61)])
+	_chk("all ninety islands are the first lap",
+		CV.island_lap(1) == 1 and CV.island_lap(90) == 1,
+		"%d..%d" % [CV.island_lap(1), CV.island_lap(90)])
+	_chk("91 opens the second", CV.island_lap(91) == 2, str(CV.island_lap(91)))
+	_chk("and 180/181 the boundary after that",
+		CV.island_lap(180) == 2 and CV.island_lap(181) == 3,
+		"%d/%d" % [CV.island_lap(180), CV.island_lap(181)])
 	# A hostile or corrupt level must not index the name table off the end.
 	_chk("a nonsense level still answers", CV.island_lap(-5) == 1 and CV.island_lap(0) == 1)
 
+	_chk("there are ninety islands", CV.ISLANDS.size() == 90, str(CV.ISLANDS.size()))
+	_chk("and a palette for every one of them",
+		CV.ISLAND_PALETTES.size() == CV.ISLANDS.size(),
+		"%d palettes for %d islands" % [CV.ISLAND_PALETTES.size(), CV.ISLANDS.size()])
+
+	# No two islands may share a name -- that was the entire complaint about the
+	# old wrap, and sixty hand-written entries is exactly where a duplicate hides.
+	var seen := {}
+	var dupe := ""
+	for i in CV.ISLANDS.size():
+		var nm := String(CV.ISLANDS[i]["name"])
+		if seen.has(nm):
+			dupe = nm
+		seen[nm] = true
+	_chk("no island shares a name with another", dupe == "", dupe)
+
+	# Every island must carry exactly five buildings; the village lays out five
+	# plots and reads the names positionally.
+	var five := true
+	var offender := ""
+	for i in CV.ISLANDS.size():
+		if (CV.ISLANDS[i]["buildings"] as Array).size() != CV.BUILDINGS.size():
+			five = false
+			offender = String(CV.ISLANDS[i]["name"])
+	_chk("every island names exactly five buildings", five, offender)
+
 	_chk("the first lap carries no suffix", CV.island_name(1) == CV.island_theme(1)["name"],
 		CV.island_name(1))
-	_chk("island 31 is visibly not island 1",
-		CV.island_name(31) != CV.island_name(1),
+	_chk("island 31 is a place of its own, not island 1 relabelled",
+		CV.island_name(31) != CV.island_name(1)
+			and not CV.island_name(31).begins_with(String(CV.island_theme(1)["name"])),
 		"%s vs %s" % [CV.island_name(31), CV.island_name(1)])
-	_chk("...and it is the same island, relabelled",
-		CV.island_name(31).begins_with(String(CV.island_theme(1)["name"])),
-		CV.island_name(31))
-	_chk("the suffix stays short", CV.island_name(31).length()
-		- String(CV.island_theme(1)["name"]).length() <= 5,
-		CV.island_name(31))
+
+	# The seam. Art wraps at thirty while identity runs to ninety, and the two
+	# must not be accidentally re-coupled by a later edit -- if they were, every
+	# island past thirty would fall through to the placeholder village.
+	_chk("art wraps at the number of art sets that exist",
+		CV.island_art_index(1) == 0 and CV.island_art_index(31) == 0
+			and CV.island_art_index(61) == 0 and CV.island_art_index(90) == 29,
+		"%d/%d/%d/%d" % [CV.island_art_index(1), CV.island_art_index(31),
+			CV.island_art_index(61), CV.island_art_index(90)])
+	var art_in_range := true
+	for lvl in range(1, 200):
+		var ai := CV.island_art_index(lvl)
+		if ai < 0 or ai >= CV.ISLAND_ART_SETS:
+			art_in_range = false
+	_chk("and never points outside the folders on disk", art_in_range)
+	_chk("while island 31 and island 1 share the drawing and nothing else",
+		CV.island_art_index(31) == CV.island_art_index(1)
+			and CV.island_theme(31)["name"] != CV.island_theme(1)["name"]
+			and CV.island_palette(31) != CV.island_palette(1))
 
 	# The name goes on the slot ribbon and the island plaque, both sized to the
 	# longest entry in ISLANDS. A lap that pushes past that is the shop deal
@@ -1915,12 +1997,16 @@ func _t_laps() -> void:
 	var deep := CV.lap_name(99)
 	_chk("and a lap past the named ones still answers", deep != "", deep)
 
-	# The crossing test the arrival actually runs.
+	# The crossing test the arrival actually runs. 31 and 61 are in the list on
+	# purpose: they used to fire, and now that they are ordinary islands with
+	# their own names they must NOT -- announcing a new voyage on arrival at
+	# Sunken Bazaar would be the old repeat wearing a new coat.
 	var fires := []
-	for level in [2, 15, 30, 31, 32, 60, 61]:
+	for level in [2, 15, 30, 31, 32, 60, 61, 89, 90, 91, 92, 181]:
 		if CV.island_lap(level) > CV.island_lap(maxi(1, level - 1)):
 			fires.append(level)
-	_chk("the crossing fires only on 31 and 61", fires == [31, 61], str(fires))
+	_chk("the crossing fires only where the islands actually run out",
+		fires == [91, 181], str(fires))
 
 # =============================================================================
 #  24. grudges

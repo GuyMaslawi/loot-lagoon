@@ -57,6 +57,73 @@ const ISLANDS := [
 	{"name": "Moon Base", "buildings": ["Lunar Dome", "Crater Mine", "Antenna Array", "Rover Garage", "Earth Deck"]},
 	{"name": "Magic Library", "buildings": ["Book Tower", "Ink Fountain", "Scroll Mill", "Owl Post", "Archive"]},
 	{"name": "Golden Capital", "buildings": ["Palace", "Mint", "Fountain", "Market Hall", "Arch"]},
+	# --- The New World: islands 31-60 --------------------------------------
+	#
+	# Sixty more, and they are named rather than numbered because the number was
+	# the problem. A player who reached 31 used to be shown Green Meadows again
+	# with the old name on it, which reads as the save having been eaten. These
+	# share the drawings -- see island_art_index -- and share nothing else.
+	{"name": "Sunken Bazaar", "buildings": ["Salt Market", "Diver Hut", "Anchor Forge", "Tide Vault", "Reef Gate"]},
+	{"name": "Clockwork Mesa", "buildings": ["Gear Ranch", "Piston Mill", "Brass Depot", "Spring House", "Sun Dial"]},
+	{"name": "Aurora Tundra", "buildings": ["Frost Lodge", "Light Mast", "Elk Pen", "Ice Cellar", "Sky Mirror"]},
+	{"name": "Emberfall", "buildings": ["Cinder Home", "Ash Kiln", "Smoke Tower", "Coal Yard", "Flame Shrine"]},
+	{"name": "Silk Road", "buildings": ["Caravanserai", "Loom House", "Spice Stall", "Camel Yard", "Watch Post"]},
+	{"name": "Glass Harbour", "buildings": ["Prism Home", "Lens Works", "Crystal Pier", "Mirror Hall", "Beacon"]},
+	{"name": "Thunder Plateau", "buildings": ["Storm Hut", "Rod Tower", "Cloud Mill", "Echo Cave", "Bolt Forge"]},
+	{"name": "Orchard Hollow", "buildings": ["Cider Press", "Bee Yard", "Pear Barn", "Root Cellar", "Blossom Arch"]},
+	{"name": "Obsidian Court", "buildings": ["Black Keep", "Glass Quarry", "Shard Gate", "Night Forge", "Onyx Well"]},
+	{"name": "Paper Lantern Bay", "buildings": ["Lantern Shop", "Rice Barn", "Fisher Pier", "Ink House", "Moon Deck"]},
+	{"name": "Salt Flats", "buildings": ["Brine Home", "Crystal Rake", "Wind Sail", "Mirage Post", "Dry Dock"]},
+	{"name": "Copper Canyon", "buildings": ["Ore Camp", "Smelter", "Rope Bridge", "Tool Shed", "Echo Ridge"]},
+	{"name": "Featherfall", "buildings": ["Nest Home", "Down Mill", "Wing Dock", "Quill Shop", "Updraft Perch"]},
+	{"name": "Amber Woods", "buildings": ["Resin Hut", "Sap Press", "Fossil Dig", "Beetle Barn", "Golden Grove"]},
+	{"name": "Tidal Terraces", "buildings": ["Step House", "Rice Paddy", "Sluice Gate", "Moon Pool", "Terrace Shrine"]},
+	{"name": "Ironwood Keep", "buildings": ["Timber Hall", "Splitting Yard", "Bark Mill", "Root Gate", "Watch Oak"]},
+	{"name": "Mirage Souk", "buildings": ["Silk Tent", "Water Seller", "Lamp Stall", "Rug Loom", "Shade Arch"]},
+	{"name": "Frost Cathedral", "buildings": ["Ice Nave", "Chime Tower", "Snow Cloister", "Rime Font", "Glacier Arch"]},
+	{"name": "Cinder Reef", "buildings": ["Pumice Home", "Steam Vent", "Black Sand Dock", "Ash Garden", "Warm Pool"]},
+	{"name": "Kite Highlands", "buildings": ["Cord House", "Sail Loft", "Ridge Barn", "Wind Shrine", "Flag Post"]},
+	{"name": "Bramble March", "buildings": ["Thorn Home", "Berry Press", "Hedge Gate", "Bird Blind", "Briar Tower"]},
+	{"name": "Porcelain Hills", "buildings": ["Kiln House", "Clay Pit", "Glaze Shop", "Tea Terrace", "Willow Gate"]},
+	{"name": "Meteor Basin", "buildings": ["Crater Camp", "Iron Rake", "Star Forge", "Dust Silo", "Impact Arch"]},
+	{"name": "Whispering Fen", "buildings": ["Stilt Home", "Reed Mill", "Punt Dock", "Frog Pond", "Mist Lantern"]},
+	{"name": "Gilded Aviary", "buildings": ["Cage Hall", "Seed Barn", "Song Tower", "Feather Vault", "Sky Perch"]},
+	{"name": "Basalt Steps", "buildings": ["Column Home", "Stone Cutter", "Sea Stair", "Tide Forge", "Giant's Gate"]},
+	{"name": "Sugarpine Camp", "buildings": ["Syrup Shack", "Tap Line", "Log Flume", "Cone Store", "Ranger Post"]},
+	{"name": "Lapis Quarry", "buildings": ["Blue Cut", "Pigment Mill", "Dust Store", "Chisel Shed", "Vein Gate"]},
+	{"name": "Monsoon Docks", "buildings": ["Raised Home", "Rain Barrel", "Ferry Slip", "Net Loft", "Storm Bell"]},
+	{"name": "Halcyon Spires", "buildings": ["Calm Tower", "Still Water", "Chime Garden", "Quiet Hall", "Dawn Arch"]},
+	# --- Far Reaches: islands 61-90 ----------------------------------------
+	{"name": "Cobalt Deep", "buildings": ["Pressure Home", "Vent Farm", "Sonar Mast", "Abyss Winch", "Blue Gate"]},
+	{"name": "Saffron Terraces", "buildings": ["Spice Home", "Drying Rack", "Stamen Field", "Trade Post", "Gold Arch"]},
+	{"name": "Nomad Steppe", "buildings": ["Yurt", "Horse Line", "Felt Press", "Fire Ring", "Cairn Marker"]},
+	{"name": "Driftwood Atoll", "buildings": ["Plank Home", "Rope Walk", "Shell Kiln", "Lagoon Weir", "Palm Mast"]},
+	{"name": "Verdigris Works", "buildings": ["Patina Hall", "Acid Bath", "Copper Roof", "Green Forge", "Oxide Vault"]},
+	{"name": "Solstice Henge", "buildings": ["Stone Ring", "Sun Track", "Barrow Home", "Chalk Path", "Heel Stone"]},
+	{"name": "Pearl Cascade", "buildings": ["Falls Home", "Oyster Bed", "Rope Lift", "Nacre Shop", "Spray Arch"]},
+	{"name": "Ashen Pines", "buildings": ["Charred Lodge", "Resin Still", "Fire Break", "Seed Vault", "New Growth"]},
+	{"name": "Vermilion Gate", "buildings": ["Red Hall", "Cinnabar Mine", "Torii Walk", "Lacquer Shop", "Guard Post"]},
+	{"name": "Hollow Moons", "buildings": ["Shell Dome", "Void Farm", "Tether Mast", "Echo Vault", "Pale Arch"]},
+	{"name": "Quartz Meridian", "buildings": ["Facet Home", "Cutting Wheel", "Light Well", "Prism Vault", "Noon Marker"]},
+	{"name": "Marsh Lanterns", "buildings": ["Bog Home", "Peat Cutter", "Wisp Post", "Duck Blind", "Sunken Arch"]},
+	{"name": "Titan's Rest", "buildings": ["Rib Hall", "Bone Bridge", "Fossil Yard", "Marrow Well", "Skull Gate"]},
+	{"name": "Cardamom Coast", "buildings": ["Pod House", "Drying Yard", "Dhow Dock", "Spice Vault", "Green Arch"]},
+	{"name": "Static Wastes", "buildings": ["Faraday Home", "Coil Field", "Arc Tower", "Ground Rod", "Charge Gate"]},
+	{"name": "Willow Reaches", "buildings": ["Withy Home", "Basket Works", "Weir Pool", "Osier Bed", "Bent Arch"]},
+	{"name": "Cobblestone Sky", "buildings": ["Float Home", "Stone Barge", "Chain Dock", "Ballast Yard", "Keystone"]},
+	{"name": "Indigo Vats", "buildings": ["Dye House", "Fermenting Pit", "Drying Line", "Cloth Store", "Blue Hands"]},
+	{"name": "Permafrost Vault", "buildings": ["Cold Store", "Core Drill", "Seed Bank", "Thermal Hut", "Deep Gate"]},
+	{"name": "Cicada Grove", "buildings": ["Shell Home", "Song Post", "Root Cellar", "Molt Yard", "Summer Arch"]},
+	{"name": "Alabaster Cliffs", "buildings": ["White Hall", "Chalk Cut", "Sea Stair", "Gull Roost", "Pale Beacon"]},
+	{"name": "Ferrous Delta", "buildings": ["Rust Home", "Silt Panner", "Barge Slip", "Ore Wash", "Red Channel"]},
+	{"name": "Zephyr Terraces", "buildings": ["Breeze Home", "Vane Field", "Kite Loft", "Seed Scatter", "Air Shrine"]},
+	{"name": "Umbra Hollow", "buildings": ["Shade Home", "Night Garden", "Moth Loft", "Dark Well", "Eclipse Arch"]},
+	{"name": "Coral Crown", "buildings": ["Polyp Hall", "Reef Nursery", "Current Mill", "Spawn Vault", "Crown Gate"]},
+	{"name": "Tinder Pass", "buildings": ["Flint Home", "Kindling Store", "Signal Fire", "Pass Gate", "Watch Cairn"]},
+	{"name": "Lodestone Bay", "buildings": ["Compass Home", "Needle Works", "Pull Dock", "North Vault", "True Arch"]},
+	{"name": "Sable Dunes", "buildings": ["Black Sand Home", "Glass Kiln", "Ridge Walk", "Night Well", "Dark Arch"]},
+	{"name": "Everbloom", "buildings": ["Petal Hall", "Pollen Mill", "Nectar Vault", "Vine Terrace", "Bloom Gate"]},
+	{"name": "The Far Shore", "buildings": ["Last Home", "End Pier", "Long Light", "Keeper's Vault", "Horizon Arch"]},
 ]
 
 # Per-island color identity for the SPIN page, one entry per ISLANDS entry.
@@ -158,6 +225,192 @@ const ISLAND_PALETTES := [
 	# Golden Capital
 	{"deep": Color(0.169, 0.122, 0.024), "mid": Color(0.42, 0.322, 0.063),
 	 "accent": Color(1, 0.878, 0.478), "spin": Color(1, 0.239, 0.353), "glow": Color(1, 0.824, 0.302)},
+	# --- palettes for the sixty islands past the first thirty ---------------
+	#
+	# One per island, so a shared drawing never means a shared look: island 47
+	# wears island 17's silhouettes under its own colour. `deep` and `mid` are
+	# the board the menus sit on, `accent` the brass, `spin` the button and
+	# `glow` what the win light throws. See island_art_index.
+	# Sunken Bazaar
+	{"deep": Color(0.021, 0.128, 0.143), "mid": Color(0.153, 0.318, 0.340),
+	 "accent": Color(0.342, 0.498, 0.900), "spin": Color(0.920, 0.375, 0.202), "glow": Color(0.620, 0.772, 1.000)},
+	# Clockwork Mesa
+	{"deep": Color(0.168, 0.106, 0.034), "mid": Color(0.400, 0.308, 0.200),
+	 "accent": Color(0.822, 0.900, 0.342), "spin": Color(0.202, 0.446, 0.920), "glow": Color(0.992, 1.000, 0.620)},
+	# Aurora Tundra
+	{"deep": Color(0.052, 0.145, 0.185), "mid": Color(0.255, 0.385, 0.440),
+	 "accent": Color(0.342, 0.398, 0.900), "spin": Color(0.920, 0.504, 0.202), "glow": Color(0.620, 0.704, 1.000)},
+	# Emberfall
+	{"deep": Color(0.151, 0.037, 0.012), "mid": Color(0.360, 0.177, 0.137),
+	 "accent": Color(0.900, 0.777, 0.342), "spin": Color(0.202, 0.705, 0.920), "glow": Color(1.000, 0.871, 0.620)},
+	# Silk Road
+	{"deep": Color(0.176, 0.125, 0.026), "mid": Color(0.420, 0.341, 0.189),
+	 "accent": Color(0.755, 0.900, 0.342), "spin": Color(0.202, 0.360, 0.920), "glow": Color(0.947, 1.000, 0.620)},
+	# Glass Harbour
+	{"deep": Color(0.074, 0.210, 0.210), "mid": Color(0.325, 0.500, 0.500),
+	 "accent": Color(0.342, 0.565, 0.900), "spin": Color(0.920, 0.289, 0.202), "glow": Color(0.620, 0.818, 1.000)},
+	# Thunder Plateau
+	{"deep": Color(0.049, 0.040, 0.160), "mid": Color(0.223, 0.209, 0.380),
+	 "accent": Color(0.721, 0.342, 0.900), "spin": Color(0.776, 0.920, 0.202), "glow": Color(0.833, 0.620, 1.000)},
+	# Orchard Hollow
+	{"deep": Color(0.086, 0.176, 0.044), "mid": Color(0.291, 0.420, 0.231),
+	 "accent": Color(0.342, 0.900, 0.498), "spin": Color(0.776, 0.202, 0.920), "glow": Color(0.620, 1.000, 0.681)},
+	# Obsidian Court
+	{"deep": Color(0.071, 0.033, 0.109), "mid": Color(0.208, 0.156, 0.260),
+	 "accent": Color(0.900, 0.342, 0.844), "spin": Color(0.475, 0.920, 0.202), "glow": Color(0.992, 0.620, 1.000)},
+	# Paper Lantern Bay
+	{"deep": Color(0.168, 0.042, 0.080), "mid": Color(0.400, 0.220, 0.274),
+	 "accent": Color(0.900, 0.509, 0.342), "spin": Color(0.202, 0.920, 0.791), "glow": Color(1.000, 0.688, 0.620)},
+	# Salt Flats
+	{"deep": Color(0.218, 0.191, 0.092), "mid": Color(0.520, 0.488, 0.374),
+	 "accent": Color(0.688, 0.900, 0.342), "spin": Color(0.202, 0.274, 0.920), "glow": Color(0.901, 1.000, 0.620)},
+	# Copper Canyon
+	{"deep": Color(0.160, 0.073, 0.024), "mid": Color(0.380, 0.246, 0.171),
+	 "accent": Color(0.900, 0.878, 0.342), "spin": Color(0.202, 0.576, 0.920), "glow": Color(1.000, 0.939, 0.620)},
+	# Featherfall
+	{"deep": Color(0.081, 0.144, 0.202), "mid": Color(0.336, 0.411, 0.480),
+	 "accent": Color(0.387, 0.342, 0.900), "spin": Color(0.920, 0.633, 0.202), "glow": Color(0.620, 0.635, 1.000)},
+	# Amber Woods
+	{"deep": Color(0.168, 0.108, 0.017), "mid": Color(0.400, 0.304, 0.160),
+	 "accent": Color(0.788, 0.900, 0.342), "spin": Color(0.202, 0.403, 0.920), "glow": Color(0.970, 1.000, 0.620)},
+	# Tidal Terraces
+	{"deep": Color(0.047, 0.168, 0.139), "mid": Color(0.232, 0.400, 0.360),
+	 "accent": Color(0.342, 0.699, 0.900), "spin": Color(0.920, 0.202, 0.289), "glow": Color(0.620, 0.909, 1.000)},
+	# Ironwood Keep
+	{"deep": Color(0.045, 0.143, 0.043), "mid": Color(0.207, 0.340, 0.204),
+	 "accent": Color(0.342, 0.900, 0.666), "spin": Color(0.920, 0.202, 0.848), "glow": Color(0.620, 1.000, 0.795)},
+	# Mirage Souk
+	{"deep": Color(0.193, 0.111, 0.035), "mid": Color(0.460, 0.336, 0.221),
+	 "accent": Color(0.855, 0.900, 0.342), "spin": Color(0.202, 0.489, 0.920), "glow": Color(1.000, 0.985, 0.620)},
+	# Frost Cathedral
+	{"deep": Color(0.091, 0.194, 0.227), "mid": Color(0.378, 0.501, 0.540),
+	 "accent": Color(0.342, 0.431, 0.900), "spin": Color(0.920, 0.461, 0.202), "glow": Color(0.620, 0.726, 1.000)},
+	# Cinder Reef
+	{"deep": Color(0.143, 0.038, 0.031), "mid": Color(0.340, 0.187, 0.177),
+	 "accent": Color(0.900, 0.710, 0.342), "spin": Color(0.202, 0.791, 0.920), "glow": Color(1.000, 0.825, 0.620)},
+	# Kite Highlands
+	{"deep": Color(0.062, 0.114, 0.193), "mid": Color(0.285, 0.355, 0.460),
+	 "accent": Color(0.454, 0.342, 0.900), "spin": Color(0.920, 0.719, 0.202), "glow": Color(0.650, 0.620, 1.000)},
+	# Bramble March
+	{"deep": Color(0.151, 0.042, 0.127), "mid": Color(0.360, 0.209, 0.327),
+	 "accent": Color(0.900, 0.342, 0.442), "spin": Color(0.202, 0.920, 0.446), "glow": Color(1.000, 0.620, 0.734)},
+	# Porcelain Hills
+	{"deep": Color(0.102, 0.227, 0.182), "mid": Color(0.405, 0.540, 0.491),
+	 "accent": Color(0.342, 0.766, 0.900), "spin": Color(0.920, 0.202, 0.375), "glow": Color(0.620, 0.954, 1.000)},
+	# Meteor Basin
+	{"deep": Color(0.070, 0.040, 0.134), "mid": Color(0.233, 0.192, 0.320),
+	 "accent": Color(0.855, 0.342, 0.900), "spin": Color(0.604, 0.920, 0.202), "glow": Color(0.924, 0.620, 1.000)},
+	# Whispering Fen
+	{"deep": Color(0.056, 0.160, 0.085), "mid": Color(0.247, 0.380, 0.284),
+	 "accent": Color(0.342, 0.900, 0.833), "spin": Color(0.920, 0.202, 0.633), "glow": Color(0.620, 1.000, 0.909)},
+	# Gilded Aviary
+	{"deep": Color(0.185, 0.161, 0.037), "mid": Color(0.440, 0.405, 0.220),
+	 "accent": Color(0.654, 0.900, 0.342), "spin": Color(0.202, 0.231, 0.920), "glow": Color(0.878, 1.000, 0.620)},
+	# Basalt Steps
+	{"deep": Color(0.067, 0.089, 0.168), "mid": Color(0.280, 0.306, 0.400),
+	 "accent": Color(0.554, 0.342, 0.900), "spin": Color(0.920, 0.848, 0.202), "glow": Color(0.719, 0.620, 1.000)},
+	# Sugarpine Camp
+	{"deep": Color(0.078, 0.185, 0.052), "mid": Color(0.292, 0.440, 0.255),
+	 "accent": Color(0.342, 0.900, 0.565), "spin": Color(0.863, 0.202, 0.920), "glow": Color(0.620, 1.000, 0.726)},
+	# Lapis Quarry
+	{"deep": Color(0.021, 0.063, 0.143), "mid": Color(0.153, 0.217, 0.340),
+	 "accent": Color(0.487, 0.342, 0.900), "spin": Color(0.920, 0.762, 0.202), "glow": Color(0.673, 0.620, 1.000)},
+	# Monsoon Docks
+	{"deep": Color(0.056, 0.176, 0.162), "mid": Color(0.260, 0.420, 0.401),
+	 "accent": Color(0.342, 0.632, 0.900), "spin": Color(0.920, 0.202, 0.202), "glow": Color(0.620, 0.863, 1.000)},
+	# Halcyon Spires
+	{"deep": Color(0.235, 0.230, 0.094), "mid": Color(0.560, 0.553, 0.392),
+	 "accent": Color(0.588, 0.900, 0.342), "spin": Color(0.260, 0.202, 0.920), "glow": Color(0.833, 1.000, 0.620)},
+	# Cobalt Deep
+	{"deep": Color(0.012, 0.067, 0.118), "mid": Color(0.112, 0.199, 0.280),
+	 "accent": Color(0.387, 0.342, 0.900), "spin": Color(0.920, 0.633, 0.202), "glow": Color(0.620, 0.635, 1.000)},
+	# Saffron Terraces
+	{"deep": Color(0.193, 0.125, 0.023), "mid": Color(0.460, 0.353, 0.193),
+	 "accent": Color(0.788, 0.900, 0.342), "spin": Color(0.202, 0.403, 0.920), "glow": Color(0.970, 1.000, 0.620)},
+	# Nomad Steppe
+	{"deep": Color(0.185, 0.115, 0.065), "mid": Color(0.440, 0.351, 0.286),
+	 "accent": Color(0.889, 0.900, 0.342), "spin": Color(0.202, 0.532, 0.920), "glow": Color(1.000, 0.962, 0.620)},
+	# Driftwood Atoll
+	{"deep": Color(0.071, 0.202, 0.194), "mid": Color(0.312, 0.480, 0.470),
+	 "accent": Color(0.342, 0.599, 0.900), "spin": Color(0.920, 0.245, 0.202), "glow": Color(0.620, 0.840, 1.000)},
+	# Verdigris Works
+	{"deep": Color(0.040, 0.160, 0.088), "mid": Color(0.209, 0.380, 0.277),
+	 "accent": Color(0.342, 0.900, 0.900), "spin": Color(0.920, 0.202, 0.547), "glow": Color(0.620, 1.000, 0.954)},
+	# Solstice Henge
+	{"deep": Color(0.193, 0.160, 0.073), "mid": Color(0.460, 0.419, 0.313),
+	 "accent": Color(0.721, 0.900, 0.342), "spin": Color(0.202, 0.317, 0.920), "glow": Color(0.924, 1.000, 0.620)},
+	# Pearl Cascade
+	{"deep": Color(0.076, 0.210, 0.218), "mid": Color(0.338, 0.509, 0.520),
+	 "accent": Color(0.342, 0.532, 0.900), "spin": Color(0.920, 0.332, 0.202), "glow": Color(0.620, 0.795, 1.000)},
+	# Ashen Pines
+	{"deep": Color(0.151, 0.071, 0.060), "mid": Color(0.360, 0.265, 0.252),
+	 "accent": Color(0.900, 0.744, 0.342), "spin": Color(0.202, 0.748, 0.920), "glow": Color(1.000, 0.848, 0.620)},
+	# Vermilion Gate
+	{"deep": Color(0.143, 0.017, 0.025), "mid": Color(0.340, 0.143, 0.155),
+	 "accent": Color(0.900, 0.643, 0.342), "spin": Color(0.202, 0.877, 0.920), "glow": Color(1.000, 0.780, 0.620)},
+	# Hollow Moons
+	{"deep": Color(0.077, 0.060, 0.143), "mid": Color(0.264, 0.245, 0.340),
+	 "accent": Color(0.788, 0.342, 0.900), "spin": Color(0.690, 0.920, 0.202), "glow": Color(0.878, 0.620, 1.000)},
+	# Quartz Meridian
+	{"deep": Color(0.102, 0.204, 0.227), "mid": Color(0.405, 0.516, 0.540),
+	 "accent": Color(0.342, 0.465, 0.900), "spin": Color(0.920, 0.418, 0.202), "glow": Color(0.620, 0.749, 1.000)},
+	# Marsh Lanterns
+	{"deep": Color(0.045, 0.151, 0.056), "mid": Color(0.216, 0.360, 0.230),
+	 "accent": Color(0.342, 0.900, 0.733), "spin": Color(0.920, 0.202, 0.762), "glow": Color(0.620, 1.000, 0.840)},
+	# Titan's Rest
+	{"deep": Color(0.176, 0.128, 0.071), "mid": Color(0.420, 0.362, 0.294),
+	 "accent": Color(0.822, 0.900, 0.342), "spin": Color(0.202, 0.446, 0.920), "glow": Color(0.992, 1.000, 0.620)},
+	# Cardamom Coast
+	{"deep": Color(0.058, 0.176, 0.039), "mid": Color(0.247, 0.420, 0.218),
+	 "accent": Color(0.342, 0.900, 0.599), "spin": Color(0.906, 0.202, 0.920), "glow": Color(0.620, 1.000, 0.749)},
+	# Static Wastes
+	{"deep": Color(0.038, 0.042, 0.134), "mid": Color(0.186, 0.191, 0.320),
+	 "accent": Color(0.654, 0.342, 0.900), "spin": Color(0.863, 0.920, 0.202), "glow": Color(0.787, 0.620, 1.000)},
+	# Willow Reaches
+	{"deep": Color(0.122, 0.185, 0.059), "mid": Color(0.356, 0.440, 0.273),
+	 "accent": Color(0.342, 0.900, 0.398), "spin": Color(0.647, 0.202, 0.920), "glow": Color(0.628, 1.000, 0.620)},
+	# Cobblestone Sky
+	{"deep": Color(0.080, 0.163, 0.210), "mid": Color(0.340, 0.442, 0.500),
+	 "accent": Color(0.342, 0.364, 0.900), "spin": Color(0.920, 0.547, 0.202), "glow": Color(0.620, 0.681, 1.000)},
+	# Indigo Vats
+	{"deep": Color(0.045, 0.029, 0.143), "mid": Color(0.194, 0.170, 0.340),
+	 "accent": Color(0.755, 0.342, 0.900), "spin": Color(0.733, 0.920, 0.202), "glow": Color(0.856, 0.620, 1.000)},
+	# Permafrost Vault
+	{"deep": Color(0.078, 0.185, 0.185), "mid": Color(0.317, 0.440, 0.440),
+	 "accent": Color(0.342, 0.565, 0.900), "spin": Color(0.920, 0.289, 0.202), "glow": Color(0.620, 0.818, 1.000)},
+	# Cicada Grove
+	{"deep": Color(0.164, 0.193, 0.048), "mid": Color(0.419, 0.460, 0.253),
+	 "accent": Color(0.454, 0.900, 0.342), "spin": Color(0.432, 0.202, 0.920), "glow": Color(0.742, 1.000, 0.620)},
+	# Alabaster Cliffs
+	{"deep": Color(0.244, 0.233, 0.134), "mid": Color(0.580, 0.571, 0.493),
+	 "accent": Color(0.621, 0.900, 0.342), "spin": Color(0.217, 0.202, 0.920), "glow": Color(0.856, 1.000, 0.620)},
+	# Ferrous Delta
+	{"deep": Color(0.160, 0.063, 0.032), "mid": Color(0.380, 0.236, 0.190),
+	 "accent": Color(0.900, 0.811, 0.342), "spin": Color(0.202, 0.662, 0.920), "glow": Color(1.000, 0.894, 0.620)},
+	# Zephyr Terraces
+	{"deep": Color(0.071, 0.202, 0.162), "mid": Color(0.312, 0.480, 0.430),
+	 "accent": Color(0.342, 0.733, 0.900), "spin": Color(0.920, 0.202, 0.332), "glow": Color(0.620, 0.932, 1.000)},
+	# Umbra Hollow
+	{"deep": Color(0.092, 0.038, 0.118), "mid": Color(0.246, 0.174, 0.280),
+	 "accent": Color(0.900, 0.342, 0.744), "spin": Color(0.346, 0.920, 0.202), "glow": Color(1.000, 0.620, 0.939)},
+	# Coral Crown
+	{"deep": Color(0.044, 0.176, 0.153), "mid": Color(0.231, 0.420, 0.386),
+	 "accent": Color(0.342, 0.666, 0.900), "spin": Color(0.920, 0.202, 0.245), "glow": Color(0.620, 0.886, 1.000)},
+	# Tinder Pass
+	{"deep": Color(0.168, 0.068, 0.025), "mid": Color(0.400, 0.246, 0.180),
+	 "accent": Color(0.900, 0.844, 0.342), "spin": Color(0.202, 0.619, 0.920), "glow": Color(1.000, 0.916, 0.620)},
+	# Lodestone Bay
+	{"deep": Color(0.053, 0.110, 0.176), "mid": Color(0.252, 0.329, 0.420),
+	 "accent": Color(0.420, 0.342, 0.900), "spin": Color(0.920, 0.676, 0.202), "glow": Color(0.628, 0.620, 1.000)},
+	# Sable Dunes
+	{"deep": Color(0.124, 0.050, 0.126), "mid": Color(0.298, 0.210, 0.300),
+	 "accent": Color(0.900, 0.342, 0.576), "spin": Color(0.202, 0.920, 0.274), "glow": Color(1.000, 0.620, 0.825)},
+	# Everbloom
+	{"deep": Color(0.185, 0.046, 0.129), "mid": Color(0.440, 0.242, 0.361),
+	 "accent": Color(0.900, 0.342, 0.342), "spin": Color(0.202, 0.920, 0.576), "glow": Color(1.000, 0.620, 0.666)},
+	# The Far Shore
+	{"deep": Color(0.068, 0.156, 0.193), "mid": Color(0.299, 0.412, 0.460),
+	 "accent": Color(0.342, 0.398, 0.900), "spin": Color(0.920, 0.504, 0.202), "glow": Color(0.620, 0.704, 1.000)},
 ]
 
 # The rival population.
@@ -727,23 +980,55 @@ static func island_theme(level: int) -> Dictionary:
 	return ISLANDS[(level - 1) % ISLANDS.size()]
 
 # =============================================================================
-#  Laps -- what happens after island thirty
+#  Which art an island wears, which is not which island it is
 # =============================================================================
 #
-# ISLANDS holds thirty and island_theme wraps, so island 31 is Green Meadows
-# again: same name, same art, same five buildings. curve() clamps at
-# ECONOMY_MAX_LEVEL too, so prices and payouts stop climbing there as well.
+# THE ART SETS AND THE ISLAND LIST ARE DIFFERENT LENGTHS ON PURPOSE, and this
+# function is the seam.
 #
-# NEITHER OF THOSE IS THE BUG, and neither is being changed here. Thirty
-# islands is a lot of art and the economy flattening at the top is deliberate.
-# What was wrong is that NOTHING SAID SO. A regular player reaches island 31 in
-# about two and a half weeks and the game silently starts over -- which, after
-# a fortnight of it, reads as the save having been eaten. Testers on the
-# fourteen-day closed track land on it inside the window.
+# There are ninety islands and thirty sets of drawings -- `assets/art/islands/
+# island_01..30`, each a background and five buildings. Those 180 images are the
+# work of a renderer nobody can re-run on demand, and sixty more islands does
+# not mean 360 more of them.
 #
-# So the repeat is named and owned. Islands one to thirty are the first lap;
-# 31 to 60 are the second, and they say so.
-const LAP_NAMES := ["", "", "New World", "Far Reaches", "Deep Blue", "Uncharted"]
+# What it must NOT do is fall through. Both texture loaders here end with "if
+# the file is missing, use the generic one", which is the right answer for a
+# single absent file and a disaster for sixty consecutive islands: everything
+# past thirty would have come up wearing the same placeholder village, which is
+# far worse than the honest repeat. So the art index wraps at the number of art
+# sets that exist, and the island's identity -- its name, its five building
+# names, its whole palette -- comes from the ninety-long lists instead.
+#
+# The result is that island 47 shares a silhouette with island 17 and shares
+# nothing else: different name, different buildings, different colour, different
+# price. That is the part this can honestly deliver.
+const ISLAND_ART_SETS := 30
+
+static func island_art_index(level: int) -> int:
+	return (maxi(1, level) - 1) % ISLAND_ART_SETS
+
+# =============================================================================
+#  Laps -- what happens after the last island
+# =============================================================================
+#
+# THE WRAP IS AT NINETY NOW, and that is most of the answer to what this block
+# used to be apologising for.
+#
+# It read: thirty islands, island_theme wraps, so island 31 is Green Meadows
+# again with the same name on it -- and since a regular player reached it in
+# about two and a half weeks, the game began repeating itself inside the
+# closed-test window. The fix at the time was to at least NAME the repeat
+# instead of pretending it was not happening.
+#
+# There are ninety islands now. Islands 31-90 are sixty distinct places with
+# their own names, their own five buildings and their own palettes, and the
+# economy climbs all the way out to them instead of flattening at thirty. What
+# they share with the first thirty is the DRAWINGS, because 180 rendered images
+# is what exists -- see island_art_index, which is the seam and says so plainly.
+#
+# So a lap is ninety islands, and at the pace cost_curve now sets that is months
+# rather than a fortnight. These names are for whoever still gets past it.
+const LAP_NAMES := ["", "", "Second Voyage", "Third Voyage", "Deep Blue", "Uncharted"]
 
 # 1 for islands 1-30, 2 for 31-60, and on.
 static func island_lap(level: int) -> int:
@@ -798,7 +1083,7 @@ static func island_building_name(level: int, i: int) -> String:
 	return island_theme(level)["buildings"][i]
 
 static func island_building_tex(level: int, i: int) -> Texture2D:
-	var idx := (level - 1) % ISLANDS.size()
+	var idx := island_art_index(level)
 	var t := tex("res://assets/art/islands/island_%02d/b%d.png" % [idx + 1, i])
 	if t == null:
 		t = building_tex(BUILDINGS[i]["id"])
@@ -820,7 +1105,7 @@ static func level_scale(level: int) -> float:
 	return 0.58 + 0.084 * float(clampi(level, 0, MAX_STAR))
 
 static func island_bg_tex(level: int) -> Texture2D:
-	var idx := (level - 1) % ISLANDS.size()
+	var idx := island_art_index(level)
 	var t := tex("res://assets/art/islands/island_%02d/bg.png" % (idx + 1))
 	if t == null:
 		t = bg_tex("village")
@@ -922,10 +1207,69 @@ static func tide_overlap(from: float, to: float) -> float:
 		k += 1.0
 	return total
 
-const ECONOMY_MAX_LEVEL := 30
+# =============================================================================
+#  Two slopes, and why the second one exists
+# =============================================================================
+#
+# The curve used to be a single 1.6x per island clamped at thirty, which was
+# right while there were thirty islands. There are ninety now, and 1.6 cannot
+# reach them: 1.6^89 is 1.5e18, so the largest base in the game (5,000,000, the
+# top shop grant) lands at 7.3e24 and walks straight off int64. The clamp was
+# what kept that honest, and removing it without changing the slope would have
+# turned every price past island sixty into a negative number.
+#
+# So the slope bends at the old ceiling. Islands 1-30 are EXACTLY what they were
+# -- same multiplier, same prices, same payouts, to the last coin -- and that is
+# not a nicety: there are testers on the closed track standing on island 12
+# right now, and the one change a live economy must never make is to reprice the
+# island somebody is halfway through. Past thirty it climbs at 1.25, which
+# reaches island ninety at 5.4e11 and leaves the biggest base in the game at
+# 2.7e18, comfortably inside int64 with room for whatever gets added later.
+const ECONOMY_MAX_LEVEL := 90
+
+# Where the slope bends. Deliberately the old ECONOMY_MAX_LEVEL: everything at
+# or below it is untouched by this change.
+const ECONOMY_KNEE := 30
+const ECONOMY_STEP_EARLY := 1.6
+const ECONOMY_STEP_LATE := 1.25
 
 static func curve(level: int) -> float:
-	return pow(1.6, clampi(level, 1, ECONOMY_MAX_LEVEL) - 1)
+	var l := clampi(level, 1, ECONOMY_MAX_LEVEL)
+	if l <= ECONOMY_KNEE:
+		return pow(ECONOMY_STEP_EARLY, l - 1)
+	return pow(ECONOMY_STEP_EARLY, ECONOMY_KNEE - 1) \
+		* pow(ECONOMY_STEP_LATE, l - ECONOMY_KNEE)
+
+# =============================================================================
+#  What a building costs, which is NOT the same curve
+# =============================================================================
+#
+# THIS IS THE ONLY THING IN THE GAME THAT MAKES PROGRESS SLOW DOWN, and it works
+# by being a fraction of a percent steeper than the payout curve rather than by
+# being a big number anywhere.
+#
+# Both sides of the ledger used to ride `curve()`: a building cost 1.6x more on
+# the next island and a spin paid 1.6x more, so the two cancelled and an island
+# took the same ~196 spins whether it was the first or the thirtieth. That is
+# why thirty islands went by in about two and a half weeks. Raising prices alone
+# would have changed nothing at all -- it would have raised payouts with them.
+#
+# Past the knee the cost climbs at 1.28 while the payout climbs at 1.25. Three
+# points of difference, compounding: island 31 costs 201 spins against 196, and
+# island 90 costs 813. Nobody feels a step; the curve just gets heavier. Ninety
+# islands come to ~32,000 spins, about thirteen weeks at 350 spins a day, where
+# the first thirty are still the same fortnight they always were.
+#
+# Below the knee this IS `curve()`, returned by the same expression, so no
+# island anybody is currently standing on can move by a coin.
+const COST_STEP_LATE := 1.28
+
+static func cost_curve(level: int) -> float:
+	var l := clampi(level, 1, ECONOMY_MAX_LEVEL)
+	if l <= ECONOMY_KNEE:
+		return curve(l)
+	return pow(ECONOMY_STEP_EARLY, ECONOMY_KNEE - 1) \
+		* pow(COST_STEP_LATE, l - ECONOMY_KNEE)
 
 # Coins on the 1.6x-per-island curve, snapped to three significant digits so a
 # payout reads as "+660" and "+1.25M" rather than "+655" and "+1,246,151".
