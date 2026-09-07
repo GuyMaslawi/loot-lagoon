@@ -3311,16 +3311,43 @@ void fragment() {
 	var glow_mat := ShaderMaterial.new()
 	glow_mat.shader = glow_sh
 	_spin_glow.material = glow_mat
-	_spin_glow.size = Vector2(214, 214)
-	_spin_glow.position = Vector2(360 - 107, -42)
 	_spin_glow.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	nav_root.add_child(_spin_glow)
+	# CENTRED ON THE BAR, NOT ON 360. Both of these used to be placed at the
+	# literal x=360 -- half of the 720-wide design canvas -- which is the right
+	# answer only because `canvas_items`/`expand` keeps the viewport 720 units
+	# wide however tall the phone is. Nothing else in the nav is positioned
+	# absolutely; the tabs are an HBoxContainer and every glyph on them is
+	# anchored, which is why they alone survived a viewport that is genuinely
+	# wider than 720.
+	#
+	# `tools/store_shot.gd` renders inside a SubViewport, and a SubViewport
+	# inherits none of the window's stretch -- its coordinate space really is
+	# 1290 across. So the disc landed at 28% of the bar, sitting on the Shop
+	# tab, in every store screenshot while looking perfect on hardware. That is
+	# the worst shape a layout bug comes in: invisible everywhere except the
+	# five images a buyer sees first.
+	#
+	# Anchored to the bar's own midpoint it is identical on device -- nav_root
+	# is 720 wide there, so 0.5 is 360 and the offsets below reproduce the old
+	# numbers exactly -- and correct at any width.
+	_spin_glow.anchor_left = 0.5
+	_spin_glow.anchor_right = 0.5
+	_spin_glow.offset_left = -107.0
+	_spin_glow.offset_right = 107.0
+	_spin_glow.offset_top = -42.0
+	_spin_glow.offset_bottom = 172.0
 
 	# The one coral disc on the bar, ringed in brass and lifted above the glass.
 	# Nothing else in the nav is coral, so the eye lands here first every time.
 	_spin_nav = Button.new()
-	_spin_nav.size = Vector2(132, 132)
-	_spin_nav.position = Vector2(360 - 66, 0)
+	# Same centring as the glow above it, and for the same reason.
+	_spin_nav.anchor_left = 0.5
+	_spin_nav.anchor_right = 0.5
+	_spin_nav.offset_left = -66.0
+	_spin_nav.offset_right = 66.0
+	_spin_nav.offset_top = 0.0
+	_spin_nav.offset_bottom = 132.0
 	_spin_nav.focus_mode = Control.FOCUS_NONE
 	for state in ["normal", "hover", "pressed"]:
 		var csb := StyleBoxFlat.new()

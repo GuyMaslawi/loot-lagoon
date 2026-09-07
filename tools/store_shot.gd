@@ -52,3 +52,61 @@ func _ready() -> void:
 	# rather than on disk so the harness leaves no trace in user://.
 	if game.profile.is_empty():
 		game.profile = {"name": "Guest", "email": "", "provider": "guest"}
+
+	_dress_the_set(game)
+
+# A STORE SCREENSHOT OF A SAVE THAT HAS NEVER BEEN PLAYED SELLS NOTHING.
+#
+# The five images this harness feeds are the first thing a buyer sees, and on a
+# fresh save every one of them is a picture of zero: 0/9 on all fifteen
+# collection shelves, 0/8 missions, five identical Build buttons on island 1,
+# and a 1,500-coin wallet. The shots this replaced showed 248K coins, a full
+# spin meter and island 3 -- they were taken off a save that had been played,
+# which is why they looked like a game. Nothing recorded how, so the next
+# re-render lost it. This is that state, written down.
+#
+# It is applied AFTER boot, because `_boot_load` reads the save as its first
+# step and would overwrite anything set before it, and BEFORE `_capture_page`
+# stops waiting -- it opens the page immediately and then sits on a five second
+# timer, so the repaint below lands well inside that window.
+#
+# Deliberately not a save file: nothing here touches user://, so the harness
+# leaves no trace and cannot poison the save the other harnesses load.
+func _dress_the_set(game: Control) -> void:
+	while game.get("_boot") != null:
+		await game.get_tree().process_frame
+
+	# Mid-game, not late-game. Island 3 of ninety with the village part-raised
+	# is what the second evening looks like, and it reads as a game with room
+	# left rather than one already finished.
+	game.coins = 248000
+	game.spins = game.SPIN_CAP
+	game.island_level = 3
+	game.buildings = [5, 3, 2, 1, 0]
+	game.stars = 11
+	game.rank_stars = 11
+	game.shields = 2
+
+	# Card shelves at honest, uneven progress. A flat 5/9 everywhere reads as
+	# placeholder data; the easy sets running ahead of the hard ones is what
+	# actually happens, because the drop weights say so.
+	var filled := [7, 6, 5, 5, 4, 4, 3, 3, 2, 2, 2, 1, 1, 1, 0]
+	for i in CV.COLLECTIONS.size():
+		var c: Dictionary = CV.COLLECTIONS[i]
+		var owned: Array = game.col_owned[c["id"]]
+		var want: int = filled[i] if i < filled.size() else 0
+		# Commonest first, which is the order a player really fills a shelf --
+		# the 5-star at the end of each set stays missing, so the grand prize
+		# still has somewhere to go.
+		var order := []
+		for star in [1, 2, 3, 4]:
+			for j in (c["items"] as Array).size():
+				if int((c["items"] as Array)[j][2]) == star:
+					order.append(j)
+		for k in mini(want, order.size()):
+			owned[order[k]] = true
+
+	game._refresh()
+	var key := OS.get_environment("SHOT")
+	if game.pages.has(key):
+		game._fill_page(key)
