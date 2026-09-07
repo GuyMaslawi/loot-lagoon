@@ -1255,14 +1255,46 @@ static func curve(level: int) -> float:
 # would have changed nothing at all -- it would have raised payouts with them.
 #
 # Past the knee the cost climbs at 1.28 while the payout climbs at 1.25. Three
-# points of difference, compounding: island 31 costs 201 spins against 196, and
-# island 90 costs 813. Nobody feels a step; the curve just gets heavier. Ninety
-# islands come to ~32,000 spins, about thirteen weeks at 350 spins a day, where
-# the first thirty are still the same fortnight they always were.
+# points of difference, compounding. Nobody feels a step; the curve just gets
+# heavier.
+#
+# THE NUMBERS THAT USED TO BE HERE WERE WRONG BY 2.3x, and how they were wrong
+# is worth more than the numbers were. They read: "island 31 costs 201 spins
+# against 196, island 90 costs 813, ninety islands come to ~32,000 spins, about
+# thirteen weeks at 350 a day, and the first thirty are still the same fortnight
+# they always were."
+#
+# 84,000 / 429 = 196, and 429 is the REEL income alone. Those figures counted
+# reel wins and nothing else. They left out the steal, which lands on 7% of
+# spins and is 37% of every coin the game pays, and they left out the bolt
+# triple, which hands back twelve spins and stretches the meter by a quarter.
+# Two omissions, compounding: a real island was 86 spins, not 196, and the whole
+# ladder was 40 days rather than the thirteen weeks it was written for.
+#
+# 1.31, NOT 1.28 -- Guy's call, 2026-09-07, once the gap was measured. It buys
+# back the intended length and it is the ONLY constant that moved: the ratio is
+# exactly 1 below the knee, so islands 1-30 are untouched to the coin and no
+# player already inside the first thirty feels anything at all. Measured after
+# the change, by tools/qa_pace.tscn:
+#
+#     island 1-30      86 spins each      the first thirty:  ~2,600,  8 days
+#     island 31        88 spins           all ninety:       ~31,900, 91 days
+#     island 90     1,433 spins
+#
+# AND THIS LEVER IS KNIFE-EDGE, which is the other thing measurement showed. It
+# compounds over sixty islands: 1.28 -> 40 days, 1.30 -> 68, 1.31 -> 91,
+# 1.32 -> 124, 1.35 -> 340. Three hundredths is not a nudge here. Anyone
+# reaching for this constant runs the harness before AND after; nobody reasons
+# about it on paper, because that is exactly how the old numbers got here.
+#
+# Headroom, since the prices are the thing that compounds: the dearest star on
+# island 90 is 8.1e16 against an int64 ceiling of 9.2e18. Comfortable, but it is
+# 4x what 1.28 cost -- so the ceiling is a real constraint on this constant now
+# and not a theoretical one.
 #
 # Below the knee this IS `curve()`, returned by the same expression, so no
 # island anybody is currently standing on can move by a coin.
-const COST_STEP_LATE := 1.28
+const COST_STEP_LATE := 1.31
 
 static func cost_curve(level: int) -> float:
 	var l := clampi(level, 1, ECONOMY_MAX_LEVEL)
