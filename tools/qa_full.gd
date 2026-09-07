@@ -440,6 +440,7 @@ func _t_upgrades() -> void:
 	m.tourney_id = m._tourney_now_id()
 	m.tourney_points = 0
 	m.tourney_claimed = []
+	m.tourney_build_pts = 0
 	m._ensure_missions()
 	# Measured as a delta. Missions persist in the save, so a previous run of
 	# this harness leaves build progress on today's daily and an absolute
@@ -470,9 +471,15 @@ func _t_upgrades() -> void:
 		"%d vs %d" % [m.stars, expect_stars])
 	_chk("and banked the same into the permanent rank", m.rank_stars == expect_stars,
 		"%d vs %d" % [m.rank_stars, expect_stars])
+	# Through the cap, not around it -- an island is 25 builds and the allowance
+	# is deliberately worth two islands, so this is the uncapped figure today.
+	# Written against mini() anyway, so the day somebody tightens the cap this
+	# asserts the new truth instead of failing on a game that is working.
+	var want_build_pts: int = mini(m.TOURNEY_BUILD_CAP,
+		m.TP_BUILD * CV.MAX_STAR * CV.BUILDINGS.size())
 	_chk("the tournament scored every build",
-		m.tourney_points == m.TP_BUILD * CV.MAX_STAR * CV.BUILDINGS.size(),
-		"%d points" % m.tourney_points)
+		m.tourney_points == want_build_pts,
+		"%d points, expected %d" % [m.tourney_points, want_build_pts])
 	var builds_counted := int(m.mission_state["daily"]["progress"].get("builds", 0)) - builds_before
 	_chk("the builds mission counted every one",
 		builds_counted == CV.MAX_STAR * CV.BUILDINGS.size(),
@@ -1220,6 +1227,7 @@ func _reset_track() -> void:
 	m.tourney_claimed = []
 	m.tourney_lap = 0
 	m.tourney_lap_base = 0
+	m.tourney_build_pts = 0
 
 func _t_tourney() -> void:
 	m.tourney_id = m._tourney_now_id()
@@ -1234,11 +1242,77 @@ func _t_tourney() -> void:
 	m._tourney_add("attack", 3)
 	_chk("an attack scores per bet too", m.tourney_points == m.TP_ATTACK * 3, str(m.tourney_points))
 	m.tourney_points = 0
+	m.tourney_build_pts = 0
 	m._tourney_add("build", 5)
 	_chk("a build is flat, whatever the bet", m.tourney_points == m.TP_BUILD, str(m.tourney_points))
 	m.tourney_points = 0
 	m._tourney_add("nonsense", 5)
 	_chk("an action that is not scored scores nothing", m.tourney_points == 0)
+
+	# --- THE BUILD CAP -------------------------------------------------------
+	# Coins are the most purchasable thing in the game and sailing is gated on
+	# nothing else, so an uncapped build score is a rank counter wired straight
+	# to the shop. This is the bound that denies that, and every assertion here
+	# is derived from the two live constants rather than typed -- a typed number
+	# goes stale the moment either moves, and stale in the loose direction.
+	m.tourney_points = 0
+	m.tourney_build_pts = 0
+	var builds_to_cap: int = int(ceil(float(m.TOURNEY_BUILD_CAP) / float(maxi(1, m.TP_BUILD))))
+	for _i in builds_to_cap + 40:
+		m._tourney_add("build")
+	_chk("building cannot score past the cycle cap however many times it is done",
+		m.tourney_points == m.TOURNEY_BUILD_CAP,
+		"%d points from %d builds, cap %d" % [m.tourney_points, builds_to_cap + 40, m.TOURNEY_BUILD_CAP])
+	# The cap must not touch the half of the score it is not about, or the fix
+	# for the wallet becomes a nerf to playing.
+	var capped_at: int = m.tourney_points
+	m._tourney_add("steal", 5)
+	m._tourney_add("attack", 5)
+	_chk("raids keep scoring after the build cap is spent",
+		m.tourney_points == capped_at + m.TP_STEAL * 5 + m.TP_ATTACK * 5, str(m.tourney_points))
+	# A cap that outlived its cycle would silently become a lifetime ceiling --
+	# a player who built in cycle one would start cycle two already exhausted.
+	m.tourney_id = m._tourney_now_id() - 1
+	m._tourney_sync()
+	_chk("the build allowance comes back with the new cycle", m.tourney_build_pts == 0,
+		str(m.tourney_build_pts))
+	m.tourney_points = 0
+	m._tourney_add("build")
+	_chk("and building scores again in it", m.tourney_points == m.TP_BUILD, str(m.tourney_points))
+	# The save-file bound. tourney_build_pts is a number in the save, so a
+	# negative one is one edit away, and a negative one is an unlimited
+	# allowance -- exactly what the cap exists to deny.
+	m.tourney_build_pts = -999999
+	m.tourney_build_pts = clampi(m.tourney_build_pts, 0, m.TOURNEY_BUILD_CAP)
+	_chk("a hostile allowance clamps into range", m.tourney_build_pts == 0)
+
+	# The whole point of the two constants above: what a cycle is actually
+	# worth, measured the way the tracks were tuned. An island is 25 builds and
+	# 131 spins of income at the live odds (tools/qa_pace.tscn), so building may
+	# never be more than a garnish on the raid score of the player who did it.
+	var per_spin_build: float = float(m.TP_BUILD) * 25.0 / 131.0
+	var per_spin_raid: float = float(m.TP_ATTACK) * _triple_odds("hammer") \
+		+ float(m.TP_STEAL) * _triple_odds("steal")
+	_chk("building is a garnish on the raid score, not the meal",
+		per_spin_build < per_spin_raid * 0.75,
+		"%.2f from builds vs %.2f from raids, per spin" % [per_spin_build, per_spin_raid])
+	# And the four-track ceiling only holds while that stays true: the tracks
+	# total 29,680 against 10,459 free spins in a seventy-two hour cycle.
+	var free_spins_a_cycle := 10459.0
+	var top: int = 0
+	for lap in m.TOURNEY_TRACKS:
+		top += m._tourney_tier_at(m.TOURNEY_TIERS.size() - 1, lap)
+	# The build term is TOURNEY_BUILD_CAP flat, not per_spin_build x spins --
+	# that is exactly what the cap buys here, and using the uncapped rate would
+	# make this bound fail on a game that is fine.
+	var reachable_free: float = free_spins_a_cycle * per_spin_raid + float(m.TOURNEY_BUILD_CAP)
+	_chk("all four tracks stay out of reach without buying spins",
+		reachable_free < float(top), "%.0f reachable vs %d needed" % [reachable_free, top])
+	m.tourney_build_pts = 0
+	# _tourney_sync above rolled a cycle with a score on it, which parks a debt.
+	# Left standing it would hand the placing-prize tests a cycle they never ran.
+	m.tourney_owed_id = -1
+	m.tourney_owed_points = 0
 
 	# Claims. The last rung of a track opens the next one, so the first three
 	# are taken on their own and the fourth is a case of its own below.

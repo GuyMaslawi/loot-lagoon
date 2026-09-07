@@ -99,8 +99,44 @@ func _ready() -> void:
 		await get_tree().process_frame
 		await get_tree().process_frame
 		_check_page("popup " + opener, m._popup)
+		_check_fixed_height("popup " + opener, m._popup)
 		m._close_popup(true)
 		await get_tree().process_frame
+	# EVERY RUNG'S CHIP, ON THE CARD.
+	#
+	# The bubble a tapped rung puts up is anchored to the rung, and the rungs
+	# sit at both ends of the rail -- so it is the one control on this screen
+	# that is centred on the very edge of the card by design. It hung off the
+	# side, and `_check_page` could not see it: `_spills` measures right edges
+	# against the screen, and this one went left, off a card that is itself
+	# inset from the screen. So this measures both edges against the rail.
+	#
+	# Every rung is taken or out of reach first. A rung you can claim answers a
+	# press by paying out and rebuilding the board, which puts up no chip at
+	# all -- that is the one state with nothing here to measure.
+	m.tourney_id = m._tourney_now_id()
+	m.tourney_lap = 0
+	m.tourney_lap_base = 0
+	m.tourney_claimed = [0, 1, 2]
+	m.tourney_points = 1500
+	m.call("_open_tourney")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	var rungs := []
+	for b in m._popup.find_children("*", "Button", true, false):
+		if b.has_meta("tourney_pip"):
+			rungs.append(b)
+	if rungs.is_empty():
+		fails += 1
+		print("  [FAIL] tournament board drew no rungs to press")
+	for pip in rungs:
+		pip.pressed.emit()
+		await get_tree().process_frame
+		await get_tree().process_frame
+		_check_tip(int(pip.get_meta("tourney_pip")))
+	m._close_popup(true)
+	await get_tree().process_frame
+
 	# The end-of-tournament dialog, in both its shapes: a podium finish carrying
 	# three reward cells, and a placing with none. The first is the widest thing
 	# this modal ever draws.
@@ -190,6 +226,42 @@ func _check_page(key: String, root: Node = null) -> void:
 	print("  [%s] %s fits the screen %s" % ["ok" if over == 0 else "FAIL", key,
 		"" if over == 0 else "-- %d controls spill, worst %.0fpx: %s" % [over, worst, who]])
 
+# The rail is inset 30px inside the card, which is the whole of the room a chip
+# centred on an end rung has to lean into.
+const RAIL_INSET := 30.0
+
+func _check_tip(tier: int) -> void:
+	var tip: Control = null
+	for c in m._popup.find_children("*", "Control", true, false):
+		if c.has_meta("tourney_tip"):
+			tip = c
+	if tip == null:
+		fails += 1
+		print("  [FAIL] tournament rung %d put up no chip" % tier)
+		return
+	# `position`, not `global_position`: the chip pops in from a third of its
+	# size, and for the fifth of a second that takes, the transform puts the
+	# origin a good 50px right of where the layout put it. Measuring through
+	# the animation reports a spill that is not there and, worse, would hide
+	# one that is. `position` is the resting rect and that is the thing under
+	# test.
+	var host: Control = tip.get_parent()
+	var left: float = tip.position.x
+	var right: float = left + tip.size.x
+	var on_screen: float = host.global_position.x + left
+	var bad := ""
+	if left < -RAIL_INSET - SLACK or right > host.size.x + RAIL_INSET + SLACK:
+		bad = "x=%.0f..%.0f, the card column is %.0f wide" % [left, right, host.size.x]
+	elif on_screen < -SLACK or on_screen + tip.size.x > _view_w() + SLACK:
+		bad = "x=%.0f..%.0f on a %.0f screen" % [
+			on_screen, on_screen + tip.size.x, _view_w()]
+	elif tip.position.y + tip.size.y > SLACK:
+		bad = "it reaches %.0fpx into the rail" % (tip.position.y + tip.size.y)
+	if bad != "":
+		fails += 1
+	print("  [%s] tournament rung %d chip sits on the card %s" % [
+		"ok" if bad == "" else "FAIL", tier, "" if bad == "" else "-- " + bad])
+
 # One pixel of tolerance, because a rounded layout can land a border half a unit
 # past the edge and that is not what this is looking for.
 const SLACK := 1.0
@@ -207,6 +279,37 @@ func _spills(n: Node, limit: float, out: Array = []) -> Array:
 		_spills(c, limit, out)
 	return out
 
+
+# THE OTHER AXIS, for the one kind of control _check_page is blind to.
+#
+# _spills measures right edges against the screen, which finds every horizontal
+# overflow in the game. It cannot see a VERTICAL one, and there is a control
+# here that can have one: the daily hero is a plain Control pinned to a fixed
+# DAILY_HERO_H with a PanelContainer full of rows inside it. A Control does not
+# clip, so contents taller than the box do not disappear -- they draw straight
+# over the streak ladder below, which reads as a spacing bug rather than as the
+# overflow it is.
+#
+# Anything that pins a height and fills it can opt into this by setting the
+# meta; the value is the height being claimed.
+func _check_fixed_height(what: String, root: Node) -> void:
+	if root == null:
+		return
+	for n in root.find_children("*", "Control", true, false):
+		var c := n as Control
+		if not c.has_meta("daily_hero"):
+			continue
+		var claimed: float = float(c.get_meta("daily_hero"))
+		var need := 0.0
+		for kid in c.get_children():
+			if kid is Control:
+				need = maxf(need, (kid as Control).get_combined_minimum_size().y)
+		if need > claimed + 0.5:
+			fails += 1
+			print("  [FAIL] %s: fixed-height box claims %.0f, contents need %.0f"
+				% [what, claimed, need])
+		else:
+			print("  [ok] %s: fixed-height box fits (%.0f of %.0f)" % [what, need, claimed])
 
 # WHICH card did it. A page that overflows almost never overflows because of the
 # control that reports the overflow: a VBoxContainer hands its widest child's

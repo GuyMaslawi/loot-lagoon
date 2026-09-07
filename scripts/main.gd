@@ -947,9 +947,13 @@ func _after_boot() -> void:
 	# the bar that draws it -- and the interesting states (a rung lit and
 	# claimable, the bar past the last pip) are exactly the ones you cannot
 	# reach on a fresh install.
-	# DEMO_TOURNEY=<points>[:<lap>] -- the second field opens a later track,
-	# which is otherwise reachable only by claiming every rung of every track
-	# before it.
+	# DEMO_TOURNEY=<points>[:<lap>[:<rung>]] -- the second field opens a later
+	# track, which is otherwise reachable only by claiming every rung of every
+	# track before it. The third presses one rung, over and over, and that is
+	# the only way to look at the chip it puts up anywhere but the harness: the
+	# simulator takes no taps from a script, the chip is gone in under three
+	# seconds, and a phone running the simulator build draws one or two frames
+	# a second -- so a single press lands nowhere near the screenshot.
 	if OS.has_environment("DEMO_TOURNEY"):
 		var demo_t := OS.get_environment("DEMO_TOURNEY").split(":")
 		tourney_id = _tourney_now_id()
@@ -959,6 +963,22 @@ func _after_boot() -> void:
 		for _l in tourney_lap:
 			tourney_lap_base += _tourney_tier_at(TOURNEY_TIERS.size() - 1, _l)
 		tourney_points = tourney_lap_base + maxi(0, int(demo_t[0]))
+		# The demo score arrives from nowhere, so the build allowance it implies
+		# is unknowable -- left untouched at zero, which is the state a harness
+		# wants: it can still score builds to watch the flight and the stage.
+		tourney_build_pts = 0
+		if demo_t.size() > 2:
+			var demo_rung := clampi(int(demo_t[2]), 0, TOURNEY_TIERS.size() - 1)
+			var demo_tap := create_tween().set_loops()
+			demo_tap.tween_interval(1.8)
+			demo_tap.tween_callback(func() -> void:
+				if not is_instance_valid(_popup):
+					_open_tourney()
+					return
+				for b in _popup.find_children("*", "Button", true, false):
+					if b.has_meta("tourney_pip") \
+							and int(b.get_meta("tourney_pip")) == demo_rung:
+						b.pressed.emit())
 	# DEMO_TOURNEY_END=<place> puts the end-of-tournament dialog on the screen.
 	# Reaching it honestly means playing a full seventy-two hour cycle and then
 	# waiting for the clock to turn, which is not a thing you can do while
@@ -4915,6 +4935,13 @@ func _streak_broken() -> bool:
 func _streak_tier(day: int) -> int:
 	return clampi(day, 1, STREAK_TOP) - 1
 
+# A coin figure in the unit the player feels, for the one place that shows a
+# number too big to hold. Takes the ISLAND-1 base, not the scaled figure -- the
+# answer is the same on every island (both sides ride `curve()`), and doing the
+# division down here keeps a 1e11 round trip out of it. See CV.COINS_PER_SPIN.
+func _coins_in_spins(base_coins: int) -> int:
+	return maxi(1, int(round(float(base_coins) / CV.COINS_PER_SPIN)))
+
 func _streak_coins(day: int) -> int:
 	return _scaled(STREAK_COINS[_streak_tier(day)])
 
@@ -4941,12 +4968,30 @@ func _streak_deadline() -> float:
 # It hands back the art nodes, because the claim flies the goods out of the
 # exact pictures the player has been looking at -- a reward that leaves from the
 # middle of the screen is a counter ticking with extra steps.
-const DAILY_HERO_H := 232.0
+# 312, and it was WRONG BEFORE THE LINE THAT MADE ME MEASURE IT.
+#
+# 232 was too small for what was already in the card: the plaque is 64, the
+# goods column comes to ~192 with an 88px prize over a figure in display type,
+# the pad is 12 top and bottom and the column separates by 6 -- 268 in a box
+# claiming 232. A plain Control does not clip, so the card had been drawing 36
+# units over the streak ladder underneath it since the redesign, which reads as
+# tight spacing rather than as the overflow it is.
+#
+# The "about N spins' worth" caption adds 43 more, so 311, and 312 for a clean
+# number. Both numbers came out of qa_layout's _check_fixed_height, which was
+# written for this and found the older bug on its first run -- exactly the
+# failure DAILY_TILE's own note describes from the other side of the dialog.
+const DAILY_HERO_H := 312.0
 
 func _daily_hero(parent: VBoxContainer, day: int) -> Dictionary:
 	var root := Control.new()
 	root.custom_minimum_size = Vector2(0, DAILY_HERO_H)
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Marked so qa_layout can find it and measure what is inside against
+	# DAILY_HERO_H. A plain Control does not clip, so a hero whose contents
+	# outgrow it draws over the ladder underneath instead of failing -- and the
+	# page-width check every other dialog gets cannot see a vertical spill.
+	root.set_meta("daily_hero", DAILY_HERO_H)
 	parent.add_child(root)
 
 	# The inside of a chest: dark, warm, brass-rimmed, lit from above. It is the
@@ -5011,6 +5056,25 @@ func _daily_hero(parent: VBoxContainer, day: int) -> Dictionary:
 			Lagoon.CORAL_HI, 1.0, UI.F_TITLE, Color(1.0, 0.46, 0.36, 1.0))
 		goods.add_child(card_col)
 		out["cards"] = card_col.get_meta("art")
+
+	# WHAT THE COIN FIGURE IS ACTUALLY WORTH, because past island ten it stops
+	# being a number anybody can hold.
+	#
+	# Guy, 2026-09-07: "you get over a million every day, that is a lot for the
+	# start." It is not -- the daily is 14.3% of an island on island 1 and 14.3%
+	# on island 30, because _streak_coins rides `curve()` and so does everything
+	# it buys. But 8.65M PROMISES a jackpot and delivers a hut and a half, and a
+	# figure whose only job is to be impressive is a figure the player learns to
+	# stop reading.
+	#
+	# It names the coins, and that is load-bearing rather than wordy: the bolt
+	# column two inches to the right is already printing a spin count, and a
+	# bare "19 spins" under a coin pile reads as a second, contradictory one.
+	var worth := Lagoon.label("💰 %s coins — about %s spins' worth"
+		% [_fmt_compact(_streak_coins(day)), _fmt(_coins_in_spins(STREAK_COINS[_streak_tier(day)]))],
+		UI.F_CAPTION, Color(1.0, 0.86, 0.62), false)
+	worth.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(worth)
 
 	# THE GEMS GUY ASKED FOR, and they hang off the card rather than standing in
 	# the row. Pinned to the hero's own corners with anchors, so they cost the
@@ -6143,7 +6207,118 @@ func _open_give_card(who: Dictionary) -> void:
 		none.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 		vbox.add_child(none)
 
+# THE THINGS YOU CAN DO ARE AT THE TOP, WHERE THE PAGE STARTS.
+#
+# They were under the log, which is the one place on this page that has no
+# fixed height: it is one card per raid and per refill, and a player who has
+# been away a week has forty of them. So "Settings" and "Clear all" were a
+# scroll away, and the more you needed them -- because the page had got long --
+# the further away they got. A control whose distance grows with the mess it
+# tidies is the wrong way round.
+#
+# It is a bar rather than the two full-width buttons it used to be. Full-width
+# candy at the top of a page reads as the page's headline, and the headline
+# here is the news, not the housekeeping. So: the state on the left as a chip,
+# the two actions on the right at their own width, and the whole row shorter
+# than a card. It scrolls away with everything else, which is correct -- these
+# are errands you run on arrival, not controls you reach for mid-read.
+#
+# Built BEFORE the log below marks everything read, so the chip reports the
+# state the page was opened in rather than the state building it produced.
+func _alerts_bar(vb: VBoxContainer) -> void:
+	var bar := HBoxContainer.new()
+	bar.add_theme_constant_override("separation", 10)
+	vb.add_child(bar)
+
+	# The chip is the answer to "why is there a dot on the bell", so it says
+	# the unread count when there is one and falls back to the size of the log
+	# when there is not. An empty log gets no chip at all -- the page below is
+	# already a bell and the words "no notifications yet".
+	var unread := _unread_count()
+	if unread > 0:
+		bar.add_child(Lagoon.chip("%d NEW" % unread, Lagoon.REEF, UI.F_CAPTION))
+	elif not notif_log.is_empty():
+		bar.add_child(Lagoon.chip("%d ALERTS" % notif_log.size(), Lagoon.BRASS_MID, UI.F_CAPTION))
+
+	var gap := Control.new()
+	gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bar.add_child(gap)
+
+	# Which alerts the phone is allowed to send is a settings question, and it
+	# is the reason most people arrive here twice. Glass rather than a colour:
+	# it is a door to somewhere else, not something that happens.
+	var settings := Button.new()
+	settings.text = "Settings"
+	settings.custom_minimum_size = Vector2(0, UI.TAP)
+	_candy_button(settings, Color(0.62, 0.68, 0.72))
+	FX.press_feedback(settings)
+	settings.pressed.connect(func() -> void: _goto(pages["options"]))
+	bar.add_child(settings)
+
+	if notif_log.is_empty():
+		return
+
+	# CLEAR ALL ASKS FIRST, NOW THAT IT IS EASY TO REACH.
+	#
+	# At the bottom of a long page it was effectively guarded by the scroll --
+	# nobody arrived at it by accident. At the top it is two taps from opening
+	# the page, next to a button people press often, and what it destroys is
+	# the only record of who raided the island while they were asleep. The
+	# confirm is the price of the move, not an extra.
+	#
+	# BRASS, NOT RED. The red one was tried first and it was the brightest
+	# object on the page -- a page whose headline is meant to be the news. A
+	# destroy control that out-shouts what it destroys is the wrong hierarchy,
+	# and at the top of the page the colour was doing the job the confirm
+	# below now does properly. So the bar is chrome in the game's own metal,
+	# and the red is spent once, on the button in the dialog that actually
+	# deletes something.
+	#
+	# NOT `Lagoon.BRASS` -- that constant is the brass the game PAINTS with,
+	# and its hue is 36 degrees, which `kind_for` reads as coral. The brass
+	# MATERIAL is the 45-70 band, so a call site asking for it has to name a
+	# colour in that band. Passing the constant here produced the game's
+	# primary-action orange on the one button that destroys something.
+	var clear := Button.new()
+	clear.text = "Clear all"
+	clear.custom_minimum_size = Vector2(0, UI.TAP)
+	_candy_button(clear, Color(0.86, 0.74, 0.26))
+	FX.press_feedback(clear)
+	clear.pressed.connect(_confirm_clear_alerts)
+	bar.add_child(clear)
+
+func _confirm_clear_alerts() -> void:
+	var box := _open_popup("Clear alerts")
+	var body := _popup_row_label(
+		"Delete all %d notifications? The list of who raided you goes with them."
+			% notif_log.size(), UI.F_CAPTION)
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(body)
+	var go := Button.new()
+	go.text = "Clear all"
+	go.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	_candy_button(go, Color(0.78, 0.35, 0.32))
+	FX.press_feedback(go)
+	go.pressed.connect(func() -> void:
+		notif_log = []
+		_update_badges()
+		_save_game()
+		_close_popup()
+		_fill_page("alerts")
+	)
+	box.add_child(go)
+	var no := Button.new()
+	no.text = "Keep them"
+	no.custom_minimum_size = Vector2(0, UI.TAP)
+	_candy_button(no, Color(0.45, 0.55, 0.6))
+	FX.press_feedback(no)
+	no.pressed.connect(func() -> void: _close_popup())
+	box.add_child(no)
+
 func _fill_alerts(vb: VBoxContainer) -> void:
+	_alerts_bar(vb)
 	_fill_grudges(vb)
 	if notif_log.is_empty():
 		var card := _page_card(vb)
@@ -6159,81 +6334,52 @@ func _fill_alerts(vb: VBoxContainer) -> void:
 		sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		sub.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 		card.add_child(sub)
-	else:
-		var unread_n := _unread_count()
-		if unread_n > 0:
-			var flag := HBoxContainer.new()
-			flag.alignment = BoxContainer.ALIGNMENT_CENTER
-			flag.add_theme_constant_override("separation", 10)
-			vb.add_child(flag)
-			flag.add_child(Lagoon.chip("%d NEW" % unread_n, Lagoon.REEF, UI.F_CAPTION))
+		return
 
-		# One card per entry, straight into the page's own scroll. The old modal
-		# nested a scroller inside a fixed-height panel, which is two scrolls
-		# fighting over one flick.
-		for entry in notif_log:
-			var unread: bool = not bool(entry.get("read", true))
-			var card := _tinted_card(vb, Lagoon.REEF if unread else Lagoon.BRASS_MID, unread)
-			var pad := MarginContainer.new()
-			for m in [["margin_left", 14], ["margin_right", 14], ["margin_top", 12], ["margin_bottom", 12]]:
-				pad.add_theme_constant_override(m[0], m[1])
-			card.add_child(pad)
-			var row := HBoxContainer.new()
-			row.add_theme_constant_override("separation", 14)
-			pad.add_child(row)
-			var tok := Lagoon.token(str(entry.get("emoji", "\U01F514")), 72.0,
-				Lagoon.REEF if unread else Lagoon.BRASS)
-			tok.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-			row.add_child(tok)
-			var col := VBoxContainer.new()
-			col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-			col.add_theme_constant_override("separation", 4)
-			row.add_child(col)
-			var txt := Label.new()
-			txt.text = str(entry.get("text", ""))
-			txt.add_theme_font_size_override("font_size", UI.F_CAPTION)
-			txt.add_theme_color_override("font_color", Lagoon.INK if unread else Lagoon.INK_SOFT)
-			txt.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-			col.add_child(txt)
-			var when := Label.new()
-			when.text = _time_ago(float(entry.get("ts", 0.0)))
-			when.add_theme_font_size_override("font_size", UI.F_TINY)
-			when.add_theme_color_override("font_color", Lagoon.INK_FAINT)
-			col.add_child(when)
+	# One card per entry, straight into the page's own scroll. The old modal
+	# nested a scroller inside a fixed-height panel, which is two scrolls
+	# fighting over one flick.
+	#
+	# The "N NEW" chip that used to sit here is in the bar above now: it was a
+	# second, centred count directly under the one the bar already carries.
+	for entry in notif_log:
+		var unread: bool = not bool(entry.get("read", true))
+		var card := _tinted_card(vb, Lagoon.REEF if unread else Lagoon.BRASS_MID, unread)
+		var pad := MarginContainer.new()
+		for m in [["margin_left", 14], ["margin_right", 14], ["margin_top", 12], ["margin_bottom", 12]]:
+			pad.add_theme_constant_override(m[0], m[1])
+		card.add_child(pad)
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 14)
+		pad.add_child(row)
+		var tok := Lagoon.token(str(entry.get("emoji", "\U01F514")), 72.0,
+			Lagoon.REEF if unread else Lagoon.BRASS)
+		tok.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(tok)
+		var col := VBoxContainer.new()
+		col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		col.add_theme_constant_override("separation", 4)
+		row.add_child(col)
+		var txt := Label.new()
+		txt.text = str(entry.get("text", ""))
+		txt.add_theme_font_size_override("font_size", UI.F_CAPTION)
+		txt.add_theme_color_override("font_color", Lagoon.INK if unread else Lagoon.INK_SOFT)
+		txt.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		col.add_child(txt)
+		var when := Label.new()
+		when.text = _time_ago(float(entry.get("ts", 0.0)))
+		when.add_theme_font_size_override("font_size", UI.F_TINY)
+		when.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+		col.add_child(when)
 
-		# Marked read on the way out of the builder rather than on the way in,
-		# so the "NEW" chips above are the state the page was opened in.
-		for entry in notif_log:
-			entry["read"] = true
-		_update_badges()
-		_save_game()
+	# Marked read on the way out of the builder rather than on the way in,
+	# so the "NEW" chip in the bar is the state the page was opened in.
+	for entry in notif_log:
+		entry["read"] = true
+	_update_badges()
+	_save_game()
 
-	var btn_row := HBoxContainer.new()
-	btn_row.add_theme_constant_override("separation", 12)
-	vb.add_child(btn_row)
-	if not notif_log.is_empty():
-		var clear := Button.new()
-		clear.text = "Clear all"
-		clear.custom_minimum_size = Vector2(0, UI.TAP)
-		clear.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		_candy_button(clear, Color(0.75, 0.3, 0.3))
-		FX.press_feedback(clear)
-		clear.pressed.connect(func() -> void:
-			notif_log = []
-			_update_badges()
-			_save_game()
-			_fill_page("alerts")
-		)
-		btn_row.add_child(clear)
-	var settings := Button.new()
-	settings.text = "Settings"
-	settings.custom_minimum_size = Vector2(0, UI.TAP)
-	settings.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_candy_button(settings, Color(0.55, 0.45, 0.65))
-	FX.press_feedback(settings)
-	settings.pressed.connect(func() -> void: _goto(pages["options"]))
-	btn_row.add_child(settings)
 
 # --- full menu pages (shop / collections / quests / options) ---
 
@@ -11200,10 +11346,77 @@ const TOURNEY_SECONDS := 72.0 * 3600.0   # three days
 # thresholds, the lap multipliers and the SQL all stay exactly as they were.
 const TP_STEAL := 20
 const TP_ATTACK := 30
-# Building is not a bet, so it is flat. It is worth more than a single raid
-# because it is the slower half of the game and the board should not belong
-# exclusively to whoever spins most.
-const TP_BUILD := 60
+# Building is not a bet, so it is flat.
+#
+# SIX, NOT SIXTY, AND CAPPED PER CYCLE. Guy, 2026-09-07: "when I build I climb
+# very fast in the tournament ... whoever has money will pass very easily."
+# Measured rather than argued, and he was understating it.
+#
+# The whole feature is calibrated on 2.21 points a spin from raids. Nothing
+# ever counted the OTHER term. An island is five huts at five stars -- twenty
+# five builds -- and at the live reel odds it takes 131 spins to pay for
+# (tools/qa_pace.tscn, run 2026-09-07: 642.5 coins a spin). So per island:
+#
+#     raids     131 spins x 2.21  =    289 points
+#     builds     25 builds x 60   =  1,500 points     <- 84% of the score
+#
+# Every archetype the track was tuned against was therefore out by 6.2x:
+#
+#     casual  150/day   designed   990   actually  6,157
+#     regular 350/day   designed 2,300   actually 14,367
+#     heavy   800/day   designed 5,300   actually 32,840
+#
+# That last row is the one that matters. TOURNEY_TRACKS is FOUR precisely
+# because 29,680 points was unreachable without buying spins -- see the note
+# there. With builds counted, a free heavy player cleared all four inside the
+# cycle, so the bar ran dry again for exactly the players the fourth track
+# exists for.
+#
+# AND IT WAS THE CHEAPEST THING IN THE SHOP. Coins are the most purchasable
+# resource in the game and sailing is gated on nothing else, so a coin pack
+# converted straight into rank -- and the packs scale to your island, so the
+# $2.99 one bought about one island every time it was pressed:
+#
+#     $2.99 of coins, repeated    ~500 tournament points per dollar
+#     $49.99 of spins                88 tournament points per dollar
+#
+# The cheapest way to buy a placing was the product that was never meant to
+# sell one, at 5.7x the value of the one that was. All four tracks came to
+# about $60 of coins without touching the machine.
+#
+# So the value is set by the game's OWN parity rule -- the one that makes a x5
+# bet worth five times a x1: score what the action consumed. A star upgrade
+# costs 3,360 coins in island-1 units, which is 5.23 spins of income, which is
+# 11.6 points. Half of that, because the coins that paid for it ALREADY scored
+# once as the spins that earned them; six is the garnish that keeps the board
+# from belonging exclusively to whoever spins most, which is what this constant
+# was always for.
+const TP_BUILD := 6
+
+# What building can contribute to one 72-hour cycle, and the reason it is a
+# hard ceiling rather than a taper.
+#
+# Lowering TP_BUILD alone fixes the calibration but not the wallet: coins are
+# still buyable in unlimited quantity, so a payer with no interest in the
+# machine could still buy rank, just at a tenth of the old rate. A cap says the
+# thing the taper cannot: past this line money stops working, at any price.
+#
+# 300 is fifty builds -- two full islands, comfortably more than the eight-tenths
+# of an island a regular player actually finishes in a cycle, so nobody playing
+# normally ever meets it. With TP_BUILD at 6 and this cap, the three archetypes
+# land back on the numbers the tracks were tuned for:
+#
+#     casual  150/day   designed   990   ->  1,294
+#     regular 350/day   designed 2,300   ->  2,620
+#     heavy   800/day   designed 5,300   ->  5,604
+#
+# The board is a spin contest again, and spins are throttled by the meter
+# (6,480 free in a cycle). Money still works -- 2,000 spins for $49.99 is 4,420
+# points -- but it is the expensive, intended route, and it costs the buyer the
+# same spins it costs everybody else.
+#
+# NOT capped: the meter's own free spins, raids, or anything else. Only this.
+const TOURNEY_BUILD_CAP := 300
 
 # Mostly spins, because spins are what a player actually runs out of; the top
 # two rungs add collection cards, which are the thing you cannot buy your way
@@ -11219,6 +11432,13 @@ const TP_BUILD := 60
 #   casual  ~150 spins/day  ->  ~990 pts   -- rung 2, rung 3 with builds
 #   regular ~350 spins/day  ->  ~2,300 pts -- finishes it, near the buzzer
 #   heavy   ~800 spins/day  ->  ~5,300 pts -- finishes it inside 36 hours
+#
+# THOSE THREE ROWS WERE ONCE FICTION AND ARE TRUE AGAIN. They count raids only,
+# and until 2026-09-07 building added an uncounted 84% on top of every one of
+# them -- see TP_BUILD, which is where that was found and fixed. With the build
+# score at 6 and bounded by TOURNEY_BUILD_CAP the real totals are 1,294 / 2,620
+# / 5,604, which is this table plus the deliberate garnish. Anybody re-tuning
+# these rungs measures BOTH terms or repeats the mistake.
 #
 # That last row was the hole. The heaviest players -- the ones the board is
 # for -- ran out of track half way through the cycle and spent the rest of it
@@ -11264,6 +11484,13 @@ const TOURNEY_LAP_PAY := 1.4
 # the exact hole the repeating track was built to close. Four cannot be reached
 # without buying spins, so the bar never runs dry on a player who is not paying,
 # and clearing it is a real thing rather than a matter of turning up.
+#
+# THAT LAST SENTENCE WAS FALSE FOR FIVE DAYS and is true again. The table above
+# counts raids and nothing else, and while a build was worth 60 uncapped a free
+# heavy player cleared all four inside the cycle -- the exact hole the fourth
+# track exists to close, reopened by the term nobody was counting. With
+# TP_BUILD at 6 and TOURNEY_BUILD_CAP at 300 the four tracks need 13,294 spins
+# against 10,459 available free, so the row above is honest again.
 #
 # For whoever does get there: 3,979 spins and 28 cards across the four, for
 # about 13,500 spins spent -- 29% back, so it is still nothing like a way to
@@ -11332,6 +11559,11 @@ var tourney_owed_points := 0
 # draws `tourney_points - tourney_lap_base`. One number, two readers.
 var tourney_lap := 0
 var tourney_lap_base := 0
+# How much of TOURNEY_BUILD_CAP this cycle has already spent. Counted in POINTS
+# rather than in builds so the cap survives TP_BUILD moving again, and reset
+# with the cycle like everything else here -- it is not a lifetime total and
+# must never be merged into one.
+var tourney_build_pts := 0
 
 # The rungs and the rewards of whichever track is running.
 func _tourney_tier_at(i: int, lap := -1) -> int:
@@ -11393,6 +11625,7 @@ func _tourney_sync() -> void:
 	tourney_claimed = []
 	tourney_lap = 0
 	tourney_lap_base = 0
+	tourney_build_pts = 0
 
 func _tourney_add(kind: String, bet := 1, from_global := Vector2.ZERO) -> void:
 	_tourney_sync()
@@ -11400,8 +11633,15 @@ func _tourney_add(kind: String, bet := 1, from_global := Vector2.ZERO) -> void:
 	match kind:
 		"steal":  gained = TP_STEAL * maxi(1, bet)
 		"attack": gained = TP_ATTACK * maxi(1, bet)
-		"build":  gained = TP_BUILD
+		# Trimmed to whatever is left of the cycle's build allowance, not
+		# refused outright -- a build that crosses the line still scores the
+		# part that fits, so the cap is a ceiling rather than a cliff on the
+		# one build that happens to meet it. Banked BEFORE the early return
+		# below, or a cap of zero would leave the counter behind for ever.
+		"build":  gained = clampi(TOURNEY_BUILD_CAP - tourney_build_pts, 0, TP_BUILD)
 		_: return
+	if kind == "build":
+		tourney_build_pts += gained
 	if gained <= 0:
 		return
 	var before := tourney_points
@@ -12420,8 +12660,8 @@ func _tourney_pip(host: Control, tier: int, at_ratio: float, lap: int) -> Button
 	# Button takes no input at all, and `tooltip_text` needs a pointer to hover
 	# -- so on the phone, which has neither, tapping a rung that was not yet
 	# claimable did nothing whatsoever. Guy tapped them and the game ignored
-	# him. Every rung answers now: the claimable one pays out, the rest say what
-	# they are worth and what it takes.
+	# him. Every rung answers now: the claimable one pays out, the rest put up a
+	# chip saying what they are worth.
 	pip.tooltip_text = "%d pts — %d spins%s" % [need, pip_spins,
 		"" if pip_cards == 0 else " + %d cards" % pip_cards]
 	for state in ["normal", "hover", "pressed", "disabled"]:
@@ -12450,9 +12690,10 @@ func _tourney_pip(host: Control, tier: int, at_ratio: float, lap: int) -> Button
 	Glyph.fill(pip, "cards" if pip_cards > 0 else "wheel", 12.0)
 
 	FX.press_feedback(pip)
-	var reward := "%d spins" % pip_spins
-	if pip_cards > 0:
-		reward += " + %d card%s" % [pip_cards, "" if pip_cards == 1 else "s"]
+	# Addressable by the harness: TIP=<tier> in tools/preview.gd presses a rung
+	# by number, because the bubble is the one thing on this card that only
+	# exists after a tap and only lives for a couple of seconds.
+	pip.set_meta("tourney_pip", tier)
 	pip.pressed.connect(func() -> void:
 		if ready:
 			# By hand, which is still the path when the auto-show was skipped
@@ -12461,11 +12702,8 @@ func _tourney_pip(host: Control, tier: int, at_ratio: float, lap: int) -> Button
 			_close_popup()
 			_open_tourney()
 			return
-		var note := "%s pts  →  %s" % [_fmt_compact(need), reward]
-		if claimed:
-			note = "Taken  ·  " + reward
 		Sfx.play("pop", -12.0)
-		_tourney_tip(host, at_ratio, note, claimed)
+		_tourney_tip(host, at_ratio, pip_spins, pip_cards, claimed)
 	)
 
 	if ready:
@@ -12476,15 +12714,32 @@ func _tourney_pip(host: Control, tier: int, at_ratio: float, lap: int) -> Button
 		pip.pivot_offset = Vector2(27, 27)
 	return pip
 
-# The little label a tapped rung puts up. One at a time, above the bar, gone on
-# its own -- a phone has no hover, so this is the whole of what `tooltip_text`
-# was supposed to be doing.
-func _tourney_tip(host: Control, at_ratio: float, text: String, taken: bool) -> void:
+# WHAT THE RUNG IS WORTH, AND NOTHING ELSE.
+#
+# This was a sentence -- "2.5K pts  →  400 spins + 2 cards" -- and it hung off
+# the side of the card. Two reasons, and the second is the one that made it a
+# bug: the sentence is wide, and the bubble is anchored to a rung that sits at
+# the end of a rail, so the widest label in the game was centred on the far
+# right of it. Guy tapped a rung and read half a line.
+#
+# A prize is an icon and a number everywhere else in this game -- the prize
+# tiles, the HUD capsules, the chest. So it is an icon and a number here: the
+# bolt and its count, the card fan and its count, nothing to read and nothing
+# to run out of room. What it COSTS is not on the chip; the rung's own place
+# along the bar, against the fill, is that number drawn to scale.
+#
+# One at a time, above the bar, gone on its own -- a phone has no hover, so
+# this is the whole of what `tooltip_text` was supposed to be doing.
+func _tourney_tip(host: Control, at_ratio: float, spins: int, cards: int,
+		taken: bool) -> void:
 	for c in host.get_children():
 		if c.has_meta("tourney_tip"):
 			host.remove_child(c)
 			c.queue_free()
 
+	# Green for a rung already taken, which is the colour that rung is wearing
+	# on the bar -- the chip does not have to say "Taken" if it matches.
+	var ink := Color(0.62, 0.85, 0.7) if taken else Lagoon.SAND
 	var tip := PanelContainer.new()
 	tip.set_meta("tourney_tip", true)
 	tip.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -12492,34 +12747,56 @@ func _tourney_tip(host: Control, at_ratio: float, text: String, taken: bool) -> 
 	sb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.94)
 	sb.set_corner_radius_all(12)
 	sb.set_border_width_all(2)
-	sb.border_color = Color(1.0, 0.87, 0.45, 0.85)
-	sb.content_margin_left = 12.0
-	sb.content_margin_right = 12.0
-	sb.content_margin_top = 5.0
-	sb.content_margin_bottom = 5.0
+	sb.border_color = Color(ink.r, ink.g, ink.b, 0.85) if taken \
+		else Color(1.0, 0.87, 0.45, 0.85)
+	sb.content_margin_left = 10.0
+	sb.content_margin_right = 10.0
+	sb.content_margin_top = 4.0
+	sb.content_margin_bottom = 4.0
 	tip.add_theme_stylebox_override("panel", sb)
 	host.add_child(tip)
 
-	var l := Lagoon.label(text, UI.F_CAPTION,
-		Color(0.62, 0.85, 0.7) if taken else Lagoon.SAND)
-	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	tip.add_child(l)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	tip.add_child(row)
+	# `_fmt_compact` like every other figure on this board, though the widest a
+	# chip ever gets is three digits and one: the last rung of the last track
+	# pays 823 spins and 8 cards.
+	_tip_prize(row, "bolt", _fmt_compact(spins), ink)
+	if cards > 0:
+		_tip_prize(row, "cards", str(cards), ink)
 
-	# Centred on the rung, then pulled back inside the bar: the first and last
-	# rungs sit at the ends of the rail, and a bubble centred on either of them
-	# hangs off the card.
+	# Centred on the rung, then held on the card. `at_ratio` is the anchor, so
+	# the chip tracks its own rung through any re-layout; `shift` is the only
+	# absolute part and it is what keeps the two end rungs' chips inside the
+	# rail, which is inset 30px and so has exactly that much room to give.
 	tip.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
 	tip.anchor_left = at_ratio
-	tip.anchor_top = 0.0
-	tip.resized.connect(func() -> void:
-		if not is_instance_valid(tip):
+	tip.anchor_right = at_ratio
+	var placing := [false]
+	var place := func() -> void:
+		if not is_instance_valid(tip) or placing[0]:
 			return
-		var half := tip.size.x * 0.5
-		var span := host.size.x
-		var centre := clampf(at_ratio * span, half - 30.0, span - half + 30.0)
-		tip.position = Vector2(centre - half - at_ratio * span, -tip.size.y - 2.0)
-	)
-	tip.offset_top = -34.0
+		placing[0] = true
+		var w: float = tip.size.x
+		var h: float = tip.size.y
+		var mid: float = at_ratio * host.size.x
+		var slack := 28.0
+		var lo := w * 0.5 - mid - slack
+		var hi := host.size.x - mid - w * 0.5 + slack
+		var shift := clampf(0.0, minf(lo, hi), maxf(lo, hi))
+		tip.offset_left = shift - w * 0.5
+		tip.offset_right = shift + w * 0.5
+		tip.offset_top = -h - 2.0
+		tip.offset_bottom = -2.0
+		placing[0] = false
+	tip.resized.connect(place)
+	# Sized and placed before it is shown, rather than a frame later: the pop
+	# grows from `size * 0.5`, and at a size of nothing that pivot is the top
+	# left corner and the chip swings in from off to one side.
+	tip.reset_size()
+	place.call()
 
 	FX.pop_in(tip, 0.18)
 	var away := tip.create_tween()
@@ -12528,6 +12805,15 @@ func _tourney_tip(host: Control, at_ratio: float, text: String, taken: bool) -> 
 	away.tween_callback(func() -> void:
 		if is_instance_valid(tip):
 			tip.queue_free())
+
+# One prize on the chip: the art at chip size, then its count. Shared by both
+# halves so the bolt and the card fan sit on the same baseline at the same
+# weight -- two of these read as one row, not as two chips crammed together.
+func _tip_prize(row: HBoxContainer, kind: String, text: String, ink: Color) -> void:
+	row.add_child(_prize_art(kind, 30.0))
+	var l := Lagoon.label(text, UI.F_CAPTION, ink, true)
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	row.add_child(l)
 
 # =============================================================================
 #  Where the tournament stands
@@ -12998,8 +13284,21 @@ func _open_tourney_rules() -> void:
 		var worth := Lagoon.gold_value(str(spec[2]), UI.F_LABEL)
 		row.add_child(worth)
 	vbox.add_child(Lagoon.divider())
+	# The cap is stated, and stated with its LIVE remainder. A ceiling a player
+	# can hit without being told it exists reads as the game having quietly
+	# stopped counting — which is the one thing a scoring screen must never let
+	# happen. _tourney_sync first, or a cycle that turned while the app was shut
+	# would print yesterday's remainder.
+	_tourney_sync()
+	var left := maxi(0, TOURNEY_BUILD_CAP - tourney_build_pts)
+	var build_rule := "Building counts up to %s points a cycle — %s left." \
+		% [_fmt(TOURNEY_BUILD_CAP), _fmt(left)]
+	if left <= 0:
+		build_rule = "Building has scored its %s points for this cycle. Raids still count." \
+			% _fmt(TOURNEY_BUILD_CAP)
 	for line in [
 			"A blocked attack scores nothing.",
+			build_rule,
 			"The top five win a prize when the clock runs out.",
 			"Your bet multiplies every steal and every attack — a bigger bet is a bigger score."]:
 		var l := _popup_row_label(line, UI.F_CAPTION)
@@ -16052,6 +16351,7 @@ func _save_dict() -> Dictionary:
 		"tourney_owed_points": tourney_owed_points,
 		"tourney_lap": tourney_lap,
 		"tourney_lap_base": tourney_lap_base,
+		"tourney_build_pts": tourney_build_pts,
 		"shields": shields,
 		"island_level": island_level,
 		"buildings": buildings,
@@ -16516,6 +16816,13 @@ func _load_game() -> void:
 	# never becomes available; an older save has neither key and starts at zero,
 	# which is track one, which is where it was.
 	tourney_lap_base = clampi(_i(data.get("tourney_lap_base", 0), 0), 0, tourney_points)
+	# Clamped into the cap it is spent against. A save carrying a negative here
+	# would hand back an unlimited build allowance, which is the whole thing the
+	# cap exists to deny -- and it is a save-file field, so that is one edit away
+	# rather than a theoretical concern. A save from before the cap starts at
+	# zero, which gives an existing cycle its full allowance once; that is the
+	# generous direction and it happens exactly once per player.
+	tourney_build_pts = clampi(_i(data.get("tourney_build_pts", 0), 0), 0, TOURNEY_BUILD_CAP)
 	# Coerced element by element, and the reason is not tidiness -- it is the
 	# difference between a claimed rung staying claimed and every restart
 	# handing the player the whole reward track again.

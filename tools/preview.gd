@@ -83,7 +83,7 @@ func _ready() -> void:
 	# SCORE and CLAIM own it for the same reason.
 	if OS.has_environment("SHOT") and not OS.has_environment("GRANT") \
 			and not OS.has_environment("SCORE") and not OS.has_environment("CLAIM") \
-			and not OS.has_environment("GOTO"):
+			and not OS.has_environment("GOTO") and not OS.has_environment("TIP"):
 		_shoot.call_deferred()
 
 # A tournament rung being crossed, from the outside.
@@ -308,6 +308,23 @@ func _open_page(game: Control, key: String) -> void:
 		var d := int(OS.get_environment("DAY"))
 		game.set("streak_days", maxi(0, d - 1))
 		game.set("daily_last", 0.0 if d <= 1 else game.call("_trusted_now") - game.DAILY_COOLDOWN)
+	# ALERTS=<n> stocks the notification log, because the alerts page is the
+	# one page whose controls depend on having content: the bar at the top
+	# carries an unread count and only offers "Clear all" when there is
+	# something to clear, so an empty log shows neither. A dev save is almost
+	# always empty.
+	if OS.has_environment("ALERTS"):
+		var n := maxi(1, int(OS.get_environment("ALERTS")))
+		var stamp: float = game.call("_now")
+		var seeded := []
+		for k in n:
+			seeded.append({"type": "raid" if k % 2 == 0 else "spins",
+				"text": ("Barnaby raided your vault \u2014 %s coins" % (1200 + k * 340))
+					if k % 2 == 0 else "+3 spins refilled  (%d/50)" % (20 + k),
+				"emoji": "\U01F3F4" if k % 2 == 0 else "\U01F300",
+				"ts": stamp - float(k) * 5400.0,
+				"read": k >= 3})
+		game.set("notif_log", seeded)
 	if key.begins_with("popup:"):
 		# PIGGY=full|empty|<n> pins the bank before the screen opens. The three
 		# faces are the point of that drawing and two of them are otherwise
@@ -316,7 +333,42 @@ func _open_page(game: Control, key: String) -> void:
 			var want := OS.get_environment("PIGGY")
 			var cap := int(CV.PIGGY_CAP)
 			game.set("piggy_coins", cap if want == "full" else (0 if want == "empty" else int(want)))
+		# TIP=<tier>[:<lap>] presses one tournament rung once the board is up
+		# and shoots the chip it puts up. That chip exists only after a tap and
+		# only lives 2.7 seconds, so it cannot be caught by a delay measured
+		# from start-up -- this owns the capture, the way GRANT and SCORE do.
+		# The track is parked first: a dev save has no live tournament, and a
+		# board with nothing on it has no rungs to press.
+		if OS.has_environment("TIP"):
+			# `_boot` going null is not the splash being gone -- it fades on
+			# its own afterwards, and a shot taken on the boot loop alone is a
+			# picture of the raccoon.
+			await get_tree().create_timer(1.6).timeout
+			var spec := OS.get_environment("TIP").split(":")
+			game.set("tourney_id", game.call("_tourney_now_id"))
+			game.set("tourney_lap", int(spec[1]) if spec.size() > 1 else 0)
+			game.set("tourney_lap_base", 0)
+			game.set("tourney_claimed", [0])
+			game.set("tourney_points", int(game.call("_tourney_tier_at", 1)) + 40)
+			game.call("_refresh")
+			game.call("_open_" + key.substr(6))
+			await get_tree().process_frame
+			await get_tree().process_frame
+			var want_tier := int(spec[0])
+			for b in game.find_children("*", "Button", true, false):
+				if b.has_meta("tourney_pip") and int(b.get_meta("tourney_pip")) == want_tier:
+					b.pressed.emit()
+			if OS.has_environment("SHOT"):
+				await _shoot()
+			return
 		game.call("_open_" + key.substr(6))
+		return
+	# PAGE=call:<method> presses a dialog open by name, for the ones that are
+	# not `_open_<something>` and so cannot be reached by the popup: route --
+	# every confirm in the game is `_confirm_<thing>` and none of them were
+	# shootable before this.
+	if key.begins_with("call:"):
+		game.call(key.substr(5))
 		return
 	if key.begins_with("collections:"):
 		# jump straight into one set's own page

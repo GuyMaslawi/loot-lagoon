@@ -649,6 +649,78 @@ begin
                        and public.tourney_progress() <= 1.0,
                            public.tourney_progress()::text);
 
+        -- --- brackets -------------------------------------------------------
+        --
+        -- The board returns at most 40 rows and the end-of-cycle dialog counted
+        -- the whole league, so at scale the two named different competitions.
+        -- These are the properties that stop that: the slot space partitions
+        -- exactly, a slice change SPLITS a bracket rather than reshuffling it,
+        -- and both readers ask the same question.
+        perform pg_temp.ck('one slice is the whole league, which is how this behaved before',
+                           public.tourney_bracket_range(0, 1) = array[0, 1024]
+                       and public.tourney_bracket_range(1023, 1) = array[0, 1024],
+                           public.tourney_bracket_range(1023, 1)::text);
+        perform pg_temp.ck('a slot always falls inside its own bracket',
+                           (select bool_and(s >= (public.tourney_bracket_range(s, k))[1]
+                                        and s <  (public.tourney_bracket_range(s, k))[2])
+                              from generate_series(0, 1023) s,
+                                   unnest(array[1,2,3,4,7,16,30,64]) k));
+        -- The partition property, which is the one that matters: no slot in two
+        -- brackets and no slot in none. A gap is a player nobody competes with.
+        perform pg_temp.ck('the brackets tile the slot space with no gap and no overlap',
+                           (select bool_and(ok) from (
+                               select count(distinct (public.tourney_bracket_range(s, k))[1]
+                                                  || ':' ||
+                                       (public.tourney_bracket_range(s, k))[2]) = k as ok
+                                 from generate_series(0, 1023) s,
+                                      unnest(array[1,2,4,8,16,32,64]) k
+                                group by k) t));
+        -- Contiguous runs, not modulo, is what makes a resize a SPLIT: everyone
+        -- who shared a bracket at k slices shares one of its two halves at 2k.
+        -- Modulo would scatter the whole league every time it grew.
+        perform pg_temp.ck('growing a league splits brackets instead of reshuffling them',
+                           (select bool_and(
+                               (public.tourney_bracket_range(a, 8))[1]
+                                   >= (public.tourney_bracket_range(a, 4))[1]
+                           and (public.tourney_bracket_range(a, 8))[2]
+                                   <= (public.tourney_bracket_range(a, 4))[2])
+                              from generate_series(0, 1023) a));
+        perform pg_temp.ck('a league nobody has reported in is one bracket',
+                           public.tourney_slices(7) = 1, public.tourney_slices(7)::text);
+        -- The cache is kept warm by the write path, because the board is
+        -- `stable` and cannot write. Alice reported above, so league 2 has a row.
+        perform pg_temp.ck('reporting a score refreshes the league size',
+                           (select members from public.tourney_leagues where league = 2) >= 1,
+                           coalesce((select members::text from public.tourney_leagues
+                                      where league = 2), 'no row'));
+        -- Driven off a written count rather than the fixture's own population,
+        -- which is whatever the tests above happened to insert.
+        update public.tourney_leagues set members = 30 where league = 2;
+        perform pg_temp.ck('thirty members is one bracket',
+                           public.tourney_slices(2) = 1, public.tourney_slices(2)::text);
+        update public.tourney_leagues set members = 31 where league = 2;
+        perform pg_temp.ck('and thirty-one is two',
+                           public.tourney_slices(2) = 2, public.tourney_slices(2)::text);
+        update public.tourney_leagues set members = 100000 where league = 2;
+        perform pg_temp.ck('a huge league is capped at 64 slices rather than shredded',
+                           public.tourney_slices(2) = 64, public.tourney_slices(2)::text);
+        update public.tourney_leagues set members = 1 where league = 2;
+        -- The defect itself: the board and the result must name one field.
+        perform pg_temp.be(alice);
+        r := public.tourney_board(100);
+        perform pg_temp.ck('the caller is still on their own board after bracketing',
+                           r::text like '%' || p_alice::text || '%', r::text);
+        perform pg_temp.ck('and the board and the end-of-cycle field agree on who was in it',
+                           (public.tourney_result(cyc)->>'field')::integer
+                             >= jsonb_array_length(r) - 1,
+                           public.tourney_result(cyc)::text || ' vs ' ||
+                             jsonb_array_length(r)::text || ' rows');
+        perform pg_temp.ck('every island has a slot to be bracketed by',
+                           not exists (select 1 from public.players where tourney_slot is null));
+        perform pg_temp.ck('and every slot is inside the space the ranges cover',
+                           (select bool_and(tourney_slot between 0 and 1023)
+                              from public.players));
+
         -- --- grants ---------------------------------------------------------
         perform pg_temp.ck('anon cannot report a tournament score',
                            not has_function_privilege('anon',
@@ -656,6 +728,13 @@ begin
         perform pg_temp.ck('while a signed-in player can',
                            has_function_privilege('authenticated',
                                'public.tourney_report(integer, integer)', 'execute'));
+        -- The league sizes are a population figure, which is exactly the kind
+        -- of thing a scraper wants and no player needs.
+        perform pg_temp.ck('nobody can ask the server how big a league is',
+                           not has_function_privilege('authenticated',
+                               'public.tourney_slices(integer)', 'execute')
+                       and not has_table_privilege('authenticated',
+                               'public.tourney_leagues', 'select'));
     end;
 
 

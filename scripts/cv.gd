@@ -1296,6 +1296,27 @@ static func curve(level: int) -> float:
 # island anybody is currently standing on can move by a coin.
 const COST_STEP_LATE := 1.31
 
+# WHAT A SPIN PAYS, at island-1 prices, measured rather than assumed.
+#
+# tools/qa_pace.tscn, 40,000 real spins through main.gd's own `_roll()` on
+# 2026-09-07: 487.8 coins off the reels plus 154.7 from the steal (which lands
+# on 3.92% of spins and is three quarters of a mean 5,263-coin vault) = 642.5.
+# An attack pays no coins at all; it flattens a hut and the coins come back
+# later as revenge, from the other side.
+#
+# Here so a coin figure can be quoted in the unit a player actually feels. Past
+# island ten the daily bonus prints seven digits and a player has no way to tell
+# whether that is a fortune or a rounding error -- it is neither, it is 19
+# spins, and it is 19 spins on every island in the game because both sides of
+# that division ride `curve()`. Which is exactly why this is a constant in
+# ISLAND-1 UNITS and callers divide a BASE figure by it: scale both and the
+# ratio is unchanged, but the float has done a pointless round trip through
+# 1e11 to get back to the same answer.
+#
+# Re-measure it, do not adjust it. It is the product of the reel table, the
+# triple rate and the vault size, and any of the three moving changes it.
+const COINS_PER_SPIN := 642.5
+
 static func cost_curve(level: int) -> float:
 	var l := clampi(level, 1, ECONOMY_MAX_LEVEL)
 	if l <= ECONOMY_KNEE:
