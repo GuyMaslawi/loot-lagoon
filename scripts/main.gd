@@ -928,7 +928,15 @@ func _after_boot() -> void:
 		_show_login()
 	# The takeover, if one is owed. See _maybe_show_powerup for why this is a
 	# session-start event and not something the once-a-second tick checks.
-	_maybe_show_powerup()
+	#
+	# A BEAT AFTER BOOT, NOT ON THE FRAME IT FINISHES. Everything the game says
+	# about the time the player was away -- the raids that happened, the
+	# tournament that settled, the island that completed -- is fired from the
+	# lines above this one and arrives over the next second or two as banners
+	# and dialogs. A takeover on the same frame lands on top of the lot, and
+	# _maybe_show_powerup's own guard cannot help because at that instant there
+	# is genuinely nothing up yet.
+	_after(2.2, _maybe_show_powerup)
 	# DEMO_RAID sails straight to a raid. An attack needs three hammers on the
 	# reels to happen for real, which is not a thing you can spin up on demand
 	# while looking at the animation it plays.
@@ -5694,12 +5702,16 @@ func _fill_grudges(vb: VBoxContainer) -> void:
 		when.add_theme_color_override("font_color", Lagoon.INK_FAINT)
 		col.add_child(when)
 
-	var note := _popup_row_label(
+	# _page_note, not ink on nothing. This line is added straight to the page
+	# body, which stands on the deep board -- and INK_FAINT is ink, tuned
+	# against cream card stock. On the board it measured 1.66 : 1, the worst
+	# text in the game and the only SEVERE row qa_contrast had. Anything that
+	# floats on a page rather than sitting on a card is white with an outline;
+	# that is what _page_note is for and it has been there all along.
+	var note := _page_note(
 		"Raid one of them back and the debt clears. The reels pick from this list first.",
 		UI.F_CAPTION)
 	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	note.add_theme_color_override("font_color", Lagoon.INK_FAINT)
 	vb.add_child(note)
 	vb.add_child(Lagoon.divider())
 
@@ -9115,6 +9127,17 @@ func _maybe_show_powerup() -> void:
 	if _current_page != slot_page and _current_page != village_page:
 		return
 	if get_tree().paused:
+		return
+	# AUTO SPIN IS A THING THE PLAYER SET RUNNING, and a dialog over it is the
+	# clearest possible case of the interruption this whole guard list exists to
+	# prevent -- the machine holds for an interruption rather than dying of one,
+	# so the takeover would not even lose the run, it would just sit on top of
+	# it until dismissed. qa_flows caught it as "1 spin in 25 seconds".
+	#
+	# A raid is the same argument: _raiding() covers the overlay and the frames
+	# either side of it, neither of which is a popup, so nothing above this line
+	# would have noticed one.
+	if auto_spin or _raiding():
 		return
 	powerup_shown = true
 	_save_game()
@@ -16005,6 +16028,24 @@ func _event_deadlines() -> Array:
 	if col_deadline > 0.0:
 		out.append({"id": "season", "ends": col_deadline, "name": "The card season",
 			"body": "One hour to finish a set before the season resets."})
+	# THE TWO EVENTS, and leaving them out would have made the ladder pointless
+	# on the platform it ships to. A deal chain runs for a day and its whole
+	# mechanic is a queue the player is part-way through -- but a player who is
+	# part-way through it is, by definition, not in the app. The one reminder
+	# the game is allowed to send is the one that says the queue is closing.
+	#
+	# Only while there is still something in it to take. A notification about an
+	# event the player has already finished is the kind that gets notifications
+	# turned off for good.
+	var chain := _active_deal()
+	if not chain.is_empty() and deal_taken < Deals.STEPS:
+		out.append({"id": "deal", "ends": deal_until, "name": String(chain["name"]),
+			"body": "%d rewards still on the ladder — it closes in an hour."
+				% (Deals.STEPS - deal_taken)})
+	var pu := _active_powerup()
+	if not pu.is_empty():
+		out.append({"id": "powerup", "ends": powerup_until, "name": String(pu["name"]),
+			"body": "One pack, three packs' worth. Gone in an hour."})
 	return out
 
 # How long before an event ends the player gets told. An hour: long enough to

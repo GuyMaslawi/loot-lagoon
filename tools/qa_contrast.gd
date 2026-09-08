@@ -71,6 +71,17 @@ func _ready() -> void:
 
 	for key in keys:
 		await _goto(key)
+		# THE SCREEN THIS HARNESS MEASURES HAS TO BE THE ONE IT ASKED FOR.
+		#
+		# The game can put a dialog up by itself -- the power-up takeover fires
+		# a couple of seconds into a session -- and a modal dims the whole page
+		# behind it. Every label on the page then measures against the dim
+		# rather than against its own card, and the report comes back with
+		# fifty failures and nineteen of them severe, none of which are real.
+		# It happened once, intermittently, which is the worst way for a harness
+		# to be wrong: the run before and the run after were clean.
+		m._close_popup(true)
+		await get_tree().process_frame
 		await _measure(key, m)
 
 	# ONE SET'S OWN PAGE, WHICH THE SHELF ABOVE DOES NOT REACH.
