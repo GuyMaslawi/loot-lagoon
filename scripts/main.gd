@@ -467,6 +467,33 @@ const MISSION_BONUS := {
 	"weekly": {"emoji": "🧰", "coins": 10000, "spins": 45},
 	"monthly": {"emoji": "🏆", "coins": 26000, "spins": 90},
 }
+
+# =============================================================================
+#  The milestone track
+# =============================================================================
+#
+# WHAT WAS WRONG WITH THE ALL-CLEAR BONUS, which this does not replace so much
+# as give a middle to. It paid for eight missions out of eight and nothing at
+# all for seven, and seven out of eight is what a good day actually looks like:
+# some of these need rivals to be online, some need the reels to offer a raid.
+# So the one reward on the page that was worth chasing was, most days, invisibly
+# out of reach -- and a player who worked that out stopped reading the page.
+#
+# The track pays at a quarter, a half, three quarters and the whole, so progress
+# is always worth something and the last rung is still the prize. Nothing got
+# cheaper: the final milestone IS the old bonus, at the old value, and the three
+# below it are new money.
+#
+# `at` is a fraction of the period's mission count, rounded up, so one table
+# serves boards of eight missions and boards of seven. `share` is a fraction of
+# that period's bonus, so a rung is worth the same relative thing on all three
+# boards and there is one number to tune rather than twelve.
+const MISSION_MILESTONES := [
+	{"at": 0.25, "share": 0.20},
+	{"at": 0.50, "share": 0.35},
+	{"at": 0.75, "share": 0.55},
+	{"at": 1.00, "share": 1.00},
+]
 const MISSION_TAB_INFO := {
 	"daily": {"emoji": "☀️", "title": "DAILY", "color": Color(0.3, 0.62, 0.38)},
 	"weekly": {"emoji": "🗓️", "title": "WEEKLY", "color": Color(0.25, 0.5, 0.85)},
@@ -4404,7 +4431,8 @@ func _ensure_missions() -> void:
 		# All three key spaces (day count, week count, year*12+month) are
 		# monotonic, so "later than the one we recorded" is well defined.
 		if st.is_empty() or _i(st.get("key", -1), -1) < key:
-			mission_state[period] = {"key": key, "progress": {}, "claimed": {}, "bonus": false}
+			mission_state[period] = {"key": key, "progress": {}, "claimed": {},
+				"bonus": false, "miles": {}}
 			changed = true
 	if changed:
 		_update_badges()
@@ -4414,6 +4442,82 @@ func _mission_ready(period: String, m: Dictionary) -> bool:
 	if bool(st["claimed"].get(m["id"], false)):
 		return false
 	return int(st["progress"].get(m["id"], 0)) >= _mission_target(m)
+
+# --- the milestone track -----------------------------------------------------
+
+# How many of this period's missions are already claimed. The track's unit.
+func _mission_done(period: String) -> int:
+	var st: Dictionary = mission_state[period]
+	var n := 0
+	for m in MISSION_DEFS[period]:
+		if bool(st["claimed"].get(m["id"], false)):
+			n += 1
+	return n
+
+# The mission count a rung sits at. Rounded UP, and clamped so two rungs can
+# never land on the same number -- on the monthly board, which has seven
+# missions, a quarter is 1.75 and a half is 3.5, and without the clamp a board
+# of four missions would put three rungs on top of each other.
+func _milestone_at(period: String, i: int) -> int:
+	var total: int = (MISSION_DEFS[period] as Array).size()
+	var want := int(ceil(float(MISSION_MILESTONES[i]["at"]) * float(total)))
+	return clampi(want, i + 1, total)
+
+# What a rung pays: a share of the period's own bonus. The last rung IS the
+# bonus, at its old value, so this is the same number it always was.
+func _milestone_reward(period: String, i: int) -> Dictionary:
+	var b: Dictionary = MISSION_BONUS[period]
+	var share: float = MISSION_MILESTONES[i]["share"]
+	return {
+		"coins": int(round(float(b["coins"]) * share)),
+		"spins": int(round(float(b["spins"]) * share)),
+	}
+
+# THE LAST RUNG KEEPS THE OLD SAVE KEY, and the ones below it get a new one.
+#
+# `bonus` is a bool that has been in the save since the all-clear existed, and
+# the top rung is that same reward at that same value -- so it stays where it
+# is rather than being migrated into the new field, and a save written by the
+# build before this one comes back with its bonus state intact.
+#
+# The new field is a DICTIONARY with string keys, not the array it obviously
+# wants to be. JSON has one number type: an array of ints written to the save
+# comes back as an array of floats, and `Array.has(2)` against `[2.0]` is false
+# -- which here would mean every lower rung silently re-arming on the next
+# launch. Object keys survive the round trip as the strings they were.
+func _milestone_claimed(period: String, i: int) -> bool:
+	if i >= MISSION_MILESTONES.size() - 1:
+		return bool(mission_state[period].get("bonus", false))
+	var raw = mission_state[period].get("miles", {})
+	var miles: Dictionary = raw if typeof(raw) == TYPE_DICTIONARY else {}
+	return bool(miles.get(str(i), false))
+
+func _milestone_ready(period: String, i: int) -> bool:
+	return not _milestone_claimed(period, i) \
+		and _mission_done(period) >= _milestone_at(period, i)
+
+func _claim_milestone(period: String, i: int) -> void:
+	if not _milestone_ready(period, i):
+		return
+	# The top rung goes through the original path, so there is exactly one
+	# place that can spend the all-clear bonus.
+	if i >= MISSION_MILESTONES.size() - 1:
+		_claim_mission_bonus(period)
+		return
+	var raw = mission_state[period].get("miles", {})
+	var miles: Dictionary = raw if typeof(raw) == TYPE_DICTIONARY else {}
+	miles[str(i)] = true
+	mission_state[period]["miles"] = miles
+	var r := _milestone_reward(period, i)
+	_grant_mission_reward(_scaled(int(r["coins"])), int(r["spins"]))
+	FX.confetti(self, 26)
+	_fill_page("quests")
+
+func _milestone_any_ready(period: String) -> bool:
+	for i in MISSION_MILESTONES.size():
+		if _milestone_ready(period, i):
+			return true
+	return false
 
 func _bonus_ready(period: String) -> bool:
 	var st: Dictionary = mission_state[period]
@@ -4427,7 +4531,7 @@ func _bonus_ready(period: String) -> bool:
 func _period_claimable(period: String) -> bool:
 	if mission_state.get(period, {}).is_empty():
 		return false
-	if _bonus_ready(period):
+	if _milestone_any_ready(period):
 		return true
 	for m in MISSION_DEFS[period]:
 		if _mission_ready(period, m):
@@ -10256,56 +10360,177 @@ func _update_quests_timer() -> void:
 		return
 	_quests_timer_label.text = "Resets in  %s" % _countdown_text(_period_reset_secs(quests_tab))
 
+# The milestone track: one card, four rungs, drawn along a bar.
+#
+# It replaces a single ALL-CLEAR BONUS row that paid for eight missions out of
+# eight and nothing for seven. See MISSION_MILESTONES for why that was the wrong
+# shape; this is the same reward with three smaller ones in front of it, so the
+# page has something to show for every mission claimed rather than only for the
+# last.
+#
+# The rungs are drawn ON the bar rather than listed under it. A list of four
+# rewards with four numbers beside them is a table; four markers standing on a
+# track the player can see themselves moving along is a ladder, and the whole
+# argument for the mechanic is that it reads as distance covered.
 func _quests_bonus_card(vb: VBoxContainer) -> void:
-	var st: Dictionary = mission_state[quests_tab]
-	var b: Dictionary = MISSION_BONUS[quests_tab]
-	var claimed_bonus := bool(st.get("bonus", false))
-	var ready := _bonus_ready(quests_tab)
+	var period := quests_tab
+	var info: Dictionary = MISSION_TAB_INFO[period]
+	var total: int = (MISSION_DEFS[period] as Array).size()
+	var done := _mission_done(period)
 
-	var panel := _tinted_card(vb, Lagoon.BRASS if ready else Color(Lagoon.BRASS.r, Lagoon.BRASS.g, Lagoon.BRASS.b, 0.30), ready)
-	if claimed_bonus:
-		panel.modulate.a = 0.55
+	var panel := _tinted_card(vb, Lagoon.BRASS, _milestone_any_ready(period))
 	FX.pop_in(panel, 0.3)
 	var margin := MarginContainer.new()
-	for mg in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
-		margin.add_theme_constant_override(mg, 14)
+	margin.add_theme_constant_override("margin_left", 16)
+	margin.add_theme_constant_override("margin_right", 16)
+	margin.add_theme_constant_override("margin_top", 14)
+	margin.add_theme_constant_override("margin_bottom", 14)
 	panel.add_child(margin)
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 14)
-	margin.add_child(row)
-	var chest := _emoji_label(str(b["emoji"]), 44)
-	row.add_child(chest)
-	if ready:
-		FX.pulse_forever(chest, 1.15, 0.7)
 	var col := VBoxContainer.new()
-	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	col.add_theme_constant_override("separation", 3)
-	row.add_child(col)
-	var t := Lagoon.label("ALL-CLEAR  BONUS", UI.F_LABEL, Lagoon.INK, true)
-	col.add_child(t)
-	var sub := _popup_row_label("Claim every mission to unlock", UI.F_CAPTION)
-	sub.add_theme_color_override("font_color", Lagoon.INK_SOFT)
-	col.add_child(sub)
-	var rrow := HBoxContainer.new()
-	rrow.add_theme_constant_override("separation", 12)
-	col.add_child(rrow)
-	rrow.add_child(_reward_chip("💰", "+%s" % _fmt_compact(_bonus_coins(quests_tab)), Lagoon.BRASS_LO))
-	# ABYSS, not LAGOON_DEEP. The drop-off is a mid teal and this card is pale
-	# sand -- "+15" is a reward and it was the faintest thing on the row at 3.74.
-	rrow.add_child(_reward_chip("🌀", "+%d" % int(b["spins"]), Lagoon.ABYSS))
-	if claimed_bonus:
-		row.add_child(_emoji_label("✅", 34))
+	col.add_theme_constant_override("separation", 10)
+	margin.add_child(col)
+
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 10)
+	col.add_child(head)
+	head.add_child(Lagoon.label("REWARD  TRACK", UI.F_LABEL, Lagoon.INK, true))
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(spacer)
+	var tally := Lagoon.chip("%d / %d  MISSIONS" % [done, total],
+		Color(info["color"]), UI.F_TINY)
+	head.add_child(tally)
+
+	# The bar, with the rungs pinned along it.
+	#
+	# A plain Control holds both, rather than the markers being children of the
+	# ProgressBar: a ProgressBar draws its fill over its own children, so a
+	# marker parented to it disappears the moment the player passes it -- which
+	# is precisely when it matters most.
+	var lane := Control.new()
+	lane.custom_minimum_size = Vector2(0, 152)
+	col.add_child(lane)
+
+	var bar := Lagoon.progress(Color(info["color"]).lightened(0.10))
+	bar.custom_minimum_size = Vector2(0, 26)
+	bar.max_value = total
+	bar.value = done
+	lane.add_child(bar)
+	bar.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	bar.offset_top = 62.0
+	bar.offset_bottom = 88.0
+
+	for i in MISSION_MILESTONES.size():
+		_milestone_pip(lane, period, i, total)
+
+	var note := _popup_row_label("Every mission you claim moves the track", UI.F_TINY)
+	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	note.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	col.add_child(note)
+
+# One rung, standing on the bar at its own mark.
+#
+# THE GEOMETRY IS THREE BANDS AND IT HAD TO BE, after the first pass drew the
+# reward and the mission-count pin inside one box and let them find their own
+# room: the pin landed on top of the reward on every rung, and the rung at the
+# far right -- anchored at fraction 1.0 with a box hung symmetrically around it
+# -- had half its width off the edge of the card. Fractional anchors put a thing
+# AT a point; they do not keep it on the page.
+#
+#   0 .. 56    rewards for the even rungs
+#  62 .. 88    the bar, and every rung's mission-count pin
+#  96 .. 152   rewards for the odd rungs
+#
+# Alternating above and below is not decoration either. Four rewards in a row on
+# a 620-unit card is 155 units each including the gaps, and the widest of them
+# reads "26,000 +90"; staggered, each one gets the width of two.
+func _milestone_pip(lane: Control, period: String, i: int, total: int) -> void:
+	var at := _milestone_at(period, i)
+	var reward := _milestone_reward(period, i)
+	var claimed := _milestone_claimed(period, i)
+	var ready := _milestone_ready(period, i)
+	var top := i % 2 == 0
+	var last := i >= MISSION_MILESTONES.size() - 1
+	var f := float(at) / float(maxi(1, total))
+
+	# The reward.
+	var box := Control.new()
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lane.add_child(box)
+	box.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	box.anchor_left = f
+	box.anchor_right = f
+	# A rung at either end is hung off that end rather than centred on it, which
+	# is the only way a box 132 wide sits inside a card whose edge it is on.
+	if f > 0.97:
+		box.offset_left = -132.0
+		box.offset_right = 0.0
+	elif f < 0.03:
+		box.offset_left = 0.0
+		box.offset_right = 132.0
 	else:
-		var btn := Button.new()
+		box.offset_left = -66.0
+		box.offset_right = 66.0
+	box.offset_top = 0.0 if top else 96.0
+	box.offset_bottom = 56.0 if top else 152.0
+
+	var btn := Button.new()
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.add_theme_font_size_override("font_size", UI.F_TINY)
+	if claimed:
+		btn.text = "\u2713  TAKEN"
+		_candy_button(btn, Lagoon.KELP)
+		btn.modulate = Color(1, 1, 1, 0.50)
+		btn.disabled = true
+	elif ready:
 		btn.text = "CLAIM"
-		btn.custom_minimum_size = Vector2(132, UI.TAP)
-		btn.disabled = not ready
-		_candy_button(btn, Color(0.95, 0.65, 0.15))
+		_candy_button(btn, Color(0.95, 0.65, 0.15) if last else Lagoon.KELP)
 		FX.press_feedback(btn)
-		if ready:
-			FX.pulse_forever(btn, 1.06, 0.7)
-		btn.pressed.connect(func() -> void: _claim_mission_bonus(quests_tab))
-		row.add_child(btn)
+		FX.pulse_forever(btn, 1.07, 0.75)
+		btn.pressed.connect(_claim_milestone.bind(period, i))
+	else:
+		# WHAT IT PAYS, NOT "LOCKED". A rung out of reach is the reason to claim
+		# the next mission, so it spends its whole width on the reward and says
+		# nothing about being unavailable -- the bar under it already does.
+		btn.text = "%s   +%d" % [_fmt_compact(_scaled(int(reward["coins"]))),
+			int(reward["spins"])]
+		_candy_button(btn, Lagoon.BRASS if last else Lagoon.LAGOON_DEEP)
+		Lagoon.set_enabled(btn, false)
+		btn.disabled = true
+	box.add_child(btn)
+	btn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	btn.offset_left = 4.0
+	btn.offset_right = -4.0
+
+	# The mark on the bar: how many missions this rung stands at. Its own child
+	# of the lane rather than of the box above, so the two can never be asked to
+	# share a rect -- which is exactly how they came to be drawn on top of each
+	# other.
+	var pin := Lagoon.stamp_plate(Lagoon.BRASS_HI if last else Lagoon.SAND)
+	pin.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lane.add_child(pin)
+	pin.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	pin.anchor_left = f
+	pin.anchor_right = f
+	# Hung off the end at the ends, like the reward above it. The last rung is
+	# always at fraction 1.0 -- it is the whole board -- so a pin centred there
+	# has half its width outside the card, where the rounded corner clips it.
+	if f > 0.97:
+		pin.offset_left = -44.0
+		pin.offset_right = 0.0
+	elif f < 0.03:
+		pin.offset_left = 0.0
+		pin.offset_right = 44.0
+	else:
+		pin.offset_left = -22.0
+		pin.offset_right = 22.0
+	pin.offset_top = 58.0
+	pin.offset_bottom = 92.0
+	var pl := Lagoon.label(str(at), UI.F_TINY,
+		Lagoon.BRASS_HI if last else Lagoon.SAND, true)
+	pl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	pin.add_child(pl)
 
 func _quest_card(vb: VBoxContainer, m: Dictionary, index: int) -> void:
 	var st: Dictionary = mission_state[quests_tab]

@@ -19,6 +19,7 @@ func _ready() -> void:
 	await _t_offline_raids()
 	await _t_deal_chain()
 	await _t_powerup()
+	await _t_milestones()
 	print("QA-FLOWS: %s" % ("ALL PASS" if fails == 0 else "%d FAILURES" % fails))
 	get_tree().quit(1 if fails > 0 else 0)
 
@@ -366,6 +367,69 @@ func _t_powerup() -> void:
 	m.powerup_pending = ""
 	m._close_popup(true)
 	await get_tree().create_timer(0.5).timeout
+
+# --- the mission reward track -------------------------------------------------
+#
+# The top rung is the old all-clear bonus and keeps its old save key; the three
+# below it live in a new one. Two things have to hold: a rung pays once, and the
+# whole board pays the same total it always did plus the three new rungs -- not
+# the bonus twice.
+func _t_milestones() -> void:
+	print("mission reward track")
+	for period in ["daily", "weekly", "monthly"]:
+		m._ensure_missions()
+		var st: Dictionary = m.mission_state[period]
+		st["claimed"] = {}
+		st["bonus"] = false
+		st["miles"] = {}
+		var total: int = (m.MISSION_DEFS[period] as Array).size()
+
+		# Marks are strictly increasing and land inside the board.
+		var last_at := 0
+		var ok_marks := true
+		for i in m.MISSION_MILESTONES.size():
+			var at: int = m._milestone_at(period, i)
+			if at <= last_at or at > total:
+				ok_marks = false
+			last_at = at
+		_chk("%s marks climb and fit the board" % period, ok_marks,
+			"%d missions" % total)
+
+		# Nothing is claimable on an empty board.
+		_chk("%s pays nothing at zero" % period, not m._milestone_any_ready(period))
+
+		# Claim the missions one at a time and take every rung as it opens.
+		var paid := 0
+		var before: int = m.coins
+		for mi in m.MISSION_DEFS[period]:
+			st["claimed"][mi["id"]] = true
+			for i in m.MISSION_MILESTONES.size():
+				if m._milestone_ready(period, i):
+					m._claim_milestone(period, i)
+					paid += 1
+		_chk("%s pays all four rungs across the board" % period, paid == 4,
+			"%d paid" % paid)
+		_chk("%s pays something" % period, m.coins > before)
+
+		# And nothing pays twice, however often it is asked.
+		var after: int = m.coins
+		for i in m.MISSION_MILESTONES.size():
+			m._claim_milestone(period, i)
+		_chk("%s rungs pay once" % period, m.coins == after, "+%d" % (m.coins - after))
+		_chk("%s marks the all-clear bonus spent" % period, bool(st.get("bonus", false)))
+
+		# THE SAVE ROUND TRIP, which is where an int-keyed array would have died
+		# quietly: JSON has one number type, so a list of claimed indices comes
+		# back as floats and every lower rung silently re-arms. String keys
+		# survive; this is what proves it.
+		var round_tripped = JSON.parse_string(JSON.stringify(m.mission_state))
+		m.mission_state = round_tripped
+		var rearmed := false
+		for i in m.MISSION_MILESTONES.size():
+			if m._milestone_ready(period, i):
+				rearmed = true
+		_chk("%s rungs survive a save round trip" % period, not rearmed)
+	await get_tree().process_frame
 
 # --- stars in, cards out ------------------------------------------------------
 func _t_boxes_and_melt() -> void:
