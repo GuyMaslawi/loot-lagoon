@@ -23,6 +23,21 @@ func _ready() -> void:
 	add_child(m)
 	await get_tree().create_timer(4.0).timeout
 	_quiet()
+	# NO TAKEOVER WHILE THIS RUNS.
+	#
+	# The power-up opens itself a couple of seconds into a session, and this
+	# harness spends several minutes driving the game by calling its methods
+	# directly. A dialog appearing part-way through does not fail anything on
+	# its own, but it changes what is on screen and what the tree is doing
+	# underneath a hundred timed awaits -- and the island-cost check came back
+	# "spent 43500, expected 84000" on one run in three and passed on the rest.
+	# A harness that is right two times out of three is worse than no harness.
+	#
+	# Pushed out through the game's own mechanism rather than a test-only flag:
+	# an offer that is not due cannot roll, and that is exactly the state a
+	# player between offers is in.
+	m.powerup_id = ""
+	m.powerup_next = m._now() + 86400.0 * 30.0
 
 	_section("1. the economy curve")
 	_t_curve()
