@@ -191,3 +191,115 @@ static func verify() -> Array:
 		if last_paid == steps.size() - 1:
 			problems.append("%s: ends on a paid rung -- the grand prize is unreachable" % id)
 	return problems
+
+
+# =============================================================================
+#  THE POWER UP — one price, three columns, two of them free
+# =============================================================================
+#
+# The other shape the reference stores all run: a takeover that shows THREE
+# stacks of goods side by side, with a price under the middle one and FREE under
+# the other two. Buying the middle hands over all three.
+#
+# It is worth being exact about what this is, because it would be easy to
+# dismiss as a bundle with a bigger picture. Mechanically that is what it is:
+# one product id, one charge, more goods than the pack alone. The reason it
+# converts better than the same value sold as one card is that a player cannot
+# price three columns against anything -- there is no shelf rate for "a pack
+# plus two gifts" -- while a single card with a bigger number on it is compared
+# straight back to the rung below it. The columns are the product.
+#
+# So the value has to be REAL, and it is: `bonus` below is paid on top of
+# everything the pack already pays. A "1+2" whose two free columns were carved
+# out of the pack's own contents would be a lie the player could work out with
+# arithmetic, and the one thing a store cannot survive is being caught at that.
+const POWERUP_HOURS := 12.0
+const POWERUP_DURATION := POWERUP_HOURS * 3600.0
+const POWERUP_COOLDOWN := 40.0 * 3600.0
+
+# Coins are island-1 units, like everywhere else.
+const POWERUPS := [
+	{
+		"id": "pu_deckhand",
+		"name": "Perfect Power Up",
+		"pack": "bundle_s",
+		"bonus": [
+			{"spins": 60, "coins": 50000},
+			{"spins": 40, "cards": 1},
+		],
+	},
+	{
+		"id": "pu_quartermaster",
+		"name": "Triple Haul",
+		"pack": "bundle_m",
+		"bonus": [
+			{"spins": 200, "coins": 200000},
+			{"spins": 150, "cards": 2, "shields": 1},
+		],
+	},
+	{
+		"id": "pu_squall",
+		"name": "Storm Triple",
+		"pack": "to_squall",
+		"bonus": [
+			{"spins": 50, "coins": 45000},
+			{"spins": 35, "cards": 1},
+		],
+	},
+]
+
+static func powerup_by_id(id: String) -> Dictionary:
+	for p in POWERUPS:
+		if String(p["id"]) == id:
+			return p
+	return {}
+
+# The three columns, left to right, as plain reward records. The PAID one is in
+# the middle, which is not decoration: it is the column the eye lands on first,
+# and putting a price there with FREE on both sides is the entire composition.
+static func powerup_columns(pu: Dictionary) -> Array:
+	var pack := CV.pack_by_id(String(pu["pack"]))
+	var bonus: Array = pu["bonus"]
+	return [
+		{"reward": bonus[0], "paid": false},
+		{"reward": {
+			"spins": pack.get("spins", 0),
+			"coins": pack.get("coins", 0),
+			"cards": pack.get("cards", 0),
+			"shields": pack.get("shields", 0),
+		}, "paid": true, "pack": pack},
+		{"reward": bonus[1], "paid": false},
+	]
+
+# --- the loyalty card --------------------------------------------------------
+#
+# The bar across the top of the reference's takeover is not a progress bar for
+# the offer -- it counts PURCHASES, and it pays a chest every few. It survives
+# the offer that showed it, which is what makes it a reason to buy the next one.
+#
+# Five is the number because it has to be reachable by a player who buys the
+# small packs and still mean something to one who buys the big ones, and the
+# reward is cards rather than currency for the same reason: cards are the one
+# thing in this game that money buys and grinding does not reliably produce.
+const LOYALTY_TARGET := 5
+const LOYALTY_REWARD := {"cards": 3, "tier": 2, "spins": 60}
+
+static func powerup_verify() -> Array:
+	var problems := []
+	var seen := {}
+	for pu in POWERUPS:
+		var id := String(pu["id"])
+		if seen.has(id):
+			problems.append("duplicate power-up id: %s" % id)
+		seen[id] = true
+		var pack := CV.pack_by_id(String(pu["pack"]))
+		if pack.is_empty():
+			problems.append("%s: no such pack '%s'" % [id, pu["pack"]])
+		elif not IAP.all_product_ids().has(IAP.product_id(pack)):
+			problems.append("%s: '%s' is not a sold product" % [id, pu["pack"]])
+		if (pu["bonus"] as Array).size() != 2:
+			problems.append("%s: needs exactly two free columns" % id)
+		for b in pu["bonus"]:
+			if (b as Dictionary).is_empty():
+				problems.append("%s: a free column pays nothing" % id)
+	return problems

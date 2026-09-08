@@ -560,6 +560,24 @@ var deal_taken := 0
 # `deal_taken == 6` because the sixth rung and the finale are two grants and
 # the app can be killed between them.
 var deal_finale := false
+# The live power-up takeover: which one, when it dies, the earliest the next may
+# roll, and whether this one has already been put in front of the player.
+#
+# `powerup_shown` is why the takeover is not a nuisance. An offer that opens
+# itself every time the game is launched is an ad; one that opens itself once
+# per offer and then waits to be found in the shop is a shop window. The flag
+# is cleared when the offer rolls over, not when the app does.
+var powerup_id := ""
+var powerup_until := 0.0
+var powerup_next := 0.0
+var powerup_shown := false
+# The offer whose Buy button was pressed, held across the store sheet. Saved
+# for the same reason topup_pending is: the window this lives in is Apple's own
+# dialog, and the app can be killed inside one -- which would charge the player
+# for the pack and quietly drop the two free columns they bought it for.
+var powerup_pending := ""
+# The loyalty card: paid purchases since the last chest it paid out.
+var loyalty_buys := 0
 # Where each shelf starts, by key. Node references, rebuilt with the page every
 # time it is filled -- so this is cleared at the top of _fill_shop rather than
 # held across a rebuild, where every entry would be a freed node.
@@ -577,6 +595,8 @@ var _offer_timer_label: Label
 # repeat.
 var _deal_timer_label: Label
 var _deal_last_id := ""
+var _powerup_timer_label: Label
+var _powerup_last_id := ""
 var col_owned := {}
 # set id -> [count, count, ...], how many spare copies of each card are held.
 # Pulling a card you already have used to be a dead beat with a coin refund
@@ -879,6 +899,9 @@ func _after_boot() -> void:
 	Diag.awake("boot")
 	if profile.is_empty():
 		_show_login()
+	# The takeover, if one is owed. See _maybe_show_powerup for why this is a
+	# session-start event and not something the once-a-second tick checks.
+	_maybe_show_powerup()
 	# DEMO_RAID sails straight to a raid. An attack needs three hammers on the
 	# reels to happen for real, which is not a thing you can spin up on demand
 	# while looking at the animation it plays.
@@ -1156,6 +1179,7 @@ func _capture_page(key: String) -> void:
 			# save, and the harness waits five seconds before it opens
 			# anything, so by here there is always one live.
 			"deal":    _open_deal()
+			"powerup": _open_powerup()
 			"intro":   _open_intro()
 			"build":   _intro_build_card()
 			# The lap crossing. Reaching it honestly is thirty islands, so the
@@ -2191,6 +2215,9 @@ func _process(delta: float) -> void:
 		_deal_tick()
 		if _deal_timer_label != null and is_instance_valid(_deal_timer_label):
 			_deal_timer_label.text = "ENDS  IN  %s" % _deal_countdown_text()
+		_powerup_tick()
+		if _powerup_timer_label != null and is_instance_valid(_powerup_timer_label):
+			_powerup_timer_label.text = "ENDS  IN  %s" % _powerup_countdown_text()
 		if _current_page == pages.get("quests"):
 			# roll missions over live if a cycle ends while the page is open
 			if mission_state.get(quests_tab, {}).is_empty() or int(mission_state[quests_tab]["key"]) != _period_key(quests_tab):
@@ -2296,6 +2323,12 @@ func _resume_from_away() -> void:
 	_flush_save()
 	Alerts.set_badge(_unread_count())
 	Diag.awake(_page_name(_current_page))
+	# The other honest "a session is starting" moment. A phone that has been in
+	# a pocket since yesterday and a phone that was cold-launched are the same
+	# arrival as far as the player is concerned, and only one of them goes
+	# through boot. Last, after the offline credits have landed, so the takeover
+	# never opens on top of a "while you were away" banner.
+	_maybe_show_powerup()
 
 # =============================================================================
 #  The Spin Tide, client side
@@ -6742,10 +6775,18 @@ func _fill_shop(vb: VBoxContainer) -> void:
 	_offer_timer_label = null
 	_shop_anchors.clear()
 
-	# Order matters more here than anywhere else on the page. The two things
-	# that expire -- the live offer and the one-time starter -- go above the
-	# standing shelf, because a player who scrolls past a countdown to reach a
-	# price list has already been told the countdown was the less urgent thing.
+	# Order matters more here than anywhere else on the page. Everything that
+	# expires goes above the standing shelf, because a player who scrolls past a
+	# countdown to reach a price list has already been told the countdown was
+	# the less urgent thing.
+	#
+	# The two events come first of all, and they have to be here at all: the
+	# power-up's takeover shows itself once per offer at the start of a session
+	# and never again, so without a door on this page an offer dismissed in the
+	# first two seconds of a launch is gone for twelve hours. An offer the
+	# player cannot go back and look at is not an offer.
+	_event_entries(vb)
+
 	var live := _active_offer()
 	if not live.is_empty():
 		_offer_card(vb, live)
@@ -6806,6 +6847,81 @@ func _fill_shop(vb: VBoxContainer) -> void:
 # down. Gold text floating on the page needed a heavy outline to survive the
 # backdrop; on brass it needs none, and the reader gets a shape they have
 # already learned to read as "heading".
+# The doors to the two running events, at the top of the shop.
+#
+# One row each, not a card each: these are not products, they are places to go,
+# and a full shop card would put them in competition with the packs underneath
+# on the packs' own terms -- which they would win, being free, and the shelf
+# would never get read.
+func _event_entries(vb: VBoxContainer) -> void:
+	var pu := _active_powerup()
+	if not pu.is_empty():
+		_event_entry(vb, String(pu["name"]), "1 + 2  —  buy one pack, get two free",
+			"box", Lagoon.BRASS, _powerup_countdown_text(), _open_powerup)
+	var chain := _active_deal()
+	if not chain.is_empty():
+		var left := Deals.STEPS - deal_taken
+		var sub := "All six taken — grand prize paid" if left <= 0 \
+			else ("%d free and paid rewards waiting" % left if deal_taken == 0 \
+			else "%d of %d rewards still to take" % [left, Deals.STEPS])
+		_event_entry(vb, String(chain["name"]), sub, String(chain["glyph"]),
+			Color(chain["hue"]), _deal_countdown_text(), _open_deal)
+
+func _event_entry(vb: VBoxContainer, title: String, sub: String, glyph: String,
+		hue: Color, clock: String, open: Callable) -> void:
+	var card := _tinted_card(vb, hue, true)
+	var btn := Button.new()
+	btn.flat = true
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.custom_minimum_size = Vector2(0, 118)
+	btn.pressed.connect(open)
+	FX.press_feedback(btn)
+	card.add_child(btn)
+
+	# The row is drawn INSIDE the button rather than beside it. A flat Button
+	# with children is the only way in this toolkit to make a whole card
+	# pressable without either a transparent overlay eating the taps meant for
+	# what is under it, or a container swallowing the press before the button
+	# sees it.
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 14)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	btn.add_child(row)
+	row.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for m in [["offset_left", 16.0], ["offset_right", -16.0],
+			["offset_top", 12.0], ["offset_bottom", -12.0]]:
+		row.set(m[0], m[1])
+
+	var mark := Glyph.new()
+	mark.kind = glyph
+	mark.custom_minimum_size = Vector2(72, 72)
+	mark.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(mark)
+	FX.pulse_forever(mark, 1.07, 1.5)
+
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	col.add_theme_constant_override("separation", 2)
+	row.add_child(col)
+	col.add_child(Lagoon.label(title, UI.F_BODY, Lagoon.INK, true))
+	var sl := Lagoon.label(sub, UI.F_CAPTION, Lagoon.INK_SOFT)
+	sl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(sl)
+
+	var right := VBoxContainer.new()
+	right.alignment = BoxContainer.ALIGNMENT_CENTER
+	right.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	right.add_theme_constant_override("separation", 6)
+	row.add_child(right)
+	var plate := Lagoon.stamp_plate(Lagoon.CORAL_HI)
+	plate.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	right.add_child(plate)
+	plate.add_child(Lagoon.label(clock, UI.F_TINY, Lagoon.CORAL_HI, true))
+	var go := Lagoon.chip("OPEN", Lagoon.KELP, UI.F_TINY)
+	go.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	right.add_child(go)
+
 func _shop_section(vb: VBoxContainer, key: String, title: String) -> void:
 	# A ribbon across the column. It used to be a small brass pill with a faded
 	# rule out to each side -- a heading that said "heading" politely, on a page
@@ -6930,8 +7046,21 @@ func _pile_art(kind: String, rung: int, rungs: int, shrink := 1.0) -> Control:
 	var f := float(rung) / float(maxi(1, rungs - 1))
 
 	if kind == "spins":
-		# Ship's wheels, drawn rather than textured -- the same glyph the HUD
-		# counter and the nav disc use, so a bought spin looks like a spin.
+		# THE REEL'S BOLT, not the ship's wheel this used to fan.
+		#
+		# The note that stood here said the wheel was chosen so that "a bought
+		# spin looks like a spin", and it was right about the goal and wrong
+		# about which drawing meets it. The shop card this pile sits on lists
+		# its contents an inch to the right, and that list is the bolt -- so the
+		# card showed two different pictures of the same currency, side by side,
+		# on the same object.
+		#
+		# The rule the whole game now follows: THE BOLT IS THE SPINS YOU HAVE,
+		# the wheel is the act of spinning. The bolt is a symbol on the strips
+		# that pays spins, so the player is taught what it means every time they
+		# play; it is also what flies to the meter when spins are won, and it is
+		# painted art rather than a vector outline. The wheel keeps the SPIN
+		# button and the nav tab, where it is a verb.
 		var n := 1 + int(round(f * 4.0))
 		var side := 46.0 + f * 30.0
 		# Outermost first, centre last, so the fan closes towards the front
@@ -6942,9 +7071,11 @@ func _pile_art(kind: String, rung: int, rungs: int, shrink := 1.0) -> Control:
 		order.sort_custom(func(a: int, b: int) -> bool:
 			return absf(float(a) - float(n - 1) * 0.5) > absf(float(b) - float(n - 1) * 0.5))
 		for i in order:
-			var g := Glyph.new()
-			g.kind = "wheel"
-			g.tint = Lagoon.LAGOON if i % 2 == 0 else Lagoon.LAGOON.lightened(0.20)
+			var g := _prize_art("bolt", side)
+			# The alternation was a glyph `tint` and a texture has none, so it
+			# is a modulate now. It is what keeps a fan of five from reading as
+			# one smeared shape -- every other bolt sits back half a step.
+			g.modulate = Color(1, 1, 1, 1) if i % 2 == 0 else Color(0.90, 0.85, 0.72)
 			g.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			box.add_child(g)
 			# A shallow fan rather than a stack: overlapping discs of one shape
@@ -8802,6 +8933,358 @@ func _deal_pay_finale(quiet: bool) -> void:
 	ok.pressed.connect(func() -> void: _close_popup())
 	vbox.add_child(ok)
 
+# =============================================================================
+#  The power up
+# =============================================================================
+#
+# One price, three columns, two of them free. The data and the argument for it
+# are in scripts/deals.gd; this is the rotation, the screen and the grant.
+
+func _active_powerup() -> Dictionary:
+	if powerup_id == "" or _now() >= powerup_until:
+		return {}
+	return Deals.powerup_by_id(powerup_id)
+
+func _powerup_countdown_text() -> String:
+	var left := maxi(0, int(powerup_until - _now()))
+	return "%d:%02d:%02d" % [left / 3600, (left / 60) % 60, left % 60]
+
+func _powerup_tick() -> void:
+	var now := _now()
+	if powerup_id != "":
+		if now >= powerup_until:
+			powerup_id = ""
+			powerup_until = 0.0
+			powerup_shown = false
+			powerup_next = now + Deals.POWERUP_COOLDOWN
+			_save_game()
+			if _current_page == pages.get("shop"):
+				_fill_page("shop")
+		return
+	if now < powerup_next:
+		return
+	# Never the same one twice running, for the same reason the chain rotation
+	# avoids it: two identical takeovers in a row read as the game having one
+	# offer rather than a calendar of them.
+	var pool := []
+	for p in Deals.POWERUPS:
+		if String(p["id"]) != _powerup_last_id:
+			pool.append(p)
+	if pool.is_empty():
+		pool = Deals.POWERUPS.duplicate()
+	var pick: Dictionary = pool[randi() % pool.size()]
+	powerup_id = String(pick["id"])
+	_powerup_last_id = powerup_id
+	powerup_until = now + Deals.POWERUP_DURATION
+	powerup_shown = false
+	_save_game()
+	if _current_page == pages.get("shop"):
+		_fill_page("shop")
+
+# ONCE PER OFFER, AT THE START OF A SESSION, AND ONLY WHERE THERE IS NOTHING TO
+# INTERRUPT.
+#
+# It was on the once-a-second tick first and that was wrong twice over. The
+# harness caught it as a node leak -- the takeover opening mid page-spam and
+# still standing when the tree was counted -- and the leak was the symptom. The
+# actual problem is that an offer which can open at ANY second opens in the
+# middle of things: between two spins, on the way to the shop, a beat after a
+# raid. That is not a shop window, it is an interruption, and the fact that the
+# player has to dismiss it to get back to what they were doing is exactly what
+# makes people uninstall this kind of game.
+#
+# So it fires at the two moments that honestly are "a session is starting" --
+# boot, and coming back from the background -- and the offer is otherwise found
+# where offers belong, on the shop page. Once per offer, not once per launch:
+# the flag clears when the offer rolls over, not when the app does.
+#
+# The guards below are the second half of the same argument. A takeover over a
+# raid, a chest result or the sign-in gate lands on top of something the player
+# asked for, so it waits for the machine or the island with nothing else up.
+func _maybe_show_powerup() -> void:
+	if powerup_shown or _active_powerup().is_empty():
+		return
+	if _popup != null or _boot != null or _journey_layer != null:
+		return
+	if _current_page != slot_page and _current_page != village_page:
+		return
+	if get_tree().paused:
+		return
+	powerup_shown = true
+	_save_game()
+	_open_powerup()
+
+func _open_powerup() -> void:
+	var pu := _active_powerup()
+	if pu.is_empty():
+		return
+	var cols := Deals.powerup_columns(pu)
+	var pack: Dictionary = cols[1]["pack"]
+	var vbox := _open_popup(String(pu["name"]), 660.0, true)
+	if not vbox.is_inside_tree():
+		return
+	_powerup_timer_label = null
+
+	# "1 + 2", which is the whole offer in three characters, STAMPED ON A PLATE.
+	#
+	# Two goes at this before the plate. Lagoon.wordmark was the obvious first
+	# choice and it was invisible: it sets warm sand over a brass outline
+	# because it is built for the title screen, where it sits on open water.
+	# This dialog is cream paper, and sand on cream is sand on cream. Brass
+	# highlight over the deep keyline read, but only as an outline drawing --
+	# brass on cream is about 2.4 : 1, so the letters were their own edges with
+	# nothing inside them.
+	#
+	# A headline cannot be fixed by picking a better ink when the paper is the
+	# problem. On a deep plate the same brass clears 7 : 1 and the thing reads
+	# as a stamped badge, which is what the reference screens do with theirs.
+	var eq_wrap := CenterContainer.new()
+	vbox.add_child(eq_wrap)
+	var eq_plate := PanelContainer.new()
+	var eq_sb := StyleBoxFlat.new()
+	eq_sb.bg_color = Lagoon.HULL
+	eq_sb.set_corner_radius_all(22)
+	eq_sb.set_border_width_all(4)
+	eq_sb.border_color = Lagoon.BRASS
+	eq_sb.content_margin_left = 40.0
+	eq_sb.content_margin_right = 40.0
+	eq_sb.content_margin_top = 2.0
+	eq_sb.content_margin_bottom = 8.0
+	eq_plate.add_theme_stylebox_override("panel", eq_sb)
+	eq_wrap.add_child(eq_plate)
+	var eq := Lagoon.title("1  +  2", 78, Lagoon.BRASS_HI, Lagoon.ABYSS)
+	eq.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	eq_plate.add_child(eq)
+
+	var pitch := Lagoon.chip("BUY  1  PACK  &  GET  2  FREE", Lagoon.CORAL, UI.F_CAPTION)
+	pitch.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	vbox.add_child(pitch)
+
+	_loyalty_track(vbox)
+
+	# The three columns, with a "+" between them. The plus is a real character
+	# on a plate rather than a label, because at the size this screen needs it
+	# a bare "+" on cream is a smudge between two cards.
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	vbox.add_child(row)
+	for i in cols.size():
+		if i > 0:
+			var plus := Lagoon.title("+", UI.F_TITLE, Lagoon.BRASS_HI, Lagoon.BRASS_LO)
+			plus.custom_minimum_size = Vector2(34, 0)
+			plus.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			plus.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+			row.add_child(plus)
+		row.add_child(_powerup_column(cols[i], pack))
+
+	# The countdown, at the foot. On the ladder it goes at the top because the
+	# clock is the reason to open the screen at all; here the reason is the
+	# offer itself and the clock is the closing argument.
+	var clock := CenterContainer.new()
+	vbox.add_child(clock)
+	var plate := Lagoon.stamp_plate(Lagoon.CORAL_HI)
+	clock.add_child(plate)
+	_powerup_timer_label = Lagoon.label("", UI.F_CAPTION, Lagoon.CORAL_HI, true)
+	_powerup_timer_label.text = "ENDS  IN  %s" % _powerup_countdown_text()
+	plate.add_child(_powerup_timer_label)
+
+func _powerup_column(col: Dictionary, pack: Dictionary) -> Control:
+	var paid: bool = col["paid"]
+	var reward: Dictionary = col["reward"]
+
+	var holder := VBoxContainer.new()
+	holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	var card := _tinted_card(holder, Lagoon.BRASS if paid else Lagoon.LAGOON, paid)
+	card.size_flags_vertical = Control.SIZE_EXPAND_FILL
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 8)
+	margin.add_theme_constant_override("margin_right", 8)
+	margin.add_theme_constant_override("margin_top", 12)
+	margin.add_theme_constant_override("margin_bottom", 12)
+	card.add_child(margin)
+
+	var body := VBoxContainer.new()
+	body.alignment = BoxContainer.ALIGNMENT_CENTER
+	body.add_theme_constant_override("separation", 6)
+	margin.add_child(body)
+
+	# A HEAD ON EVERY COLUMN. Without one the two free stacks are anonymous
+	# piles of goods and the offer reads as "a pack, and some stuff" rather than
+	# as three packs -- which is the only claim it is making.
+	var head := Lagoon.chip("YOUR  PACK" if paid else "FREE  PACK",
+		Lagoon.BRASS if paid else Lagoon.KELP, UI.F_TINY)
+	head.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	body.add_child(head)
+
+	# STACKED, NOT IN A ROW. Three columns on a 660-unit dialog leaves about 190
+	# each, and two prizes side by side inside that is a 60px picture with a
+	# four-character number under it -- unreadable, and it makes the goods look
+	# cheap, which is the opposite of what a takeover is for. Down the column
+	# each prize gets the full width.
+	for entry in [["bolt", int(reward.get("spins", 0))],
+			["coin", _scaled(int(reward.get("coins", 0)))],
+			["cards", int(reward.get("cards", 0))],
+			["shield", int(reward.get("shields", 0))]]:
+		var n: int = entry[1]
+		if n <= 0:
+			continue
+		body.add_child(_prize_column(String(entry[0]), 76.0, _fmt_compact(n),
+			Lagoon.INK, 1.0, UI.F_LABEL,
+			Color(1.0, 0.85, 0.4, 0.45) if paid else Color(0, 0, 0, 0)))
+
+	var pad := Control.new()
+	pad.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	body.add_child(pad)
+
+	var btn := Button.new()
+	btn.custom_minimum_size = Vector2(0, UI.TAP)
+	btn.add_theme_font_size_override("font_size", UI.F_LABEL if paid else UI.F_CAPTION)
+	if paid:
+		btn.text = IAP.price_for(pack)
+		_candy_button(btn, Color(0.28, 0.68, 0.34))
+		FX.press_feedback(btn)
+		FX.pulse_forever(btn, 1.04, 1.25)
+		btn.pressed.connect(func() -> void:
+			# The intent is recorded BEFORE the store sheet opens, and it is
+			# recorded on disk. Between here and the receipt is Apple's own
+			# dialog, which the app can be killed inside; without this the
+			# player would be charged for the pack and lose the two columns the
+			# charge was for.
+			powerup_pending = powerup_id
+			_flush_save()
+			_close_popup()
+			_confirm_purchase(pack)
+		)
+	else:
+		# FREE, with a lock, and it is the same argument as the ladder's: a
+		# greyed control reads as broken, a padlock reads as "this comes with
+		# the one in the middle".
+		btn.text = "FREE"
+		_candy_button(btn, Lagoon.KELP)
+		Lagoon.set_enabled(btn, false)
+		btn.disabled = true
+		var lock := Glyph.new()
+		lock.kind = "lock"
+		lock.custom_minimum_size = Vector2(28, 28)
+		lock.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		btn.add_child(lock)
+		lock.set_anchors_preset(Control.PRESET_CENTER_RIGHT)
+		lock.offset_left = -40.0
+		lock.offset_right = -12.0
+		lock.offset_top = -14.0
+		lock.offset_bottom = 14.0
+	body.add_child(btn)
+	return holder
+
+# --- the loyalty card --------------------------------------------------------
+
+func _loyalty_track(vbox: VBoxContainer) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	vbox.add_child(row)
+
+	# The SHOP mark, not a medal. A medal is the podium's icon and it means
+	# "you placed"; this counts packs bought. It also drew as a red smudge at
+	# 44px -- the medal's ribbon is coral and at that size the ribbon is most of
+	# what survives.
+	var tag := Glyph.new()
+	tag.kind = "shop"
+	tag.custom_minimum_size = Vector2(46, 46)
+	tag.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(tag)
+
+	var bar := Lagoon.progress(Lagoon.URCHIN)
+	bar.custom_minimum_size = Vector2(0, 38)
+	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	bar.max_value = Deals.LOYALTY_TARGET
+	bar.value = mini(loyalty_buys, Deals.LOYALTY_TARGET)
+	row.add_child(bar)
+	Lagoon.progress_value(bar, "%d / %d" % [mini(loyalty_buys, Deals.LOYALTY_TARGET),
+		Deals.LOYALTY_TARGET], UI.F_CAPTION)
+
+	var chest := Glyph.new()
+	chest.kind = "box"
+	chest.custom_minimum_size = Vector2(50, 50)
+	chest.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(chest)
+
+	var note := _popup_row_label("Buy any %d packs for a free card chest" % Deals.LOYALTY_TARGET,
+		UI.F_TINY)
+	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	note.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	vbox.add_child(note)
+
+# Counted on every paid pack, not only on power-ups. The card is a reason to
+# make the NEXT purchase wherever it happens, and one that only counted
+# takeovers would be invisible to the players who buy off the shelf.
+func _loyalty_add() -> void:
+	loyalty_buys += 1
+	if loyalty_buys < Deals.LOYALTY_TARGET:
+		_save_game()
+		return
+	loyalty_buys = 0
+	var cards := []
+	for i in int(Deals.LOYALTY_REWARD.get("cards", 0)):
+		cards.append(_grant_chest_card(int(Deals.LOYALTY_REWARD.get("tier", 1)), 0))
+	_grant_spins(int(Deals.LOYALTY_REWARD.get("spins", 0)),
+		Vector2(view_size().x * 0.5, view_size().y * 0.42))
+	_flush_save()
+	# QUEUED BEHIND WHATEVER THE PURCHASE ITSELF PUT UP. _grant_pack opens the
+	# pack result or the chest result the moment it returns, and _open_popup
+	# closes whatever is already there -- so a loyalty chest opened here would
+	# replace the thing the player just paid for with a thing they did not.
+	_after(1.4, func() -> void:
+		if not cards.is_empty():
+			_show_chest_result(cards, "Loyalty Chest!",
+				"%d packs bought — here is your chest." % Deals.LOYALTY_TARGET))
+
+# --- the grant ---------------------------------------------------------------
+
+# The two free columns. Called from _on_purchase_ok once the pack itself has
+# been handed over, and only when the purchase came from the takeover.
+func _powerup_credit_purchase(pack_id: String) -> void:
+	if powerup_pending == "":
+		return
+	var pu := Deals.powerup_by_id(powerup_pending)
+	if pu.is_empty() or String(pu["pack"]) != pack_id:
+		return
+	# Cleared before the grant, never after: the grant writes the save, and a
+	# record left standing through it would survive a crash mid-grant and pay
+	# the bonus columns a second time on the next launch.
+	powerup_pending = ""
+	# The offer is spent. Leaving the countdown running on a takeover the player
+	# has already bought is the shop advertising at someone who just paid.
+	if powerup_id == String(pu["id"]):
+		powerup_id = ""
+		powerup_until = 0.0
+		powerup_shown = false
+		powerup_next = _now() + Deals.POWERUP_COOLDOWN
+		_powerup_timer_label = null
+	var from := Vector2(view_size().x * 0.5, view_size().y * 0.42)
+	var cards := []
+	for bonus in pu["bonus"]:
+		var b: Dictionary = bonus
+		var sp := int(b.get("spins", 0))
+		var co := _scaled(int(b.get("coins", 0)))
+		if sp > 0:
+			_grant_spins(sp, from)
+		if co > 0:
+			_grant_coins(co, from)
+		_grant_shields(int(b.get("shields", 0)), from)
+		for i in int(b.get("cards", 0)):
+			cards.append(_grant_chest_card(int(b.get("tier", 1)), 0))
+	_flush_save()
+	_refresh()
+	_after(1.4, func() -> void:
+		if not cards.is_empty():
+			_show_chest_result(cards, "Your 2 Free Packs!")
+		else:
+			_banner("Both free packs delivered!", Lagoon.KELP, "🎁"))
+
 # --- contextual offers --------------------------------------------------
 #
 # The moment a player is stopped by a number is the moment the number is worth
@@ -9245,6 +9728,9 @@ func _on_purchase_ok(product_id: String) -> void:
 	# -- the player would have paid, received the goods, and watched the ladder
 	# stay where it was.
 	_deal_credit_purchase(short)
+	_powerup_credit_purchase(short)
+	# Every paid pack counts, wherever it was bought. See _loyalty_add.
+	_loyalty_add()
 	IAP.finish(product_id)
 
 # Backing out of Apple's sheet is a decision, not a fault. Take the spinner
@@ -17052,6 +17538,8 @@ func _sanitize_clock() -> void:
 	offer_next = minf(offer_next, now + CV.OFFER_COOLDOWN)
 	deal_until = minf(deal_until, now + Deals.CHAIN_DURATION)
 	deal_next = minf(deal_next, now + Deals.CHAIN_COOLDOWN)
+	powerup_until = minf(powerup_until, now + Deals.POWERUP_DURATION)
+	powerup_next = minf(powerup_next, now + Deals.POWERUP_COOLDOWN)
 	col_deadline = minf(col_deadline, now + CV.COLLECTION_SEASON_DAYS * 86400.0)
 	for entry in notif_log:
 		if typeof(entry) == TYPE_DICTIONARY:
@@ -17177,6 +17665,12 @@ func _save_dict() -> Dictionary:
 		"deal_next": deal_next,
 		"deal_taken": deal_taken,
 		"deal_finale": deal_finale,
+		"powerup_id": powerup_id,
+		"powerup_until": powerup_until,
+		"powerup_next": powerup_next,
+		"powerup_shown": powerup_shown,
+		"powerup_pending": powerup_pending,
+		"loyalty_buys": loyalty_buys,
 		"notif_enabled": notif_enabled,
 		"notif_types": notif_types,
 		"notif_log": notif_log,
@@ -17483,6 +17977,12 @@ func _load_game() -> void:
 	deal_next = _f(data.get("deal_next", 0.0))
 	deal_taken = _i(data.get("deal_taken", 0))
 	deal_finale = bool(data.get("deal_finale", false))
+	powerup_id = _s(data.get("powerup_id", ""))
+	powerup_until = _f(data.get("powerup_until", 0.0))
+	powerup_next = _f(data.get("powerup_next", 0.0))
+	powerup_shown = bool(data.get("powerup_shown", false))
+	powerup_pending = _s(data.get("powerup_pending", ""))
+	loyalty_buys = maxi(0, _i(data.get("loyalty_buys", 0)))
 	notif_enabled = _b(data.get("notif_enabled", true), true)
 	notif_prompted = _b(data.get("notif_prompted", false))
 	var pr = data.get("pending_raids", [])

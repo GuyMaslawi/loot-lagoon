@@ -360,10 +360,13 @@ func _build_meter() -> Control:
 	on_bar.add_child(pair)
 	# Sized to the cap height of the digits beside it so the pair reads as one
 	# object.
-	var spin_mark := Glyph.new()
-	spin_mark.kind = "wheel"
-	spin_mark.custom_minimum_size = Vector2(26, 26)
-	spin_mark.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	# THE BOLT, which is also what lands in this meter. Spins won on the reels
+	# fly here as bolts and always have; the gauge they land in was labelled
+	# with a ship's wheel, so the counter and the thing filling it were two
+	# different pictures. The bolt is the currency, the wheel is the action --
+	# and the wheel is six inches below this on the SPIN button, where it means
+	# the verb.
+	var spin_mark := _spin_mark(26.0)
 	pair.add_child(spin_mark)
 	# White over a deep well and a kelp fill alike, which is what the shared
 	# track style is built for -- sand was picked when this number sat on the
@@ -910,3 +913,23 @@ static func _fmt(n: int) -> String:
 			out += ","
 		out += s[i]
 	return out
+
+
+# The spins currency mark, sized for a container.
+#
+# Its own function rather than main.gd's _prize_art because the machine is a
+# separate view and must not reach up into the game for a picture. Same crop and
+# same reasoning: the file carries a wide margin that is right on the strips and
+# is a third of the icon thrown away anywhere else.
+func _spin_mark(px: float) -> Control:
+	var tr := TextureRect.new()
+	var at := AtlasTexture.new()
+	at.atlas = CV.symbol_tex("bolt")
+	at.region = Rect2(87.0, 39.0, 329.0, 459.0)
+	tr.texture = at
+	tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	tr.custom_minimum_size = Vector2(px, px)
+	tr.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return tr

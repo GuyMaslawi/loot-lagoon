@@ -18,6 +18,7 @@ func _ready() -> void:
 	await _t_season_rollover()
 	await _t_offline_raids()
 	await _t_deal_chain()
+	await _t_powerup()
 	print("QA-FLOWS: %s" % ("ALL PASS" if fails == 0 else "%d FAILURES" % fails))
 	get_tree().quit(1 if fails > 0 else 0)
 
@@ -274,6 +275,96 @@ func _t_deal_chain() -> void:
 	m._close_popup(true)
 	m.deal_id = ""
 	m.deal_next = 0.0
+	await get_tree().create_timer(0.5).timeout
+
+# --- the power up ------------------------------------------------------------
+#
+# The failure this exists to catch is the expensive one: the player is charged
+# for the middle column and the two free ones never arrive. It has three ways of
+# happening -- the intent is not recorded, the receipt does not match, or the
+# grant runs twice -- and all three look identical from the outside.
+func _t_powerup() -> void:
+	print("power up")
+	_chk("every power-up is well-formed", Deals.powerup_verify().is_empty(),
+		", ".join(PackedStringArray(Deals.powerup_verify())))
+
+	# THE LOYALTY CARD IS HELD OFF FOR THE WHOLE OF THIS TEST, and finding out
+	# why cost the first run of it: every purchase below is measured in spins,
+	# the card pays 60 spins when it fills, and the packs bought here are what
+	# fill it. Two of the three assertions came back 60 over and read exactly
+	# like the free columns being paid when they should not have been. Zeroed
+	# before each purchase it can never reach its target, so what is measured is
+	# the pack and the columns and nothing else. The card gets its own test at
+	# the bottom.
+	for pu in Deals.POWERUPS:
+		m._close_popup(true)
+		m.loyalty_buys = 0
+		m.powerup_id = String(pu["id"])
+		m.powerup_until = m._now() + Deals.POWERUP_DURATION
+		m.powerup_pending = ""
+		m._open_powerup()
+		await get_tree().process_frame
+		m._close_popup(true)
+
+		var owed_spins := 0
+		var owed_cards := 0
+		for b in pu["bonus"]:
+			owed_spins += int((b as Dictionary).get("spins", 0))
+			owed_cards += int((b as Dictionary).get("cards", 0))
+
+		# Bought from the SHELF rather than the takeover: the bonus columns must
+		# not be handed over. Nothing recorded the intent, so nothing is owed.
+		m.powerup_pending = ""
+		var before: int = m.spins
+		m.loyalty_buys = 0
+		m._on_purchase_ok(IAP.PREFIX + String(pu["pack"]))
+		m._close_popup(true)
+		await get_tree().process_frame
+		var pack: Dictionary = CV.pack_by_id(String(pu["pack"]))
+		_chk("%s off the shelf pays the pack only" % pu["id"],
+			m.spins == before + int(pack.get("spins", 0)),
+			"+%d, pack is %d" % [m.spins - before, int(pack.get("spins", 0))])
+
+		# And from the takeover, where it is owed.
+		m.powerup_id = String(pu["id"])
+		m.powerup_until = m._now() + Deals.POWERUP_DURATION
+		m.powerup_pending = String(pu["id"])
+		before = m.spins
+		m.loyalty_buys = 0
+		m._on_purchase_ok(IAP.PREFIX + String(pu["pack"]))
+		m._close_popup(true)
+		await get_tree().process_frame
+		_chk("%s from the takeover pays all three columns" % pu["id"],
+			m.spins == before + int(pack.get("spins", 0)) + owed_spins,
+			"+%d, wanted %d" % [m.spins - before, int(pack.get("spins", 0)) + owed_spins])
+		_chk("%s is spent once it is bought" % pu["id"], m.powerup_id == "")
+
+		# The replay. An interrupted transaction is re-delivered at boot, and a
+		# pending record that outlived its own grant would pay twice.
+		before = m.spins
+		m.loyalty_buys = 0
+		m._on_purchase_ok(IAP.PREFIX + String(pu["pack"]))
+		m._close_popup(true)
+		await get_tree().process_frame
+		_chk("%s does not pay its free columns twice" % pu["id"],
+			m.spins == before + int(pack.get("spins", 0)),
+			"+%d" % (m.spins - before))
+
+	# The loyalty card pays at the target and resets, rather than running on.
+	m.loyalty_buys = 0
+	var chests := 0
+	for i in Deals.LOYALTY_TARGET * 2:
+		var pre: int = m.loyalty_buys
+		m._loyalty_add()
+		if m.loyalty_buys == 0 and pre == Deals.LOYALTY_TARGET - 1:
+			chests += 1
+	_chk("the loyalty card pays every %d and resets" % Deals.LOYALTY_TARGET,
+		chests == 2 and m.loyalty_buys == 0, "%d chests, at %d" % [chests, m.loyalty_buys])
+
+	m.powerup_id = ""
+	m.powerup_next = 0.0
+	m.powerup_pending = ""
+	m._close_popup(true)
 	await get_tree().create_timer(0.5).timeout
 
 # --- stars in, cards out ------------------------------------------------------
