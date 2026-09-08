@@ -662,7 +662,124 @@ def pig(fill, path):
     render(path, dist=6.9, yaw=-27.0, pitch=17.0, target=(0, 0, 0.94))
 
 
+# =============================================================================
+#  The gift, and the lock
+# =============================================================================
+#
+# Added for the two event screens, where both of these were flat vector glyphs
+# drawn at runtime -- the same problem the chests and the pig had before they
+# were rendered, and it shows worst here because they sit two inches from the
+# reel symbols, which are painted.
+#
+# The gift is the grand prize at the end of the deal ladder and the chest on the
+# loyalty card. The lock is on every rung the player has not reached and on both
+# free columns of the power-up, so between them they are the most-repeated
+# objects on the new screens.
+
+def build_gift():
+    """A wrapped box with a ribbon cross and a bow. Lid slightly proud of the
+    body, because a gift that is one sealed cube reads as a crate."""
+    # DEEPER THAN IT LOOKS IT SHOULD BE. The first pass was #db3340 with a
+    # clearcoat and it rendered pale pink: a coat is a white specular layer over
+    # the base, and under a 250 W key most of what comes back off a saturated
+    # colour is that layer. The base is taken down and the coat with it, and the
+    # result is the coral the rest of the game uses rather than a birthday
+    # balloon.
+    # Coat 0, and deeper again. A clearcoat is a white specular layer laid over
+    # the base and under a 250 W key it is most of what comes back off a
+    # saturated colour -- two passes at this came out pink, which is the pig's
+    # hue and the one colour in the game that already means something else. No
+    # coat, a broader rough, and a base that looks too dark in the swatch is
+    # what renders as the red it is supposed to be.
+    paper = mat("paper", (0.50, 0.055, 0.10), rough=0.50, coat=0.0)
+    lid_m = mat("lidpaper", (0.58, 0.075, 0.12), rough=0.48, coat=0.0)
+    # Satin, not paper: the ribbon has to separate from the wrapping by
+    # MATERIAL, since at 64px on a shop card two reds an eighth apart are one
+    # red. Gold at low roughness catches the key light and the paper does not.
+    band = brushed(mat("ribbon", (0.98, 0.78, 0.28), rough=0.22, metal=0.72), 90.0, 0.03)
+
+    W, D, H = 1.60, 1.44, 1.18
+    box((W, D, H), loc=(0, 0, H / 2), material=paper, bevel=0.055, seg=4)
+    box((W * 1.06, D * 1.06, 0.30), loc=(0, 0, H + 0.13), material=lid_m,
+        bevel=0.055, seg=4)
+
+    # The ribbon runs over the lid and down all four sides as one band per axis.
+    t = 0.20
+    box((t, D * 1.12, H + 0.34), loc=(0, 0, (H + 0.30) / 2 + 0.02),
+        material=band, bevel=0.03, seg=3)
+    box((W * 1.12, t, H + 0.34), loc=(0, 0, (H + 0.30) / 2 + 0.02),
+        material=band, bevel=0.03, seg=3)
+
+    # The bow: four loops and a knot. Loops are squashed spheres rather than
+    # torus sections -- at icon size the hole in a torus closes up anyway, and a
+    # solid loop keeps a highlight the whole way round.
+    top = H + 0.30
+    for ang in (35, 145, 215, 325):
+        a = math.radians(ang)
+        o = ball(0.30, loc=(math.cos(a) * 0.34, math.sin(a) * 0.34, top + 0.20),
+                 material=band, scale=(1.5, 0.72, 0.62))
+        o.rotation_euler = Euler((0, 0, a))
+    ball(0.17, loc=(0, 0, top + 0.24), material=band, scale=(1, 1, 0.85))
+
+
+def build_lock():
+    """A padlock: brass body, steel shackle, a keyhole cut as geometry.
+
+    The keyhole is a real recess and not a painted circle. A hole that is only
+    a dark shape has no edge to catch light, which at 40px is the whole
+    difference between a padlock and a bag.
+    """
+    brass = brushed(mat("lockbrass", (0.86, 0.62, 0.24), rough=0.26, metal=0.95), 70.0, 0.05)
+    steel = brushed(mat("shackle", (0.80, 0.84, 0.88), rough=0.20, metal=1.0), 55.0, 0.05)
+    dark = mat("keyhole", (0.16, 0.11, 0.05), rough=0.75)
+
+    W, D, H = 1.42, 0.62, 1.20
+    body = box((W, D, H), loc=(0, 0, H / 2), material=brass, bevel=0.10, seg=5)
+
+    # The shackle is ONE TORUS, and the first attempt was nineteen little
+    # cylinders laid round an arc. That rendered as a caterpillar: at any tube
+    # radius small enough to look like a shackle the cylinders do not touch, and
+    # at any radius large enough to touch they read as a string of beads. There
+    # is no width that is both.
+    #
+    # A torus centred on the top face hides its own lower half inside the body,
+    # which is opaque brass -- so the half that shows is exactly the arc wanted
+    # and the half that does not costs nothing. No bevel on it: the modifier at
+    # this tube radius eats the tube.
+    r, tube = 0.46, 0.105
+    bpy.ops.mesh.primitive_torus_add(
+        major_radius=r, minor_radius=tube, major_segments=64, minor_segments=20,
+        location=(0, 0, H), rotation=(math.pi / 2, 0, 0))
+    _finish(bpy.context.object, steel, 0.0, 0, True)
+
+    # The keyhole: a bored disc and a tapered slot, sunk into the face.
+    y = -D / 2 - 0.005
+    cyl(0.155, 0.10, loc=(0, y, H * 0.58), rot=(math.pi / 2, 0, 0),
+        material=dark, bevel=0.02, verts=32)
+    box((0.20, 0.10, 0.30), loc=(0, y, H * 0.58 - 0.20), material=dark,
+        bevel=0.02, seg=2)
+    return body
+
+
+def gift(path):
+    reset()
+    world_sky()
+    rig(key=250.0)
+    build_gift()
+    render(path, dist=6.4, yaw=-30.0, pitch=19.0, target=(0, 0, 0.86))
+
+
+def lock(path):
+    reset()
+    world_sky()
+    rig(key=255.0)
+    build_lock()
+    render(path, dist=5.6, yaw=-24.0, pitch=13.0, target=(0, 0, 0.82))
+
+
 TARGETS = {
+    "gift": lambda: gift(os.path.join(OUT, "gift.png")),
+    "lock": lambda: lock(os.path.join(OUT, "lock.png")),
     "chest0": lambda: chest(0, os.path.join(OUT, "chest_t0.png")),
     "chest1": lambda: chest(1, os.path.join(OUT, "chest_t1.png")),
     "chest2": lambda: chest(2, os.path.join(OUT, "chest_t2.png")),

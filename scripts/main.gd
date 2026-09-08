@@ -5147,6 +5147,15 @@ const SYMBOL_CROP := {
 func _prize_art(kind: String, px: float) -> Control:
 	var node: Control
 	var tex := CV.symbol_tex(kind)
+	# THE RENDERED PROPS COUNT AS ARTWORK TOO. `gift` and `lock` are Blender
+	# renders in assets/art/props rather than reel symbols, and before this they
+	# fell straight through to Glyph -- so the grand prize at the end of the
+	# deal ladder and the padlock on every rung the player has not reached were
+	# the two flat vector drawings on a screen otherwise made of painted
+	# objects. Symbols are looked up first because that is the larger set and
+	# the two names do not collide.
+	if tex == null:
+		tex = CV.prop_tex(kind)
 	if tex != null:
 		var tr := TextureRect.new()
 		if SYMBOL_CROP.has(kind):
@@ -6961,7 +6970,7 @@ func _event_entries(vb: VBoxContainer) -> void:
 	var pu := _active_powerup()
 	if not pu.is_empty():
 		_event_entry(vb, String(pu["name"]), "1 + 2  —  buy one pack, get two free",
-			"box", Lagoon.BRASS, _powerup_countdown_text(), _open_powerup)
+			"gift", Lagoon.BRASS, _powerup_countdown_text(), _open_powerup)
 	var chain := _active_deal()
 	if not chain.is_empty():
 		var left := Deals.STEPS - deal_taken
@@ -6996,9 +7005,9 @@ func _event_entry(vb: VBoxContainer, title: String, sub: String, glyph: String,
 			["offset_top", 12.0], ["offset_bottom", -12.0]]:
 		row.set(m[0], m[1])
 
-	var mark := Glyph.new()
-	mark.kind = glyph
-	mark.custom_minimum_size = Vector2(72, 72)
+	# _prize_art rather than a bare Glyph: the power-up's door is the rendered
+	# gift and the chains' are drawn glyphs, and one call resolves both.
+	var mark := _prize_art(glyph, 74.0)
 	mark.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(mark)
 	FX.pulse_forever(mark, 1.07, 1.5)
@@ -8684,9 +8693,7 @@ func _open_deal() -> void:
 	foot.alignment = BoxContainer.ALIGNMENT_CENTER
 	foot.add_theme_constant_override("separation", 14)
 	vbox.add_child(foot)
-	var fico := Glyph.new()
-	fico.kind = "box"
-	fico.custom_minimum_size = Vector2(44, 44)
+	var fico := _prize_art("gift", 48.0)
 	fico.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	foot.add_child(fico)
 	var fl := Lagoon.label("ALL  SIX", UI.F_CAPTION, Lagoon.INK_MUTE, true)
@@ -8715,10 +8722,8 @@ func _deal_track(vbox: VBoxContainer, hue: Color) -> void:
 	row.add_child(bar)
 	Lagoon.progress_value(bar, "%d / %d" % [deal_taken, Deals.STEPS], UI.F_CAPTION)
 
-	# The chest at the end of the bar, lit once it is owed and flat until then.
-	var chest := Glyph.new()
-	chest.kind = "box"
-	chest.custom_minimum_size = Vector2(52, 52)
+	# The prize at the end of the bar, lit once it is owed and flat until then.
+	var chest := _prize_art("gift", 56.0)
 	chest.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	if deal_taken >= Deals.STEPS and not deal_finale:
 		FX.pulse_forever(chest, 1.12, 1.1)
@@ -8872,11 +8877,8 @@ func _deal_cell(idx: int, hue: Color) -> Control:
 		# "this is coming", which is the only thing a future rung should say.
 		Lagoon.set_enabled(btn, false)
 		btn.disabled = true
-		var lock := Glyph.new()
-		lock.kind = "lock"
-		lock.custom_minimum_size = Vector2(30, 30)
+		var lock := _prize_art("lock", 34.0)
 		lock.modulate = Color(1, 1, 1, 0.92)
-		lock.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		btn.add_child(lock)
 		lock.set_anchors_preset(Control.PRESET_CENTER_RIGHT)
 		lock.offset_left = -46.0
@@ -9270,10 +9272,7 @@ func _powerup_column(col: Dictionary, pack: Dictionary) -> Control:
 		_candy_button(btn, Lagoon.KELP)
 		Lagoon.set_enabled(btn, false)
 		btn.disabled = true
-		var lock := Glyph.new()
-		lock.kind = "lock"
-		lock.custom_minimum_size = Vector2(28, 28)
-		lock.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var lock := _prize_art("lock", 32.0)
 		btn.add_child(lock)
 		lock.set_anchors_preset(Control.PRESET_CENTER_RIGHT)
 		lock.offset_left = -40.0
@@ -9310,9 +9309,7 @@ func _loyalty_track(vbox: VBoxContainer) -> void:
 	Lagoon.progress_value(bar, "%d / %d" % [mini(loyalty_buys, Deals.LOYALTY_TARGET),
 		Deals.LOYALTY_TARGET], UI.F_CAPTION)
 
-	var chest := Glyph.new()
-	chest.kind = "box"
-	chest.custom_minimum_size = Vector2(50, 50)
+	var chest := _prize_art("gift", 54.0)
 	chest.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(chest)
 
