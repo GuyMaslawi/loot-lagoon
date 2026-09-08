@@ -80,6 +80,7 @@ func _draw() -> void:
 		"calendar": _calendar()
 		"warn":    _warn()
 		"hammer":  _hammer()
+		"lock":    _lock()
 		"clan":    _clan()
 
 # --- drawing primitives ------------------------------------------------------
@@ -411,6 +412,37 @@ func _medal() -> void:
 	_disc(Vector2(50, 60), 27, metal.lightened(0.28), 4.0, metal.darkened(0.25))
 	_shape(_star_pts(Vector2(50, 60), 17, 7.0), metal.lightened(0.55), 3.0, metal.darkened(0.35))
 	_spec(Vector2(50, 60), 30, 0.55)
+
+# A PADLOCK, because the deal chain was borrowing the shield for one.
+#
+# Every future rung on the ladder carries a "you cannot have this yet" mark, and
+# the nearest thing in the set was the shield -- which on that screen sits four
+# inches from a card whose REWARD is shields. The same drawing meant "protected
+# from raids" on one card and "not yet" on the next, which is the one thing an
+# icon set exists to prevent.
+#
+# Drawn in sand over brass rather than in the usual grey: a lock in this game is
+# a thing that will open, not a thing that is broken, and grey is the colour the
+# rest of the UI uses for dead controls.
+func _lock() -> void:
+	var metal := _hue(Lagoon.BRASS)
+	# The shackle, as an arc with square ends -- two draw_arc passes, the dark
+	# one wider, which is how every other outlined stroke in the set is made.
+	var top := Vector2(50, 42)
+	draw_arc(top, 22.0, PI, TAU, 24, Lagoon.BRASS_LO, 20.0)
+	draw_arc(top, 22.0, PI, TAU, 24, metal.lightened(0.20), 12.0)
+	for side in [-1.0, 1.0]:
+		_bar(Vector2(50 + 22 * side, 42), Vector2(50 + 22 * side, 54), 12.0,
+			metal.lightened(0.20), 5.0)
+	# The body.
+	_shape(_round_rect(Vector2(50, 68), Vector2(64, 46), 10.0),
+		Lagoon.SAND, LINE, Lagoon.BRASS_LO)
+	# The keyhole: a disc with a tapered slot under it.
+	_disc(Vector2(50, 63), 9, Lagoon.BRASS_LO, 0.0)
+	_shape(PackedVector2Array([
+		Vector2(46, 66), Vector2(54, 66), Vector2(57, 82), Vector2(43, 82)]),
+		Lagoon.BRASS_LO, 0.0)
+	_spec(Vector2(50, 68), 22, 0.40)
 
 func _tick() -> void:
 	var c := _hue(Lagoon.KELP)

@@ -17,6 +17,7 @@ func _ready() -> void:
 	await _t_steal_raid()
 	await _t_season_rollover()
 	await _t_offline_raids()
+	await _t_deal_chain()
 	print("QA-FLOWS: %s" % ("ALL PASS" if fails == 0 else "%d FAILURES" % fails))
 	get_tree().quit(1 if fails > 0 else 0)
 
@@ -193,6 +194,86 @@ func _t_every_purchase() -> void:
 	_chk("a piggy emptied mid-purchase still pays what was promised", m.coins == pre + 7777,
 		"+%d" % (m.coins - pre))
 	m._close_popup(true)
+	await get_tree().create_timer(0.5).timeout
+
+# --- the deal chain -----------------------------------------------------------
+#
+# Three things this has to prove, and they are the three ways the ladder can go
+# wrong without anybody noticing on a desktop build:
+#
+#   1. Every paid rung names a product the stores actually sell. A rung naming
+#      an unregistered id renders a button that does nothing on a real phone and
+#      looks perfectly fine here.
+#   2. Six rungs can be walked end to end and the grand prize lands exactly once.
+#   3. A rung cannot be taken twice, or out of order, by a stale button -- the
+#      screen outlives the state it was built from every time a purchase goes
+#      through a StoreKit sheet.
+func _t_deal_chain() -> void:
+	print("deal chain")
+	_chk("every chain is well-formed", Deals.verify().is_empty(),
+		", ".join(PackedStringArray(Deals.verify())))
+
+	for chain in Deals.CHAINS:
+		m._close_popup(true)
+		m.deal_id = String(chain["id"])
+		m.deal_until = m._now() + Deals.CHAIN_DURATION
+		m.deal_taken = 0
+		m.deal_finale = false
+		m._open_deal()
+		await get_tree().process_frame
+
+		var paid_rungs := 0
+		for i in Deals.STEPS:
+			var step: Dictionary = chain["steps"][i]
+			var before_taken: int = m.deal_taken
+			# A stale button from two rungs ago must do nothing at all.
+			m._take_deal(maxi(0, i - 2))
+			if i >= 2 and m.deal_taken != before_taken:
+				_chk("%s rung %d refuses an out-of-order tap" % [chain["id"], i], false)
+			if Deals.is_paid(step):
+				paid_rungs += 1
+				# Money never advances the ladder on the tap; the receipt does.
+				m._take_deal(i)
+				m._close_popup(true)
+				_chk("%s rung %d waits for the receipt" % [chain["id"], i + 1],
+					m.deal_taken == i)
+				m._deal_credit_purchase(String(step["pack"]))
+			else:
+				m._take_deal(i)
+			m._close_popup(true)
+			await get_tree().process_frame
+			_chk("%s rung %d lands" % [chain["id"], i + 1], m.deal_taken == i + 1,
+				"taken=%d" % m.deal_taken)
+
+		_chk("%s pays its grand prize" % chain["id"], m.deal_finale)
+		_chk("%s has at least one paid rung" % chain["id"], paid_rungs > 0)
+		# Paid twice would be the expensive bug: the expiry path pays the finale
+		# on the way out, and it must see that it is already settled.
+		var spins_before: int = m.spins
+		m.deal_until = m._now() - 1.0
+		m._deal_tick()
+		_chk("%s does not pay the grand prize twice" % chain["id"],
+			m.spins == spins_before, "+%d" % (m.spins - spins_before))
+		_chk("%s rolls out when its clock runs out" % chain["id"], m.deal_id == "")
+
+	# The other half of that: a ladder finished with seconds to spare, and the
+	# app closed before the finale dialog was answered.
+	m.deal_id = String(Deals.CHAINS[0]["id"])
+	m.deal_until = m._now() + 10.0
+	m.deal_taken = Deals.STEPS
+	m.deal_finale = false
+	var owed: int = m.spins
+	m.deal_until = m._now() - 1.0
+	m._deal_tick()
+	# The PAYOUT is what is asserted, not the flag. `deal_finale` is reset by the
+	# same tick that pays it -- rolling the chain out clears every field so the
+	# next one starts unpaid -- so a test that read the flag would be testing
+	# the teardown rather than the grant.
+	_chk("a ladder cleared at the buzzer is still paid",
+		m.spins >= owed + int(Deals.FINALE["spins"]), "+%d spins" % (m.spins - owed))
+	m._close_popup(true)
+	m.deal_id = ""
+	m.deal_next = 0.0
 	await get_tree().create_timer(0.5).timeout
 
 # --- stars in, cards out ------------------------------------------------------

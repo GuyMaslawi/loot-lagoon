@@ -547,6 +547,19 @@ var piggy_promised := 0
 var offer_id := ""
 var offer_until := 0.0
 var offer_next := 0.0
+# The live deal chain -- see scripts/deals.gd. Which chain, when it dies, the
+# earliest the next may roll, and how many of its six rungs have been taken.
+# All four persist for the same reason the offer's three do: a ladder a player
+# is half-way up is the entire mechanic, and a ladder that forgets where it was
+# is worse than no ladder at all.
+var deal_id := ""
+var deal_until := 0.0
+var deal_next := 0.0
+var deal_taken := 0
+# Whether the grand prize at the top has been paid out. Separate from
+# `deal_taken == 6` because the sixth rung and the finale are two grants and
+# the app can be killed between them.
+var deal_finale := false
 # Where each shelf starts, by key. Node references, rebuilt with the page every
 # time it is filled -- so this is cleared at the top of _fill_shop rather than
 # held across a rebuild, where every entry would be a freed node.
@@ -558,6 +571,12 @@ var topup_pending := {}
 var _ui_tick := 0.0
 var _shop_gift_timer_label: Label
 var _offer_timer_label: Label
+# The deal chain's countdown, and which chain ran last. The label is nulled
+# whenever its screen is rebuilt; the id is session-only on purpose -- it stops
+# the same chain rolling twice in a row, and a fresh launch has nothing to
+# repeat.
+var _deal_timer_label: Label
+var _deal_last_id := ""
 var col_owned := {}
 # set id -> [count, count, ...], how many spare copies of each card are held.
 # Pulling a card you already have used to be a dead beat with a coin refund
@@ -1133,6 +1152,10 @@ func _capture_page(key: String) -> void:
 			"tourney": _open_tourney()
 			"daily":   _open_daily()
 			"piggy":   _shot_piggy()
+			# The deal chain. It rolls itself in on the first tick of a fresh
+			# save, and the harness waits five seconds before it opens
+			# anything, so by here there is always one live.
+			"deal":    _open_deal()
 			"intro":   _open_intro()
 			"build":   _intro_build_card()
 			# The lap crossing. Reaching it honestly is thirty islands, so the
@@ -2165,6 +2188,9 @@ func _process(delta: float) -> void:
 		_offer_tick()
 		if _offer_timer_label != null and is_instance_valid(_offer_timer_label):
 			_offer_timer_label.text = "⏳  ENDS  IN  %s" % _offer_countdown_text()
+		_deal_tick()
+		if _deal_timer_label != null and is_instance_valid(_deal_timer_label):
+			_deal_timer_label.text = "ENDS  IN  %s" % _deal_countdown_text()
 		if _current_page == pages.get("quests"):
 			# roll missions over live if a cycle ends while the page is open
 			if mission_state.get(quests_tab, {}).is_empty() or int(mission_state[quests_tab]["key"]) != _period_key(quests_tab):
@@ -3741,7 +3767,13 @@ func _add_side_rail(parent: Control, top: float) -> void:
 	_shell_rails.append(_side_rail_lane(parent, top, true, [
 			["gift",   "Daily",      "daily",  _open_daily],
 			["trophy", "Tournament", "ranks",  _open_tourney, true],
-			["piggy",  "Piggy Bank", "piggy",  _open_piggy]]))
+			["piggy",  "Piggy Bank", "piggy",  _open_piggy],
+			# The deal chain. Last in the lane rather than first because it is
+			# the only disc here that is sometimes not a thing at all -- see
+			# _update_badges, which hides it outright while no chain is live.
+			# A disc that comes and goes has to do it at the END of a run, or
+			# every other disc in the rail moves when it does.
+			["spark",  "Event",      "deal",   _open_deal]]))
 
 # One lane. The run grows downward from its top, so adding a button lengthens
 # the rail rather than re-centring the ones above it.
@@ -4135,6 +4167,24 @@ func _update_badges() -> void:
 		_badges["shop_free"].visible = _shop_badge_due()
 	if _badges.has("piggy"):
 		_badges["piggy"].visible = _piggy_full()
+	if _badges.has("deal"):
+		# The dot means "a free rung is waiting", never "an event exists".
+		_badges["deal"].visible = _deal_free_ready()
+		# And the disc itself goes when no chain is live -- a badge hidden on a
+		# visible disc would leave a button opening a screen with nothing on it.
+		#
+		# The BOX is hidden, not the button. `_rail_discs` holds the button, and
+		# the button is one child of a VBox that also carries the counter
+		# plaque; hiding the button alone leaves the box in the run with the
+		# separation still spent, so the discs below it sit a few units low for
+		# no visible reason.
+		var live := not _active_deal().is_empty()
+		for disc in _rail_discs.get("deal", []):
+			if not is_instance_valid(disc):
+				continue
+			var box: Node = (disc as Control).get_parent()
+			if box is Control:
+				(box as Control).visible = live
 	# The gold inside the disc's pig, on the same pass. Not tweened: this runs
 	# on every refresh, and a 200ms fill replayed after every spin is a rail
 	# that never stops moving.
@@ -4356,7 +4406,20 @@ func _period_claimable(period: String) -> bool:
 # `width` is the glass's minimum, and only the daily bonus asks for more than
 # the 580 every other dialog in the game uses: its ladder is seven drawn rungs
 # rather than seven pips, and they do not fit in 532 units of content.
-func _open_popup(title: String, width := 580.0) -> VBoxContainer:
+# `scroll` is opt-in rather than the default, and that is a deliberate choice
+# about blast radius: the tournament board and the world ranks already build
+# their own ScrollContainer inside the body, and a scroller inside a scroller is
+# a drag that does the wrong one. Only dialogs that can genuinely outgrow the
+# screen ask for it.
+#
+# WHAT IT FIXES. The deal chain is six cards in three rows and it comes to about
+# 1420 units; the game is drawn for 720x1280. On the tall phones the harness
+# usually shoots at, it fitted and looked finished. On the canvas it is actually
+# designed for, the grand prize was off the bottom of the screen and the
+# nameplate was jammed under the notch -- and nothing about the modal said so,
+# because a CenterContainer centres content larger than itself by hanging it off
+# both ends.
+func _open_popup(title: String, width := 580.0, scroll := false) -> VBoxContainer:
 	# Nothing opens over a locked modal. `_close_popup` already refuses to take
 	# it down, so without this the line below would leave the locked popup in
 	# the tree -- still drawing, still eating every tap -- while `_popup` moved
@@ -4416,7 +4479,22 @@ func _open_popup(title: String, width := 580.0) -> VBoxContainer:
 
 	var vbox := VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 14)
-	margin.add_child(vbox)
+	if scroll:
+		var sc := ScrollContainer.new()
+		sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		sc.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+		# The screen, less the two ends the system owns, less the nameplate and
+		# the panel's own margins. Whatever is left is what a dialog may be.
+		sc.custom_minimum_size = Vector2(0, maxf(360.0,
+			view_size().y - safe_top() - safe_bottom() - 260.0))
+		margin.add_child(sc)
+		# A ScrollContainer does not stretch its child across its own width --
+		# the child has to ask -- and without this the cards inside come out at
+		# their minimum and huddle against the left edge.
+		vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		sc.add_child(vbox)
+	else:
+		margin.add_child(vbox)
 	Lagoon.add_gloss(panel, Lagoon.R_PANEL)
 
 	# Close sits on the corner of the glass, not in the content flow, so it
@@ -7031,16 +7109,14 @@ func _reward_row(pack: Dictionary, ink := Lagoon.INK, size := UI.F_BODY) -> Cont
 	var coins_n := _scaled(int(pack.get("coins", 0)))
 	var cards_n := int(pack.get("cards", 0))
 
-	for entry in [["wheel", spins_n], ["coin", coins_n], ["cards", cards_n]]:
+	for entry in [["bolt", spins_n], ["coin", coins_n], ["cards", cards_n]]:
 		var n: int = entry[1]
 		if n <= 0:
 			continue
 		var item := HBoxContainer.new()
 		item.add_theme_constant_override("separation", 5)
 		row.add_child(item)
-		var icon := Glyph.new()
-		icon.kind = String(entry[0])
-		icon.custom_minimum_size = Vector2(34, 34)
+		var icon := _prize_art(String(entry[0]), 36.0)
 		icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		item.add_child(icon)
 		var num := Lagoon.label(_fmt_compact(n), size, ink, true)
@@ -8223,6 +8299,509 @@ func _offer_expiring() -> bool:
 func _shop_badge_due() -> bool:
 	return _shop_free_ready() or _offer_expiring()
 
+# =============================================================================
+#  The deal chain
+# =============================================================================
+#
+# A limited-time ladder of six rewards where taking one reveals the next. The
+# data, the rules and the reasoning are in scripts/deals.gd; this is the state
+# machine and the screen.
+#
+# It rotates like the timed offer does and for the same reason -- a live window
+# and a dark one, both persisted, so that opening the game is checking whether
+# something is happening. The difference is that the offer is one card the
+# player either takes or does not, and this is a queue they can be part-way
+# through. That is the entire point: a half-finished ladder is a reason to come
+# back tonight, and the offer never had one.
+
+# The next rung, or an empty dictionary when the chain is finished or dark.
+func _deal_step() -> Dictionary:
+	var chain := _active_deal()
+	if chain.is_empty() or deal_taken >= Deals.STEPS:
+		return {}
+	return chain["steps"][deal_taken]
+
+# The live chain, or an empty dictionary. Same shape of answer as _active_offer.
+func _active_deal() -> Dictionary:
+	if deal_id == "" or _now() >= deal_until:
+		return {}
+	return Deals.by_id(deal_id)
+
+func _deal_countdown_text() -> String:
+	var left := maxi(0, int(deal_until - _now()))
+	return "%d:%02d:%02d" % [left / 3600, (left / 60) % 60, left % 60]
+
+# True when the rung the player is standing in front of costs nothing. This is
+# what lights the rail disc, and it is deliberately NOT "a chain is running":
+# a badge that means "there is something here you could buy" is an advert, and
+# the game already has a shop tab for that. A badge that means "there is
+# something here that is free and yours" is information, and it is the only
+# claim this dot makes.
+func _deal_free_ready() -> bool:
+	var step := _deal_step()
+	return not step.is_empty() and not Deals.is_paid(step)
+
+# Rolls a chain in, and rolls a dead one out. Called once a second off the same
+# tick that drives the timed offer.
+func _deal_tick() -> void:
+	var now := _now()
+	if deal_id != "":
+		# A chain that ran out of time, WITH ITS GRAND PRIZE STILL OWED, pays it
+		# on the way out. The finale is earned by clearing six rungs and the
+		# clock has nothing to do with it -- a player who finished the ladder in
+		# the last minute of the window and closed the app would otherwise have
+		# cleared it for nothing, which is the one outcome that would make the
+		# whole mechanic feel rigged.
+		if now >= deal_until:
+			if deal_taken >= Deals.STEPS and not deal_finale:
+				_deal_pay_finale(true)
+			deal_id = ""
+			deal_until = 0.0
+			deal_taken = 0
+			deal_finale = false
+			deal_next = now + Deals.CHAIN_COOLDOWN
+			_save_game()
+			_update_badges()
+		return
+	if now < deal_next:
+		return
+	# Never the same chain twice running. With four of them the odds of a repeat
+	# are one in four, and two identical events back to back is what makes a
+	# rotation read as "the game has one event" rather than as a calendar.
+	var pool := []
+	for c in Deals.CHAINS:
+		if String(c["id"]) != _deal_last_id:
+			pool.append(c)
+	if pool.is_empty():
+		pool = Deals.CHAINS.duplicate()
+	var pick: Dictionary = pool[randi() % pool.size()]
+	deal_id = String(pick["id"])
+	_deal_last_id = deal_id
+	deal_until = now + Deals.CHAIN_DURATION
+	deal_taken = 0
+	deal_finale = false
+	_save_game()
+	_notify("spins", "%s has begun — six rewards, %d hours!" % [pick["name"], int(Deals.CHAIN_HOURS)], "🎁")
+	_update_badges()
+
+# --- the screen --------------------------------------------------------------
+
+# The serpentine. Six rungs in three rows of two, and the middle row runs
+# right-to-left, so the eye walks the ladder in one unbroken stroke instead of
+# carriage-returning twice. Values are step indices in visual order.
+const DEAL_SERPENTINE := [0, 1, 3, 2, 4, 5]
+
+func _open_deal() -> void:
+	var chain := _active_deal()
+	if chain.is_empty():
+		return
+	var hue: Color = chain["hue"]
+	var vbox := _open_popup(String(chain["name"]), 648.0, true)
+	if not vbox.is_inside_tree():
+		return
+	_deal_timer_label = null
+
+	# The countdown and the blurb, in that order. A limited event's clock is the
+	# reason to act and it belongs above what it is a clock for.
+	var clock := CenterContainer.new()
+	vbox.add_child(clock)
+	var plate := Lagoon.stamp_plate(Lagoon.CORAL_HI)
+	clock.add_child(plate)
+	_deal_timer_label = Lagoon.label("", UI.F_CAPTION, Lagoon.CORAL_HI, true)
+	_deal_timer_label.text = "ENDS  IN  %s" % _deal_countdown_text()
+	plate.add_child(_deal_timer_label)
+
+	var blurb := _popup_row_label(String(chain["blurb"]).to_upper(), UI.F_CAPTION)
+	blurb.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	blurb.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	vbox.add_child(blurb)
+
+	_deal_track(vbox, hue)
+
+	# The ladder itself.
+	var rows := VBoxContainer.new()
+	rows.add_theme_constant_override("separation", 0)
+	vbox.add_child(rows)
+	for r in 3:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 6)
+		row.alignment = BoxContainer.ALIGNMENT_CENTER
+		rows.add_child(row)
+		row.add_child(_deal_cell(DEAL_SERPENTINE[r * 2], hue))
+		# WHICH WAY THE MIDDLE ROW RUNS IS NOT GUESSABLE, and without this it
+		# was simply wrong on the screen: rung three sits on the right of row
+		# two and rung four on its left, so a reader walking the page in
+		# ordinary reading order meets them backwards and the free rung they
+		# can actually take looks locked. The arrow between the two cells is
+		# what makes the serpentine a path rather than a grid.
+		row.add_child(_deal_arrow("\u25b6" if r != 1 else "\u25c0", hue))
+		row.add_child(_deal_cell(DEAL_SERPENTINE[r * 2 + 1], hue))
+		if r < 2:
+			# The turn. It hangs under the column the flow leaves from, which is
+			# the right on row one and the left on row two.
+			rows.add_child(_deal_turn(r == 0, hue))
+
+	# What clearing the whole ladder pays, stated up front. A grand prize the
+	# player only discovers on the sixth rung is a grand prize that never
+	# motivated anybody to climb.
+	vbox.add_child(Lagoon.divider())
+	var foot := HBoxContainer.new()
+	foot.alignment = BoxContainer.ALIGNMENT_CENTER
+	foot.add_theme_constant_override("separation", 14)
+	vbox.add_child(foot)
+	var fico := Glyph.new()
+	fico.kind = "box"
+	fico.custom_minimum_size = Vector2(44, 44)
+	fico.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	foot.add_child(fico)
+	var fl := Lagoon.label("ALL  SIX", UI.F_CAPTION, Lagoon.INK_MUTE, true)
+	fl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	foot.add_child(fl)
+	foot.add_child(_reward_row(Deals.FINALE, Lagoon.INK, UI.F_LABEL))
+
+# The progress track: how many rungs are down, and the chest they add up to.
+func _deal_track(vbox: VBoxContainer, hue: Color) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	vbox.add_child(row)
+
+	var left := Glyph.new()
+	left.kind = "spark"
+	left.custom_minimum_size = Vector2(46, 46)
+	left.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(left)
+
+	var bar := Lagoon.progress(hue)
+	bar.custom_minimum_size = Vector2(0, 40)
+	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	bar.max_value = Deals.STEPS
+	bar.value = deal_taken
+	row.add_child(bar)
+	Lagoon.progress_value(bar, "%d / %d" % [deal_taken, Deals.STEPS], UI.F_CAPTION)
+
+	# The chest at the end of the bar, lit once it is owed and flat until then.
+	var chest := Glyph.new()
+	chest.kind = "box"
+	chest.custom_minimum_size = Vector2(52, 52)
+	chest.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	if deal_taken >= Deals.STEPS and not deal_finale:
+		FX.pulse_forever(chest, 1.12, 1.1)
+	else:
+		chest.modulate = Color(1, 1, 1, 0.55)
+	row.add_child(chest)
+
+# One rung.
+#
+# Three states, and they are three different objects rather than three shades of
+# one:
+#   TAKEN    a spent plate with a tick on it, out of the running
+#   LIVE     the only card on the page with a pressable button, brass-rimmed and
+#            standing in its own pool of light
+#   LOCKED   the goods at full strength behind a padlock -- readable, inert
+#
+# LOCKED RUNGS ARE NOT DIMMED, and that took a rewrite to get right. The first
+# pass faded them, on the reasoning that a control you cannot press should not
+# look pressable; what it actually produced was a page of six pale rectangles
+# where the reward the player is climbing toward was the hardest thing on
+# screen to read. The whole mechanic is "you can see it and you cannot have it
+# yet", so the goods stay bright and the LOCK carries the state. Only the
+# button greys.
+#
+# The colour is systematic and not decorative: sea glass for a free rung, the
+# chain's own hue for a paid one. Six invented hues would look more like the
+# reference games and would break the rule the rest of this game is built on --
+# a colour here means something.
+func _deal_cell(idx: int, hue: Color) -> Control:
+	var chain := _active_deal()
+	var step: Dictionary = chain["steps"][idx]
+	var reward := Deals.step_reward(step)
+	var paid := Deals.is_paid(step)
+	var taken := idx < deal_taken
+	var live := idx == deal_taken
+
+	var holder := VBoxContainer.new()
+	holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	holder.custom_minimum_size = Vector2(0, 236)
+
+	# URCHIN, NOT THE CHAIN'S OWN HUE. The chain colour dresses the banner, the
+	# track and the waymarkers -- it is the event's identity. On the cards it
+	# was doing a second job it is no good at: High Tide Hunt is blue and sea
+	# glass is blue, so its paid rungs and its free rungs came out the same
+	# colour and the one distinction that matters on this screen vanished.
+	# URCHIN already means "rare / premium" everywhere else in the game.
+	var card := _tinted_card(holder,
+		Lagoon.INK_FAINT if taken else (Lagoon.URCHIN if paid else Lagoon.LAGOON), paid)
+	card.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	if live:
+		# THE ONE CARD THAT CAN BE PRESSED LOOKS LIKE IT. A brass rim is what
+		# this game already uses to mean "this is the object that matters" --
+		# the machine's frame, the page plaques, the HUD capsules -- so the live
+		# rung is marked in the vocabulary the player has been reading since the
+		# title screen, not with a novel highlight colour.
+		var sb: StyleBoxFlat = card.get_theme_stylebox("panel").duplicate()
+		sb.set_border_width_all(6)
+		sb.border_color = Lagoon.BRASS
+		sb.shadow_size = 18
+		sb.shadow_color = Color(Lagoon.BRASS_LO.r, Lagoon.BRASS_LO.g, Lagoon.BRASS_LO.b, 0.60)
+		card.add_theme_stylebox_override("panel", sb)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 10)
+	margin.add_theme_constant_override("margin_right", 10)
+	margin.add_theme_constant_override("margin_top", 12)
+	margin.add_theme_constant_override("margin_bottom", 12)
+	card.add_child(margin)
+
+	var col := VBoxContainer.new()
+	col.alignment = BoxContainer.ALIGNMENT_CENTER
+	col.add_theme_constant_override("separation", 6)
+	margin.add_child(col)
+
+	# The goods, as icon-over-figure columns -- the same vocabulary the daily
+	# ladder and the tournament tips use, so a prize looks like a prize
+	# everywhere in the game.
+	# What a paid rung is worth, stated on the card. The shop never sells a pack
+	# without its value chip and a rung is the same pack at the same price, so
+	# leaving it off would make the ladder look like the expensive way to buy
+	# something the store discounts.
+	#
+	# ON ITS OWN LINE, not as a corner ribbon. The ribbon is drawn diagonally
+	# across the top-left of the panel and this panel's top-left is where the
+	# first prize sits -- it struck straight through the bolt and the coin. A
+	# corner band needs a corner with nothing in it.
+	var flag := CenterContainer.new()
+	flag.custom_minimum_size = Vector2(0, 30)
+	col.add_child(flag)
+	if paid and CV.bonus_pct(Deals.step_pack(step)) >= 8:
+		flag.add_child(Lagoon.chip("+%d%%  VALUE" % CV.bonus_pct(Deals.step_pack(step)),
+			Lagoon.URCHIN, UI.F_TINY))
+
+	var goods := HBoxContainer.new()
+	goods.alignment = BoxContainer.ALIGNMENT_CENTER
+	goods.add_theme_constant_override("separation", 10)
+	goods.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	col.add_child(goods)
+	# Three is the ceiling and it is a width limit, not a taste one: the cell is
+	# a shade over 290 units wide and a fourth column takes the figures under
+	# the size they can be read at. No rung in Deals.CHAINS carries four kinds
+	# of goods, and Deals.verify() is where that would be caught if one did.
+	var shown := 0
+	for entry in [["bolt", int(reward.get("spins", 0))],
+			["coin", _scaled(int(reward.get("coins", 0)))],
+			["cards", int(reward.get("cards", 0))],
+			["shield", int(reward.get("shields", 0))]]:
+		var n: int = entry[1]
+		if n <= 0 or shown >= 3:
+			continue
+		shown += 1
+		goods.add_child(_prize_column(String(entry[0]), 66.0,
+			_fmt_compact(n), Lagoon.INK, 1.0, UI.F_LABEL,
+			Color(1.0, 0.85, 0.4, 0.42) if live else Color(0, 0, 0, 0)))
+
+	if taken:
+		var got := Lagoon.chip("TAKEN", Lagoon.KELP, UI.F_TINY)
+		got.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		col.add_child(got)
+		# The goods go, the plate stays. A spent rung still has to hold its
+		# place in the ladder -- it is the evidence of how far up it the player
+		# already is -- but it must not go on advertising a reward that has
+		# already been handed over.
+		card.modulate = Color(1, 1, 1, 0.55)
+		var tick := Glyph.new()
+		tick.kind = "tick"
+		tick.custom_minimum_size = Vector2(52, 52)
+		tick.modulate = Lagoon.KELP_HI
+		tick.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		card.add_child(tick)
+		tick.set_anchors_preset(Control.PRESET_CENTER)
+		return holder
+
+	var btn := Button.new()
+	btn.custom_minimum_size = Vector2(0, UI.TAP)
+	btn.add_theme_font_size_override("font_size", UI.F_LABEL)
+	if paid:
+		btn.text = IAP.price_for(Deals.step_pack(step))
+		_candy_button(btn, Color(0.28, 0.68, 0.34))
+	else:
+		btn.text = "FREE"
+		_candy_button(btn, Lagoon.KELP)
+	if live:
+		FX.press_feedback(btn)
+		btn.pressed.connect(_take_deal.bind(idx))
+		if not paid:
+			FX.pulse_forever(btn, 1.035, 1.3)
+	else:
+		# A LOCK, NOT A DISABLED BUTTON. A greyed control says "this is broken
+		# or you are not allowed"; a padlock on a live-coloured button says
+		# "this is coming", which is the only thing a future rung should say.
+		Lagoon.set_enabled(btn, false)
+		btn.disabled = true
+		var lock := Glyph.new()
+		lock.kind = "lock"
+		lock.custom_minimum_size = Vector2(30, 30)
+		lock.modulate = Color(1, 1, 1, 0.92)
+		lock.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		btn.add_child(lock)
+		lock.set_anchors_preset(Control.PRESET_CENTER_RIGHT)
+		lock.offset_left = -46.0
+		lock.offset_right = -16.0
+		lock.offset_top = -15.0
+		lock.offset_bottom = 15.0
+	col.add_child(btn)
+
+	return holder
+
+# The turn between two rows, under the column the ladder leaves from.
+func _deal_turn(right: bool, hue: Color) -> Control:
+	var lane := HBoxContainer.new()
+	lane.custom_minimum_size = Vector2(0, 34)
+	lane.alignment = BoxContainer.ALIGNMENT_END if right else BoxContainer.ALIGNMENT_BEGIN
+	var pad := Control.new()
+	pad.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if right:
+		lane.add_child(pad)
+	var mark := _deal_arrow("\u25bc", hue)
+	lane.add_child(mark)
+	if not right:
+		lane.add_child(pad)
+	return lane
+
+# A chevron on its own disc.
+#
+# It was a bare glyph first and it read as a stray triangle: the ladder's
+# direction is the one thing on this screen that has to be legible instantly,
+# and an unbacked arrow on a cream page at 26px is not. On a deep disc it is a
+# waymarker, which is what it is.
+func _deal_arrow(mark: String, hue: Color) -> Control:
+	var disc := PanelContainer.new()
+	disc.custom_minimum_size = Vector2(52, 34)
+	disc.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	disc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Lagoon.HULL
+	sb.set_corner_radius_all(17)
+	sb.set_border_width_all(3)
+	sb.border_color = hue.lerp(Color.WHITE, 0.30)
+	disc.add_theme_stylebox_override("panel", sb)
+	var l := Lagoon.label(mark, UI.F_CAPTION, hue.lerp(Color.WHITE, 0.55), true)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	disc.add_child(l)
+	return disc
+
+# --- taking a rung -----------------------------------------------------------
+
+func _take_deal(idx: int) -> void:
+	# Re-checked rather than trusted. The button was wired when the screen was
+	# built and the screen can outlive the state it was built from -- the clock
+	# rolls the chain over once a second, and a purchase opened from here comes
+	# back through a StoreKit sheet that may have taken minutes.
+	var chain := _active_deal()
+	if chain.is_empty() or idx != deal_taken or idx >= Deals.STEPS:
+		return
+	var step: Dictionary = chain["steps"][idx]
+	if Deals.is_paid(step):
+		# Money goes down the same road as every other purchase in the game --
+		# _confirm_purchase, IAP, _on_purchase_ok, _grant_pack. The rung is
+		# advanced by the receipt, never by the tap; see _deal_credit_purchase.
+		_close_popup()
+		_confirm_purchase(Deals.step_pack(step))
+		return
+	deal_taken = idx + 1
+	_deal_pay(Deals.step_reward(step))
+	_save_game()
+	_after_deal_step()
+
+# The receipt for a paid rung. Called from _on_purchase_ok, so a transaction
+# that arrives on a later launch -- an interrupted purchase replayed at boot --
+# still advances the ladder it was bought from.
+func _deal_credit_purchase(pack_id: String) -> void:
+	var chain := _active_deal()
+	if chain.is_empty() or deal_taken >= Deals.STEPS:
+		return
+	var step: Dictionary = chain["steps"][deal_taken]
+	if not Deals.is_paid(step) or String(step["pack"]) != pack_id:
+		return
+	# The goods themselves were already handed over by _grant_pack. All this
+	# owes is the rung.
+	deal_taken += 1
+	_save_game()
+	_after_deal_step()
+
+# What the free rungs actually hand over. Paid rungs never come through here --
+# _grant_pack pays those, so the pack is the single source of what a pack is
+# worth whether it is bought from the shop or from a ladder.
+func _deal_pay(reward: Dictionary) -> void:
+	var from := Vector2(view_size().x * 0.5, view_size().y * 0.42)
+	var spins_n := int(reward.get("spins", 0))
+	var coins_n := _scaled(int(reward.get("coins", 0)))
+	if spins_n > 0:
+		_grant_spins(spins_n, from)
+	if coins_n > 0:
+		_grant_coins(coins_n, from)
+	_grant_shields(int(reward.get("shields", 0)), from)
+	var cards := []
+	for i in int(reward.get("cards", 0)):
+		cards.append(_grant_chest_card(int(reward.get("tier", 1)), 0))
+	Sfx.play("coin", -4.0)
+	FX.confetti(self, 26)
+	if not cards.is_empty():
+		_show_chest_result(cards, "Deal Taken!")
+	_update_badges()
+	_refresh()
+
+# After a rung lands, whichever way it landed.
+func _after_deal_step() -> void:
+	if deal_taken >= Deals.STEPS and not deal_finale:
+		_deal_pay_finale(false)
+		return
+	# The screen is rebuilt rather than patched. Every cell's state is a
+	# function of deal_taken and exactly one of them changed, but patching two
+	# cells in place is two chances to leave the third in a state no rule
+	# describes -- and the whole page costs a frame to draw.
+	if _popup != null and _deal_timer_label != null:
+		_open_deal()
+
+# The grand prize. `quiet` is the expiry path, where there is no screen to put a
+# dialog over and the player is not necessarily even in the app.
+func _deal_pay_finale(quiet: bool) -> void:
+	deal_finale = true
+	_deal_pay(Deals.FINALE)
+	_save_game()
+	if quiet:
+		_notify("spins", "Grand prize paid — you cleared the whole ladder!", "🏆")
+		return
+	Sfx.play("jackpot", -3.0)
+	FX.confetti(self, 52)
+	FX.flash(self)
+	var vbox := _open_popup("Grand Prize!")
+	if not vbox.is_inside_tree():
+		return
+	var lead := _popup_row_label("Six for six. The whole ladder is yours.", UI.F_BODY)
+	lead.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lead.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(lead)
+	var goods := HBoxContainer.new()
+	goods.alignment = BoxContainer.ALIGNMENT_CENTER
+	goods.add_theme_constant_override("separation", 22)
+	vbox.add_child(goods)
+	for entry in [["bolt", int(Deals.FINALE.get("spins", 0))],
+			["coin", _scaled(int(Deals.FINALE.get("coins", 0)))],
+			["cards", int(Deals.FINALE.get("cards", 0))]]:
+		var n: int = entry[1]
+		if n <= 0:
+			continue
+		goods.add_child(_prize_column(String(entry[0]), 96.0, _fmt_compact(n),
+			Lagoon.INK, 1.0, UI.F_TITLE, Color(1.0, 0.85, 0.4, 0.55)))
+	var ok := Button.new()
+	ok.text = "COLLECT"
+	ok.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	_candy_button(ok, Lagoon.KELP)
+	FX.press_feedback(ok)
+	ok.pressed.connect(func() -> void: _close_popup())
+	vbox.add_child(ok)
+
 # --- contextual offers --------------------------------------------------
 #
 # The moment a player is stopped by a number is the moment the number is worth
@@ -8660,6 +9239,12 @@ func _on_purchase_ok(product_id: String) -> void:
 			pack["coins_exact"] = exact
 			pack["name"] = "%s Coins" % _fmt_compact(exact)
 	_grant_pack(pack)
+	# BEFORE finish(), and that ordering is the whole point. finish() is what
+	# tells the store the transaction is settled and stops it being replayed, so
+	# a rung credited after it would be lost for good if the app died in between
+	# -- the player would have paid, received the goods, and watched the ladder
+	# stay where it was.
+	_deal_credit_purchase(short)
 	IAP.finish(product_id)
 
 # Backing out of Apple's sheet is a decision, not a fault. Take the spinner
@@ -16465,6 +17050,8 @@ func _sanitize_clock() -> void:
 	shop_free_last = minf(shop_free_last, now)
 	offer_until = minf(offer_until, now + CV.OFFER_DURATION)
 	offer_next = minf(offer_next, now + CV.OFFER_COOLDOWN)
+	deal_until = minf(deal_until, now + Deals.CHAIN_DURATION)
+	deal_next = minf(deal_next, now + Deals.CHAIN_COOLDOWN)
 	col_deadline = minf(col_deadline, now + CV.COLLECTION_SEASON_DAYS * 86400.0)
 	for entry in notif_log:
 		if typeof(entry) == TYPE_DICTIONARY:
@@ -16585,6 +17172,11 @@ func _save_dict() -> Dictionary:
 		"offer_id": offer_id,
 		"offer_until": offer_until,
 		"offer_next": offer_next,
+		"deal_id": deal_id,
+		"deal_until": deal_until,
+		"deal_next": deal_next,
+		"deal_taken": deal_taken,
+		"deal_finale": deal_finale,
 		"notif_enabled": notif_enabled,
 		"notif_types": notif_types,
 		"notif_log": notif_log,
@@ -16886,6 +17478,11 @@ func _load_game() -> void:
 	offer_id = _s(data.get("offer_id", ""))
 	offer_until = _f(data.get("offer_until", 0.0))
 	offer_next = _f(data.get("offer_next", 0.0))
+	deal_id = _s(data.get("deal_id", ""))
+	deal_until = _f(data.get("deal_until", 0.0))
+	deal_next = _f(data.get("deal_next", 0.0))
+	deal_taken = _i(data.get("deal_taken", 0))
+	deal_finale = bool(data.get("deal_finale", false))
 	notif_enabled = _b(data.get("notif_enabled", true), true)
 	notif_prompted = _b(data.get("notif_prompted", false))
 	var pr = data.get("pending_raids", [])
