@@ -1693,6 +1693,37 @@ func _t_raids() -> void:
 			stars_sane = false
 	_chk("a rival's standing is a real number", stars_sane)
 
+	# A RIVAL OFF THE SERVER IS A PURSE, NOT A BANK BALANCE.
+	#
+	# `players.vault_coins` is a real player's entire wallet and has no ceiling
+	# on it. A locally drawn rival carries 1,500..16,000 island-1 units by
+	# design, and every pace figure in the game assumes it -- so a human target
+	# has to arrive in the same units and inside the same range or one steal
+	# pays more than the island the player is standing on.
+	m.island_level = 14
+	var rich: Dictionary = m._rival_from_server({
+		"name": "Whale", "emoji": "\U0001F433", "island_level": 14,
+		"coins": int(9_000_000_000), "buildings": [5, 5, 5, 5, 5], "shields": 0,
+		"id": "x"})
+	_chk("a human's whole wallet is clamped to a rival's purse",
+		int(rich["coins"]) <= CV.VAULT_RICH_MAX, "%d" % int(rich["coins"]))
+
+	# And it is divided by THEIR curve, not the player's. find_target bands a
+	# rival to within three islands, and three islands is 1.6^3 -- so reading
+	# the figure against the wrong curve misquotes a neighbour by four times.
+	var ahead: Dictionary = m._rival_from_server({
+		"name": "Ahead", "emoji": "\U0001F642", "island_level": 17,
+		"coins": int(round(4000.0 * CV.curve(17))), "buildings": [1, 1, 1, 1, 1],
+		"shields": 0, "id": "y"})
+	_chk("a neighbour's vault is read on their own island's curve",
+		absi(int(ahead["coins"]) - 4000) <= 2, "%d, wanted 4000" % int(ahead["coins"]))
+
+	# Nothing anywhere may hand a raid more than one island's worth.
+	_chk("a purse can never outgrow an island",
+		CV.VAULT_CEIL == 84000 and CV.VAULT_RICH_MAX < CV.VAULT_CEIL,
+		"ceil %d, rich %d" % [CV.VAULT_CEIL, CV.VAULT_RICH_MAX])
+	m.island_level = 4
+
 	# The stake scales with the island and the bet, and nothing else.
 	var npc := {"coins": 5000, "buildings": [3, 3, 3, 3, 3], "island": 4}
 	m.island_level = 1

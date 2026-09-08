@@ -129,12 +129,17 @@ static func shake(node: Control, amount := 12.0, times := 6) -> void:
 		node.remove_meta(_SHAKE_RUN)
 		node.remove_meta(_SHAKE_HOME))
 
-static func pulse_forever(node: Control, scale := 1.06, period := 0.8) -> void:
+# Returns the loop, so a caller that may later want the node to stop pulsing can
+# kill it. `create_tween` does not stop the tweens a node already owns, so a
+# control that is re-dressed in place -- a deal ladder waymarker, say -- ends up
+# with two loops fighting over `scale` unless the first one is killed by hand.
+static func pulse_forever(node: Control, scale := 1.06, period := 0.8) -> Tween:
 	node.resized.connect(func() -> void: node.pivot_offset = node.size * 0.5)
 	node.pivot_offset = node.size * 0.5
 	var tw := node.create_tween().set_loops()
 	tw.tween_property(node, "scale", Vector2(scale, scale), period * 0.5).set_trans(Tween.TRANS_SINE)
 	tw.tween_property(node, "scale", Vector2.ONE, period * 0.5).set_trans(Tween.TRANS_SINE)
+	return tw
 
 static func float_bob(node: Control, amp := 14.0, period := 2.0) -> void:
 	var y := node.position.y

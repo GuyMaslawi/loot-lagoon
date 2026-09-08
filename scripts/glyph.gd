@@ -82,6 +82,7 @@ func _draw() -> void:
 		"hammer":  _hammer()
 		"lock":    _lock()
 		"clan":    _clan()
+		"chevron": _chevron()
 
 # --- drawing primitives ------------------------------------------------------
 
@@ -450,6 +451,23 @@ func _tick() -> void:
 	var pts := PackedVector2Array([Vector2(30, 52), Vector2(44, 66), Vector2(72, 34)])
 	draw_polyline(pts, Lagoon.KELP_LO, 15.0, true)
 	draw_polyline(pts, Color.WHITE, 9.0, true)
+
+# The waymarker on the deal ladder's path. Solid, with a soft rim behind it, so
+# it holds at 26 units where an outlined arrowhead closes up into a blob -- and
+# a shape rather than a character, because the display face has no
+# geometric-shapes block and each platform substituted its own.
+func _chevron() -> void:
+	var c := _hue(Lagoon.BRASS_HI)
+	var pts := PackedVector2Array([
+		Vector2(27, 14), Vector2(41, 14), Vector2(73, 46),
+		Vector2(73, 54), Vector2(41, 86), Vector2(27, 86),
+		Vector2(57, 50)])
+	# A shadow of itself, one unit down, is what gives a flat mark a lit edge.
+	var back := PackedVector2Array()
+	for pt in pts:
+		back.append(pt + Vector2(0, 3))
+	draw_colored_polygon(back, Color(0, 0, 0, 0.35))
+	draw_colored_polygon(pts, c)
 
 func _spark() -> void:
 	var c := _hue(Lagoon.BRASS_HI)

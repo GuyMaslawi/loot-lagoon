@@ -4597,6 +4597,7 @@ func _open_popup(title: String, width := 580.0, scroll := false) -> VBoxContaine
 		detached.queue_free()
 		return detached
 	_close_popup(true)
+	_popup_closed_cb = Callable()
 	_popup = Control.new()
 	_popup.mouse_filter = Control.MOUSE_FILTER_STOP
 	_popup.z_index = 120
@@ -4718,6 +4719,18 @@ func _open_popup(title: String, width := 580.0, scroll := false) -> VBoxContaine
 # outstanding purchase and the un-dismissable modal faded away on its own.
 var _popup_locked := false
 
+# Run when the dialog goes, by whichever route it went -- its own button, the
+# corner cross, or another dialog opening over the top of it. Set by the caller
+# after _open_popup and cleared by the next open, so it belongs to exactly one
+# dialog and cannot outlive it.
+#
+# There is one user: the deal ladder's grand prize, which owes the player a
+# handful of cards it has deliberately held back until the prize itself has
+# been read. Hanging that off the COLLECT button alone left the cards unshown
+# -- and the rank pill holding a number it was never going to be paid -- for
+# anybody who dismissed the dialog with the cross instead.
+var _popup_closed_cb := Callable()
+
 func _close_popup(instant := false) -> void:
 	if _popup == null:
 		return
@@ -4725,6 +4738,10 @@ func _close_popup(instant := false) -> void:
 		return
 	var p := _popup
 	_popup = null
+	var closed := _popup_closed_cb
+	_popup_closed_cb = Callable()
+	if closed.is_valid():
+		closed.call()
 	if instant:
 		p.queue_free()
 		return
@@ -8788,6 +8805,11 @@ var _deal_anim_from := -1
 # index. Rebuilt with the screen; only ever read by the animation.
 var _deal_cell_nodes := {}
 var _deal_arrow_nodes := {}
+# The track across the top, held so a rung can move it without the screen it
+# lives on being torn down. See _deal_patch.
+var _deal_bar: Range
+var _deal_count: Label
+var _deal_finale_art: Control
 
 func _open_deal() -> void:
 	var chain := _active_deal()
@@ -8800,6 +8822,9 @@ func _open_deal() -> void:
 	_deal_timer_label = null
 	_deal_cell_nodes.clear()
 	_deal_arrow_nodes.clear()
+	_deal_bar = null
+	_deal_count = null
+	_deal_finale_art = null
 
 	# The animation is owed only to the rung that was actually just taken. A
 	# stale flag -- the chain rolled over, the save came back from another
@@ -8851,7 +8876,7 @@ func _open_deal() -> void:
 		#
 		# A waymarker knows which rung it leads INTO, which is what lets the
 		# unlock run down the path instead of appearing at both ends of it.
-		row.add_child(_deal_arrow("▶" if r != 1 else "◀", hue, maxi(a, b)))
+		row.add_child(_deal_arrow(DEAL_TURN_ON if r != 1 else DEAL_TURN_BACK, hue, maxi(a, b)))
 		row.add_child(_deal_cell(b, hue))
 		if r < 2:
 			# The turn. It hangs under the column the flow leaves from, which is
@@ -8897,29 +8922,62 @@ func _deal_track(vbox: VBoxContainer, hue: Color, beat: int) -> void:
 	bar.max_value = Deals.STEPS
 	row.add_child(bar)
 	var count := Lagoon.progress_value(bar, "%d / %d" % [deal_taken, Deals.STEPS], UI.F_CAPTION)
+	_deal_bar = bar
+	_deal_count = count
 	# The bar climbs the rung rather than already being up it. It is the one
 	# thing on the screen that says how much of the ladder is behind you, so
 	# arriving pre-filled throws away the only reading it exists to give.
+	#
+	# This is the OWED beat -- a rung taken while the screen was shut, which is
+	# only ever a paid one coming back off a StoreKit sheet. A rung taken with
+	# the ladder open never comes through here at all; _deal_climb_track moves
+	# the same bar in place. See _deal_patch.
 	if beat >= 0:
 		bar.value = beat
-		var tw := bar.create_tween()
-		tw.tween_interval(0.18)
-		tw.tween_property(bar, "value", float(deal_taken), 0.45) \
-			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-		tw.tween_callback(func() -> void:
-			if is_instance_valid(count):
-				FX.counter_pop(count, Lagoon.BRASS_HI))
+		_deal_climb_track(beat)
 	else:
 		bar.value = deal_taken
 
 	# The prize at the end of the bar, lit once it is owed and flat until then.
 	var chest := _prize_art("gift", 56.0)
 	chest.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_deal_finale_art = chest
 	if deal_taken >= Deals.STEPS and not deal_finale:
 		FX.pulse_forever(chest, 1.12, 1.1)
 	else:
 		chest.modulate = Color(1, 1, 1, 0.55)
 	row.add_child(chest)
+
+# The bar walking up one rung, with the count popping when it arrives. Split
+# out of _deal_track because it is now called twice: once for a rung taken
+# while the ladder was shut (the bar is built at the old value and climbs), and
+# once for a rung taken with the ladder open (the bar is already on screen at
+# the old value and climbs from where it stands).
+func _deal_climb_track(from: int) -> void:
+	if not is_instance_valid(_deal_bar):
+		return
+	var bar := _deal_bar
+	var count := _deal_count
+	bar.value = from
+	var tw := bar.create_tween()
+	tw.tween_interval(0.18)
+	tw.tween_property(bar, "value", float(deal_taken), 0.45) \
+		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	tw.tween_callback(func() -> void:
+		if is_instance_valid(count):
+			count.text = "%d / %d" % [deal_taken, Deals.STEPS]
+			FX.counter_pop(count, Lagoon.BRASS_HI))
+	# The prize at the end lights the moment the last rung is down, on the same
+	# beat the bar reaches it -- it is the one thing on this screen that says
+	# the ladder is finished.
+	if deal_taken >= Deals.STEPS and not deal_finale and is_instance_valid(_deal_finale_art):
+		var art := _deal_finale_art
+		var lt := art.create_tween()
+		lt.tween_interval(0.55)
+		lt.tween_property(art, "modulate", Color.WHITE, 0.30)
+		lt.tween_callback(func() -> void:
+			if is_instance_valid(art):
+				FX.pulse_forever(art, 1.12, 1.1))
 
 # The stock a rung is struck on: a dark slab in the rung's own signal colour,
 # with the light on it painted rather than styled.
@@ -9096,7 +9154,17 @@ func _deal_cell(idx: int, hue: Color) -> Control:
 	# the lock is one layer over the top of it and the beat takes that layer
 	# off. Rebuilding the cell a second time to reveal it would be two chances
 	# to disagree about what the rung is.
-	var opening := live and _deal_anim_from == idx - 1
+	# `_deal_anim_from >= 0` IS THE WHOLE GUARD, AND WITHOUT IT NO CHAIN COULD
+	# BE STARTED AT ALL.
+	#
+	# The idle value of `_deal_anim_from` is -1, and rung 0's `idx - 1` is also
+	# -1. So the first rung of every chain matched "the rung that has just come
+	# free", built itself in the opening state -- lock plate on, button
+	# disabled, stock dressed down -- and then no beat ran to take the lock off,
+	# because `beat` was -1 too. Six rewards, a countdown, and nothing on the
+	# screen that could be pressed. The harness never saw it: qa_flows drives
+	# `_take_deal(0)` directly and never presses the button.
+	var opening := live and idx > 0 and _deal_anim_from == idx - 1
 
 	var holder := VBoxContainer.new()
 	holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -9276,22 +9344,50 @@ func _deal_play_take(from: int) -> void:
 			if is_instance_valid(opened):
 				_deal_beat_unlock(opened))
 
+# A LAYER FOR EFFECTS, INSIDE A CONTROL THE LAYOUT OWNS.
+#
+# `FX.ring` and `FX.burst` add plain Panels to whatever parent they are handed,
+# and a Container lays out every child it holds. So a ring dropped straight onto
+# a rung's VBoxContainer became a third row of that box and shoved the goods and
+# the button apart -- the neighbouring card visibly grew and the whole row
+# jumped while the beat played -- and eighteen burst particles dropped onto a
+# 56x38 waymarker disc were each re-fitted to 56x38 and came out as pale slabs
+# instead of sparks.
+#
+# Neither is an animation problem. The tweens were right; they were running on
+# nodes the layout owned. A plain Control is not a Container, so anything put
+# inside one keeps the size and position it was given. One is stretched over
+# each host and cached on it.
+func _beat_stage(host: Control) -> Control:
+	if host.has_meta("stage"):
+		var found = host.get_meta("stage")
+		if is_instance_valid(found) and found is Control:
+			return found
+	var stage := Control.new()
+	stage.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stage.z_index = 2
+	host.add_child(stage)
+	stage.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	host.set_meta("stage", stage)
+	return stage
+
 # The receipt. The card takes the hit, a ring leaves it, and the medallion
 # lands last and hardest -- it is the thing the player is meant to remember
 # seeing.
 func _deal_beat_spent(holder: Control) -> void:
-	var centre := holder.size * 0.5
-	holder.pivot_offset = centre
+	var card = holder.get_meta("card", null) if holder.has_meta("card") else null
+	var stage: Control = _beat_stage(card) if (is_instance_valid(card) and card is Control) else holder
+	var centre := stage.size * 0.5
+	holder.pivot_offset = holder.size * 0.5
 	var tw := holder.create_tween()
 	tw.tween_property(holder, "scale", Vector2(1.10, 1.10), 0.11) \
 		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tw.tween_property(holder, "scale", Vector2.ONE, 0.30) \
 		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	FX.ring(holder, centre, Lagoon.KELP_HI, holder.size.x * 0.60, 0.50, 8.0)
-	FX.burst(holder, centre, Lagoon.KELP_HI, 18)
+	FX.ring(stage, centre, Lagoon.KELP_HI, stage.size.x * 0.60, 0.50, 8.0)
+	FX.burst(stage, centre, Lagoon.KELP_HI, 18)
 	Sfx.play("pop", -4.0, 0.02, 1.12)
 
-	var card = holder.get_meta("card", null)
 	if is_instance_valid(card) and card is Control:
 		# It fades to a spent plate rather than arriving as one, so the eye has
 		# a moment to see WHICH card was spent.
@@ -9315,12 +9411,21 @@ func _deal_beat_spent(holder: Control) -> void:
 # does not read as two unrelated things happening at either end of the screen.
 func _deal_beat_waymark(disc: Control) -> void:
 	disc.pivot_offset = disc.size * 0.5
+	# The pulse loop and this beat both drive `scale`, and the loop wins the
+	# frame after -- so the live marker's flare used to be snapped away
+	# half-played. It stops for the beat and is put back when the beat lands.
+	var loop = disc.get_meta("beat", null) if disc.has_meta("beat") else null
+	if loop is Tween and (loop as Tween).is_valid():
+		(loop as Tween).kill()
+	disc.set_meta("beat", null)
 	var tw := disc.create_tween()
 	tw.tween_property(disc, "scale", Vector2(1.55, 1.55), 0.14) \
 		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tw.tween_property(disc, "scale", Vector2.ONE, 0.32) \
 		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	FX.burst(disc, disc.size * 0.5, Lagoon.BRASS_HI, 8)
+	tw.tween_callback(func() -> void: _deal_dress_arrow(disc))
+	var stage := _beat_stage(disc)
+	FX.burst(stage, stage.size * 0.5, Lagoon.BRASS_HI, 8)
 	Sfx.play("pop", -14.0, 0.02, 1.45)
 
 # The lock giving. Two hard shakes -- the latch refusing -- and then the plate
@@ -9335,8 +9440,9 @@ func _deal_beat_unlock(holder: Control) -> void:
 	_after(0.32, func() -> void:
 		if not is_instance_valid(holder):
 			return
-		var centre := holder.size * 0.5
-		var card = holder.get_meta("card", null)
+		var card = holder.get_meta("card", null) if holder.has_meta("card") else null
+		var stage: Control = _beat_stage(card) if (is_instance_valid(card) and card is Control) else holder
+		var centre := stage.size * 0.5
 		if is_instance_valid(card) and card is PanelContainer:
 			_event_dress(card, String(holder.get_meta("kind", "free")), true)
 		var btn = holder.get_meta("btn", null)
@@ -9358,9 +9464,9 @@ func _deal_beat_unlock(holder: Control) -> void:
 			pt.tween_property(p, "modulate:a", 0.0, 0.26)
 			pt.chain().tween_callback(p.queue_free)
 		Sfx.play("coin", -5.0)
-		FX.ring(holder, centre, Lagoon.BRASS_HI, holder.size.x * 0.70, 0.55, 9.0)
-		FX.burst(holder, centre, Lagoon.BRASS_HI, 22)
-		holder.pivot_offset = centre
+		FX.ring(stage, centre, Lagoon.BRASS_HI, stage.size.x * 0.70, 0.55, 9.0)
+		FX.burst(stage, centre, Lagoon.BRASS_HI, 22)
+		holder.pivot_offset = holder.size * 0.5
 		var tw := holder.create_tween()
 		tw.tween_property(holder, "scale", Vector2(1.13, 1.13), 0.15) \
 			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
@@ -9376,7 +9482,7 @@ func _deal_turn(right: bool, hue: Color, into: int) -> Control:
 	pad.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	if right:
 		lane.add_child(pad)
-	var mark := _deal_arrow("▼", hue, into)
+	var mark := _deal_arrow(DEAL_TURN_DOWN, hue, into)
 	lane.add_child(mark)
 	if not right:
 		lane.add_child(pad)
@@ -9393,11 +9499,65 @@ func _deal_turn(right: bool, hue: Color, into: int) -> Control:
 # it are dimmed to half. That turns six identical markers into a path with a
 # position on it -- the eye lands on the live rung without having to read a
 # single card to find it.
-func _deal_arrow(mark: String, hue: Color, into := -1) -> Control:
+func _deal_arrow(turn: float, hue: Color, into := -1) -> Control:
 	var disc := PanelContainer.new()
 	disc.custom_minimum_size = Vector2(56, 38)
 	disc.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	disc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# A DRAWN CHEVRON, NOT A TYPED ONE. It was `Lagoon.title("\u25b6")` -- a
+	# geometric-shapes character set in the game's display face, which is a
+	# rounded Latin face and does not carry that block. What came back was
+	# whatever the platform substituted: a different weight, a different
+	# optical size and a different vertical centre on iOS than in the editor,
+	# which is exactly the kind of detail that reads as "made of text" rather
+	# than as an object. The mark is a polygon now, so it is the same shape at
+	# every size on every device -- and `turn` is a rotation in degrees rather
+	# than a character to look a rotation up by, so there are three call sites
+	# and one shape instead of three glyphs.
+	#
+	# IN ITS OWN BOX, for the same reason the taken rung's medallion is. `disc`
+	# is a PanelContainer, and a Container re-fits every child to its own rect,
+	# anchors and all -- so a 26-unit chevron put straight on it came out as a
+	# 56x38 one rotating about a corner. A plain Control is what the container
+	# is allowed to stretch; the mark inside it is not.
+	var slot := Control.new()
+	slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	disc.add_child(slot)
+	var head := Glyph.new()
+	head.kind = "chevron"
+	head.tint = hue
+	head.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	slot.add_child(head)
+	head.set_anchors_preset(Control.PRESET_CENTER)
+	head.offset_left = -13.0
+	head.offset_right = 13.0
+	head.offset_top = -13.0
+	head.offset_bottom = 13.0
+	head.pivot_offset = Vector2(13, 13)
+	head.rotation_degrees = turn
+	disc.set_meta("head", head)
+	disc.set_meta("hue", hue)
+	disc.set_meta("into", into)
+	if into >= 0:
+		_deal_arrow_nodes[into] = disc
+	_deal_dress_arrow(disc)
+	return disc
+
+# Which way a waymarker points, in degrees clockwise from "along the row". One
+# drawn chevron, turned -- rather than three glyphs, or three characters the
+# display face does not carry.
+const DEAL_TURN_ON := 0.0
+const DEAL_TURN_BACK := 180.0
+const DEAL_TURN_DOWN := 90.0
+
+# A waymarker's whole state, in one place, so a rung taken with the ladder open
+# can re-dress the two markers that changed instead of the screen rebuilding to
+# get them right. Everything here is a pure function of `deal_taken`.
+func _deal_dress_arrow(disc: Control) -> void:
+	if not is_instance_valid(disc):
+		return
+	var into := int(disc.get_meta("into", -1))
+	var hue: Color = disc.get_meta("hue", Lagoon.BRASS)
 	var walked := into >= 0 and into <= deal_taken
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = hue.lerp(Lagoon.HULL, 0.30) if walked else Lagoon.HULL
@@ -9408,18 +9568,26 @@ func _deal_arrow(mark: String, hue: Color, into := -1) -> Control:
 	sb.shadow_color = Color(0, 0, 0, 0.40)
 	sb.shadow_offset = Vector2(0, 3)
 	disc.add_theme_stylebox_override("panel", sb)
-	var l := Lagoon.title(mark, UI.F_CAPTION, Color.WHITE if walked else hue.lerp(Color.WHITE, 0.45),
-		Lagoon.HULL)
-	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	disc.add_child(l)
-	if into >= 0:
-		_deal_arrow_nodes[into] = disc
-		if into == deal_taken:
-			FX.pulse_forever(disc, 1.12, 1.05)
-		elif into > deal_taken:
-			disc.modulate = Color(1, 1, 1, 0.55)
-	return disc
+	var head = disc.get_meta("head", null) if disc.has_meta("head") else null
+	if is_instance_valid(head) and head is Glyph:
+		(head as Glyph).tint = Color.WHITE if walked else hue.lerp(Color.WHITE, 0.45)
+		(head as Glyph).queue_redraw()
+	# KILLED BEFORE IT IS REPLACED. `create_tween()` does not stop the tweens a
+	# node already owns, and pulse_forever's is a looping one -- re-dressing a
+	# marker without this leaves two loops fighting over `scale`, which is a
+	# jitter rather than a pulse and does not stop when the marker goes quiet.
+	var old = disc.get_meta("beat", null) if disc.has_meta("beat") else null
+	if old is Tween and (old as Tween).is_valid():
+		(old as Tween).kill()
+	disc.set_meta("beat", null)
+	disc.scale = Vector2.ONE
+	if into == deal_taken:
+		disc.modulate = Color.WHITE
+		disc.set_meta("beat", FX.pulse_forever(disc, 1.12, 1.05))
+	elif into > deal_taken:
+		disc.modulate = Color(1, 1, 1, 0.55)
+	else:
+		disc.modulate = Color.WHITE
 # --- taking a rung -----------------------------------------------------------
 
 func _take_deal(idx: int) -> void:
@@ -9438,9 +9606,17 @@ func _take_deal(idx: int) -> void:
 		_close_popup()
 		_confirm_purchase(Deals.step_pack(step))
 		return
+	# Read BEFORE the cell is thrown away by the patch below, and as a point
+	# rather than as a node: _deal_swap_cell frees the holder this button lives
+	# on, and a typed read off a freed instance raises before any validity
+	# guard can run.
+	var at := Vector2.ZERO
+	var cell = _deal_cell_nodes.get(idx)
+	if is_instance_valid(cell) and cell is Control:
+		at = (cell as Control).global_position + (cell as Control).size * 0.5
 	deal_taken = idx + 1
 	_deal_anim_from = idx
-	_deal_pay(Deals.step_reward(step))
+	_deal_pay(Deals.step_reward(step), at)
 	_save_game()
 	_after_deal_step()
 
@@ -9464,8 +9640,13 @@ func _deal_credit_purchase(pack_id: String) -> void:
 # What the free rungs actually hand over. Paid rungs never come through here --
 # _grant_pack pays those, so the pack is the single source of what a pack is
 # worth whether it is bought from the shop or from a ladder.
-func _deal_pay(reward: Dictionary) -> void:
-	var from := Vector2(view_size().x * 0.5, view_size().y * 0.42)
+# `at` is where the goods leave from. A prize that flies out of the middle of
+# the screen came from nowhere; a prize that flies out of the card the player
+# just pressed came from the thing they pressed, and on a page with six cards
+# on it that is the difference between a reward and a number changing. Zero
+# means "no rung asked", which is the finale and the expiry payout.
+func _deal_pay(reward: Dictionary, at := Vector2.ZERO) -> void:
+	var from := at if at != Vector2.ZERO else Vector2(view_size().x * 0.5, view_size().y * 0.42)
 	var spins_n := int(reward.get("spins", 0))
 	var coins_n := _scaled(int(reward.get("coins", 0)))
 	if spins_n > 0:
@@ -9473,34 +9654,149 @@ func _deal_pay(reward: Dictionary) -> void:
 	if coins_n > 0:
 		_grant_coins(coins_n, from)
 	_grant_shields(int(reward.get("shields", 0)), from)
-	var cards := []
+	# HELD THE MOMENT THEY ARE BANKED, not when the dialog that shows them
+	# opens. `_grant_chest_card` puts the stars in the save immediately and the
+	# `_refresh()` two lines down would print them -- so with the reveal now
+	# deferred by a beat, the rank pill would climb on the grant and then drop
+	# back when `_show_chest_result` took its own hold a second later. The hold
+	# belongs with the grant; the tiles pay it off as they land.
+	var held := 0
 	for i in int(reward.get("cards", 0)):
-		cards.append(_grant_chest_card(int(reward.get("tier", 1)), 0))
+		var card := _grant_chest_card(int(reward.get("tier", 1)), 0)
+		_deal_pending_cards.append(card)
+		if not card.get("dup", false):
+			held += int(card.get("stars", 0))
+	_hud_hold("stars", held)
 	Sfx.play("coin", -4.0)
 	FX.confetti(self, 26)
-	if not cards.is_empty():
-		_show_chest_result(cards, "Deal Taken!")
 	_update_badges()
 	_refresh()
 
+# CARDS ARE HELD BACK UNTIL THE LADDER HAS FINISHED TALKING.
+#
+# `_show_chest_result` opens a popup, and a popup closes whatever is under it.
+# So a rung that paid a card used to take the ladder off the screen on the same
+# frame it was pressed -- no spend, no waymarker, no unlock, just the card
+# dialog -- and on the SIXTH rung it was worse than that: the rung's card
+# dialog opened, the finale's `_deal_pay` opened a second one over it, and
+# `Grand Prize!` closed that. Three modals in one frame, two of them destroyed
+# before they had drawn.
+#
+# The cards granted by a rung are banked immediately -- they are on the shelf
+# and in the save the moment the rung lands -- and merely SHOWN once the beats
+# are done. One dialog, holding everything the step paid.
+var _deal_pending_cards := []
+
+func _deal_show_cards(title: String) -> void:
+	if _deal_pending_cards.is_empty():
+		return
+	var cards := _deal_pending_cards
+	_deal_pending_cards = []
+	# `held` -- the stars were put on hold by _deal_pay when the cards were
+	# banked, and holding them a second time would leave the pill permanently
+	# short by the same amount the tiles are about to deliver.
+	_show_chest_result(cards, title, "", [], true)
+
 # After a rung lands, whichever way it landed.
+#
+# THE LADDER IS PATCHED NOW, NOT REBUILT, AND THAT IS THE WHOLE OF WHAT WAS
+# WRONG WITH THIS SCREEN.
+#
+# It used to call `_open_deal()`, which goes through `_open_popup` -- and
+# `_open_popup` frees the dialog it is replacing and plays `FX.pop_in` on the
+# new one. So taking a rung tore down the plaque, the clock, the blurb, the
+# track and all six cards and scaled the lot back in from 30% over 0.32s. Every
+# object on the screen jumped, including the five that had not changed, and the
+# three carefully-ordered beats then played on top of a page that had just
+# teleported. That is the "animation and transitions look amateurish" Guy
+# reported off his own phone: the beats were fine, they were simply being run
+# over a hard cut of the entire screen.
+#
+# Nothing about the state was wrong -- the reasoning for a rebuild was that
+# every cell is a function of `deal_taken` and a patch might leave one in a
+# state no rule describes. That is still true, and it is answered by patching
+# through the SAME builders rather than by hand: `_deal_swap_cell` throws the
+# old cell away and asks `_deal_cell` for a new one in the same slot, and
+# `_deal_dress_arrow` is the only place a waymarker's look is decided. Two
+# cells and two markers change; the page they sit on does not move.
+#
+# is_instance_valid, NOT `!= null`. `_deal_timer_label` is the ladder's own
+# clock and it is not cleared when the ladder closes -- a freed Object is
+# still not null in GDScript, so a PAID rung, which leaves this screen for a
+# StoreKit sheet and comes back to whatever the purchase flow put up, was
+# re-opening the ladder straight over the top of the player's reward.
 func _after_deal_step() -> void:
 	if deal_taken >= Deals.STEPS and not deal_finale:
+		# The ladder is finished. Walk the track and spend the last rung first,
+		# then hand over the grand prize -- the finale used to land on top of a
+		# screen that had not yet shown the sixth rung being taken, so the one
+		# beat the whole chain builds to was covered by its own reward.
+		if _popup != null and is_instance_valid(_deal_timer_label):
+			_deal_patch()
+			_after(DEAL_BEAT_TOTAL, _deal_pay_finale.bind(false))
+			return
 		_deal_pay_finale(false)
 		return
-	# The screen is rebuilt rather than patched. Every cell's state is a
-	# function of deal_taken and exactly one of them changed, but patching two
-	# cells in place is two chances to leave the third in a state no rule
-	# describes -- and the whole page costs a frame to draw. What the rebuild
-	# then plays is _deal_play_take, off `_deal_anim_from`.
-	#
-	# is_instance_valid, NOT `!= null`. `_deal_timer_label` is the ladder's own
-	# clock and it is not cleared when the ladder closes -- a freed Object is
-	# still not null in GDScript, so a PAID rung, which leaves this screen for a
-	# StoreKit sheet and comes back to whatever the purchase flow put up, was
-	# re-opening the ladder straight over the top of the player's reward.
 	if _popup != null and is_instance_valid(_deal_timer_label):
-		_open_deal()
+		_deal_patch()
+		if not _deal_pending_cards.is_empty():
+			_after(DEAL_BEAT_TOTAL, _deal_show_cards.bind("Deal Taken!"))
+		return
+	# No ladder on screen to play the beats on -- a paid rung coming back off a
+	# StoreKit sheet. The cards go up straight away and the unlock stays owed to
+	# the next time the ladder is opened, which is where the player will look
+	# for it.
+	_deal_show_cards("Deal Taken!")
+
+# How long the three beats take end to end. Used to hold the finale back until
+# the ladder has finished showing what the player just did.
+const DEAL_BEAT_TOTAL := 1.15
+
+# One rung landing, on the screen that is already up.
+func _deal_patch() -> void:
+	var chain := _active_deal()
+	if chain.is_empty():
+		return
+	var from := deal_taken - 1
+	if from < 0:
+		return
+	var hue: Color = chain["hue"]
+	# `opening` inside _deal_cell reads this, which is what makes the rung that
+	# has just come free build LIVE and then dress back down -- so the unlock
+	# beat has a finished card to take a lock off rather than a second render
+	# to agree with. Cleared once both cells exist, before the beats run.
+	_deal_anim_from = from
+	_deal_swap_cell(from, hue)
+	_deal_swap_cell(from + 1, hue)
+	_deal_anim_from = -1
+	# The markers either side of the rung that moved: the one leading into it
+	# has just been walked, the one past it is now the live one.
+	for into in [from, from + 1]:
+		_deal_dress_arrow(_deal_arrow_nodes.get(into))
+	_deal_climb_track(from)
+	_deal_play_take(from)
+
+# Throws one cell away and asks the builder for the same cell again, back in the
+# same place in its row.
+#
+# The slot rather than the node is what has to survive: both holders carry the
+# identical sizing (SIZE_EXPAND_FILL, a 236 minimum), so the row does not
+# reflow and the two cards that did not change do not move by a pixel.
+func _deal_swap_cell(idx: int, hue: Color) -> void:
+	if idx < 0 or idx >= Deals.STEPS:
+		return
+	var old = _deal_cell_nodes.get(idx)
+	if not is_instance_valid(old) or not (old is Control):
+		return
+	var row := (old as Control).get_parent()
+	if row == null:
+		return
+	var at := (old as Control).get_index()
+	row.remove_child(old)
+	(old as Control).queue_free()
+	var fresh := _deal_cell(idx, hue)
+	row.add_child(fresh)
+	row.move_child(fresh, at)
 
 # The grand prize. `quiet` is the expiry path, where there is no screen to put a
 # dialog over and the player is not necessarily even in the app.
@@ -9509,6 +9805,9 @@ func _deal_pay_finale(quiet: bool) -> void:
 	_deal_pay(Deals.FINALE)
 	_save_game()
 	if quiet:
+		# Nobody is looking. The cards are already banked and on the shelf; the
+		# dialog that would have shown them has no screen to open over.
+		_deal_pending_cards = []
 		_notify("spins", "Grand prize paid — you cleared the whole ladder!", "🏆")
 		return
 	Sfx.play("jackpot", -3.0)
@@ -9538,8 +9837,15 @@ func _deal_pay_finale(quiet: bool) -> void:
 	ok.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
 	_candy_button(ok, Lagoon.KELP)
 	FX.press_feedback(ok)
-	ok.pressed.connect(func() -> void: _close_popup())
+	ok.pressed.connect(_close_popup)
 	vbox.add_child(ok)
+	# The cards the ladder owes -- the sixth rung's and the finale's together --
+	# land as one handful once this dialog goes, rather than as two dialogs that
+	# flashed past before the grand prize even opened. On the CLOSE rather than
+	# on the button, so the corner cross pays them too.
+	_popup_closed_cb = func() -> void:
+		if not _deal_pending_cards.is_empty():
+			_after(0.22, _deal_show_cards.bind("Ladder Cleared!"))
 
 # =============================================================================
 #  The power up
@@ -10593,7 +10899,11 @@ func _show_pack_result(pack: Dictionary) -> void:
 		tw.tween_interval(0.07 * i)
 		tw.tween_property(tile, "modulate:a", 1.0, 0.22)
 
-func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := "", completed_sets: Array = []) -> void:
+# `held` says the caller has already put this handful's stars on hold. It is set
+# by the deal ladder, which banks a rung's cards a beat before it shows them so
+# the ladder can finish its own animation first -- see _deal_show_cards. Holding
+# twice would leave the rank pill short by the amount the tiles then deliver.
+func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := "", completed_sets: Array = [], held := false) -> void:
 	# What the handful was worth to your standing, counted before anything is
 	# drawn -- because the pill at the top of the screen has to be holding the
 	# OLD number by the time the first tile appears. The stars were banked in
@@ -10602,7 +10912,8 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 	for c in cards:
 		if not c.get("dup", false):
 			rank_gain += int(c.get("stars", 0))
-	_hud_hold("stars", rank_gain)
+	if not held:
+		_hud_hold("stars", rank_gain)
 	_refresh()
 	var vbox := _open_popup(title)
 	if bonus_text != "":
@@ -16603,9 +16914,15 @@ func _offline_raids() -> void:
 				# The rival is looked up by name rather than held by
 				# reference: the pool is restocked between sessions, and a
 				# rival who has rotated out simply keeps what they took.
+				# CEILINGED. What they took is theirs to keep -- that is the
+				# grudge, and the reason the card says THEY OWE YOU -- but a
+				# purse fed by a wallet several islands deep, over an absence
+				# long enough to roll a dozen raids, is how a rival ends up
+				# holding more than the island the player is standing on.
 				for n in npcs:
 					if String(n.get("name", "")) == String(ev.get("npc", "")):
-						n["coins"] = int(n["coins"]) + int(round(take / maxf(_economy_mult(), 1.0)))
+						n["coins"] = mini(CV.VAULT_CEIL,
+							int(n["coins"]) + int(round(take / maxf(_economy_mult(), 1.0))))
 						break
 		_notify(String(ev.get("type", "steal")), String(ev.get("text", "")), String(ev.get("emoji", "🚨")), false)
 	if events.size() == 1:
@@ -17165,14 +17482,34 @@ func _prefetch_rival() -> void:
 
 # The server's row, in the shape the rest of the game already speaks.
 #
-# The one real conversion is the vault. Every coin figure belonging to a rival
-# is stored in island-1 units and multiplied by _economy_mult() where it is
-# shown or paid out -- so handing the raw server figure straight through would
-# have it scaled a second time and quote a vault worth hundreds of times what
-# is in it. Dividing by the same multiplier first means what the player reads on
-# the card is exactly the number the server is holding.
+# THE VAULT IS THE WHOLE OF THE WORK HERE, AND IT WAS WRONG TWICE.
+#
+# Every coin figure belonging to a rival is stored in island-1 units and
+# multiplied by _economy_mult() where it is shown or paid out, so the raw server
+# figure has to be divided by a curve on the way in or it is scaled twice.
+#
+# ONE: it was divided by MY curve, and the number is on THEIRS. find_target
+# bands a rival to within three islands of the player, and three islands is
+# 1.6^3 -- so a rival that far ahead had their vault quoted at four times what
+# it is worth where they are standing, and one that far behind at a quarter.
+# `island_level` is in the row; it is used now.
+#
+# TWO, and this is the one Guy saw on his phone: `coins` is `players.vault_coins`
+# -- a real player's ENTIRE COIN BALANCE. A locally drawn rival carries a purse
+# of 1,500 to 16,000 island-1 units, which is by design between 1% and 14% of an
+# island, and every pace figure the game is tuned to assumes that. A human is
+# not a purse. Somebody saving up for a five-star hut is sitting on several
+# islands' worth, and the card quoted all of it -- before the bet multiplied it
+# again. One raid on a rich neighbour paid more than the island the player was
+# standing on cost.
+#
+# So it is clamped to the top of the range the local generator draws from. That
+# is not a nerf of the mechanic: it makes a steal the same event whoever is on
+# the other end of it, which is the only way the measured economy holds. The
+# server clamps a claim to what the victim actually holds anyway, so claiming
+# less than their balance can never overpay.
 func _rival_from_server(row: Dictionary) -> Dictionary:
-	var mult := maxf(0.001, _economy_mult())
+	var theirs := maxf(0.001, CV.curve(maxi(1, int(row.get("island_level", 1)))))
 	var b := []
 	for v in row.get("buildings", []):
 		b.append(clampi(int(v), 0, CV.MAX_STAR))
@@ -17189,7 +17526,8 @@ func _rival_from_server(row: Dictionary) -> Dictionary:
 		"name": str(row.get("name", "Islander")),
 		"emoji": str(row.get("emoji", "🙂")),
 		"flag": flag,
-		"coins": maxi(0, int(round(float(row.get("coins", 0)) / mult))),
+		"coins": clampi(int(round(float(row.get("coins", 0)) / theirs)),
+			0, CV.VAULT_RICH_MAX),
 		"buildings": b,
 		"shield": int(row.get("shields", 0)) > 0,
 		"island": maxi(1, int(row.get("island_level", 1))),

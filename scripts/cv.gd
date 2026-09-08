@@ -1368,6 +1368,39 @@ static func scaled(base: int, level: int) -> int:
 		step *= 10.0
 	return int(round(v / step)) * int(step)
 
+# WHAT A VAULT IS WORTH, and it is a spec rather than a tuning knob.
+#
+# A full island costs 84,000 in island-1 units, and the player takes three of
+# the raid's four chests -- three quarters of the pot, whichever three. So these
+# numbers say a steal is worth between 1.3% and 14% of an island, and the whole
+# pace measurement in tools/qa_pace rests on it: 3.92% of spins land a steal, a
+# mean vault is 5,236, and the 155 coins per spin that comes out of those two is
+# a quarter of everything the game pays.
+#
+# They are named because a SECOND source of vaults exists. A rival fetched from
+# the server carries a real player's coin balance, which is not a purse and has
+# no ceiling on it at all -- see main.gd's _rival_from_server, which clamps to
+# VAULT_RICH_MAX so that a steal is the same event whoever is on the other end.
+const VAULT_MIN := 1500
+const VAULT_MAX := 6000
+const VAULT_RICH_MIN := 9000
+const VAULT_RICH_MAX := 16000
+const VAULT_RICH_ODDS := 0.17
+
+# THE CEILING ON ANY VAULT, however it got there.
+#
+# 84,000 is what a full island costs at island-1 prices -- five huts, five stars
+# each -- so this says the plainest thing there is to say about a raid: one raid
+# can be worth at most one island, and only to somebody who has been robbing the
+# player blind for a week. A fresh rival is nowhere near it (VAULT_RICH_MAX is
+# 16,000, a seventh of it); it is the two ways a purse GROWS that need bounding.
+#
+# A rival who steals from you keeps what they took, which is the whole of the
+# grudge mechanic and worth having -- but it compounds over an absence, against
+# a wallet that is itself several islands deep, and there was nothing on it
+# short of NPC_COIN_CAP at five million. Sixty islands, in one chest.
+const VAULT_CEIL := 84000
+
 # A fresh rival. Vaults are written in island-1 units like every other coin
 # figure in the game and scaled where they are shown or paid out, so a bot is
 # worth the same fraction of a building whichever island you meet it on.
@@ -1383,9 +1416,9 @@ static func new_npc(def: Dictionary, near := 0) -> Dictionary:
 	var home := randi_range(1, ISLANDS.size())
 	if near > 0:
 		home = clampi(near + randi_range(-2, 2), 1, ISLANDS.size())
-	var purse := randi_range(1500, 6000)
-	if randf() < 0.17:
-		purse = randi_range(9000, 16000)
+	var purse := randi_range(VAULT_MIN, VAULT_MAX)
+	if randf() < VAULT_RICH_ODDS:
+		purse = randi_range(VAULT_RICH_MIN, VAULT_RICH_MAX)
 	return {
 		"name": def["name"],
 		"emoji": def["emoji"],
