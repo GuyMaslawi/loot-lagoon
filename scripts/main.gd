@@ -432,7 +432,7 @@ var muted := false
 # mission is always worth the same fraction of a building at any island.
 const MISSION_DEFS := {
 	"daily": [
-		{"id": "spins", "emoji": "🌀", "desc": "Spin the wheel", "target": 15, "coins": 800},
+		{"id": "spins", "emoji": "⚡", "desc": "Spin the wheel", "target": 15, "coins": 800},
 		{"id": "coins_won", "emoji": "💰", "desc": "Win coins on spins", "target": 8000, "coins": 900},
 		{"id": "attacks", "emoji": "🔨", "desc": "Attack rival islands", "target": 3, "coins": 1200},
 		{"id": "steals", "emoji": "🦝", "desc": "Steal from rivals", "target": 2, "coins": 1100},
@@ -442,7 +442,7 @@ const MISSION_DEFS := {
 		{"id": "cards", "emoji": "🃏", "desc": "Find collection cards", "target": 2, "coins": 1000},
 	],
 	"weekly": [
-		{"id": "spins", "emoji": "🌀", "desc": "Spin the wheel", "target": 100, "coins": 3600},
+		{"id": "spins", "emoji": "⚡", "desc": "Spin the wheel", "target": 100, "coins": 3600},
 		{"id": "coins_won", "emoji": "💰", "desc": "Win coins on spins", "target": 60000, "coins": 4300},
 		{"id": "attacks", "emoji": "🔨", "desc": "Attack rival islands", "target": 15, "coins": 4000},
 		{"id": "steals", "emoji": "🦝", "desc": "Steal from rivals", "target": 12, "coins": 3700},
@@ -452,7 +452,7 @@ const MISSION_DEFS := {
 		{"id": "cards", "emoji": "🃏", "desc": "Find collection cards", "target": 10, "coins": 3700},
 	],
 	"monthly": [
-		{"id": "spins", "emoji": "🌀", "desc": "Spin the wheel", "target": 400, "coins": 11000},
+		{"id": "spins", "emoji": "⚡", "desc": "Spin the wheel", "target": 400, "coins": 11000},
 		{"id": "coins_won", "emoji": "💰", "desc": "Win coins on spins", "target": 250000, "coins": 12500},
 		{"id": "attacks", "emoji": "🔨", "desc": "Attack rival islands", "target": 50, "coins": 11800},
 		{"id": "steals", "emoji": "🦝", "desc": "Steal from rivals", "target": 40, "coins": 11000},
@@ -2207,9 +2207,9 @@ func _process(delta: float) -> void:
 			spins += gained
 			_refresh()
 			if spins >= SPIN_CAP:
-				_notify("spins", "Spins refilled — you're full!  (%d/%d)" % [spins, SPIN_CAP], "🌀")
+				_notify("spins", "Spins refilled — you're full!  (%d/%d)" % [spins, SPIN_CAP], "⚡")
 			else:
-				_notify("spins", "+%d spins refilled  (%d/%d)" % [gained, spins, SPIN_CAP], "🌀")
+				_notify("spins", "+%d spins refilled  (%d/%d)" % [gained, spins, SPIN_CAP], "⚡")
 	if _save_pending and float(Time.get_ticks_msec()) / 1000.0 - _save_flushed >= SAVE_FLUSH_GAP:
 		_flush_save()
 	_ui_tick += delta
@@ -5529,7 +5529,7 @@ func _grant_mission_reward(coin_amt: int, spin_amt: int) -> void:
 		FX.rise_label(self, Vector2(270, 560), "+%s" % _fmt_compact(coin_amt), Color(1.0, 0.85, 0.3), 36)
 	if spin_amt > 0:
 		spins += spin_amt
-		FX.rise_label(self, Vector2(300, 630), "+%d  🌀" % spin_amt, Color(0.6, 0.9, 1.0), 30)
+		FX.rise_label(self, Vector2(300, 630), "+%d  ⚡" % spin_amt, Color(0.6, 0.9, 1.0), 30)
 	Sfx.play("jackpot", -3.0)
 	FX.confetti(self, 20)
 	_update_badges()
@@ -7219,9 +7219,15 @@ func _pile_art(kind: String, rung: int, rungs: int, shrink := 1.0) -> Control:
 		# and it is the reason the most valuable offers on the page looked
 		# cheaper than the spin packs underneath them.
 		#
-		# So: a bed of coins, wheels standing in it, and a card at the crest if
+		# So: a bed of coins, BOLTS standing in it, and a card at the crest if
 		# the pack carries one. Composed back-to-front so nothing in front is
 		# occluded by something that should be behind it.
+		#
+		# Bolts, because this heap sits an inch from the same card's contents
+		# line and that line is bolts -- the spin ladder's own pile was fixed
+		# first and this one was missed, so for one commit a bundle card showed
+		# the currency three ways: a wheel in the heap, a bolt in the list, and
+		# a bolt again in the meter it pays into.
 		var lcoin := CV.symbol_tex("coin")
 		var cside := 40.0 + f * 14.0
 		var lcount := 4 + int(round(f * 9.0))
@@ -7240,10 +7246,9 @@ func _pile_art(kind: String, rung: int, rungs: int, shrink := 1.0) -> Control:
 		var wn := 2 + int(round(f * 2.0))
 		var wside := 48.0 + f * 16.0
 		for i in wn:
-			var g := Glyph.new()
-			g.kind = "wheel"
+			var g := _prize_art("bolt", wside)
 			g.custom_minimum_size = Vector2.ZERO
-			g.tint = Lagoon.LAGOON if i % 2 == 0 else Lagoon.LAGOON.lightened(0.20)
+			g.modulate = Color(1, 1, 1, 1) if i % 2 == 0 else Color(0.90, 0.85, 0.72)
 			g.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			box.add_child(g)
 			var wspan := float(wn - 1) * wside * 0.66
@@ -10367,12 +10372,21 @@ func _quests_tab_button(period: String) -> Button:
 		FX.pulse_forever(dot, 1.25, 0.9)
 	return b
 
-func _reward_chip(emoji: String, text: String, col: Color) -> HBoxContainer:
+# `kind` is a _prize_art name -- a reel symbol, a rendered prop or a drawn
+# glyph, resolved in that order. It used to be an emoji string, which is how the
+# quests page and the collection shelf came to advertise spins as a blue spiral
+# while the meter they land in, the shop that sells them and every prize tile in
+# the game had already moved to the reel's bolt.
+func _reward_chip(kind: String, text: String, col: Color) -> HBoxContainer:
 	var hb := HBoxContainer.new()
-	hb.add_theme_constant_override("separation", 4)
+	hb.add_theme_constant_override("separation", 5)
 	hb.alignment = BoxContainer.ALIGNMENT_CENTER
-	hb.add_child(_emoji_label(emoji, UI.F_CAPTION))
-	hb.add_child(Lagoon.label(text, UI.F_CAPTION, col, true))
+	var art := _prize_art(kind, 30.0)
+	art.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	hb.add_child(art)
+	var l := Lagoon.label(text, UI.F_CAPTION, col, true)
+	l.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	hb.add_child(l)
 	return hb
 
 func _update_quests_timer() -> void:
@@ -10611,9 +10625,9 @@ func _quest_card(vb: VBoxContainer, m: Dictionary, index: int) -> void:
 	row.add_child(right)
 	var spin_r := int(m.get("spins", 0))
 	if spin_r > 0:
-		right.add_child(_reward_chip("🌀", "+%d" % spin_r, Lagoon.ABYSS))
+		right.add_child(_reward_chip("bolt", "+%d" % spin_r, Lagoon.ABYSS))
 	else:
-		right.add_child(_reward_chip("🪙", "+%s" % _fmt_compact(_mission_coins(m)), Lagoon.BRASS_LO))
+		right.add_child(_reward_chip("coin", "+%s" % _fmt_compact(_mission_coins(m)), Lagoon.BRASS_LO))
 	if claimed:
 		var donel := _emoji_label("✅", 30)
 		donel.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -12357,7 +12371,7 @@ func _fill_collection_detail(vb: VBoxContainer, c: Dictionary) -> void:
 	meta.add_theme_constant_override("separation", 10)
 	info.add_child(meta)
 	meta.add_child(_diff_chip(c["diff"]))
-	meta.add_child(_reward_chip("🌀", "+%s  spins" % _fmt(int(c["reward_spins"])), Lagoon.LAGOON_DEEP))
+	meta.add_child(_reward_chip("bolt", "+%s  spins" % _fmt(int(c["reward_spins"])), Lagoon.LAGOON_DEEP))
 
 	var spare_n := _set_dupe_total(c)
 	if spare_n > 0:
@@ -12718,7 +12732,7 @@ func _claim_collection(c: Dictionary) -> void:
 	FX.confetti(self, 40)
 	FX.flash(self)
 	FX.fly_coins(self, Vector2(360, 640), _spin_counter_at(),
-		clampi(won / 120, 6, 12), "bolt", "🌀")
+		clampi(won / 120, 6, 12), "bolt", "⚡")
 	_award_stars(star_bonus, Vector2(360, 620))
 	_banner("%s:  +%s spins  and  +%d \u2605" % [c["name"], _fmt(won), star_bonus], Color(0.6, 0.9, 1.0), c["icon"])
 	_update_badges()
@@ -12739,7 +12753,7 @@ func _claim_mega() -> void:
 	FX.confetti(self, 80)
 	FX.flash(self)
 	FX.fly_coins(self, Vector2(360, 620), _spin_counter_at(),
-		18, "bolt", "🌀")
+		18, "bolt", "⚡")
 	_banner("GRAND PRIZE!  +%s spins  and  +250 \u2605" % _fmt(CV.COLLECTION_MEGA_SPINS), Color(0.6, 0.9, 1.0), "🏆")
 	_update_badges()
 	_refresh()
@@ -14162,7 +14176,19 @@ func _tourney_pip(host: Control, tier: int, at_ratio: float, lap: int) -> Button
 	pip.offset_top = 8.0
 	pip.offset_bottom = 62.0
 
-	Glyph.fill(pip, "cards" if pip_cards > 0 else "wheel", 12.0)
+	# A rung that pays cards is marked with the card glyph; one that pays spins
+	# gets the reel's bolt, like every other spin figure in the game. Glyph.fill
+	# cannot carry a texture, so the bolt is anchored the same way by hand.
+	if pip_cards > 0:
+		Glyph.fill(pip, "cards", 12.0)
+	else:
+		var pb := _prize_art("bolt", 0.0)
+		pb.custom_minimum_size = Vector2.ZERO
+		pip.add_child(pb)
+		pb.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		for mm in [["offset_left", 12.0], ["offset_right", -12.0],
+				["offset_top", 12.0], ["offset_bottom", -12.0]]:
+			pb.set(mm[0], mm[1])
 
 	FX.press_feedback(pip)
 	# Addressable by the harness: TIP=<tier> in tools/preview.gd presses a rung
@@ -14506,16 +14532,18 @@ func _tourney_result_dialog(place: int, field: int, scored: int,
 		prizes.add_theme_constant_override("separation", 22)
 		vbox.add_child(prizes)
 		for spec in [["coin", got_coins, _fmt_compact(got_coins)],
-				["wheel", got_spins, str(got_spins)], ["cards", got_cards, str(got_cards)]]:
+				["bolt", got_spins, str(got_spins)], ["cards", got_cards, str(got_cards)]]:
 			if int(spec[1]) <= 0:
 				continue
 			var cell := VBoxContainer.new()
 			cell.add_theme_constant_override("separation", 2)
 			prizes.add_child(cell)
-			var g := Glyph.new()
-			g.kind = str(spec[0])
-			g.custom_minimum_size = Vector2(58, 58)
-			g.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+			# _prize_art, so the coin and the bolt arrive as the reel's own
+			# painted symbols rather than as vector glyphs standing next to a
+			# painted card. This is the dialog a tournament ends on -- the one
+			# screen in the game that only ever appears after the player has
+			# won something.
+			var g := _prize_art(str(spec[0]), 58.0)
 			cell.add_child(g)
 			# A flat deep gold rather than the cabinet's gold-on-dark-outline.
 			# That treatment is for brass and dark glass; on this panel's pale
@@ -14565,7 +14593,7 @@ func _tourney_prize_text(place: int) -> String:
 	if place < 1 or place > TOURNEY_PRIZES.size():
 		return ""
 	var p: Dictionary = TOURNEY_PRIZES[place - 1]
-	var bits := ["💰 %s" % _fmt_compact(_scaled(int(p["coins"]))), "🌀 %d" % int(p["spins"])]
+	var bits := ["💰 %s" % _fmt_compact(_scaled(int(p["coins"]))), "⚡ %d" % int(p["spins"])]
 	if int(p["cards"]) > 0:
 		bits.append("🃏 %d" % int(p["cards"]))
 	return " · ".join(bits)
@@ -14911,7 +14939,7 @@ func _tourney_row(r: Dictionary, place: int) -> Control:
 	# BOTH LABELS BELOW ARE CLIPPED, and this is load-bearing rather than
 	# defensive. A Label hands its full text width up as a minimum, a VBox hands
 	# up its widest child's, and a VBox of rows hands that to every sibling --
-	# so one long prize line ("💰 12,000 · 🌀 250 · 🃏 3" on the first island,
+	# so one long prize line ("💰 12,000 · ⚡ 250 · 🃏 3" on the first island,
 	# where the coin prize has not compacted yet) widened the whole table and
 	# pushed the points column off the right-hand edge of the dialog. Every row
 	# lost its score to a prize chip that only five of them carry. Same trap as
@@ -15960,7 +15988,7 @@ func _alert_plan(from: float) -> Array:
 	if bool(notif_types.get("spins", true)) and spins < SPIN_CAP:
 		out.append({
 			"id": "spins_full", "at": _spins_full_at(from),
-			"title": "Your spins are full 🌀",
+			"title": "Your spins are full ⚡",
 			"body": "All %d back on the meter. The reels are waiting." % SPIN_CAP,
 		})
 	for i in pending_raids.size():
@@ -17003,7 +17031,7 @@ func _show_island_complete_popup() -> void:
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(sub)
 
-	var reward := _popup_row_label("Journey rewards:  💰 +%s   🌀 +%d" % [_fmt_compact(_scaled(ISLAND_REWARD_COINS, island_level + 1)), ISLAND_REWARD_SPINS], UI.F_CAPTION)
+	var reward := _popup_row_label("Journey rewards:  💰 +%s   ⚡ +%d" % [_fmt_compact(_scaled(ISLAND_REWARD_COINS, island_level + 1)), ISLAND_REWARD_SPINS], UI.F_CAPTION)
 	reward.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	reward.add_theme_color_override("font_color", Lagoon.KELP_LO)
 	vbox.add_child(reward)
@@ -17402,7 +17430,7 @@ func _open_new_world(level: int) -> void:
 	honest.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 	vbox.add_child(honest)
 
-	var reward := _popup_row_label("💰 +%s   🌀 +%d"
+	var reward := _popup_row_label("💰 +%s   ⚡ +%d"
 		% [_fmt_compact(_scaled(ISLAND_REWARD_COINS, level)), ISLAND_REWARD_SPINS], UI.F_LABEL)
 	reward.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	reward.add_theme_color_override("font_color", Lagoon.KELP_LO)
