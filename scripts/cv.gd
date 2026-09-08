@@ -733,6 +733,39 @@ const COLLECTION_BREAK_HOURS := 6
 # lands in the right season on its own, with no repair logic to get wrong.
 const SEASON_CYCLE_SECS := COLLECTION_SEASON_DAYS * 86400.0 + COLLECTION_BREAK_HOURS * 3600.0
 
+# THE SEASON HAS A NAME NOW, and until this it had only an index.
+#
+# The shelf said "Season ends in 16d 16h" and nothing else, so the thing the
+# player was collecting had no identity at all -- which is most of why the page
+# read as a list of sets rather than as an event. Every game in this genre gives
+# the current album a name and a cover, and the name is what makes finishing it
+# feel like finishing something rather than ticking fifteen boxes.
+#
+# Derived from the season index rather than stored, for exactly the reason the
+# season clock itself is: everyone is on the same global cycle, so everyone sees
+# the same album name at the same time with nothing to synchronise and no
+# migration to get wrong. A save shut in a drawer for two months comes back
+# knowing which album it is looking at.
+const SEASON_ALBUMS := [
+	{"name": "Castaway Tales",  "hue": Color(0.925, 0.545, 0.208)},
+	{"name": "Deep Water",      "hue": Color(0.180, 0.510, 0.769)},
+	{"name": "Salt & Spice",    "hue": Color(0.804, 0.310, 0.353)},
+	{"name": "The Long Voyage", "hue": Color(0.427, 0.353, 0.769)},
+	{"name": "Harbour Lights",  "hue": Color(0.196, 0.612, 0.478)},
+]
+
+static func season_album(t: float) -> Dictionary:
+	return SEASON_ALBUMS[season_index(t) % SEASON_ALBUMS.size()]
+
+# Every card in every collection, which is what the album counts. Sets are what
+# the grand prize is paid for; cards are what the player actually accumulates,
+# and a bar that only moves fifteen times in a month is not a bar.
+static func total_cards() -> int:
+	var n := 0
+	for c in COLLECTIONS:
+		n += (c["items"] as Array).size()
+	return n
+
 static func season_index(t: float) -> int:
 	return int(floor(t / SEASON_CYCLE_SECS))
 

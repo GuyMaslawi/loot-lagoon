@@ -11961,6 +11961,199 @@ func _season_ribbon(vb: VBoxContainer) -> void:
 	FX.pop_in(panel)
 	Sfx.play("levelup", -6.0)
 
+# =============================================================================
+#  The album
+# =============================================================================
+#
+# The shelf used to open on a card headed GRAND PRIZE: a sentence, a bar of
+# fifteen, and a countdown. Everything on it was true and none of it said what
+# the player was collecting -- the season had no name, no cover and no face, so
+# fifteen tiles under it read as a list of sets rather than as one thing worth
+# finishing. Guy sent a Cards Center screenshot where the season is a BOOK, and
+# he is right that that is the difference.
+#
+# So it is a book. A spine with bands down the left, a cover with the season's
+# name on it, the three hardest sets shown as the chase, and one bar across the
+# bottom. What is on it is what was on the old card plus an identity.
+#
+# THE BAR STILL COUNTS SETS, and that is deliberate even though cards would move
+# more often and feel better. The bar is the grand prize's bar, the grand prize
+# is paid for fifteen finished sets, and a progress bar that measures something
+# other than the thing it unlocks is a lie the player finds out about at the
+# end. The card count is real and is worth stating, so it is stated -- beside
+# the bar, as a fact, not as the bar.
+func _album_card(vb: VBoxContainer) -> void:
+	var album := CV.season_album(_now())
+	var hue: Color = album["hue"]
+
+	var claimed_n := 0
+	for c in CV.COLLECTIONS:
+		if col_claimed.get(c["id"], false):
+			claimed_n += 1
+	var cards_owned := 0
+	for c in CV.COLLECTIONS:
+		cards_owned += _collection_owned_count(c)
+
+	var book := _tinted_card(vb, hue, true)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 0)
+	book.add_child(row)
+
+	# The spine. A book seen face-on is a rectangle; the spine is the whole of
+	# what makes it a book, so it is drawn first and it is the only part of this
+	# card that is not the page's usual stock.
+	var spine := PanelContainer.new()
+	spine.custom_minimum_size = Vector2(34, 0)
+	var ssb := StyleBoxFlat.new()
+	ssb.bg_color = hue.lerp(Lagoon.HULL, 0.42)
+	ssb.corner_radius_top_left = Lagoon.R_CARD
+	ssb.corner_radius_bottom_left = Lagoon.R_CARD
+	ssb.border_width_right = 3
+	ssb.border_color = Lagoon.BRASS_LO
+	spine.add_theme_stylebox_override("panel", ssb)
+	row.add_child(spine)
+	var bands := VBoxContainer.new()
+	bands.alignment = BoxContainer.ALIGNMENT_CENTER
+	bands.add_theme_constant_override("separation", 16)
+	spine.add_child(bands)
+	for i in 3:
+		var band := Panel.new()
+		band.custom_minimum_size = Vector2(0, 9)
+		var bsb := StyleBoxFlat.new()
+		bsb.bg_color = Lagoon.BRASS
+		band.add_theme_stylebox_override("panel", bsb)
+		bands.add_child(band)
+
+	var margin := MarginContainer.new()
+	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	margin.add_theme_constant_override("margin_left", 18)
+	margin.add_theme_constant_override("margin_right", 16)
+	margin.add_theme_constant_override("margin_top", 14)
+	margin.add_theme_constant_override("margin_bottom", 14)
+	row.add_child(margin)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 10)
+	margin.add_child(col)
+
+	# The cover: a tag, and the season's name in brass.
+	var tag := Lagoon.chip("SEASONAL  ALBUM", hue, UI.F_TINY)
+	tag.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	col.add_child(tag)
+	var title := Lagoon.title(String(album["name"]).to_upper(), UI.F_TITLE,
+		Lagoon.BRASS_HI, Lagoon.ABYSS)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(title)
+
+	_album_chase(col)
+
+	# The bar, the count beside it, and the prize at the end.
+	var bar_row := HBoxContainer.new()
+	bar_row.add_theme_constant_override("separation", 10)
+	col.add_child(bar_row)
+	var gpb := _styled_progress(Lagoon.BRASS)
+	gpb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	gpb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	gpb.max_value = CV.COLLECTIONS.size()
+	gpb.value = claimed_n
+	bar_row.add_child(gpb)
+	Lagoon.progress_value(gpb, "%d / %d  sets" % [claimed_n, CV.COLLECTIONS.size()])
+	# THE PRIZE SITS BESIDE THE BAR, NOT UNDER IT. _prize_column stacks its
+	# figure below its artwork, so dropped into this row the bolt lined up with
+	# the track and the "3,000" hung off the bottom of it -- the row grew to fit
+	# and the bar stopped looking like it had an end. A chip is one line and
+	# centres on the track it belongs to.
+	var prize := _reward_chip("bolt", _fmt_compact(CV.COLLECTION_MEGA_SPINS), Lagoon.INK)
+	prize.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	bar_row.add_child(prize)
+	if claimed_n == CV.COLLECTIONS.size():
+		FX.pulse_forever(prize, 1.08, 1.0)
+
+	# The two facts under it. The card count is the one that moves daily and it
+	# is the only place in the game it has ever been said.
+	var facts := _popup_row_label("%d of %d cards collected" % [cards_owned, CV.total_cards()],
+		UI.F_CAPTION)
+	facts.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	# INK_MUTE, not INK_SOFT. The ink table in lagoon.gd measures every token
+	# against bare SHELL and SOFT clears it at 5.3 -- but this card is washed
+	# with the album's own hue, and on that stock qa_contrast measured this line
+	# at 4.41. Same trap the note on INK_SOFT already describes: a token has to
+	# clear the bar on the surface it actually lands on, not on the swatch.
+	facts.add_theme_color_override("font_color", Lagoon.INK_MUTE)
+	col.add_child(facts)
+
+	if not _col_break():
+		var left := maxf(0.0, col_deadline - _now())
+		var season := _popup_row_label("Ends in %dd %dh \u2014 the album resets"
+			% [int(left / 86400.0), int(fmod(left, 86400.0) / 3600.0)], UI.F_TINY)
+		season.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		season.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+		col.add_child(season)
+
+	if col_mega_claimed:
+		var done := _popup_row_label("GRAND  PRIZE  CLAIMED  \u2713", UI.F_LABEL)
+		done.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		done.add_theme_color_override("font_color", Lagoon.KELP_LO)
+		col.add_child(done)
+	elif claimed_n == CV.COLLECTIONS.size():
+		var mega := Button.new()
+		mega.text = "CLAIM  GRAND  PRIZE!"
+		mega.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+		_candy_button(mega, Color(0.45, 0.75, 0.35))
+		FX.press_feedback(mega)
+		FX.pulse_forever(mega, 1.04, 1.0)
+		mega.pressed.connect(_claim_mega)
+		col.add_child(mega)
+
+# The three hardest sets, as the chase.
+#
+# Hardest means rarest drop, which is `weight` ascending -- the same number the
+# reel uses to decide which set a card comes from, so this cannot drift from
+# what the game actually makes hard. Each shows its own progress and what it
+# pays, because "nine cards away from 800 spins" is a reason to keep spinning
+# and "Night Market 0/9" on a tile in the grid below is not.
+func _album_chase(col: VBoxContainer) -> void:
+	var by_weight := CV.COLLECTIONS.duplicate()
+	by_weight.sort_custom(func(a, b) -> bool:
+		return int((a as Dictionary)["weight"]) < int((b as Dictionary)["weight"]))
+
+	var head := Lagoon.label("TOP  COLLECTIBLES", UI.F_TINY, Lagoon.INK_MUTE, true)
+	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(head)
+
+	var strip := HBoxContainer.new()
+	strip.alignment = BoxContainer.ALIGNMENT_CENTER
+	strip.add_theme_constant_override("separation", 14)
+	col.add_child(strip)
+
+	for i in mini(3, by_weight.size()):
+		var c: Dictionary = by_weight[i]
+		var items: Array = c["items"]
+		var owned := _collection_owned_count(c)
+
+		var cell := VBoxContainer.new()
+		cell.alignment = BoxContainer.ALIGNMENT_CENTER
+		cell.add_theme_constant_override("separation", 3)
+		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		strip.add_child(cell)
+
+		# The set's own rarest card is its face -- the last item, which is the
+		# five-star one in every collection in CV. A set is remembered by its
+		# chase card, not by its icon.
+		var face := Lagoon.token(String((items[items.size() - 1] as Array)[0]), 66.0,
+			Lagoon.BRASS if owned >= items.size() else Lagoon.HULL)
+		face.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		cell.add_child(face)
+
+		var cnt := Lagoon.label("%d/%d" % [owned, items.size()], UI.F_TINY,
+			Lagoon.INK, true)
+		cnt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		cell.add_child(cnt)
+
+		var pay := _reward_chip("bolt", _fmt_compact(int(c["reward_spins"])), Lagoon.INK_MUTE)
+		pay.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		cell.add_child(pay)
+
 func _fill_collection_shelf(vb: VBoxContainer) -> void:
 	# Seeing the shelf IS noticing, so this is where the badge goes out -- not
 	# on the banner being shown, which fires on a page the player may never have
@@ -11976,47 +12169,7 @@ func _fill_collection_shelf(vb: VBoxContainer) -> void:
 	# title set in dark ink is a bold first line; a title in white on a band of
 	# colour is a label on an object, and it is what lets the page say what each
 	# card is for from arm's length.
-	var head := _page_card(vb, "GRAND  PRIZE", Lagoon.BRASS_MID)
-	var claimed_n := 0
-	for c in CV.COLLECTIONS:
-		if col_claimed.get(c["id"], false):
-			claimed_n += 1
-	var gsub := _popup_row_label("Complete all %d collections:  +%s spins" % [CV.COLLECTIONS.size(), _fmt(CV.COLLECTION_MEGA_SPINS)], UI.F_CAPTION)
-	gsub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	head.add_child(gsub)
-	var gpb := _styled_progress(Lagoon.BRASS)
-	gpb.max_value = CV.COLLECTIONS.size()
-	gpb.value = claimed_n
-	head.add_child(gpb)
-	# The count, written across the track. Empty, this bar was a dark groove
-	# with nothing in it and nothing on it -- the page's headline reward and no
-	# statement anywhere of how far off it is. Anchored inside the bar, so it
-	# cannot widen anything.
-	Lagoon.progress_value(gpb, "%d / %d  sets" % [claimed_n, CV.COLLECTIONS.size()])
-	# The old line said "Season ends in 0d 0h" during the lull, which is both
-	# wrong and the least useful thing it could say to somebody staring at a
-	# shelf that has stopped taking cards.
-	if not _col_break():
-		var days_left := maxf(0.0, col_deadline - _now())
-		var season := _popup_row_label("Season ends in %dd %dh \u2014 collections reset!"
-			% [int(days_left / 86400.0), int(fmod(days_left, 86400.0) / 3600.0)], UI.F_TINY)
-		season.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		season.add_theme_color_override("font_color", Lagoon.INK_FAINT)
-		head.add_child(season)
-	if col_mega_claimed:
-		var done := _popup_row_label("CLAIMED  \u2713", UI.F_LABEL)
-		done.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		done.add_theme_color_override("font_color", Lagoon.KELP_LO)
-		head.add_child(done)
-	elif claimed_n == CV.COLLECTIONS.size():
-		var mega := Button.new()
-		mega.text = "CLAIM  GRAND  PRIZE!"
-		mega.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
-		_candy_button(mega, Color(0.45, 0.75, 0.35))
-		FX.press_feedback(mega)
-		FX.pulse_forever(mega, 1.04, 1.0)
-		mega.pressed.connect(_claim_mega)
-		head.add_child(mega)
+	_album_card(vb)
 
 	# The teaching line, for a player who has not seen a duplicate yet. Once
 	# they have spares the dock button's badge says it in one number and this
