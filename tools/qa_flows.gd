@@ -11,7 +11,9 @@ func _ready() -> void:
 	await get_tree().create_timer(4.0).timeout
 	await _t_page_spam()
 	await _t_popup_spam()
+	await _t_autospin_gesture()
 	await _t_autospin()
+	await _t_daily_dialog()
 	await _t_every_purchase()
 	await _t_boxes_and_melt()
 	await _t_steal_raid()
@@ -56,6 +58,79 @@ func _nodes(n: Node) -> int:
 	for c in n.get_children():
 		t += _nodes(c)
 	return t
+
+# --- the daily gift, as a control ---------------------------------------------
+#
+# Two claims Guy made about it off build 111: the gift itself has to take the
+# tap ("the button at the bottom is completely redundant"), and the countdown
+# under it has to run ("it changes when you go in and then it stops"). Both are
+# invisible to every other test in this file, which drives _claim_daily directly.
+func _t_daily_dialog() -> void:
+	print("daily gift")
+	m._close_popup(true)
+	await get_tree().process_frame
+
+	# READY: the gift answers, and nothing else on the dialog does.
+	m.streak_days = 2
+	m.daily_last = 0.0
+	m._open_daily()
+	await get_tree().process_frame
+	var hits := _claim_hits(m._popup)
+	_chk("the gift and today's rung are both pressable", hits.size() == 2,
+		"%d hit boxes" % hits.size())
+	_chk("no claim button is left under them",
+		_labelled_claim(m._popup) == null)
+	var coins_before: int = m.coins
+	if hits.size() > 0:
+		hits[0].pressed.emit()
+		await get_tree().process_frame
+	_chk("tapping the gift claims the day", m.coins > coins_before and not m._daily_ready(),
+		"+%d coins" % (m.coins - coins_before))
+
+	# And the second tap, through the fade, pays nothing.
+	var after: int = m.coins
+	for h in hits:
+		if is_instance_valid(h):
+			h.pressed.emit()
+	await get_tree().process_frame
+	_chk("a second tap through the fade pays nothing", m.coins == after,
+		"+%d" % (m.coins - after))
+	m._close_popup(true)
+	await get_tree().process_frame
+
+	# NOT READY: the clock has to move on its own.
+	m._open_daily()
+	await get_tree().process_frame
+	var clock: Label = m._daily_timer_label
+	_chk("a dialog that cannot be claimed shows a clock", clock != null)
+	if clock != null:
+		var first := clock.text
+		await get_tree().create_timer(2.2).timeout
+		_chk("and the clock counts down live", clock.text != first,
+			"%s -> %s" % [first, clock.text])
+	m._close_popup(true)
+	await get_tree().create_timer(0.5).timeout
+
+func _claim_hits(n: Node) -> Array:
+	var out := []
+	if n == null:
+		return out
+	if n is Button and (n as Button).has_meta("claim"):
+		out.append(n)
+	for c in n.get_children():
+		out.append_array(_claim_hits(c))
+	return out
+
+func _labelled_claim(n: Node) -> Button:
+	if n == null:
+		return null
+	if n is Button and (n as Button).text.to_upper().begins_with("CLAIM"):
+		return n
+	for c in n.get_children():
+		var f := _labelled_claim(c)
+		if f != null:
+			return f
+	return null
 
 # --- hammering the navigation -------------------------------------------------
 func _t_page_spam() -> void:
@@ -128,6 +203,72 @@ func _t_popup_spam() -> void:
 	_chk("popup spam does not grow the tree", _nodes(m) < before + 300, "%d -> %d" % [before, _nodes(m)])
 
 # --- the auto-spin loop -------------------------------------------------------
+# THE GESTURE, NOT THE FLAG.
+#
+# Everything below _t_autospin sets `m.auto_spin = true` by hand, which is how a
+# run that no player could ever start passed every test in this file. The bug
+# was in the half-second between the finger going down and coming up again: the
+# hold started a run, the run's first spin re-wrote spin_button.disabled, and
+# the setter cleared the flag that swallows the release -- so the release
+# arrived as a press, and a press during a run is STOP. Drive the button.
+func _t_autospin_gesture() -> void:
+	print("auto spin, by holding the button")
+	m._goto(m.slot_page)
+	await get_tree().create_timer(0.8).timeout
+	m.spins = 60
+	m.auto_spin = false
+	m.slot.set_auto(false)
+	m.slot.bet = 1
+	var btn: SpinButton = m.slot.spin_button
+
+	# The finger goes down and stays down well past HOLD -- long enough for the
+	# run to have started AND for its first spin to be under way, which is the
+	# window the bug lived in.
+	btn._on_down()
+	await get_tree().create_timer(SpinButton.HOLD + 0.05).timeout
+	_chk("holding the button starts a run", m.auto_spin)
+	await get_tree().create_timer(0.6).timeout
+	_chk("the run survives its own first spin", m.auto_spin)
+	# and now the finger leaves.
+	btn._on_up()
+	await get_tree().process_frame
+	_chk("letting go does not press STOP", m.auto_spin)
+	_chk("the button still says STOP", btn._label.text == "STOP", btn._label.text)
+
+	# It really is spinning, and the ordinary tap really does stop it.
+	#
+	# WATCHED, NOT SAMPLED. The meter is the wrong witness: a triple lands a
+	# raid that holds the run for as long as nobody taps through it, and a spin
+	# that pays spins puts back more than the bet took -- so "spins went down
+	# over four seconds" is a coin toss on a machine that is working perfectly.
+	# A reel actually turning is the claim being made.
+	var spun := false
+	var t3 := 0.0
+	while t3 < 12.0 and not spun:
+		await get_tree().create_timer(0.15).timeout
+		t3 += 0.15
+		_tap_through_raid()
+		spun = m.slot.is_spinning()
+	_chk("the run it started actually spins the reels", spun, "after %.1fs" % t3)
+	btn._on_down()
+	await get_tree().process_frame
+	btn._on_up()
+	await get_tree().process_frame
+	_chk("a short tap stops the run", not m.auto_spin)
+
+	# A press that is interrupted by the control going dead must not be banked
+	# and fired later -- the other half of the same setter.
+	btn._on_down()
+	btn.disabled = true
+	btn.disabled = false
+	await get_tree().process_frame
+	btn._on_up()
+	await get_tree().process_frame
+	_chk("a press eaten by a disable does not start a run", not m.auto_spin)
+	m.auto_spin = false
+	m.slot.set_auto(false)
+	await get_tree().create_timer(2.0).timeout
+
 func _t_autospin() -> void:
 	print("auto spin")
 	m._goto(m.slot_page)

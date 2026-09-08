@@ -34,10 +34,25 @@ var disabled: bool:
 		_disabled = value
 		if _hit != null:
 			_hit.disabled = value
-			# a spin can start while the finger is still down; drop the hold so
-			# releasing afterwards cannot fire a stale press or auto toggle
-			_down = false
-			_was_hold = false
+			# ONLY ON THE WAY DOWN, AND THAT IS THE WHOLE AUTO-SPIN BUG.
+			#
+			# Disabling the hit box means Godot never delivers the button_up for
+			# a finger still on the glass -- BaseButton drops the press attempt
+			# silently -- so a hold that is interrupted has to be dropped here or
+			# it fires on some later release instead.
+			#
+			# Clearing it on the way UP was killing every auto run at birth.
+			# Holding the button starts a run; a quarter of a second later that
+			# run's first spin calls start_spin, which writes `disabled = false`
+			# -- the value it already had -- and this setter wiped `_was_hold`
+			# anyway. So the release of the very gesture that STARTED the run
+			# arrived as an ordinary press, and an ordinary press during a run is
+			# STOP. The player held, saw the button say STOP, let go, and the run
+			# was over before a single reel had landed.
+			if value:
+				_down = false
+				_was_hold = false
+				_unpress(0.20)
 			_mat.set_shader_parameter("enabled", 0.0 if value else 1.0)
 			_label.modulate = Color(1, 1, 1, 0.5) if value else Color.WHITE
 			_idle_t = 0.0
@@ -170,13 +185,22 @@ func _on_down() -> void:
 		_sync_press()
 	, _press, 1.0, 0.07)
 
-func _on_up() -> void:
-	_down = false
+# The face rising back off its base. Shared, because a press can end two ways:
+# the finger leaves, or the control goes dead under it while the finger is
+# still there -- and the second one used to leave the button drawn sunken with
+# nothing coming to lift it.
+func _unpress(dur: float) -> void:
+	if _press <= 0.0:
+		return
 	var tw := create_tween()
 	tw.tween_method(func(v: float) -> void:
 		_press = v
 		_sync_press()
-	, _press, 0.0, 0.20).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	, _press, 0.0, dur).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+func _on_up() -> void:
+	_down = false
+	_unpress(0.20)
 	if not _disabled:
 		FX.burst(self, size * 0.5, _glow_col, 10)
 		_ring_pop()

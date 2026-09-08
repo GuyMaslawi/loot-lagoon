@@ -621,6 +621,12 @@ var _offer_timer_label: Label
 # the same chain rolling twice in a row, and a fresh launch has nothing to
 # repeat.
 var _deal_timer_label: Label
+# The daily dialog's countdown, and the three prize nodes its flights launch
+# from. The parts are held on the node rather than passed through the press,
+# because the press is now two different controls -- the hero and today's rung
+# -- and both have to hand _claim_daily the same three places.
+var _daily_timer_label: Label
+var _daily_hero_parts := {}
 var _deal_last_id := ""
 var _powerup_timer_label: Label
 var _powerup_last_id := ""
@@ -2247,6 +2253,21 @@ func _process(delta: float) -> void:
 		_offer_tick()
 		if _offer_timer_label != null and is_instance_valid(_offer_timer_label):
 			_offer_timer_label.text = "⏳  ENDS  IN  %s" % _offer_countdown_text()
+		# The daily dialog's clock, while it is up. When it runs out the screen
+		# is rebuilt rather than left saying "Next bonus in 0:00:00" over a
+		# gift that is now claimable -- the whole point of the live count is
+		# that the player is sitting there watching it.
+		# The ancestor test, not just is_instance_valid. _close_popup fades the
+		# old popup over 0.16s before freeing it, so for a beat after the daily
+		# closes its clock is still a valid node -- and a rebuild off that would
+		# throw the daily dialog up over whatever the player opened next.
+		if _daily_timer_label != null and is_instance_valid(_daily_timer_label) \
+				and _popup != null and _popup.is_ancestor_of(_daily_timer_label):
+			if _daily_ready():
+				_open_daily()
+			else:
+				_daily_timer_label.text = "Next bonus in  %s" % _countdown_text(
+					maxi(0, int(DAILY_COOLDOWN - (_trusted_now() - daily_last))))
 		_deal_tick()
 		if _deal_timer_label != null and is_instance_valid(_deal_timer_label):
 			_deal_timer_label.text = "ENDS  IN  %s" % _deal_countdown_text()
@@ -4943,25 +4964,32 @@ func _streak_state(day: int, n: int) -> String:
 		return "today"
 	return "done" if day > n else "later"
 
-func _streak_ladder(parent: VBoxContainer, day: int) -> void:
+func _streak_ladder(parent: VBoxContainer, day: int, tap := Callable()) -> void:
 	var rows := VBoxContainer.new()
 	rows.add_theme_constant_override("separation", 12)
 	parent.add_child(rows)
+
+	# Only today's rung answers. A banked day is a receipt and a future one is a
+	# promise; neither is a control, and making them press would be the ladder
+	# offering six things it cannot give.
+	var arm := func(n: int) -> Callable:
+		return tap if tap.is_valid() and _streak_state(day, n) == "today" else Callable()
 
 	var top := HBoxContainer.new()
 	top.alignment = BoxContainer.ALIGNMENT_CENTER
 	top.add_theme_constant_override("separation", 12)
 	rows.add_child(top)
 	for n in [1, 2, 3, 4]:
-		top.add_child(_streak_tile(n, _streak_state(day, n)))
+		top.add_child(_streak_tile(n, _streak_state(day, n), false, arm.call(n)))
 
 	var bottom := HBoxContainer.new()
 	bottom.alignment = BoxContainer.ALIGNMENT_CENTER
 	bottom.add_theme_constant_override("separation", 12)
 	rows.add_child(bottom)
 	for n in [5, 6]:
-		bottom.add_child(_streak_tile(n, _streak_state(day, n)))
-	bottom.add_child(_streak_tile(STREAK_TOP, _streak_state(day, STREAK_TOP), true))
+		bottom.add_child(_streak_tile(n, _streak_state(day, n), false, arm.call(n)))
+	bottom.add_child(_streak_tile(STREAK_TOP, _streak_state(day, STREAK_TOP), true,
+		arm.call(STREAK_TOP)))
 
 	if day > STREAK_TOP:
 		var held := _popup_row_label(
@@ -4977,7 +5005,7 @@ func _streak_ladder(parent: VBoxContainer, day: int) -> void:
 # The tile is a Control with the panel anchored inside it rather than a bare
 # PanelContainer, so today's rung can be scaled and pulsed from its own centre
 # without the row re-laying itself out around a node that keeps changing size.
-func _streak_tile(n: int, state: String, wide := false) -> Control:
+func _streak_tile(n: int, state: String, wide := false, tap := Callable()) -> Control:
 	var root := Control.new()
 	root.custom_minimum_size = DAILY_WIDE if wide else DAILY_TILE
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -5024,6 +5052,36 @@ func _streak_tile(n: int, state: String, wide := false) -> Control:
 		root.resized.connect(func() -> void: root.pivot_offset = root.size * 0.5)
 		root.pivot_offset = root.custom_minimum_size * 0.5
 		FX.pulse_forever(root, 1.045, 1.5)
+
+	# THE RUNG IS THE BUTTON.
+	#
+	# Guy, off build 111: "the daily gift should be a tap in itself -- the
+	# button at the bottom is completely redundant, the tiles should be
+	# tappable." He is right, and the old shape was the tell: today's rung
+	# already pulsed, already wore the coral rim that means "this one" in every
+	# other screen, and already had the prize drawn on it -- and then the player
+	# was sent to a separate control underneath to actually take it. The one
+	# object on the page that looks pressable was the one thing that was not.
+	#
+	# A flat Button over the whole rung, so the hit area is the tile rather than
+	# some icon inside it. `root` ignores the mouse; ignoring it does not stop
+	# children receiving, which is what lets the tile stay a plain Control that
+	# scales and pulses from its own centre.
+	if tap.is_valid():
+		var hit := Button.new()
+		hit.flat = true
+		hit.focus_mode = Control.FOCUS_NONE
+		var clear := StyleBoxEmpty.new()
+		for st in ["normal", "hover", "pressed", "disabled", "focus"]:
+			hit.add_theme_stylebox_override(st, clear)
+		root.add_child(hit)
+		hit.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		hit.pressed.connect(tap)
+		# Marked so the harnesses can find the claim now that it has no label on
+		# it. FX.press_feedback is deliberately NOT here: it scales the control
+		# it is given, and this one is invisible. What answers the press is the
+		# claim's own flash and confetti, a frame later.
+		hit.set_meta("claim", true)
 
 	var pad := MarginContainer.new()
 	pad.add_theme_constant_override("margin_left", 8)
@@ -5254,7 +5312,7 @@ func _streak_deadline() -> float:
 # failure DAILY_TILE's own note describes from the other side of the dialog.
 const DAILY_HERO_H := 312.0
 
-func _daily_hero(parent: VBoxContainer, day: int) -> Dictionary:
+func _daily_hero(parent: VBoxContainer, day: int, tap := Callable()) -> Dictionary:
 	var root := Control.new()
 	root.custom_minimum_size = Vector2(0, DAILY_HERO_H)
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -5379,6 +5437,30 @@ func _daily_hero(parent: VBoxContainer, day: int) -> Dictionary:
 		# zero, because nothing has been laid out yet, and the first sort pass
 		# then puts it back. Scale is not a thing layout has an opinion about.
 		FX.pulse_forever(gem, 1.10 if side else 1.08, 2.6 if side else 3.1)
+
+	# THE GIFT ITSELF IS THE CONTROL. Same argument as the rung, and this is the
+	# bigger of the two targets: the prize is drawn at 88px here, and a player
+	# reaching for a reward reaches for the picture of it. The hit sits over the
+	# gems as well as the card, because the gems are part of the object as far
+	# as anybody looking at it is concerned.
+	if tap.is_valid():
+		var hit := Button.new()
+		hit.flat = true
+		hit.focus_mode = Control.FOCUS_NONE
+		var clear := StyleBoxEmpty.new()
+		for st in ["normal", "hover", "pressed", "disabled", "focus"]:
+			hit.add_theme_stylebox_override(st, clear)
+		root.add_child(hit)
+		hit.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		hit.pressed.connect(tap)
+		hit.set_meta("claim", true)
+		# It leans, so a card that is now the button looks like one. On the rung
+		# the pulse was already there; the hero had nothing, because the hero
+		# never used to be pressable.
+		root.pivot_offset = Vector2(root.size.x * 0.5, DAILY_HERO_H * 0.5)
+		root.resized.connect(func() -> void:
+			root.pivot_offset = Vector2(root.size.x * 0.5, DAILY_HERO_H * 0.5))
+		FX.pulse_forever(root, 1.022, 1.5)
 	return out
 
 func _open_daily() -> void:
@@ -5389,46 +5471,51 @@ func _open_daily() -> void:
 	# now for. A broken one is named rather than quietly zeroed -- a number that
 	# vanishes with no explanation reads as a bug, and the sting of losing it is
 	# the entire mechanism.
+	_daily_timer_label = null
 	var day := _streak_next()
 	if _streak_broken():
 		var lost := _popup_row_label("Your %d-day streak ended." % streak_days, UI.F_BODY)
 		lost.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		lost.add_theme_color_override("font_color", Lagoon.CORAL_LO)
 		vbox.add_child(lost)
-	var hero := _daily_hero(vbox, day)
-	_streak_ladder(vbox, day)
 
-	if _daily_ready():
-		var claim := Button.new()
-		# The prize is not in the label any more -- it is on the card above, at
-		# 84px, in gold. A button that reads "CLAIM +1,200 coins, +8 spins" is a
-		# receipt with a border round it, and it was the only place the old
-		# dialog said what you were getting.
-		claim.text = "CLAIM  DAY  %d" % day
-		claim.custom_minimum_size = Vector2(0, UI.TAP_COMFY + 14)
-		claim.add_theme_font_size_override("font_size", UI.F_SUBHEAD)
-		_candy_button(claim, Color(0.28, 0.68, 0.34))
-		FX.press_feedback(claim)
-		FX.pulse_forever(claim, 1.035, 1.25)
-		claim.pressed.connect(func() -> void:
-			# Re-checked on the press, not just when the button was drawn.
-			# _close_popup() fades the popup out over 0.16s and Godot does not
-			# gate input on modulate, so the button stayed live and tappable
-			# through the fade -- a double-tap claimed the day's bonus twice
-			# and ticked the "claim N dailies" quests twice with it. Every
-			# other claim in the game re-checks its own gate first; this was
-			# the one that did not.
-			if not _daily_ready():
-				return
-			claim.disabled = true
-			_claim_daily(day, hero)
-		)
-		vbox.add_child(claim)
+	# THE CLAIM BUTTON IS GONE AND THE GIFT ANSWERS INSTEAD.
+	#
+	# One gate, shared by the two things that can now be pressed -- the hero
+	# card and today's rung -- so they cannot disagree about whether the bonus
+	# is still owed. It re-checks _daily_ready on the press rather than trusting
+	# the state the screen was drawn from: _close_popup fades the popup over
+	# 0.16s and Godot does not gate input on modulate, so a control stays live
+	# and tappable through the fade. That is a real double-claim, and it used to
+	# tick the "claim N dailies" missions twice with it.
+	var spent := [false]
+	var take := func() -> void:
+		if spent[0] or not _daily_ready():
+			return
+		spent[0] = true
+		_claim_daily(day, _daily_hero_parts)
+
+	var ready := _daily_ready()
+	_daily_hero_parts = _daily_hero(vbox, day, take if ready else Callable())
+	_streak_ladder(vbox, day, take if ready else Callable())
+
+	if ready:
+		# One caption where a 74px button used to be. The card and the rung both
+		# pulse and both answer; this only has to say which gesture takes it.
+		var cue := _popup_row_label("Tap  your  gift  to  claim  day  %d" % day, UI.F_CAPTION)
+		cue.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		cue.add_theme_color_override("font_color", Lagoon.CORAL_LO)
+		vbox.add_child(cue)
 	else:
 		var left := maxi(0, int(DAILY_COOLDOWN - (_trusted_now() - daily_last)))
+		# LIVE. It was written once, when the dialog opened, and then sat there
+		# -- Guy watched it change on entry and stop. A countdown that does not
+		# count is a screenshot of a countdown, and this is the one number on
+		# the screen the player is waiting on.
 		var info := _popup_row_label("Next bonus in  %s" % _countdown_text(left))
 		info.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		vbox.add_child(info)
+		_daily_timer_label = info
 		# What is at stake, and the window to do it in. A player who has built
 		# a run deserves to know how long it lives without them, and it is a
 		# whole day rather than a cliff at midnight.
@@ -8652,6 +8739,56 @@ func _deal_tick() -> void:
 # carriage-returning twice. Values are step indices in visual order.
 const DEAL_SERPENTINE := [0, 1, 3, 2, 4, 5]
 
+# THE EVENT CARDS ARE STRUCK IN JEWEL STOCK, NOT PRINTED ON PAPER.
+#
+# It was six cream cards with a 13% wash of colour over them, which is what the
+# rest of the game's menus are made of and is wrong for this one screen. Guy,
+# off his own build: the event pages "are not like the pictures I showed you
+# from the big games -- they lack colour and sharpness". He is describing a
+# real inversion. The shop's spin and coin shelves were given the treasure card
+# months ago for exactly this argument -- pale gold on a pale panel has nothing
+# to be brighter than -- and then the newest, loudest screens in the game went
+# out on stationery.
+#
+# So a rung is a dark saturated slab, lit from a point above its goods, with a
+# bright rim and white figures on it. The colour is still systematic and still
+# means the same thing it did -- sea green for a free rung, violet for a paid
+# one, drained green for a spent one -- it is simply at full strength now
+# instead of at a wash, and the artwork on top of it finally has something dark
+# to be bright against.
+#
+# Used by the deal ladder and by the power-up takeover, which are the two
+# screens Guy's note was about and which had the same pale card under them.
+#
+#            bottom of the stock       the light it lifts to     rim                   the light over the goods
+const EVENT_STOCK := {
+	"free":  [Color(0.020, 0.216, 0.137), Color(0.078, 0.529, 0.325), Lagoon.KELP_HI,          Color(0.60, 1.00, 0.78)],
+	"paid":  [Color(0.129, 0.075, 0.259), Color(0.400, 0.255, 0.706), Color(0.749, 0.616, 1.0), Color(0.87, 0.78, 1.00)],
+	"taken": [Color(0.031, 0.153, 0.129), Color(0.055, 0.310, 0.235), Color(0.271, 0.541, 0.435), Color(0.48, 0.86, 0.68)],
+	# The takeover's middle column -- the one that costs money -- is struck in
+	# the shop's own metal rather than in the ladder's violet. It is a pack off
+	# the shelf at the shelf's price, and brass is what the shelf is made of.
+	"gold":  [Color(0.145, 0.094, 0.027), Color(0.475, 0.325, 0.106), Lagoon.BRASS_HI,          Color(1.00, 0.88, 0.58)],
+}
+
+# Which rung was just taken, held until the ladder next draws itself.
+#
+# A rung landing changes two cards -- one is spent, the next comes unlocked --
+# and a rebuild made both changes between frames, which is the one thing this
+# mechanic could not afford to do silently. The whole reason a chain works is
+# that the player watches a door open; a ladder that simply *is* one rung
+# further along the next time you look at it is a progress bar.
+#
+# It is not cleared by the rebuild that consumes it but by the rung it names
+# going stale, so a PAID rung -- which leaves this screen for a StoreKit sheet
+# and may not come back for minutes -- still plays its unlock the next time the
+# ladder is opened. That is the moment the player is looking for it.
+var _deal_anim_from := -1
+# The cells and the waymarkers of the ladder currently on screen, by step
+# index. Rebuilt with the screen; only ever read by the animation.
+var _deal_cell_nodes := {}
+var _deal_arrow_nodes := {}
+
 func _open_deal() -> void:
 	var chain := _active_deal()
 	if chain.is_empty():
@@ -8661,6 +8798,16 @@ func _open_deal() -> void:
 	if not vbox.is_inside_tree():
 		return
 	_deal_timer_label = null
+	_deal_cell_nodes.clear()
+	_deal_arrow_nodes.clear()
+
+	# The animation is owed only to the rung that was actually just taken. A
+	# stale flag -- the chain rolled over, the save came back from another
+	# device, a purchase landed against a ladder that has since expired -- names
+	# a rung this screen is not standing on, and playing an unlock for it would
+	# be the game lying about what the player just did.
+	var beat := _deal_anim_from if _deal_anim_from == deal_taken - 1 else -1
+	_deal_anim_from = beat
 
 	# The countdown and the blurb, in that order. A limited event's clock is the
 	# reason to act and it belongs above what it is a clock for.
@@ -8668,7 +8815,11 @@ func _open_deal() -> void:
 	vbox.add_child(clock)
 	var plate := Lagoon.stamp_plate(Lagoon.CORAL_HI)
 	clock.add_child(plate)
-	_deal_timer_label = Lagoon.label("", UI.F_CAPTION, Lagoon.CORAL_HI, true)
+	# WHITE, WITH THE RIM CARRYING THE URGENCY. Coral highlight on the stamp
+	# plate measures 2.50 : 1 -- the one line on the screen that is the reason
+	# to act was the hardest on it to read. The plate is already coral-rimmed;
+	# the digits do not have to be.
+	_deal_timer_label = Lagoon.title("", UI.F_CAPTION, Color.WHITE, Lagoon.ABYSS)
 	_deal_timer_label.text = "ENDS  IN  %s" % _deal_countdown_text()
 	plate.add_child(_deal_timer_label)
 
@@ -8677,7 +8828,7 @@ func _open_deal() -> void:
 	blurb.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 	vbox.add_child(blurb)
 
-	_deal_track(vbox, hue)
+	_deal_track(vbox, hue, beat)
 
 	# The ladder itself.
 	var rows := VBoxContainer.new()
@@ -8688,19 +8839,24 @@ func _open_deal() -> void:
 		row.add_theme_constant_override("separation", 6)
 		row.alignment = BoxContainer.ALIGNMENT_CENTER
 		rows.add_child(row)
-		row.add_child(_deal_cell(DEAL_SERPENTINE[r * 2], hue))
+		var a: int = DEAL_SERPENTINE[r * 2]
+		var b: int = DEAL_SERPENTINE[r * 2 + 1]
+		row.add_child(_deal_cell(a, hue))
 		# WHICH WAY THE MIDDLE ROW RUNS IS NOT GUESSABLE, and without this it
 		# was simply wrong on the screen: rung three sits on the right of row
 		# two and rung four on its left, so a reader walking the page in
 		# ordinary reading order meets them backwards and the free rung they
 		# can actually take looks locked. The arrow between the two cells is
 		# what makes the serpentine a path rather than a grid.
-		row.add_child(_deal_arrow("\u25b6" if r != 1 else "\u25c0", hue))
-		row.add_child(_deal_cell(DEAL_SERPENTINE[r * 2 + 1], hue))
+		#
+		# A waymarker knows which rung it leads INTO, which is what lets the
+		# unlock run down the path instead of appearing at both ends of it.
+		row.add_child(_deal_arrow("▶" if r != 1 else "◀", hue, maxi(a, b)))
+		row.add_child(_deal_cell(b, hue))
 		if r < 2:
 			# The turn. It hangs under the column the flow leaves from, which is
 			# the right on row one and the left on row two.
-			rows.add_child(_deal_turn(r == 0, hue))
+			rows.add_child(_deal_turn(r == 0, hue, r * 2 + 2))
 
 	# What clearing the whole ladder pays, stated up front. A grand prize the
 	# player only discovers on the sixth rung is a grand prize that never
@@ -8718,8 +8874,12 @@ func _open_deal() -> void:
 	foot.add_child(fl)
 	foot.add_child(_reward_row(Deals.FINALE, Lagoon.INK, UI.F_LABEL))
 
+	if beat >= 0:
+		_deal_anim_from = -1
+		_deal_play_take(beat)
+
 # The progress track: how many rungs are down, and the chest they add up to.
-func _deal_track(vbox: VBoxContainer, hue: Color) -> void:
+func _deal_track(vbox: VBoxContainer, hue: Color, beat: int) -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 12)
 	vbox.add_child(row)
@@ -8730,14 +8890,27 @@ func _deal_track(vbox: VBoxContainer, hue: Color) -> void:
 	left.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(left)
 
-	var bar := Lagoon.progress(hue)
+	var bar := Lagoon.progress(hue.lerp(Color.WHITE, 0.12))
 	bar.custom_minimum_size = Vector2(0, 40)
 	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	bar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	bar.max_value = Deals.STEPS
-	bar.value = deal_taken
 	row.add_child(bar)
-	Lagoon.progress_value(bar, "%d / %d" % [deal_taken, Deals.STEPS], UI.F_CAPTION)
+	var count := Lagoon.progress_value(bar, "%d / %d" % [deal_taken, Deals.STEPS], UI.F_CAPTION)
+	# The bar climbs the rung rather than already being up it. It is the one
+	# thing on the screen that says how much of the ladder is behind you, so
+	# arriving pre-filled throws away the only reading it exists to give.
+	if beat >= 0:
+		bar.value = beat
+		var tw := bar.create_tween()
+		tw.tween_interval(0.18)
+		tw.tween_property(bar, "value", float(deal_taken), 0.45) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		tw.tween_callback(func() -> void:
+			if is_instance_valid(count):
+				FX.counter_pop(count, Lagoon.BRASS_HI))
+	else:
+		bar.value = deal_taken
 
 	# The prize at the end of the bar, lit once it is owed and flat until then.
 	var chest := _prize_art("gift", 56.0)
@@ -8748,27 +8921,168 @@ func _deal_track(vbox: VBoxContainer, hue: Color) -> void:
 		chest.modulate = Color(1, 1, 1, 0.55)
 	row.add_child(chest)
 
+# The stock a rung is struck on: a dark slab in the rung's own signal colour,
+# with the light on it painted rather than styled.
+#
+# The StyleBox owns the shape -- rounded corners, rim, drop shadow -- because
+# those have to be crisp at any size. Everything that makes it look lit is one
+# add-blended pass over the top: the stock lifting toward the top of the card, a
+# pool and a fan of rays out of a point just above the goods, an inner rim
+# light, and a specular sweep that only runs on the rung that can be pressed.
+# Six cards all glinting is a page with nothing on it.
+func _event_stock_box(kind: String, live: bool) -> StyleBoxFlat:
+	var spec: Array = EVENT_STOCK.get(kind, EVENT_STOCK["free"])
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = spec[0]
+	sb.set_corner_radius_all(Lagoon.R_CARD)
+	# THE ONE CARD THAT CAN BE PRESSED LOOKS LIKE IT. A brass rim is what this
+	# game already uses to mean "this is the object that matters" -- the
+	# machine's frame, the page plaques, the HUD capsules -- so the live rung is
+	# marked in the vocabulary the player has been reading since the title
+	# screen, not with a novel highlight colour.
+	sb.set_border_width_all(6 if live else 3)
+	sb.border_color = Lagoon.BRASS_HI if live else spec[2]
+	sb.shadow_size = 20 if live else 9
+	sb.shadow_color = (Color(Lagoon.BRASS_LO.r, Lagoon.BRASS_LO.g, Lagoon.BRASS_LO.b, 0.70)
+		if live else Color(0, 0, 0, 0.50))
+	sb.shadow_offset = Vector2(0, 6)
+	return sb
+
+func _event_stock(parent: Node, kind: String, live: bool) -> PanelContainer:
+	var spec: Array = EVENT_STOCK.get(kind, EVENT_STOCK["free"])
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", _event_stock_box(kind, live))
+	parent.add_child(panel)
+
+	var lit := ColorRect.new()
+	var sh := Lagoon.shader("""
+shader_type canvas_item;
+render_mode blend_add;
+
+uniform vec2 rect_px = vec2(280.0, 220.0);
+uniform float radius = 26.0;
+uniform vec4 lift : source_color = vec4(0.08, 0.53, 0.33, 1.0);
+uniform vec4 warm : source_color = vec4(0.60, 1.00, 0.78, 1.0);
+uniform float live = 0.0;
+
+float rr(vec2 p, vec2 hs, float r) {
+	vec2 q = abs(p) - hs + vec2(r);
+	return length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+}
+
+void fragment() {
+	vec2 p = (UV - vec2(0.5)) * rect_px;
+	float d = rr(p, rect_px * 0.5, radius);
+	float inside = 1.0 - smoothstep(-1.2, 0.8, d);
+
+	// The stock lifts toward the top: a slab with a light over it rather than
+	// a flat swatch.
+	vec3 col = lift.rgb * smoothstep(1.05, -0.10, UV.y) * 0.62;
+
+	// The pool the goods stand in, and a fan of rays out of the same point.
+	// Wide and soft -- a hard starburst on a card this small reads as a
+	// scratch on the glass.
+	vec2 dd = UV - vec2(0.5, 0.02);
+	float dist = length(dd * vec2(1.0, 0.80));
+	col += warm.rgb * smoothstep(0.82, 0.0, dist) * (0.16 + 0.22 * live);
+	float ang = atan(dd.y, dd.x);
+	float fan = abs(sin(ang * 7.0 + TIME * 0.13));
+	// Faint until the rung is the live one. A fan this wide on a card 290 units
+	// across reads as stripes rather than as light if it is drawn at full
+	// strength on all six of them at once.
+	col += warm.rgb * smoothstep(0.62, 1.0, fan) * smoothstep(0.76, 0.05, dist) * (0.035 + 0.185 * live);
+
+	// An inner rim light along the top, so the edge is a bevel and not a
+	// printed line.
+	col += warm.rgb * smoothstep(-10.0, -1.0, d) * smoothstep(0.60, 0.0, UV.y) * 0.34;
+
+	// The sweep, on the pressable rung only.
+	float band = fract(TIME * 0.33);
+	float x = (UV.x + UV.y * 0.40) / 1.40;
+	col += vec3(1.0) * smoothstep(0.075, 0.0, abs(x - band)) * 0.26 * live;
+
+	COLOR = vec4(col, inside);
+}
+""")
+	var mat := ShaderMaterial.new()
+	mat.shader = sh
+	mat.set_shader_parameter("radius", float(Lagoon.R_CARD))
+	mat.set_shader_parameter("lift", spec[1])
+	mat.set_shader_parameter("warm", spec[3])
+	mat.set_shader_parameter("live", 1.0 if live else 0.0)
+	lit.material = mat
+	lit.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lit.resized.connect(func() -> void: mat.set_shader_parameter("rect_px", lit.size))
+	panel.add_child(lit)
+	panel.set_meta("lit", mat)
+	return panel
+
+# Re-strikes a card between locked and live, which is the whole of what an
+# unlock changes: the rim goes brass, the shadow goes warm, the light over the
+# goods comes up and the sweep starts running.
+func _event_dress(card: PanelContainer, kind: String, live: bool) -> void:
+	if not is_instance_valid(card):
+		return
+	card.add_theme_stylebox_override("panel", _event_stock_box(kind, live))
+	var mat = card.get_meta("lit", null)
+	if mat is ShaderMaterial:
+		(mat as ShaderMaterial).set_shader_parameter("live", 1.0 if live else 0.0)
+
+# A LOCK, NOT A DISABLED BUTTON. A greyed control says "this is broken or you
+# are not allowed"; a padlock on a plate says "this is coming", which is the
+# only thing a future rung should say. It also gives the unlock something to
+# take off -- a disabled button that quietly becomes an enabled one is not an
+# event, and this ladder is built entirely out of one rung becoming available.
+func _event_lock_plate() -> Control:
+	var plate := Panel.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.075, 0.192, 0.216, 0.97)
+	sb.set_corner_radius_all(22)
+	sb.set_border_width_all(3)
+	sb.border_color = Lagoon.BRASS_MID
+	plate.add_theme_stylebox_override("panel", sb)
+	plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# The padlock fills the plate rather than sitting in the middle of it as a
+	# 38px trinket. It is the only mark on a rung the player cannot press, so it
+	# has to carry the whole state on its own -- and it is a rendered brass prop,
+	# which needs size before any of that reads.
+	var lock := _prize_art("lock", 64.0)
+	plate.add_child(lock)
+	lock.set_anchors_preset(Control.PRESET_CENTER)
+	lock.offset_left = -32.0
+	lock.offset_right = 32.0
+	lock.offset_top = -32.0
+	lock.offset_bottom = 32.0
+	# A pool of light under it, so the brass has somewhere to come off.
+	var glow := _radial_glow(Color(1.0, 0.86, 0.52, 0.75), 132.0)
+	plate.add_child(glow)
+	plate.move_child(glow, 0)
+	return plate
+
 # One rung.
 #
 # Three states, and they are three different objects rather than three shades of
 # one:
-#   TAKEN    a spent plate with a tick on it, out of the running
-#   LIVE     the only card on the page with a pressable button, brass-rimmed and
-#            standing in its own pool of light
-#   LOCKED   the goods at full strength behind a padlock -- readable, inert
+#   TAKEN    a spent slab with a medallion struck on it, out of the running
+#   LIVE     the only card on the page with a pressable button, brass-rimmed,
+#            sweeping, standing in its own pool of light
+#   LOCKED   the goods at full strength behind a lock plate -- readable, inert
 #
 # LOCKED RUNGS ARE NOT DIMMED, and that took a rewrite to get right. The first
 # pass faded them, on the reasoning that a control you cannot press should not
 # look pressable; what it actually produced was a page of six pale rectangles
 # where the reward the player is climbing toward was the hardest thing on
 # screen to read. The whole mechanic is "you can see it and you cannot have it
-# yet", so the goods stay bright and the LOCK carries the state. Only the
-# button greys.
+# yet", so the goods stay bright and the LOCK carries the state.
 #
-# The colour is systematic and not decorative: sea glass for a free rung, the
-# chain's own hue for a paid one. Six invented hues would look more like the
-# reference games and would break the rule the rest of this game is built on --
-# a colour here means something.
+# The colour is systematic and not decorative: sea glass for a free rung, violet
+# for a paid one. Six invented hues would look more like the reference games and
+# would break the rule the rest of this game is built on -- a colour here means
+# something. VIOLET AND NOT THE CHAIN'S OWN HUE, for the same reason: the chain
+# colour dresses the banner, the track and the waymarkers, and on the cards it
+# was doing a second job it is no good at. High Tide Hunt is blue and sea glass
+# is blue, so its paid rungs and its free rungs came out the same colour and the
+# one distinction that matters on this screen vanished.
 func _deal_cell(idx: int, hue: Color) -> Control:
 	var chain := _active_deal()
 	var step: Dictionary = chain["steps"][idx]
@@ -8776,32 +9090,25 @@ func _deal_cell(idx: int, hue: Color) -> Control:
 	var paid := Deals.is_paid(step)
 	var taken := idx < deal_taken
 	var live := idx == deal_taken
+	# The rung that has just come live is BUILT LIVE and then dressed back down,
+	# so the unlock has something real to undo. Everything under the plate --
+	# the brass rim, the lit stock, the wired button -- is the finished card;
+	# the lock is one layer over the top of it and the beat takes that layer
+	# off. Rebuilding the cell a second time to reveal it would be two chances
+	# to disagree about what the rung is.
+	var opening := live and _deal_anim_from == idx - 1
 
 	var holder := VBoxContainer.new()
 	holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	holder.custom_minimum_size = Vector2(0, 236)
+	_deal_cell_nodes[idx] = holder
 
-	# URCHIN, NOT THE CHAIN'S OWN HUE. The chain colour dresses the banner, the
-	# track and the waymarkers -- it is the event's identity. On the cards it
-	# was doing a second job it is no good at: High Tide Hunt is blue and sea
-	# glass is blue, so its paid rungs and its free rungs came out the same
-	# colour and the one distinction that matters on this screen vanished.
-	# URCHIN already means "rare / premium" everywhere else in the game.
-	var card := _tinted_card(holder,
-		Lagoon.INK_FAINT if taken else (Lagoon.URCHIN if paid else Lagoon.LAGOON), paid)
+	var kind := "taken" if taken else ("paid" if paid else "free")
+	var card := _event_stock(holder, kind, live)
 	card.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	if live:
-		# THE ONE CARD THAT CAN BE PRESSED LOOKS LIKE IT. A brass rim is what
-		# this game already uses to mean "this is the object that matters" --
-		# the machine's frame, the page plaques, the HUD capsules -- so the live
-		# rung is marked in the vocabulary the player has been reading since the
-		# title screen, not with a novel highlight colour.
-		var sb: StyleBoxFlat = card.get_theme_stylebox("panel").duplicate()
-		sb.set_border_width_all(6)
-		sb.border_color = Lagoon.BRASS
-		sb.shadow_size = 18
-		sb.shadow_color = Color(Lagoon.BRASS_LO.r, Lagoon.BRASS_LO.g, Lagoon.BRASS_LO.b, 0.60)
-		card.add_theme_stylebox_override("panel", sb)
+	holder.set_meta("kind", kind)
+	holder.set_meta("card", card)
+	holder.set_meta("paid", paid)
 
 	var margin := MarginContainer.new()
 	margin.add_theme_constant_override("margin_left", 10)
@@ -8815,9 +9122,6 @@ func _deal_cell(idx: int, hue: Color) -> Control:
 	col.add_theme_constant_override("separation", 6)
 	margin.add_child(col)
 
-	# The goods, as icon-over-figure columns -- the same vocabulary the daily
-	# ladder and the tournament tips use, so a prize looks like a prize
-	# everywhere in the game.
 	# What a paid rung is worth, stated on the card. The shop never sells a pack
 	# without its value chip and a rung is the same pack at the same price, so
 	# leaving it off would make the ladder look like the expensive way to buy
@@ -8831,9 +9135,17 @@ func _deal_cell(idx: int, hue: Color) -> Control:
 	flag.custom_minimum_size = Vector2(0, 30)
 	col.add_child(flag)
 	if paid and CV.bonus_pct(Deals.step_pack(step)) >= 8:
-		flag.add_child(Lagoon.chip("+%d%%  VALUE" % CV.bonus_pct(Deals.step_pack(step)),
-			Lagoon.URCHIN, UI.F_TINY))
+		# A STAMP, NOT A CHIP, and the stock is why. A chip is white type on a
+		# darkened fill -- built for a cream card, and on a violet slab it is
+		# dark on dark twice over. A stamp is the inverse: bright gold type in a
+		# deep well, which is the one thing that reads on every card here.
+		flag.add_child(Lagoon.stamp("+%d%%  VALUE" % CV.bonus_pct(Deals.step_pack(step)),
+			Lagoon.BRASS_HI, UI.F_TINY))
 
+	# The goods, as icon-over-figure columns -- the same vocabulary the daily
+	# ladder and the tournament tips use, so a prize looks like a prize
+	# everywhere in the game. WHITE FIGURES, because the stock under them is
+	# dark now: ink on a jewel card is the pale-on-pale problem inverted.
 	var goods := HBoxContainer.new()
 	goods.alignment = BoxContainer.ALIGNMENT_CENTER
 	goods.add_theme_constant_override("separation", 10)
@@ -8849,29 +9161,51 @@ func _deal_cell(idx: int, hue: Color) -> Control:
 			["cards", int(reward.get("cards", 0))],
 			["shield", int(reward.get("shields", 0))]]:
 		var n: int = entry[1]
-		if n <= 0 or shown >= 3:
+		# THE GOODS GO WHEN THE RUNG IS SPENT. A card still advertising a
+		# reward that has already been handed over is the ladder telling the
+		# player there is something there for them; the medallion is the whole
+		# content of a taken rung, and it needs the middle of the card to land
+		# in rather than a crowd to be stamped through.
+		if n <= 0 or shown >= 3 or taken:
 			continue
 		shown += 1
 		goods.add_child(_prize_column(String(entry[0]), 66.0,
-			_fmt_compact(n), Lagoon.INK, 1.0, UI.F_LABEL,
-			Color(1.0, 0.85, 0.4, 0.42) if live else Color(0, 0, 0, 0)))
+			_fmt_compact(n), Color.WHITE, 1.0, UI.F_LABEL,
+			Color(1.0, 0.88, 0.52, 0.50) if live else Color(1.0, 0.94, 0.72, 0.20)))
 
 	if taken:
-		var got := Lagoon.chip("TAKEN", Lagoon.KELP, UI.F_TINY)
-		got.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-		col.add_child(got)
-		# The goods go, the plate stays. A spent rung still has to hold its
-		# place in the ladder -- it is the evidence of how far up it the player
+		# The goods go, the slab stays. A spent rung still has to hold its place
+		# in the ladder -- it is the evidence of how far up it the player
 		# already is -- but it must not go on advertising a reward that has
 		# already been handed over.
-		card.modulate = Color(1, 1, 1, 0.55)
+		var got := Lagoon.stamp("TAKEN", Lagoon.KELP_HI, UI.F_TINY)
+		got.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		col.add_child(got)
+		card.modulate = Color(1, 1, 1, 0.72)
+		# A MEDALLION IN ITS OWN BOX, and that box is the fix.
+		#
+		# The tick was added straight to the card and then anchored to its
+		# centre. The card is a PanelContainer, and a Container re-fits every
+		# child it holds to its own rect on each layout pass -- anchors and all
+		# -- so a 52px tick came out as a 290x236 tick covering the entire
+		# rung, goods included. Every taken rung on the ladder was a green
+		# rectangle. The wrapper is what a Container is allowed to stretch;
+		# the medallion inside it is not.
+		var slot := Control.new()
+		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		card.add_child(slot)
 		var tick := Glyph.new()
 		tick.kind = "tick"
-		tick.custom_minimum_size = Vector2(52, 52)
+		tick.custom_minimum_size = Vector2(96, 96)
 		tick.modulate = Lagoon.KELP_HI
 		tick.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		card.add_child(tick)
+		slot.add_child(tick)
 		tick.set_anchors_preset(Control.PRESET_CENTER)
+		tick.offset_left = -48.0
+		tick.offset_right = 48.0
+		tick.offset_top = -60.0
+		tick.offset_bottom = 36.0
+		holder.set_meta("tick", tick)
 		return holder
 
 	var btn := Button.new()
@@ -8883,39 +9217,166 @@ func _deal_cell(idx: int, hue: Color) -> Control:
 	else:
 		btn.text = "FREE"
 		_candy_button(btn, Lagoon.KELP)
+	col.add_child(btn)
+	holder.set_meta("btn", btn)
+	# What the face says once it is pressable, held so the unlock can put it
+	# back after the plate has taken it away.
+	holder.set_meta("face", btn.text)
 	if live:
 		FX.press_feedback(btn)
 		btn.pressed.connect(_take_deal.bind(idx))
 		if not paid:
 			FX.pulse_forever(btn, 1.035, 1.3)
-	else:
-		# A LOCK, NOT A DISABLED BUTTON. A greyed control says "this is broken
-		# or you are not allowed"; a padlock on a live-coloured button says
-		# "this is coming", which is the only thing a future rung should say.
-		Lagoon.set_enabled(btn, false)
+	if not live or opening:
 		btn.disabled = true
-		var lock := _prize_art("lock", 34.0)
-		lock.modulate = Color(1, 1, 1, 0.92)
-		btn.add_child(lock)
-		lock.set_anchors_preset(Control.PRESET_CENTER_RIGHT)
-		lock.offset_left = -46.0
-		lock.offset_right = -16.0
-		lock.offset_top = -15.0
-		lock.offset_bottom = 15.0
-	col.add_child(btn)
+		# The word goes with the lock. The plate covers the face completely, so
+		# a "FREE" or a "$2.99" under it is type nobody can read -- and it is
+		# type the contrast harness measures against the plate and rightly
+		# fails. What the rung is worth is on the card above it; what it costs
+		# arrives with the unlock.
+		btn.text = ""
+		var plate := _event_lock_plate()
+		btn.add_child(plate)
+		plate.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		holder.set_meta("lock", plate)
+	if opening:
+		_event_dress(card, kind, false)
 
 	return holder
 
+# --- the two beats a rebuild would otherwise swallow -------------------------
+#
+# Guy, off build 111: when a rung is taken it should "show that it was bought,
+# with a nice animation, and then the next one opens beautifully, because right
+# now it is just locked". The ladder had no motion in it at all -- taking a rung
+# rebuilt the whole screen, so the card you pressed and the card that came free
+# both simply changed between one frame and the next.
+#
+# Three beats, run down the path in the order the eye reads it: the rung is
+# spent, the waymarker between them fires, the next lock gives. Nothing here
+# decides anything -- the state was settled before the rebuild -- so a beat
+# that is interrupted by the player closing the screen costs nothing.
+func _deal_play_take(from: int) -> void:
+	# One frame, so every cell has a real rect to pivot and burst around.
+	await get_tree().process_frame
+	# is_instance_valid BEFORE the type test, every time. `x is Control` on a
+	# freed instance is not false, it is a script error -- and by the time a
+	# beat runs the screen it was built for may well have been closed.
+	var spent = _deal_cell_nodes.get(from)
+	if is_instance_valid(spent) and spent is Control:
+		_deal_beat_spent(spent)
+	var mark = _deal_arrow_nodes.get(from + 1)
+	if is_instance_valid(mark) and mark is Control:
+		_after(0.30, func() -> void:
+			if is_instance_valid(mark):
+				_deal_beat_waymark(mark))
+	var opened = _deal_cell_nodes.get(from + 1)
+	if is_instance_valid(opened) and opened is Control:
+		_after(0.50, func() -> void:
+			if is_instance_valid(opened):
+				_deal_beat_unlock(opened))
+
+# The receipt. The card takes the hit, a ring leaves it, and the medallion
+# lands last and hardest -- it is the thing the player is meant to remember
+# seeing.
+func _deal_beat_spent(holder: Control) -> void:
+	var centre := holder.size * 0.5
+	holder.pivot_offset = centre
+	var tw := holder.create_tween()
+	tw.tween_property(holder, "scale", Vector2(1.10, 1.10), 0.11) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(holder, "scale", Vector2.ONE, 0.30) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	FX.ring(holder, centre, Lagoon.KELP_HI, holder.size.x * 0.60, 0.50, 8.0)
+	FX.burst(holder, centre, Lagoon.KELP_HI, 18)
+	Sfx.play("pop", -4.0, 0.02, 1.12)
+
+	var card = holder.get_meta("card", null)
+	if is_instance_valid(card) and card is Control:
+		# It fades to a spent plate rather than arriving as one, so the eye has
+		# a moment to see WHICH card was spent.
+		(card as Control).modulate = Color.WHITE
+		(card as Control).create_tween().tween_property(card, "modulate",
+			Color(1, 1, 1, 0.62), 0.55).set_delay(0.30)
+
+	var tick = holder.get_meta("tick", null)
+	if is_instance_valid(tick) and tick is Control:
+		var t: Control = tick
+		t.pivot_offset = t.size * 0.5
+		t.scale = Vector2(0.15, 0.15)
+		t.modulate.a = 0.0
+		var tt := t.create_tween()
+		tt.set_parallel(true)
+		tt.tween_property(t, "scale", Vector2.ONE, 0.46).set_delay(0.14) \
+			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		tt.tween_property(t, "modulate:a", 1.0, 0.20).set_delay(0.14)
+
+# The path lighting up between the two cards. Small, and the reason the unlock
+# does not read as two unrelated things happening at either end of the screen.
+func _deal_beat_waymark(disc: Control) -> void:
+	disc.pivot_offset = disc.size * 0.5
+	var tw := disc.create_tween()
+	tw.tween_property(disc, "scale", Vector2(1.55, 1.55), 0.14) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(disc, "scale", Vector2.ONE, 0.32) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	FX.burst(disc, disc.size * 0.5, Lagoon.BRASS_HI, 8)
+	Sfx.play("pop", -14.0, 0.02, 1.45)
+
+# The lock giving. Two hard shakes -- the latch refusing -- and then the plate
+# blows off, the stock comes up to full, the brass rim arrives and the button
+# lands underneath at full size. The card is already the finished live card; all
+# of this is one layer coming off it.
+func _deal_beat_unlock(holder: Control) -> void:
+	var plate = holder.get_meta("lock", null)
+	Sfx.play("pop", -6.0, 0.02, 0.78)
+	if is_instance_valid(plate) and plate is Control:
+		FX.shake(plate, 6.0, 4)
+	_after(0.32, func() -> void:
+		if not is_instance_valid(holder):
+			return
+		var centre := holder.size * 0.5
+		var card = holder.get_meta("card", null)
+		if is_instance_valid(card) and card is PanelContainer:
+			_event_dress(card, String(holder.get_meta("kind", "free")), true)
+		var btn = holder.get_meta("btn", null)
+		if is_instance_valid(btn) and btn is Button:
+			(btn as Button).disabled = false
+			(btn as Button).text = String(holder.get_meta("face", "FREE"))
+			var b: Button = btn
+			b.pivot_offset = b.size * 0.5
+			b.scale = Vector2(0.72, 0.72)
+			b.create_tween().tween_property(b, "scale", Vector2.ONE, 0.38) \
+				.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		if is_instance_valid(plate) and plate is Control:
+			var p: Control = plate
+			p.pivot_offset = p.size * 0.5
+			var pt := p.create_tween()
+			pt.set_parallel(true)
+			pt.tween_property(p, "scale", Vector2(1.45, 1.85), 0.30) \
+				.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_IN)
+			pt.tween_property(p, "modulate:a", 0.0, 0.26)
+			pt.chain().tween_callback(p.queue_free)
+		Sfx.play("coin", -5.0)
+		FX.ring(holder, centre, Lagoon.BRASS_HI, holder.size.x * 0.70, 0.55, 9.0)
+		FX.burst(holder, centre, Lagoon.BRASS_HI, 22)
+		holder.pivot_offset = centre
+		var tw := holder.create_tween()
+		tw.tween_property(holder, "scale", Vector2(1.13, 1.13), 0.15) \
+			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		tw.tween_property(holder, "scale", Vector2.ONE, 0.42) \
+			.set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT))
+
 # The turn between two rows, under the column the ladder leaves from.
-func _deal_turn(right: bool, hue: Color) -> Control:
+func _deal_turn(right: bool, hue: Color, into: int) -> Control:
 	var lane := HBoxContainer.new()
-	lane.custom_minimum_size = Vector2(0, 34)
+	lane.custom_minimum_size = Vector2(0, 38)
 	lane.alignment = BoxContainer.ALIGNMENT_END if right else BoxContainer.ALIGNMENT_BEGIN
 	var pad := Control.new()
 	pad.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	if right:
 		lane.add_child(pad)
-	var mark := _deal_arrow("\u25bc", hue)
+	var mark := _deal_arrow("▼", hue, into)
 	lane.add_child(mark)
 	if not right:
 		lane.add_child(pad)
@@ -8925,25 +9386,40 @@ func _deal_turn(right: bool, hue: Color) -> Control:
 #
 # It was a bare glyph first and it read as a stray triangle: the ladder's
 # direction is the one thing on this screen that has to be legible instantly,
-# and an unbacked arrow on a cream page at 26px is not. On a deep disc it is a
+# and an unbacked arrow on a cream page at 26px is not. On a lit disc it is a
 # waymarker, which is what it is.
-func _deal_arrow(mark: String, hue: Color) -> Control:
+#
+# The one pointing at the rung you can actually take breathes, and the ones past
+# it are dimmed to half. That turns six identical markers into a path with a
+# position on it -- the eye lands on the live rung without having to read a
+# single card to find it.
+func _deal_arrow(mark: String, hue: Color, into := -1) -> Control:
 	var disc := PanelContainer.new()
-	disc.custom_minimum_size = Vector2(52, 34)
+	disc.custom_minimum_size = Vector2(56, 38)
 	disc.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	disc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var walked := into >= 0 and into <= deal_taken
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Lagoon.HULL
-	sb.set_corner_radius_all(17)
+	sb.bg_color = hue.lerp(Lagoon.HULL, 0.30) if walked else Lagoon.HULL
+	sb.set_corner_radius_all(19)
 	sb.set_border_width_all(3)
-	sb.border_color = hue.lerp(Color.WHITE, 0.30)
+	sb.border_color = hue.lerp(Color.WHITE, 0.45 if walked else 0.20)
+	sb.shadow_size = 8
+	sb.shadow_color = Color(0, 0, 0, 0.40)
+	sb.shadow_offset = Vector2(0, 3)
 	disc.add_theme_stylebox_override("panel", sb)
-	var l := Lagoon.label(mark, UI.F_CAPTION, hue.lerp(Color.WHITE, 0.55), true)
+	var l := Lagoon.title(mark, UI.F_CAPTION, Color.WHITE if walked else hue.lerp(Color.WHITE, 0.45),
+		Lagoon.HULL)
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	disc.add_child(l)
+	if into >= 0:
+		_deal_arrow_nodes[into] = disc
+		if into == deal_taken:
+			FX.pulse_forever(disc, 1.12, 1.05)
+		elif into > deal_taken:
+			disc.modulate = Color(1, 1, 1, 0.55)
 	return disc
-
 # --- taking a rung -----------------------------------------------------------
 
 func _take_deal(idx: int) -> void:
@@ -8963,6 +9439,7 @@ func _take_deal(idx: int) -> void:
 		_confirm_purchase(Deals.step_pack(step))
 		return
 	deal_taken = idx + 1
+	_deal_anim_from = idx
 	_deal_pay(Deals.step_reward(step))
 	_save_game()
 	_after_deal_step()
@@ -8979,6 +9456,7 @@ func _deal_credit_purchase(pack_id: String) -> void:
 		return
 	# The goods themselves were already handed over by _grant_pack. All this
 	# owes is the rung.
+	_deal_anim_from = deal_taken
 	deal_taken += 1
 	_save_game()
 	_after_deal_step()
@@ -9013,8 +9491,15 @@ func _after_deal_step() -> void:
 	# The screen is rebuilt rather than patched. Every cell's state is a
 	# function of deal_taken and exactly one of them changed, but patching two
 	# cells in place is two chances to leave the third in a state no rule
-	# describes -- and the whole page costs a frame to draw.
-	if _popup != null and _deal_timer_label != null:
+	# describes -- and the whole page costs a frame to draw. What the rebuild
+	# then plays is _deal_play_take, off `_deal_anim_from`.
+	#
+	# is_instance_valid, NOT `!= null`. `_deal_timer_label` is the ladder's own
+	# clock and it is not cleared when the ladder closes -- a freed Object is
+	# still not null in GDScript, so a PAID rung, which leaves this screen for a
+	# StoreKit sheet and comes back to whatever the purchase flow put up, was
+	# re-opening the ladder straight over the top of the player's reward.
+	if _popup != null and is_instance_valid(_deal_timer_label):
 		_open_deal()
 
 # The grand prize. `quiet` is the expiry path, where there is no screen to put a
@@ -9219,7 +9704,7 @@ func _open_powerup() -> void:
 	vbox.add_child(clock)
 	var plate := Lagoon.stamp_plate(Lagoon.CORAL_HI)
 	clock.add_child(plate)
-	_powerup_timer_label = Lagoon.label("", UI.F_CAPTION, Lagoon.CORAL_HI, true)
+	_powerup_timer_label = Lagoon.title("", UI.F_CAPTION, Color.WHITE, Lagoon.ABYSS)
 	_powerup_timer_label.text = "ENDS  IN  %s" % _powerup_countdown_text()
 	plate.add_child(_powerup_timer_label)
 
@@ -9230,7 +9715,12 @@ func _powerup_column(col: Dictionary, pack: Dictionary) -> Control:
 	var holder := VBoxContainer.new()
 	holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
-	var card := _tinted_card(holder, Lagoon.BRASS if paid else Lagoon.LAGOON, paid)
+	# THE SAME JEWEL STOCK THE LADDER IS STRUCK ON. This screen and the ladder
+	# are the two "buy a bonus" events in the game, they are reached from the
+	# same rail, and they were both on the cream card the rest of the menus use
+	# -- which is the pale-and-flat note Guy raised about them together. Brass
+	# for the pack that costs money, sea green for the two that come with it.
+	var card := _event_stock(holder, "gold" if paid else "free", paid)
 	card.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
 	var margin := MarginContainer.new()
@@ -9248,8 +9738,10 @@ func _powerup_column(col: Dictionary, pack: Dictionary) -> Control:
 	# A HEAD ON EVERY COLUMN. Without one the two free stacks are anonymous
 	# piles of goods and the offer reads as "a pack, and some stuff" rather than
 	# as three packs -- which is the only claim it is making.
-	var head := Lagoon.chip("YOUR  PACK" if paid else "FREE  PACK",
-		Lagoon.BRASS if paid else Lagoon.KELP, UI.F_TINY)
+	# A stamp rather than a chip, for the reason the ladder's value flag is one:
+	# a chip is white type on a darkened fill, and the stock under it is dark.
+	var head := Lagoon.stamp("YOUR  PACK" if paid else "FREE  PACK",
+		Lagoon.BRASS_HI if paid else Lagoon.KELP_HI, UI.F_TINY)
 	head.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	body.add_child(head)
 
@@ -9266,8 +9758,8 @@ func _powerup_column(col: Dictionary, pack: Dictionary) -> Control:
 		if n <= 0:
 			continue
 		body.add_child(_prize_column(String(entry[0]), 76.0, _fmt_compact(n),
-			Lagoon.INK, 1.0, UI.F_LABEL,
-			Color(1.0, 0.85, 0.4, 0.45) if paid else Color(0, 0, 0, 0)))
+			Color.WHITE, 1.0, UI.F_LABEL,
+			Color(1.0, 0.88, 0.52, 0.50) if paid else Color(1.0, 0.94, 0.72, 0.20)))
 
 	var pad := Control.new()
 	pad.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -9296,17 +9788,16 @@ func _powerup_column(col: Dictionary, pack: Dictionary) -> Control:
 		# FREE, with a lock, and it is the same argument as the ladder's: a
 		# greyed control reads as broken, a padlock reads as "this comes with
 		# the one in the middle".
-		btn.text = "FREE"
+		btn.text = ""
 		_candy_button(btn, Lagoon.KELP)
-		Lagoon.set_enabled(btn, false)
 		btn.disabled = true
-		var lock := _prize_art("lock", 32.0)
-		btn.add_child(lock)
-		lock.set_anchors_preset(Control.PRESET_CENTER_RIGHT)
-		lock.offset_left = -40.0
-		lock.offset_right = -12.0
-		lock.offset_top = -14.0
-		lock.offset_bottom = 14.0
+		# The ladder's lock plate, not a greyed button with a 32px trinket
+		# anchored to one end of it. Same mechanic, same mark -- and the plate
+		# covers the face, so the word that used to sit under it was unreadable
+		# type. "FREE PACK" is stamped at the head of the column anyway.
+		var plate := _event_lock_plate()
+		btn.add_child(plate)
+		plate.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	body.add_child(btn)
 	return holder
 

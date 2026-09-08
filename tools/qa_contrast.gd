@@ -103,7 +103,20 @@ func _ready() -> void:
 	await _measure("collection set", m)
 	m.col_open = ""
 
-	for opener in ["_open_tourney", "_open_world_ranks", "_open_daily"]:
+	# The two "buy a bonus" events. Neither was measured here, and both are
+	# struck on dark jewel stock with white figures on it -- which is exactly
+	# the kind of surface this harness exists to check, and the kind a source
+	# read cannot check at all.
+	m.deal_id = "tide_hunt"
+	m.deal_until = m._now() + 7000.0
+	m.deal_taken = 2
+	m.deal_finale = false
+	m.powerup_id = "pu_quartermaster"
+	m.powerup_until = m._now() + 7000.0
+	m.powerup_pending = ""
+
+	for opener in ["_open_tourney", "_open_world_ranks", "_open_daily",
+			"_open_deal", "_open_powerup"]:
 		await _goto("slot")
 		m.call(opener)
 		await get_tree().create_timer(2.0).timeout

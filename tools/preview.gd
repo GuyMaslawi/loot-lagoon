@@ -48,6 +48,19 @@ func _ready() -> void:
 			# sequence gets judged as motion rather than as a still.
 			if OS.has_environment("CLAIM"):
 				_claim.call_deferred(game, OS.get_environment("CLAIM"))
+			# DEAL=<taken>[:take] opens the deal ladder with that many rungs
+			# already down. `:take` then presses the live rung, which is the
+			# only way to watch the two beats the ladder is built around --
+			# the rung being spent and the next one coming unlocked. In play
+			# a ladder rolls in on its own clock and the pair is about two
+			# seconds long, so SHOTS/SHOT_GAP over this is how it gets judged.
+			if OS.has_environment("DEAL"):
+				_deal.call_deferred(game, OS.get_environment("DEAL"))
+			# POWERUP=<id> opens the 1+2 takeover. It shows itself once per
+			# offer at the start of a session and never again, so this is the
+			# only way to look at it twice in a row.
+			if OS.has_environment("POWERUP"):
+				_powerup.call_deferred(game, OS.get_environment("POWERUP"))
 			# GOTO=<page> plays the page change itself, which is the only way
 			# to see what main.gd's shell is for: the bar and the side discs
 			# have to hold still while the page under them slides. A still of
@@ -83,7 +96,8 @@ func _ready() -> void:
 	# SCORE and CLAIM own it for the same reason.
 	if OS.has_environment("SHOT") and not OS.has_environment("GRANT") \
 			and not OS.has_environment("SCORE") and not OS.has_environment("CLAIM") \
-			and not OS.has_environment("GOTO") and not OS.has_environment("TIP"):
+			and not OS.has_environment("GOTO") and not OS.has_environment("TIP") \
+			and not OS.has_environment("DEAL") and not OS.has_environment("POWERUP"):
 		_shoot.call_deferred()
 
 # A tournament rung being crossed, from the outside.
@@ -164,7 +178,19 @@ func _claim(game: Control, what: String) -> void:
 		game.set("daily_last", 0.0 if day <= 1 else game.call("_trusted_now") - game.DAILY_COOLDOWN)
 		game.call("_open_daily")
 	await get_tree().create_timer(0.5).timeout
-	var btn := _find_button(game.get("_popup"), "CLAIM")
+	# HOLD=1 stops before the press, which is the only way to look at the dialog
+	# itself now that the claim is the gift rather than a button under it.
+	if OS.has_environment("HOLD"):
+		if OS.has_environment("SHOT"):
+			await _reel(OS.get_environment("SHOT"),
+				int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 1,
+				float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.4)
+		return
+	# The daily's claim is a flat hit box over the gift now, not a labelled
+	# button, so it is found by its meta.
+	var btn := _find_meta_button(game.get("_popup"), "claim")
+	if btn == null:
+		btn = _find_button(game.get("_popup"), "CLAIM")
 	if btn == null:
 		print("  claim: no button found")
 		get_tree().quit()
@@ -174,6 +200,59 @@ func _claim(game: Control, what: String) -> void:
 		await _reel(OS.get_environment("SHOT"),
 			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 10,
 			float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.22)
+
+func _deal(game: Control, spec: String) -> void:
+	while game.get("_boot") != null:
+		await get_tree().process_frame
+	await get_tree().create_timer(1.6).timeout
+	# The splash is still paying itself out when `_boot` goes null, so a capture
+	# started on that alone opens over a loading bar rather than over the ladder.
+	await get_tree().create_timer(3.0).timeout
+	var parts := spec.split(":")
+	# CHAIN=<id> picks which of the four runs; they differ in hue and in where
+	# their paid rungs sit, which is most of what the screen looks like.
+	var chain: String = OS.get_environment("CHAIN") if OS.has_environment("CHAIN") else "tide_hunt"
+	game.set("deal_id", chain)
+	game.set("deal_until", game.call("_now") + Deals.CHAIN_DURATION)
+	game.set("deal_taken", clampi(int(parts[0]), 0, Deals.STEPS))
+	game.set("deal_finale", false)
+	game.set("spins", 400)
+	game.call("_open_deal")
+	await get_tree().create_timer(0.6).timeout
+	if parts.size() > 1 and parts[1] == "take":
+		var btn := _find_button(game.get("_popup"), "FREE")
+		if btn == null:
+			print("  deal: the live rung is not a free one")
+		else:
+			btn.emit_signal("pressed")
+	if OS.has_environment("SHOT"):
+		await _reel(OS.get_environment("SHOT"),
+			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 10,
+			float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.22)
+
+func _powerup(game: Control, id: String) -> void:
+	while game.get("_boot") != null:
+		await get_tree().process_frame
+	await get_tree().create_timer(3.0).timeout
+	game.set("powerup_id", id if id != "1" else "pu_quartermaster")
+	game.set("powerup_until", game.call("_now") + Deals.POWERUP_DURATION)
+	game.set("powerup_pending", "")
+	game.call("_open_powerup")
+	if OS.has_environment("SHOT"):
+		await _reel(OS.get_environment("SHOT"),
+			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 1,
+			float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.5)
+
+func _find_meta_button(node: Node, key: String) -> Button:
+	if node == null:
+		return null
+	for c in node.get_children():
+		if c is Button and (c as Button).has_meta(key) and not (c as Button).disabled:
+			return c as Button
+		var found := _find_meta_button(c, key)
+		if found != null:
+			return found
+	return null
 
 func _find_button(node: Node, starts: String) -> Button:
 	if node == null:

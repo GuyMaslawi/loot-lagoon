@@ -1019,9 +1019,21 @@ func _press_claim() -> void:
 	if m._popup == null or not is_instance_valid(m._popup):
 		return
 	for b in _buttons_in(m._popup):
-		if not b.disabled and b.text.to_upper().contains("CLAIM"):
+		# The daily's claim has no label on it any more -- the gift and today's
+		# rung ARE the button, so what marks one is a meta rather than a word.
+		if not b.disabled and (b.has_meta("claim") or b.text.to_upper().contains("CLAIM")):
 			b.pressed.emit()
 			return
+
+# The daily's claim, which is a flat hit box over the gift rather than a
+# labelled button. Falls back to the word for every other dialog in the game.
+func _find_claim(root: Node) -> Button:
+	if root == null:
+		return null
+	for b in _buttons_in(root):
+		if b.has_meta("claim") and not b.disabled:
+			return b
+	return _find_button(root, "CLAIM")
 
 func _buttons_in(n: Node) -> Array:
 	var out := []
@@ -2427,7 +2439,7 @@ func _t_streak() -> void:
 	var coins_before: int = m.coins
 	var spins_before: int = m.spins
 	m._open_daily()
-	var btn: Button = _find_button(m._popup, "CLAIM")
+	var btn: Button = _find_claim(m._popup)
 	if btn == null:
 		_chk("the daily dialog offers a claim button", false)
 	else:
