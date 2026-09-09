@@ -7052,7 +7052,14 @@ func _fill_shop(vb: VBoxContainer) -> void:
 	_shop_section(vb, "chests", "TREASURE  CHESTS")
 	for pack in CV.CHEST_PACKS:
 		_chest_card(vb, pack)
-	vb.add_child(_page_note("Pricier chests hold more cards and better odds — every chest shows its full odds table before you pay", UI.F_TINY))
+	vb.add_child(_page_note("Pricier chests hold more cards and better odds — every card above shows its full per-card odds. Duplicates are possible; a guaranteed 5★ replaces one draw", UI.F_TINY))
+	# The expiry disclosure the confirm dialog used to carry. The cards sold on
+	# this page reset with the season, and the one screen where money changes
+	# hands must be a screen that says so -- a disclosure the buyer reaches
+	# afterwards is not a disclosure.
+	if col_deadline > 0.0:
+		var season_left := maxf(0.0, col_deadline - _now())
+		vb.add_child(_page_note("Cards belong to the current season, which ends in %s — every card and spare resets when a season ends, including cards from packs" % _countdown_text(int(season_left)), UI.F_TINY))
 
 	_shop_section(vb, "spins", "SPIN  PACKS")
 	var sgrid := GridContainer.new()
@@ -7627,6 +7634,13 @@ func _offer_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	# Light ink, because the card underneath is deep water now. The old call
 	# took the default dark INK, which on this background is invisible.
 	text.add_child(_reward_row(pack, Color(0.86, 0.93, 0.95)))
+	# Card odds, said on the card that sells them -- there is no confirm
+	# dialog left to say it on. Faint but light: dark INK_FAINT vanishes on
+	# the deep-water card the same way the old reward row did.
+	if _is_randomized(pack):
+		var ostrip := Lagoon.label(_odds_strip(pack), UI.F_TINY, Color(0.62, 0.77, 0.82))
+		ostrip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		text.add_child(ostrip)
 	var struck := _struck_price_row(pack, Color(0.62, 0.77, 0.82))
 	if struck != null:
 		struck.alignment = BoxContainer.ALIGNMENT_BEGIN
@@ -7643,7 +7657,7 @@ func _offer_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	Lagoon.button(buy, "brass")
 	Lagoon.button_gloss(buy, 22)
 	FX.press_feedback(buy)
-	buy.pressed.connect(_confirm_purchase.bind(pack))
+	buy.pressed.connect(_start_purchase.bind(pack))
 	row.add_child(buy)
 
 	# Across the corner rather than inside the frame -- see _corner_ribbon for
@@ -7942,6 +7956,13 @@ func _bundle_card(vb: VBoxContainer, pack: Dictionary) -> void:
 		head.add_child(_tag_chip(pack["tag"], pack["tag_color"], UI.F_TINY))
 
 	col.add_child(_reward_row(pack))
+	# The cards in the box draw from the star table, and with the confirm
+	# dialog gone this card is where that has to be said before the sheet.
+	# Wrapped, or the strip's own width pushes the whole shelf off the screen.
+	if _is_randomized(pack):
+		var bstrip := Lagoon.label(_odds_strip(pack), UI.F_TINY, Lagoon.INK_FAINT)
+		bstrip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		col.add_child(bstrip)
 	# In the text column, not beside the button. The pay column's minimum width
 	# is the button's; hanging "$29.36  SAVE 76%" off it instead made this the
 	# widest row on the page, and a VBoxContainer gives its widest child's
@@ -7961,7 +7982,7 @@ func _bundle_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
 	_candy_button(buy, Color(0.28, 0.68, 0.34))
 	FX.press_feedback(buy)
-	buy.pressed.connect(_confirm_purchase.bind(pack))
+	buy.pressed.connect(_start_purchase.bind(pack))
 	row.add_child(buy)
 
 func _shop_hero_offer(vb: VBoxContainer) -> void:
@@ -8005,6 +8026,12 @@ func _shop_hero_offer(vb: VBoxContainer) -> void:
 	name_row.add_child(nm)
 	name_row.add_child(_tag_chip(pack["tag"], Lagoon.REEF))
 	col.add_child(_reward_row(pack))
+	# The starter's chest draws from the star table too, and the confirm
+	# dialog that used to publish it is gone.
+	if _is_randomized(pack):
+		var hstrip := Lagoon.label(_odds_strip(pack), UI.F_TINY, Lagoon.INK_FAINT)
+		hstrip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		col.add_child(hstrip)
 	# REEF_LO, not CORAL_LO. The starter card is pale green and coral's own dark
 	# is a mid tone on it -- 3.77 : 1 for the one line on the card that says the
 	# offer will not come back.
@@ -8018,7 +8045,7 @@ func _shop_hero_offer(vb: VBoxContainer) -> void:
 	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
 	_candy_button(buy, Color(0.28, 0.68, 0.34))
 	FX.press_feedback(buy)
-	buy.pressed.connect(_confirm_purchase.bind(pack))
+	buy.pressed.connect(_start_purchase.bind(pack))
 	row.add_child(buy)
 
 # The chest for a pack, drawn rather than sampled.
@@ -8049,7 +8076,8 @@ func _is_randomized(pack: Dictionary) -> bool:
 	return int(pack.get("cards", 0)) > 0
 
 # The one line a narrow tile has room for: the rate people are actually buying.
-# The full breakdown is one tap away, in the dialog that takes the money.
+# The full breakdown is the _odds_strip printed on the same card -- there is no
+# dialog between the shelf and the payment sheet any more.
 func _odds_line(pack: Dictionary) -> String:
 	var odds := CV.star_odds(int(pack.get("tier", 0)))
 	if pack.get("guarantee5", false):
@@ -8063,55 +8091,6 @@ func _odds_strip(pack: Dictionary) -> String:
 	for i in CV.MAX_STAR:
 		parts.append("%d★ %s" % [i + 1, CV.odds_pct(odds[i])])
 	return "  ·  ".join(parts)
-
-# The full table, for the confirm dialog. Per drawn card, which is the only
-# reading of "the odds" that means anything for a chest that draws six.
-func _odds_table(vbox: VBoxContainer, pack: Dictionary) -> void:
-	var head := _popup_row_label("CARD ODDS  ·  per card drawn", UI.F_TINY)
-	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	head.add_theme_color_override("font_color", Lagoon.INK_SOFT)
-	vbox.add_child(head)
-
-	var odds := CV.star_odds(int(pack.get("tier", 0)))
-	var table := VBoxContainer.new()
-	table.add_theme_constant_override("separation", 3)
-	vbox.add_child(table)
-	for i in CV.MAX_STAR:
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 12)
-		table.add_child(row)
-		var st := _star_row(i + 1, UI.F_CAPTION)
-		st.alignment = BoxContainer.ALIGNMENT_BEGIN
-		st.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		row.add_child(st)
-		var pct := _popup_row_label(CV.odds_pct(odds[i]), UI.F_LABEL)
-		pct.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		row.add_child(pct)
-
-	var cards := int(pack.get("cards", 0))
-	var text := ""
-	if pack.get("guarantee5", false):
-		text = "One of the %d cards is always ★★★★★. The other %d each draw from the table above." % [cards, maxi(0, cards - 1)]
-	else:
-		text = "All %d cards draw from the table above, independently. Duplicates are possible." % cards
-	# The cards being sold here have an expiry date, and this is the only place
-	# the player can be told about it before paying.
-	#
-	# The Collections page has carried the season countdown all along, so the
-	# reset itself was never hidden -- but the shop never repeated it, which
-	# left the one screen where real money changes hands as the one screen that
-	# did not mention that what it sells is cleared at the end of the season. A
-	# disclosure the buyer reaches afterwards is not a disclosure, which is the
-	# same reasoning that put the odds table above the pay button rather than
-	# below it.
-	if col_deadline > 0.0:
-		var season_left := maxf(0.0, col_deadline - _now())
-		text += "\n\nCards belong to the current season, which ends in %s. Every card and spare resets when a season ends, including cards from packs." % _countdown_text(int(season_left))
-	var foot := _popup_row_label(text, UI.F_TINY)
-	foot.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	foot.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	foot.add_theme_color_override("font_color", Lagoon.INK_SOFT)
-	vbox.add_child(foot)
 
 # THE CHEST SHELF IS A COLUMN NOW, NOT THREE TILES ACROSS.
 #
@@ -8213,6 +8192,14 @@ func _chest_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	if guaranteed:
 		FX.pulse_forever(odds, 1.06, 1.2)
 
+	# Every rate, per card drawn. The full table lived on a confirm dialog
+	# between this card and the payment sheet; that dialog is gone -- the price
+	# button raises the sheet directly -- so the card is now the disclosure,
+	# and it is a full-width row with the room to carry one.
+	var strip := Lagoon.label(_odds_strip(pack), UI.F_TINY, Lagoon.INK_FAINT)
+	strip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	info.add_child(strip)
+
 	var buy := Button.new()
 	buy.text = IAP.price_for(pack)
 	buy.custom_minimum_size = Vector2(150, UI.TAP_COMFY)
@@ -8220,7 +8207,7 @@ func _chest_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	buy.add_theme_font_size_override("font_size", UI.F_SUBHEAD)
 	_candy_button(buy, Color(0.28, 0.68, 0.34))
 	FX.press_feedback(buy)
-	buy.pressed.connect(_confirm_purchase.bind(pack))
+	buy.pressed.connect(_start_purchase.bind(pack))
 	row.add_child(buy)
 
 # square tile used for spin & coin packs (2-column grid)
@@ -8397,7 +8384,7 @@ func _shop_tile(grid: GridContainer, pack: Dictionary, _accent: Color, amount_te
 	else:
 		_candy_button(buy, Color(0.28, 0.68, 0.34))
 	FX.press_feedback(buy)
-	buy.pressed.connect(_confirm_purchase.bind(pack))
+	buy.pressed.connect(_start_purchase.bind(pack))
 	col.add_child(buy)
 
 	if pack.has("tag"):
@@ -8836,6 +8823,33 @@ func _open_deal() -> void:
 	fl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	foot.add_child(fl)
 	foot.add_child(_reward_row(Deals.FINALE, Lagoon.INK, UI.F_LABEL))
+
+	# The paid rungs sell cards, and with the confirm dialog gone this screen
+	# is the last one before Apple's sheet -- so the ladder itself carries the
+	# per-card odds. One line per star table actually sold on this chain,
+	# named by rung when there is more than one.
+	var odds_rungs := {}
+	for i in chain["steps"].size():
+		var sp: Dictionary = Deals.step_pack(chain["steps"][i])
+		if _is_randomized(sp):
+			var t := int(sp.get("tier", 0))
+			# A plain Array, not a PackedStringArray: packed arrays come out of
+			# a Dictionary by value, so appending through the lookup would
+			# grow a copy and leave the stored one empty.
+			if not odds_rungs.has(t):
+				odds_rungs[t] = []
+			odds_rungs[t].append(str(i + 1))
+	if not odds_rungs.is_empty():
+		var tiers := odds_rungs.keys()
+		tiers.sort()
+		for t in tiers:
+			var prefix: String = "CARD  ODDS" if odds_rungs.size() == 1 \
+				else "RUNG  %s  CARD  ODDS" % "  &  ".join(odds_rungs[t])
+			var strip := _popup_row_label("%s:  %s" % [prefix, _odds_strip({"tier": t})], UI.F_TINY)
+			strip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			strip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			strip.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+			vbox.add_child(strip)
 
 	if beat >= 0:
 		_deal_anim_from = -1
@@ -9539,10 +9553,10 @@ func _take_deal(idx: int) -> void:
 	var step: Dictionary = chain["steps"][idx]
 	if Deals.is_paid(step):
 		# Money goes down the same road as every other purchase in the game --
-		# _confirm_purchase, IAP, _on_purchase_ok, _grant_pack. The rung is
+		# _start_purchase, IAP, _on_purchase_ok, _grant_pack. The rung is
 		# advanced by the receipt, never by the tap; see _deal_credit_purchase.
 		_close_popup()
-		_confirm_purchase(Deals.step_pack(step))
+		_start_purchase(Deals.step_pack(step))
 		return
 	# Read BEFORE the cell is thrown away by the patch below, and as a point
 	# rather than as a node: _deal_swap_cell frees the holder this button lives
@@ -10005,6 +10019,17 @@ func _powerup_column(col: Dictionary, pack: Dictionary) -> Control:
 			Color.WHITE, 1.0, UI.F_LABEL,
 			Color(1.0, 0.88, 0.52, 0.50) if paid else Color(1.0, 0.94, 0.72, 0.20)))
 
+	# The paid column's cards draw from the star table, and this dialog is the
+	# last screen before Apple's sheet now that the confirm dialog is gone.
+	# Translucent white, not INK_FAINT: the takeover stock is dark and every
+	# other line on it is white type.
+	if paid and _is_randomized(pack):
+		var strip := _popup_row_label(_odds_strip(pack), UI.F_TINY)
+		strip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		strip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		strip.add_theme_color_override("font_color", Color(1, 1, 1, 0.65))
+		body.add_child(strip)
+
 	var pad := Control.new()
 	pad.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	body.add_child(pad)
@@ -10026,7 +10051,7 @@ func _powerup_column(col: Dictionary, pack: Dictionary) -> Control:
 			powerup_pending = powerup_id
 			_flush_save()
 			_close_popup()
-			_confirm_purchase(pack)
+			_start_purchase(pack)
 		)
 	else:
 		# FREE, with a lock, and it is the same argument as the ladder's: a
@@ -10442,6 +10467,15 @@ func _spin_offer_card(vbox: VBoxContainer, pack: Dictionary, timed: bool) -> voi
 		col.add_child(extras_wrap)
 		extras_wrap.add_child(_reward_row(extras, Color(0.88, 0.95, 0.97), UI.F_LABEL))
 
+	# Any cards in the box draw from the star table, and with the confirm
+	# dialog gone this card is the last thing read before Apple's sheet. Same
+	# light ink as the extras row above it -- the card is dark.
+	if _is_randomized(pack):
+		var strip := Lagoon.label(_odds_strip(pack), UI.F_TINY, Color(0.78, 0.87, 0.90))
+		strip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		strip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		col.add_child(strip)
+
 	var save_slot := CenterContainer.new()
 	save_slot.custom_minimum_size = Vector2(0, 40)
 	col.add_child(save_slot)
@@ -10457,7 +10491,7 @@ func _spin_offer_card(vbox: VBoxContainer, pack: Dictionary, timed: bool) -> voi
 	FX.press_feedback(buy)
 	buy.pressed.connect(func() -> void:
 		_close_popup()
-		_confirm_purchase(pack)
+		_start_purchase(pack)
 	)
 	col.add_child(buy)
 
@@ -10495,63 +10529,17 @@ func _ctx_offer_footer(vbox: VBoxContainer) -> void:
 	no.pressed.connect(func() -> void: _close_popup())
 	vbox.add_child(no)
 
-func _confirm_purchase(pack: Dictionary) -> void:
-	var vbox := _open_popup("Confirm Purchase")
-	if String(pack.get("id", "")).begins_with("chest_"):
-		var art := _chest_art(pack, 64)
-		art.custom_minimum_size = Vector2(0, 132)
-		vbox.add_child(art)
-	else:
-		var e := _emoji_label(pack["emoji"], 64)
-		e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		vbox.add_child(e)
-	var nm := _popup_row_label(pack["name"], UI.F_BODY)
-	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	vbox.add_child(nm)
-	var sub := _popup_row_label(_pack_sub(pack), UI.F_CAPTION)
-	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	# Ink, not white: the modal is glass, and what the player is buying was
-	# rendering as a ghost of itself on it.
-	sub.add_theme_color_override("font_color", Lagoon.INK_SOFT)
-	vbox.add_child(sub)
-	# The odds go above the pay button. A disclosure the player reaches after
-	# deciding is not a disclosure.
-	if _is_randomized(pack):
-		vbox.add_child(Lagoon.divider())
-		_odds_table(vbox, pack)
-		vbox.add_child(Lagoon.divider())
-	# Only where it is true. On a phone the charge is real, and a leftover
-	# "no real charge" under a live StoreKit sheet would be the most expensive
-	# sentence in the app.
-	if IAP.simulated():
-		var note := _popup_row_label("Simulated purchase — no real charge.", UI.F_TINY)
-		note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		note.add_theme_color_override("font_color", Lagoon.INK_FAINT)
-		vbox.add_child(note)
-	var pay := Button.new()
-	pay.text = "PAY  %s" % IAP.price_for(pack)
-	pay.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
-	_candy_button(pay, Color(0.28, 0.68, 0.34))
-	FX.press_feedback(pay)
-	# Pay hands off to IAP and waits. The modal stays up under Apple's own
-	# sheet so there is somewhere for a failure to be reported back to, and
-	# _on_purchase_ok is what finally closes it.
-	pay.pressed.connect(func() -> void:
-		if IAP.busy:
-			return
-		pay.disabled = true
-		pay.text = "…"
-		IAP.purchase(pack)
-	)
-	vbox.add_child(pay)
-
-# Pack blurbs quote their coin figure with a %s, since what "25,000 Coins" is
-# worth depends entirely on which island you buy it from.
-func _pack_sub(pack: Dictionary) -> String:
-	var sub := String(pack.get("sub", ""))
-	if sub.contains("%s"):
-		return sub % _fmt_compact(_scaled(int(pack.get("coins", 0))))
-	return sub
+# Straight to the platform's payment sheet -- there is no confirm dialog of
+# ours in front of it any more. Apple's sheet is the confirmation, and the
+# disclosures that used to live on that dialog moved to the surfaces that
+# sell: the odds strip sits on every card-bearing card, the season note under
+# the chest shelf, and the simulated-build note at the top of the shop.
+# Cancels and failures come back through _on_purchase_cancel and
+# _on_purchase_fail, which banner over whatever screen the player is still on.
+func _start_purchase(pack: Dictionary) -> void:
+	if IAP.busy:
+		return
+	IAP.purchase(pack)
 
 # Apple says the money moved. Turn the product id back into the thing that was
 # bought, hand it over, and only then tell Apple the transaction is done -- the

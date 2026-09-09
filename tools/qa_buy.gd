@@ -6,7 +6,7 @@ extends Node
 # comes up and FOCUS_IN when it goes away, and the transaction callback lands
 # somewhere around the second of those. So the real order is:
 #
-#   1. PAY pressed, confirm popup still up   -> IAP.purchase()
+#   1. price button pressed on the shelf     -> IAP.purchase()
 #   2. NOTIFICATION_APPLICATION_FOCUS_OUT    -> _go_away()
 #   3. NOTIFICATION_APPLICATION_FOCUS_IN     -> _resume_from_away()
 #   4. purchase_succeeded                    -> _on_purchase_ok()
@@ -28,8 +28,8 @@ func _ready() -> void:
 			print("BOOT TIMEOUT"); get_tree().quit(1); return
 		await get_tree().process_frame
 
-	# Every pack family, because they do not all end in the same dialog: only
-	# the ones carrying cards used to end in one at all.
+	# Every pack family, because they do not all land in the same result
+	# dialog: only the ones carrying cards open a chest reveal.
 	for id in ["spins_s", "spins_m", "coins_m", "coins_l", "chest_w", "chest_m",
 			"bundle_s", "starter"]:
 		await _buy(id, 5.0, true)
