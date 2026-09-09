@@ -5,6 +5,21 @@ const SAVE_PATH := "user://coinvillage_save.json"
 const SAVE_TMP := "user://coinvillage_save.json.tmp"
 const SAVE_BAK := "user://coinvillage_save.json.bak"
 
+# The save is written encrypted at rest. Not a claim of secrecy against a
+# determined attacker -- the key ships in the binary and can be extracted by
+# anyone willing to reverse-engineer the game -- but the economy is
+# client-authoritative, so the threat that actually matters is the casual one:
+# the player who opens coinvillage_save.json in a text editor and changes coins
+# from 100 to 999999. Encryption turns that from "any text editor" into "read
+# the disassembly, recover this key, decrypt, edit, re-encrypt", which is the
+# same bar the Android purchase-signature check aims for and the same bar most
+# of a store's cheaters never clear. A save whose bytes are edited fails its MD5
+# on decrypt and is treated as unreadable -- so tampering costs the cheater
+# their own island, not a free one. Old plaintext saves are still read (see
+# _read_save_text) and re-written encrypted on the next flush, so the update
+# migrates in place with nothing lost.
+const SAVE_KEY := "ll-v1-6f3a9c2e8b7d451aaf0e1c5d9273b846-island-vault"
+
 # =============================================================================
 #  What shape this build writes a save in
 # =============================================================================
@@ -19281,7 +19296,10 @@ func _flush_save() -> void:
 # see _flush_save, which used to assume it.
 func _write_save(data: Dictionary) -> bool:
 	var text := JSON.stringify(data)
-	var f := FileAccess.open(SAVE_TMP, FileAccess.WRITE)
+	# Encrypted at rest -- see SAVE_KEY. The atomic temp+rename+.bak dance around
+	# this is unchanged: the scratch file is just encrypted now, and the rename
+	# that swaps it into place is the same one.
+	var f := FileAccess.open_encrypted_with_pass(SAVE_TMP, FileAccess.WRITE, SAVE_KEY)
 	if f == null:
 		return false
 	f.store_string(text)
@@ -19318,16 +19336,45 @@ func _read_save() -> Dictionary:
 	for path in [SAVE_PATH, SAVE_BAK]:
 		if not FileAccess.file_exists(path):
 			continue
-		var f := FileAccess.open(path, FileAccess.READ)
-		if f == null:
+		var text := _read_save_text(path)
+		if text == "":
+			push_warning("Save at %s is unreadable; falling back." % path)
 			continue
-		var text := f.get_as_text()
-		f.close()
 		var parsed = JSON.parse_string(text)
 		if typeof(parsed) == TYPE_DICTIONARY and not (parsed as Dictionary).is_empty():
 			return parsed
 		push_warning("Save at %s is unreadable; falling back." % path)
 	return {}
+
+# Reads a save file as text, whichever format it is on disk. A file this build
+# wrote is encrypted (magic "GDEC"); a file an older build wrote is plaintext
+# JSON. Sniff the first four bytes rather than trying an encrypted open and
+# catching the failure, so a plaintext file on the migration launch does not
+# spew a decrypt-failed error into the log every time it is read. Returns "" for
+# anything that will not open or whose encrypted body fails its MD5 -- i.e. a
+# tampered or corrupt file -- and the caller falls through to .bak.
+func _read_save_text(path: String) -> String:
+	var probe := FileAccess.open(path, FileAccess.READ)
+	if probe == null:
+		return ""
+	var magic := probe.get_buffer(4)
+	probe.close()
+	var encrypted := magic.size() == 4 and magic[0] == 0x47 and magic[1] == 0x44 \
+		and magic[2] == 0x45 and magic[3] == 0x43
+	if encrypted:
+		var f := FileAccess.open_encrypted_with_pass(path, FileAccess.READ, SAVE_KEY)
+		if f == null:
+			return ""   # right format, wrong bytes: tampered or corrupt
+		var t := f.get_as_text()
+		f.close()
+		return t
+	# Old plaintext save. Read it as-is; the next _write_save re-encrypts it.
+	var pf := FileAccess.open(path, FileAccess.READ)
+	if pf == null:
+		return ""
+	var pt := pf.get_as_text()
+	pf.close()
+	return pt
 
 # Reads the shape stamp off a save and decides what this build is allowed to do
 # with it. Called for the file on disk and again for anything adopted out of the

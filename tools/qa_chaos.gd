@@ -542,11 +542,12 @@ func _t_boundaries() -> void:
 	_coherent("a hostile clock")
 
 func _read_save() -> Dictionary:
-	var f := FileAccess.open(SAVE_PATH, FileAccess.READ)
-	if f == null:
+	# The game encrypts the save at rest; read it through the game's own decoder
+	# (which still reads an older plaintext file too) rather than assuming plaintext.
+	var text: String = m._read_save_text(SAVE_PATH)
+	if text == "":
 		return {}
-	var d: Variant = JSON.parse_string(f.get_as_text())
-	f.close()
+	var d: Variant = JSON.parse_string(text)
 	return d if typeof(d) == TYPE_DICTIONARY else {}
 
 # DELETE THE SAVE. Do not write a tidy one over it.

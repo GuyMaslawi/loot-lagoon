@@ -52,11 +52,11 @@ func _sleep_for(secs: float) -> void:
 	m.clock_hw = m._now() + secs
 
 func _read_save() -> Dictionary:
-	var f := FileAccess.open("user://coinvillage_save.json", FileAccess.READ)
-	if f == null:
+	# The save is encrypted at rest; decode it through the game's own reader.
+	var text: String = m._read_save_text("user://coinvillage_save.json")
+	if text == "":
 		return {}
-	var d = JSON.parse_string(f.get_as_text())
-	f.close()
+	var d = JSON.parse_string(text)
 	return d if typeof(d) == TYPE_DICTIONARY else {}
 
 func _quiet() -> void:
