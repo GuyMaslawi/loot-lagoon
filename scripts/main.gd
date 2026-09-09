@@ -7025,13 +7025,9 @@ func _fill_shop(vb: VBoxContainer) -> void:
 	# countdown to reach a price list has already been told the countdown was
 	# the less urgent thing.
 	#
-	# The two events come first of all, and they have to be here at all: the
-	# power-up's takeover shows itself once per offer at the start of a session
-	# and never again, so without a door on this page an offer dismissed in the
-	# first two seconds of a launch is gone for twelve hours. An offer the
-	# player cannot go back and look at is not an offer.
-	_event_entries(vb)
-
+	# The two running events used to open this page as their own rows, but the
+	# shell's floating discs carry them on every page now, this one included --
+	# two doors to the same place, one screen apart, and the shop rows lost.
 	var live := _active_offer()
 	if not live.is_empty():
 		_offer_card(vb, live)
@@ -7092,81 +7088,6 @@ func _fill_shop(vb: VBoxContainer) -> void:
 # down. Gold text floating on the page needed a heavy outline to survive the
 # backdrop; on brass it needs none, and the reader gets a shape they have
 # already learned to read as "heading".
-# The doors to the two running events, at the top of the shop.
-#
-# One row each, not a card each: these are not products, they are places to go,
-# and a full shop card would put them in competition with the packs underneath
-# on the packs' own terms -- which they would win, being free, and the shelf
-# would never get read.
-func _event_entries(vb: VBoxContainer) -> void:
-	var pu := _active_powerup()
-	if not pu.is_empty():
-		_event_entry(vb, String(pu["name"]), "1 + 2  —  buy one pack, get two free",
-			"gift", Lagoon.BRASS, _powerup_countdown_text(), _open_powerup)
-	var chain := _active_deal()
-	if not chain.is_empty():
-		var left := Deals.STEPS - deal_taken
-		var sub := "All six taken — grand prize paid" if left <= 0 \
-			else ("%d free and paid rewards waiting" % left if deal_taken == 0 \
-			else "%d of %d rewards still to take" % [left, Deals.STEPS])
-		_event_entry(vb, String(chain["name"]), sub, String(chain["glyph"]),
-			Color(chain["hue"]), _deal_countdown_text(), _open_deal)
-
-func _event_entry(vb: VBoxContainer, title: String, sub: String, glyph: String,
-		hue: Color, clock: String, open: Callable) -> void:
-	var card := _tinted_card(vb, hue, true)
-	var btn := Button.new()
-	btn.flat = true
-	btn.focus_mode = Control.FOCUS_NONE
-	btn.custom_minimum_size = Vector2(0, 118)
-	btn.pressed.connect(open)
-	FX.press_feedback(btn)
-	card.add_child(btn)
-
-	# The row is drawn INSIDE the button rather than beside it. A flat Button
-	# with children is the only way in this toolkit to make a whole card
-	# pressable without either a transparent overlay eating the taps meant for
-	# what is under it, or a container swallowing the press before the button
-	# sees it.
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 14)
-	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	btn.add_child(row)
-	row.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	for m in [["offset_left", 16.0], ["offset_right", -16.0],
-			["offset_top", 12.0], ["offset_bottom", -12.0]]:
-		row.set(m[0], m[1])
-
-	# _prize_art rather than a bare Glyph: the power-up's door is the rendered
-	# gift and the chains' are drawn glyphs, and one call resolves both.
-	var mark := _prize_art(glyph, 74.0)
-	mark.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	row.add_child(mark)
-	FX.pulse_forever(mark, 1.07, 1.5)
-
-	var col := VBoxContainer.new()
-	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	col.add_theme_constant_override("separation", 2)
-	row.add_child(col)
-	col.add_child(Lagoon.label(title, UI.F_BODY, Lagoon.INK, true))
-	var sl := Lagoon.label(sub, UI.F_CAPTION, Lagoon.INK_SOFT)
-	sl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	col.add_child(sl)
-
-	var right := VBoxContainer.new()
-	right.alignment = BoxContainer.ALIGNMENT_CENTER
-	right.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	right.add_theme_constant_override("separation", 6)
-	row.add_child(right)
-	var plate := Lagoon.stamp_plate(Lagoon.CORAL_HI)
-	plate.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	right.add_child(plate)
-	plate.add_child(Lagoon.label(clock, UI.F_TINY, Lagoon.CORAL_HI, true))
-	var go := Lagoon.chip("OPEN", Lagoon.KELP, UI.F_TINY)
-	go.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	right.add_child(go)
-
 func _shop_section(vb: VBoxContainer, key: String, title: String) -> void:
 	# A ribbon across the column. It used to be a small brass pill with a faded
 	# rule out to each side -- a heading that said "heading" politely, on a page
