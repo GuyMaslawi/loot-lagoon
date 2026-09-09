@@ -1009,6 +1009,32 @@ static func bg_tex(id: String) -> Texture2D:
 static func prop_tex(id: String) -> Texture2D:
 	return tex("res://assets/art/props/%s.png" % id)
 
+# A COLLECTIBLE'S FACE, AND IT IS ALLOWED NOT TO EXIST YET.
+#
+# The 135 cards are the last emoji in the game that are content rather than
+# chrome, and they are being replaced a set at a time -- rendered through
+# tools/render_cards.py, which puts a mesh under the props' own lighting rig so
+# a card and a chest come out of one scene. Nine files land, nine cards stop
+# being emoji, and nothing else in the game has to know.
+#
+# So this returns null rather than a placeholder, and every call site keeps the
+# emoji as its fallback. That is what lets the art ship incrementally instead of
+# in one 135-file drop -- and it is also what keeps a missing or misnamed file a
+# cosmetic problem rather than a hole on the shelf.
+#
+# `idx` is the item's place in its set, and the file is 1-based to match the
+# names in the illustrator's brief: beach_01.png is the first card of Beach Day.
+static func card_tex(set_id: String, idx: int) -> Texture2D:
+	if set_id == "" or idx < 0:
+		return null
+	return tex("res://assets/art/cards/%s_%02d.png" % [set_id, idx + 1])
+
+# The set's own emblem, on the shelf tile. Same rules as a card face.
+static func card_set_tex(set_id: String) -> Texture2D:
+	if set_id == "":
+		return null
+	return tex("res://assets/art/cards/%s_icon.png" % set_id)
+
 static func island_theme(level: int) -> Dictionary:
 	return ISLANDS[(level - 1) % ISLANDS.size()]
 

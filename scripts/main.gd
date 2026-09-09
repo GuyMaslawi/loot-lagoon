@@ -10802,8 +10802,13 @@ func _grant_chest_card(tier: int, forced_star := 0) -> Dictionary:
 		_add_dupe(chosen["id"], idx)
 		var refund := _scaled(60 * star)
 		coins += refund
+		# set_id and idx on the SPARE too, not only on a first copy. They are how
+		# a face finds its painted art, and a duplicate is drawn on exactly the
+		# same tile as a new card -- without them a spare Seashell fell back to
+		# the emoji while the first one was a render.
 		return {"emoji": it[0], "name": it[1], "set": chosen["name"], "stars": star,
-			"dup": true, "refund": refund, "held": _dupe_count(chosen["id"], idx)}
+			"dup": true, "refund": refund, "held": _dupe_count(chosen["id"], idx),
+			"set_id": chosen["id"], "idx": idx}
 	owned[idx] = true
 	_mark_new(chosen["id"], idx)
 	# A first copy is a first copy wherever it came from: the same stars a spin
@@ -10947,8 +10952,9 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 		colv.alignment = BoxContainer.ALIGNMENT_CENTER
 		colv.add_theme_constant_override("separation", 2)
 		tile_pad.add_child(colv)
-		var e := _emoji_label(card["emoji"], 40)
-		e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		var e := _card_face(String(card.get("set_id", "")), int(card.get("idx", -1)),
+			String(card["emoji"]), 40)
+		e.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 		colv.add_child(e)
 		var nm := Lagoon.label(card["name"], UI.F_TINY, Lagoon.INK, true)
 		nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -12512,7 +12518,7 @@ func _pin_new_badge(card: Control, bottom := false, text := "NEW") -> void:
 
 # `big` is the set's own page, where a card gets a third of the width instead
 # of a fifth and can afford to be looked at rather than counted.
-func _collection_item_card(emoji: String, iname: String, owned: bool, rarity := 0, big := false, spare := 0, is_new := false) -> Control:
+func _collection_item_card(emoji: String, iname: String, owned: bool, rarity := 0, big := false, spare := 0, is_new := false, set_id := "", idx := -1) -> Control:
 	# Owned cards are brass-rimmed glass; unowned ones are the same glass with
 	# the metal drained out of them, so a set reads as "partly collected" at a
 	# glance rather than as two unrelated card designs.
@@ -12571,9 +12577,8 @@ func _collection_item_card(emoji: String, iname: String, owned: bool, rarity := 
 	col.alignment = BoxContainer.ALIGNMENT_CENTER
 	col.add_theme_constant_override("separation", 0)
 	p.add_child(col)
-	var e := _emoji_label(emoji, 74 if big else 44)
-	e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	e.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	var e := _card_face(set_id, idx, emoji, 74 if big else 44)
+	e.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	# The ghost goes LIGHT now that the slot behind it went dark. Multiplying an
 	# emoji by a mid grey on pale glass is what made the unowned half of a set
 	# disappear; on deep water the same trick has to run the other way.
@@ -13373,7 +13378,7 @@ func _fill_collection_detail(vb: VBoxContainer, c: Dictionary) -> void:
 	for i in items.size():
 		var it: Array = items[i]
 		grid.add_child(_collection_item_card(it[0], it[1], i < owned.size() and owned[i],
-			int(it[2]), true, _dupe_count(id, i), _is_new_card(id, i)))
+			int(it[2]), true, _dupe_count(id, i), _is_new_card(id, i), id, i))
 	# Spent AFTER the grid has been built off it. The badges on screen are the
 	# ones this page was asked to draw; clearing first would draw a page with
 	# nothing new on it, which is the one state this marker exists to avoid.
@@ -15053,8 +15058,9 @@ func _prize_cell_card(grid: GridContainer, card: Dictionary) -> Array:
 	var sc: Color = CV.STAR_COLORS[star - 1]
 	var tile := _prize_tile(grid, sc, star >= 4)
 	var body := tile.get_meta("body") as VBoxContainer
-	var face := _emoji_label(str(card.get("emoji", "🃏")), 78)
-	face.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	var face := _card_face(str(card.get("set_id", "")), int(card.get("idx", -1)),
+		str(card.get("emoji", "🃏")), 78)
+	face.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	body.add_child(face)
 	var nm := Lagoon.label(str(card.get("name", "Card")), UI.F_CAPTION, Lagoon.INK, true)
 	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -18769,6 +18775,39 @@ func _emoji_label(text: String, size: int) -> Label:
 	l.add_theme_font_override("font", CV.emoji_font())
 	l.add_theme_font_size_override("font_size", size)
 	return l
+
+# A COLLECTIBLE'S FACE, PAINTED IF WE HAVE IT AND TYPED IF WE DO NOT.
+#
+# The 135 cards are the last emoji in the game that are content rather than
+# chrome. They come from tools/render_cards.py -- a mesh under the props' own
+# lighting rig -- and they land a set at a time, so at any moment some sets are
+# painted and some are still emoji. Every place a card face is drawn goes
+# through here, so that transition is one function rather than five, and a
+# missing file is a card that looks like it did yesterday rather than a hole.
+#
+# The texture keeps its own aspect and is not stretched: these are square
+# renders with the object framed inside them by the pipeline, and a
+# STRETCH_KEEP_ASPECT_CENTERED is what preserves that framing when the tile it
+# lands in is not square.
+func _card_face(set_id: String, idx: int, emoji: String, px: int) -> Control:
+	var t := CV.card_tex(set_id, idx)
+	if t == null:
+		var l := _emoji_label(emoji, px)
+		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		return l
+	var r := TextureRect.new()
+	r.texture = t
+	r.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	r.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	r.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# 1.18x the type size it replaces. An emoji is drawn inside its own em box
+	# with the glyph filling most of it; a card render is framed at 86%% of a
+	# square, so matched box-for-box the painted card comes out visibly smaller
+	# than the emoji it replaced on the same shelf.
+	var box := roundi(float(px) * 1.18)
+	r.custom_minimum_size = Vector2(box, box)
+	return r
 
 func _hud_value_label(text: String) -> Label:
 	var l := Label.new()
