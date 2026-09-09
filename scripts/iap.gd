@@ -902,12 +902,19 @@ func _on_play_purchases(response: Dictionary) -> void:
 # is the thing that decides what to grant. That needs credentials this project
 # does not have yet, and this is what can be done without them.
 #
-# FAIL OPEN, deliberately, and this is the one decision here worth arguing with.
-# With no key configured the check does not run and the warning is loud. The
-# alternative -- refusing every purchase until the key is pasted in -- turns a
-# missing config file into every Android player paying and receiving nothing,
-# which is a worse failure than the one being defended against. ship_android.sh
-# says so at build time instead.
+# FAIL OPEN IN DEBUG, FAIL CLOSED IN RELEASE. This used to fail open always, on
+# the argument that refusing every purchase over a missing config is a worse
+# failure than not checking -- true for a developer running from the editor with
+# no key pasted in. But a RELEASE build is a different case: ship_android.sh
+# guarantees the key is present at build time, so a release build reaching this
+# code with no key is not a forgotten config, it is a stripped or tampered apk --
+# exactly the thing the check defends against. So the split is on
+# OS.is_debug_build(): a debug build with no key still fails open (the dev
+# convenience), a release build with no key refuses. The honest player is never
+# affected either way, because their release build always has the key.
+#
+# The real fix remains a server that validates the receipt against Google's API
+# and decides what to grant; that needs credentials this project does not have.
 const PLAY_KEY_PATH := "res://play_billing.json"
 var _play_key: CryptoKey = null
 var _play_key_checked := false
@@ -949,7 +956,9 @@ func _play_signature_ok(row: Dictionary) -> bool:
 	if not _play_key_checked:
 		_load_play_key()
 	if _play_key == null:
-		return true
+		# No key: fail open only in a debug build. In release the key is
+		# guaranteed by ship_android.sh, so a missing key is a tampered build.
+		return OS.is_debug_build()
 	var payload := String(row.get("original_json", ""))
 	var sig_b64 := String(row.get("signature", ""))
 	if payload == "" or sig_b64 == "":
@@ -986,8 +995,9 @@ func _play_signature_ok(row: Dictionary) -> bool:
 # 0 and pending is 4. Comparing the two directly reads every real purchase as
 # "not purchased" and silently grants nothing.
 #
-# Fail open with no key configured, exactly as _play_signature_ok does: this
-# returns the plugin's own view unchanged, which is what shipped before.
+# No key configured: same debug/release split as _play_signature_ok. In a debug
+# build this returns the plugin's own view unchanged (the dev convenience); in a
+# release build a missing key is a tampered apk, so refuse.
 const PLAY_PACKAGE := "com.guymaslawi.lootlagoon"
 const PLAY_JSON_PURCHASED := 0
 const PLAY_JSON_PENDING := 4
@@ -1005,7 +1015,7 @@ func _play_trusted(row: Dictionary) -> Dictionary:
 	if not _play_key_checked:
 		_load_play_key()
 	if _play_key == null:
-		return view
+		return view if OS.is_debug_build() else {}
 	if not _play_signature_ok(row):
 		return {}
 
