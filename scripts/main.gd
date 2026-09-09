@@ -169,6 +169,9 @@ var _server_rival: Dictionary = {}
 var slot_page: Control
 # The win read-out currently on the reels, if any. See `_show_win`.
 var _win_slug: Control
+# The big-win takeover, when one is up. Checked by the auto-spin tick the same
+# way a popup is: a celebration is a blocker that ends, not a reason to stop.
+var _bigwin: Control
 var village_page: Control
 var slot: SlotView
 var village: VillageView
@@ -1017,6 +1020,23 @@ func _after_boot() -> void:
 				_show_win("+%d  SHIELD%s" % [amount, "" if amount == 1 else "S"],
 					Color(0.5, 0.75, 1.0), "shield")
 				_grant_shields(amount, at))
+	# DEMO_BIGWIN=<tier>[:<gain>] raises the big-win takeover without waiting
+	# for the reels to land it -- a bag triple is 2.6% of spins, which is not a
+	# rate you can iterate a layout against. Tier 1..3; the gain defaults to
+	# the rung's honest figure at bet x1 on the current island.
+	var demo_bigwin := OS.get_environment("DEMO_BIGWIN")
+	if demo_bigwin != "":
+		var bw := demo_bigwin.split(":")
+		var bw_tier := clampi(int(bw[0]), 1, 3)
+		var bw_gain := int(bw[1]) if bw.size() > 1 else _scaled([0, 1000, 2000, 3000][bw_tier])
+		coins += bw_gain
+		_after(1.2, func() -> void:
+			# A dev save that has never signed in boots into the login layer,
+			# and the takeover would play out underneath it. A player cannot
+			# be mid-spin and mid-login at once, so this is a harness-only
+			# hazard and it is dismissed rather than worked around.
+			_close_login()
+			_show_big_win(bw_gain, bw_tier))
 	# DEMO_OFFER=coins:<shortfall> opens the build-blocked top-up on demand.
 	# Reaching it by playing means spending a village down to the exact wrong
 	# number first, which is not a thing you can do while looking at the dialog
@@ -5642,14 +5662,17 @@ func _claim_mission_bonus(period: String) -> void:
 	FX.flash(self)
 	_fill_page("quests")
 
+# Claimed from inside the missions dialog, which sits at z 120 -- so both
+# flights ride at 130 or they play out underneath the popup they left. This
+# was the last coin reward in the game still thrown as decoration at a counter
+# that had already moved; it holds and delivers now, like everything else.
 func _grant_mission_reward(coin_amt: int, spin_amt: int) -> void:
+	var at := Vector2(view_size().x * 0.5, view_size().y * 0.5)
 	if coin_amt > 0:
-		coins += coin_amt
-		FX.fly_coins(self, Vector2(360, 640), _hud_labels[0]["coins"].global_position, clampi(coin_amt / 400, 4, 10))
+		_grant_coins(coin_amt, at, 130)
 		FX.rise_label(self, Vector2(270, 560), "+%s" % _fmt_compact(coin_amt), Color(1.0, 0.85, 0.3), 36)
 	if spin_amt > 0:
-		spins += spin_amt
-		FX.rise_label(self, Vector2(300, 630), "+%d  ⚡" % spin_amt, Color(0.6, 0.9, 1.0), 30)
+		_grant_spins(spin_amt, at, 130)
 	Sfx.play("jackpot", -3.0)
 	FX.confetti(self, 20)
 	_update_badges()
@@ -10782,7 +10805,7 @@ func _show_pack_result(pack: Dictionary) -> void:
 			"COINS", Color(1.0, 0.78, 0.25)])
 	var shields_n := int(pack.get("shields", 0))
 	if shields_n > 0:
-		rows.append(["\U0001F6E1", "+%d" % shields_n, "SHIELDS", Lagoon.KELP_LO])
+		rows.append(["\U01F6E1", "+%d" % shields_n, "SHIELDS", Lagoon.KELP_LO])
 
 	# Nothing countable in it -- a pack shape this build does not understand.
 	# The banner is still the right answer there: a dialog with no rows is worse
@@ -16350,10 +16373,13 @@ func _auto_spin_tick(gen: int) -> void:
 	if slot == null or not is_instance_valid(slot):
 		_stop_auto_spin("")
 		return
-	# The four things that are none of the run's business until they are over.
+	# The five things that are none of the run's business until they are over.
 	# `_raiding()` covers the island overlay, the search screen and the gap
-	# between a triple landing and the raid being built.
-	if _current_page != slot_page or _raiding() or _popup != null or slot.is_spinning():
+	# between a triple landing and the raid being built; the big-win takeover
+	# is a blocker like any dialog -- spinning the reels behind its dim would
+	# spend the meter on spins nobody can see.
+	if _current_page != slot_page or _raiding() or _popup != null or slot.is_spinning() \
+			or is_instance_valid(_bigwin):
 		# _now(), which is a high-water mark and cannot be wound back. Winding it
 		# FORWARD only ends the hold early, which is the safe direction.
 		var now := _now()
@@ -16520,20 +16546,183 @@ func _show_win(text: String, color := Color(1.0, 0.85, 0.3), icon_kind := "", co
 	tw.parallel().tween_property(root, "modulate:a", 0.0, 0.46)
 	tw.tween_callback(root.queue_free)
 
+# =============================================================================
+#  The big-win ladder
+# =============================================================================
+#
+# What a coin triple used to get was the same pill an ordinary +300 gets, plus
+# a banner. Coin Master's single loudest lesson is that the win READOUT and the
+# win EVENT are different sizes of thing: the readout is a number, the event is
+# the screen going dark, the name of the tier slamming in, the figure counting
+# up while coins rain, and the room shaking. Three rungs, mapped to the three
+# coin triples -- BIG for coins, MEGA for gems, JACKPOT for bags -- so every
+# rung is something the reels can actually be seen doing, and the ladder never
+# fires for a win the player would not call one.
+#
+# THE COUNTER HOLDS UNTIL THE TAKEOVER COMES DOWN. The purse is banked before
+# the first frame of this (the save must be right if the app dies mid-party),
+# but _hud_lag keeps the shown figure still, and the coins only reach the chip
+# as a delivery once the overlay has left. A celebration OVER a counter that
+# has already moved is the decoration this file keeps legislating against.
+#
+# A tap mid-count completes the count; a tap after it collects. Nothing here
+# outlives the overlay: every tween is owned by the root, so a new takeover
+# freeing the old one takes the whole timeline with it.
+const BIGWIN_TITLES := ["", "BIG  WIN!", "MEGA  WIN!", "JACKPOT!"]
+const BIGWIN_INKS := [Color.WHITE, Color(1.0, 0.85, 0.3), Color(0.6, 0.85, 1.0),
+	Color(1.0, 0.78, 0.25)]
+
+func _show_big_win(gain: int, tier: int) -> void:
+	if slot_page == null or slot == null or gain <= 0 or tier <= 0:
+		return
+	tier = mini(tier, 3)
+	# A takeover still up belongs to a spin that is over -- auto-spin can land
+	# the next triple while the last is being admired. Its undelivered lag is
+	# settled (the counter snaps to truth, which is the sanctioned backstop),
+	# and the new hold starts clean.
+	if is_instance_valid(_bigwin):
+		_bigwin.queue_free()
+		_settle_hud("coins")
+	_hud_hold("coins", gain)
+
+	var vs := get_viewport_rect().size
+	var root := Control.new()
+	# STOP, not IGNORE: the takeover owns the screen while it is up. A tap goes
+	# to the count-or-collect logic below, never through the dim to the button
+	# underneath it.
+	root.mouse_filter = Control.MOUSE_FILTER_STOP
+	root.z_index = 112
+	add_child(root)
+	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	root.pivot_offset = vs * 0.5
+	_bigwin = root
+
+	var dim := ColorRect.new()
+	dim.color = Color(0.0, 0.0, 0.0, 0.0)
+	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(dim)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	var center := CenterContainer.new()
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(center)
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var col := VBoxContainer.new()
+	col.alignment = BoxContainer.ALIGNMENT_CENTER
+	col.add_theme_constant_override("separation", 6)
+	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center.add_child(col)
+
+	# Sized to own the screen: at 104 the word spans most of the 720 canvas,
+	# which is the difference between a caption and an event.
+	var title := Lagoon.title(BIGWIN_TITLES[tier], 104, BIGWIN_INKS[tier], Lagoon.ABYSS)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(title)
+	var amount := Lagoon.title("", 80, Color(1.0, 0.85, 0.3), Lagoon.ABYSS)
+	amount.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(amount)
+
+	# One dictionary rather than two locals, for the same reason deliver keeps
+	# an Array: the lambdas below need shared state, and a captured bool is a
+	# copy.
+	var state := {"counted": false, "done": false}
+	var next_tick := [0.0]
+	var write := func(v: float) -> void:
+		amount.text = "+%s" % _fmt_compact(int(round(v)))
+		var u := clampf(v / float(gain), 0.0, 1.0)
+		# The count has a voice: the reel detent, rising as the figure does.
+		if u >= next_tick[0]:
+			next_tick[0] += 0.07
+			Sfx.play("tick", -10.0, 0.0, 0.9 + 0.55 * u)
+
+	var fountain_at := vs * 0.5 + Vector2(0.0, 120.0)
+	var dismiss := func() -> void:
+		if state["done"] or not is_instance_valid(root):
+			return
+		state["done"] = true
+		var out := root.create_tween()
+		out.tween_property(root, "modulate:a", 0.0, 0.22)
+		out.parallel().tween_property(root, "scale", Vector2(1.08, 1.08), 0.22)
+		out.tween_callback(func() -> void:
+			root.queue_free()
+			# The party is over; now the accounting, watched. The coins leave
+			# the spot the figure occupied and the counter moves as they land.
+			_coin_release(gain, vs * 0.5)
+			# The cameo this spin earned, held until he could be seen.
+			if tier == 3:
+				_mascot_cue("jackpot")
+			elif gain >= _scaled(20000):
+				_mascot_cue("bigwin"))
+
+	var landing := func() -> void:
+		FX.shake(slot, [0.0, 8.0, 12.0, 16.0][tier], [0, 6, 8, 10][tier])
+		FX.flash(root, Color(1.0, 0.92, 0.5, [0.0, 0.22, 0.3, 0.38][tier]))
+		FX.haptic([0, 18, 28, 40][tier], [0.0, 0.35, 0.55, 0.8][tier])
+		FX.fountain(root, fountain_at, [0, 14, 22, 30][tier])
+		FX.confetti(root, [0, 36, 56, 80][tier])
+
+	var count_dur: float = [0.0, 0.95, 1.3, 1.7][tier]
+	root.scale = Vector2(2.4, 2.4)
+	root.modulate.a = 0.0
+	var tw := root.create_tween()
+	tw.tween_property(root, "modulate:a", 1.0, 0.12)
+	tw.parallel().tween_property(root, "scale", Vector2.ONE, 0.30) \
+		.set_trans(Tween.TRANS_QUINT).set_ease(Tween.EASE_OUT)
+	tw.parallel().tween_property(dim, "color:a", 0.62, 0.25)
+	tw.tween_callback(landing)
+	# Linear on purpose: an eased count bunches the detents at one end, and an
+	# even tick is what makes the figure feel like it is being paid out rather
+	# than displayed.
+	tw.tween_method(write, float(gain) * 0.02, float(gain), count_dur)
+	tw.tween_callback(func() -> void:
+		state["counted"] = true
+		FX.counter_pop(amount)
+		FX.burst(root, vs * 0.5, Color(1.0, 0.85, 0.3), 10)
+		Sfx.play("coins", -6.0)
+		if tier >= 2:
+			FX.fountain(root, fountain_at, 16))
+	tw.tween_interval(1.0)
+	tw.tween_callback(dismiss)
+
+	# Mouse events only, and that covers the finger too: every touch is
+	# shadowed by an emulated mouse event (see _input), so listening to both
+	# kinds would run this twice per tap -- and the second run lands in the
+	# "counted" branch and collapses the takeover the same instant the first
+	# one finished the count.
+	root.gui_input.connect(func(ev: InputEvent) -> void:
+		if not (ev is InputEventMouseButton and ev.pressed):
+			return
+		root.accept_event()
+		if not state["counted"]:
+			# An impatient tap is not a skip, it is "get to the number": the
+			# count completes on the spot and the collect follows on its own.
+			tw.kill()
+			write.call(float(gain))
+			state["counted"] = true
+			FX.counter_pop(amount)
+			FX.burst(root, vs * 0.5, Color(1.0, 0.85, 0.3), 10)
+			Sfx.play("coins", -6.0)
+			var tw2 := root.create_tween()
+			tw2.tween_interval(0.45)
+			tw2.tween_callback(dismiss)
+		else:
+			dismiss.call())
+
 # Raid loot arriving in the wallet. The island already showed the player the
 # figure and multiplied it in front of them, so this is not another read-out --
 # it is the coins physically getting to the counter they are added to, once the
-# island has finished sliding out of the way.
+# island has finished sliding out of the way. The purse holds until they land:
+# the coins were banked when the raid resolved, but the chip does not move
+# until a coin reaches it.
 func _land_loot(amount: int) -> void:
 	if amount <= 0 or _hud_labels.is_empty():
 		return
+	_hud_hold("coins", amount)
 	var tw := create_tween()
 	tw.tween_interval(0.38)
 	tw.tween_callback(func() -> void:
 		Sfx.play("coins", -5.0)
-		FX.fly_coins(self, Vector2(view_size().x * 0.5, view_size().y * 0.42),
-			_hud_labels[0]["coins"].global_position, clampi(amount / 400, 6, 12))
-	)
+		_coin_release(amount, Vector2(view_size().x * 0.5, view_size().y * 0.42)))
 
 # The next line of the opening script if there is one, and the rolled outcome
 # for ever after.
@@ -16641,25 +16830,30 @@ func _on_spin_finished(result: Array) -> void:
 	Diag.milestone("first_spin")
 	var bet := _last_bet
 	var gain := 0
+	# Which rung of the big-win ladder this spin earned, if any. The three
+	# coin-paying triples map straight onto the three rungs -- every one of
+	# them is an event, and the ladder is what says so. The banners and the
+	# loose confetti these branches used to throw are folded into the takeover;
+	# the cabinet marquee stays, because the machine announcing its own result
+	# is a different voice from the game celebrating it.
+	var tier := 0
 	var triple: bool = result[0] == result[1] and result[1] == result[2]
 	if triple:
 		match result[0]:
 			"coin":
 				gain = 1000 * bet
+				tier = 1
 				Sfx.play("jackpot", -4.0)
-				_banner("Triple coins!", Color(1.0, 0.85, 0.3))
 			"bag":
 				gain = 3000 * bet
+				tier = 3
 				Sfx.play("jackpot", -2.0)
 				slot.announce("JACKPOT!", Lagoon.BRASS_HI)
-				_banner("JACKPOT!", Color(1.0, 0.85, 0.3))
-				FX.confetti(self, 44)
-				FX.flash(self)
 			"gem":
 				gain = 2000 * bet
+				tier = 2
 				Sfx.play("jackpot", -3.0)
-				_banner("Triple gems!", Color(0.6, 0.85, 1.0))
-				FX.confetti(self, 30)
+				slot.announce("MEGA  WIN!", Color(0.6, 0.85, 1.0))
 			"hammer":
 				_start_visit("attack")
 			"steal":
@@ -16694,15 +16888,16 @@ func _on_spin_finished(result: Array) -> void:
 	if gain > 0:
 		coins += gain
 		_mission_add("coins_won", gain)
-		_show_win("+%s" % _fmt_compact(gain), Color(1.0, 0.85, 0.3), "coin", gain)
-		# The coins leave for the wallet only once the read-out has been read,
-		# so the number and the coins that are it are not two events at once.
-		var fly := create_tween()
-		fly.tween_interval(1.25)
-		fly.tween_callback(func() -> void:
-			FX.fly_coins(self, slot.reels_center(), _hud_labels[0]["coins"].global_position,
-				clampi(gain / 250, 4, 10))
-		)
+		if tier > 0:
+			_show_big_win(gain, tier)
+		else:
+			_show_win("+%s" % _fmt_compact(gain), Color(1.0, 0.85, 0.3), "coin", gain)
+			# The coins leave for the wallet only once the read-out has been
+			# read, so the number and the coins that are it are not two events
+			# at once -- and the purse holds until they land, which is the rule
+			# every other counter already follows. The reel win was the last
+			# flight in the game still decorating a number that had moved.
+			_coin_flight(gain, slot.reels_center(), 1.25)
 	# WHERE THE RACCOON COMES IN, and the ordering matters: after the win
 	# read-out is up and after any raid has taken the screen, so a cameo can
 	# only ever land on a spin page that has finished talking. `_mascot_cue`
@@ -16713,9 +16908,10 @@ func _on_spin_finished(result: Array) -> void:
 	# more than a couple of hundred spins, and the two-of-three that did not
 	# pay. An ordinary +300 does not get him, because a mascot who appears on
 	# every third spin is scenery by the end of the first session.
-	if triple and String(result[0]) == "bag":
-		_mascot_cue("jackpot")
-	elif gain >= _scaled(20000):
+	# A spin that raised the takeover holds its cameo until the takeover comes
+	# down -- _show_big_win fires it from its own dismissal, or the raccoon
+	# vaults in behind a dim he cannot be seen through.
+	if tier == 0 and gain >= _scaled(20000):
 		_mascot_cue("bigwin")
 	elif not triple and (result[0] == result[1] or result[1] == result[2]) \
 			and String(result[1]) in ["bag", "steal", "hammer"]:
@@ -18652,14 +18848,50 @@ func _grant_coins(n: int, from: Vector2, z := 101) -> void:
 	if n <= 0:
 		return
 	coins += n
+	_coin_flight(n, from, 0.0, z)
+
+# The flight alone, for coins somebody else already banked -- the reel win, the
+# raid loot, the takeover. Holds the shown figure NOW (the counter must not
+# tick before the coins move, however long the delay), flies later.
+func _coin_flight(n: int, from: Vector2, delay := 0.0, z := 101) -> void:
+	if n <= 0:
+		return
 	_hud_hold("coins", n)
+	if delay > 0.0:
+		_after(delay, func() -> void: _coin_release(n, from, z))
+	else:
+		_coin_release(n, from, z)
+
+# The second half of a hold that has already happened: the delivery, the
+# landings, and the settle that guarantees the counter can never be left short
+# by a flight something interrupted.
+#
+# CAPPED, because every reel win rides this now. Three deliveries can be in
+# the air and be read as three; past that the screen is noise and the nodes
+# are a soak failure -- turbo auto-spin, or a harness playing two thousand
+# spins a frame, queues wins faster than flights can land, and each landing
+# spawns a burst of its own. The excess skips the theatre entirely: the purse
+# takes the whole figure in one thump, which at that pace is all anybody could
+# have seen anyway. The slot below is only ever released by the settle timer,
+# so an interrupted flight frees its place on the same clock that fixes its
+# counter.
+const COIN_FLIGHTS_MAX := 3
+var _coin_flights_up := 0
+
+func _coin_release(n: int, from: Vector2, z := 101) -> void:
+	if _coin_flights_up >= COIN_FLIGHTS_MAX:
+		_hud_land("coins", n, Color(1.0, 0.85, 0.35, 0.0))
+		return
+	_coin_flights_up += 1
 	var flights := clampi(n / 400, 5, 9)
 	var per := n / flights
 	var extra := n % flights
 	FX.deliver(self, from, _hud_at("coins"), "coin", flights, func(i: int) -> void:
 		_hud_land("coins", per + (1 if i < extra else 0), Color(1.0, 0.85, 0.35))
 		Sfx.play("coins", -14.0), "", 190.0, 0.10, "", z)
-	_after(float(flights) * 0.10 + 1.6, func() -> void: _settle_hud("coins"))
+	_after(float(flights) * 0.10 + 1.6, func() -> void:
+		_coin_flights_up = maxi(0, _coin_flights_up - 1)
+		_settle_hud("coins"))
 
 # The middle of a node that may already have been freed, or a point to use when
 # it has. Read untyped and checked before the cast: `var c: Control = x` throws

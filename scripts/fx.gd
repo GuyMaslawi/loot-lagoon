@@ -52,6 +52,43 @@ static func fly_coins(parent: Control, from: Vector2, to: Vector2, count: int,
 		tw.parallel().tween_property(node, "scale", Vector2(0.5, 0.5), 0.55)
 		tw.tween_callback(node.queue_free)
 
+# A fountain of coins: launched upward, pulled back down by gravity, gone
+# before they hit anything. Pure spectacle -- nothing here touches a counter,
+# which is exactly why it is allowed to be this loud. The flight helpers below
+# are the accounting; this is the cheering.
+#
+# Physics rather than an eased tween, because a coin that decelerates into an
+# apex and accelerates out of it is the entire difference between "thrown" and
+# "moved". The eye knows what gravity looks like and forgives nothing else.
+static func fountain(parent: Control, from: Vector2, count := 18, z := 106) -> void:
+	for i in count:
+		var node := symbol_node("coin", "🪙", randf_range(34.0, 58.0))
+		node.pivot_offset = node.size * 0.5
+		node.z_index = z
+		node.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		node.modulate.a = 0.0
+		parent.add_child(node)
+		var half := node.size * 0.5
+		var v := Vector2(randf_range(-340.0, 340.0), randf_range(-1250.0, -820.0))
+		var g := 2600.0
+		var dur := randf_range(0.9, 1.25)
+		var spin := randf_range(-3.5, 3.5)
+		node.position = from - half
+		var tw := parent.create_tween()
+		# Launched over a spill rather than as one shape, for the same reason
+		# smoke is: a burst that arrives all at once is a sticker of a fountain.
+		tw.tween_interval(float(i) * 0.035)
+		tw.tween_callback(func() -> void: node.modulate.a = 1.0)
+		tw.tween_method(func(t: float) -> void:
+			if not is_instance_valid(node):
+				return
+			node.position = from + v * t + Vector2(0.0, 0.5 * g * t * t) - half
+			node.rotation = spin * t
+		, 0.0, dur, dur)
+		tw.parallel().tween_property(node, "modulate:a", 0.0, 0.3) \
+			.set_delay(maxf(0.0, dur - 0.3))
+		tw.chain().tween_callback(node.queue_free)
+
 static func burst(parent: Control, pos: Vector2, color: Color, count := 14) -> void:
 	for i in count:
 		var p := Panel.new()
@@ -128,6 +165,18 @@ static func shake(node: Control, amount := 12.0, times := 6) -> void:
 	tw.tween_callback(func() -> void:
 		node.remove_meta(_SHAKE_RUN)
 		node.remove_meta(_SHAKE_HOME))
+
+# One thump through the phone itself, for the handful of moments the screen
+# alone undersells. Guarded to mobile because that is where the hardware is;
+# everywhere else this is a no-op, including the simulator.
+#
+# USED SPARINGLY ON PURPOSE. A vibration on every spin is a phone that will not
+# stop buzzing under auto-spin, and a player who has felt fifty of them has
+# stopped feeling any. The big-win ladder is the only caller today, and
+# anything new added here should be an event on that scale.
+static func haptic(ms := 18, amplitude := 0.5) -> void:
+	if OS.has_feature("mobile"):
+		Input.vibrate_handheld(ms, amplitude)
 
 # Returns the loop, so a caller that may later want the node to stop pulsing can
 # kill it. `create_tween` does not stop the tweens a node already owns, so a

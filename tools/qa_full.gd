@@ -1702,7 +1702,7 @@ func _t_raids() -> void:
 	# pays more than the island the player is standing on.
 	m.island_level = 14
 	var rich: Dictionary = m._rival_from_server({
-		"name": "Whale", "emoji": "\U0001F433", "island_level": 14,
+		"name": "Whale", "emoji": "\U01F433", "island_level": 14,
 		"coins": int(9_000_000_000), "buildings": [5, 5, 5, 5, 5], "shields": 0,
 		"id": "x"})
 	_chk("a human's whole wallet is clamped to a rival's purse",
@@ -1712,7 +1712,7 @@ func _t_raids() -> void:
 	# rival to within three islands, and three islands is 1.6^3 -- so reading
 	# the figure against the wrong curve misquotes a neighbour by four times.
 	var ahead: Dictionary = m._rival_from_server({
-		"name": "Ahead", "emoji": "\U0001F642", "island_level": 17,
+		"name": "Ahead", "emoji": "\U01F642", "island_level": 17,
 		"coins": int(round(4000.0 * CV.curve(17))), "buildings": [1, 1, 1, 1, 1],
 		"shields": 0, "id": "y"})
 	_chk("a neighbour's vault is read on their own island's curve",
