@@ -1059,3 +1059,86 @@ begin
     raise notice 'ALL FUNCTIONAL TESTS PASSED';
 end;
 $$;
+
+
+-- --- 2026-09-09 security hardening -----------------------------------------
+-- Regression cover for the five holes closed by
+-- 20260909120000_security_hardening.sql. Each check is an exploit that used to
+-- work (or a real call that used to throw), asserted closed.
+do $$
+declare
+    greg uuid := gen_random_uuid();
+    hana uuid := gen_random_uuid();
+    p_greg uuid; p_hana uuid;
+    r jsonb; n integer; ok boolean;
+begin
+    insert into auth.users (id, email) values
+        (greg, 'greg@example.com'), (hana, 'hana@example.com');
+    insert into auth.identities (user_id, provider) values
+        (greg, 'google'), (hana, 'apple');
+
+    perform pg_temp.be(greg);
+    r := public.claim_player('{"coins": 1}'::jsonb, 'Greg', '😎', 10, 3, 0, 0, '{0,0,0,0,0}');
+    p_greg := (r->'player'->>'id')::uuid;
+    perform pg_temp.be(hana);
+    r := public.claim_player('{"coins": 1}'::jsonb, 'Hana', '🙂', 100, 8, 0, 0, '{1,1,1,0,0}');
+    p_hana := (r->'player'->>'id')::uuid;
+
+    -- --- find_players: real prefix works, wildcards cannot enumerate --------
+    perform pg_temp.be(greg);
+    r := public.find_players('han', 12);
+    perform pg_temp.ck('find_players finds a real name prefix (display_name, not the dead p.name)',
+        jsonb_array_length(r) = 1 and (r->0->>'id')::uuid = p_hana, r::text);
+    perform pg_temp.ck('a % wildcard cannot turn the prefix search into a contains scan',
+        jsonb_array_length(public.find_players('%an', 12)) = 0);
+    perform pg_temp.ck('an _ wildcard is escaped too',
+        jsonb_array_length(public.find_players('_an', 12)) = 0);
+
+    -- --- push_save: size cap, buildings cap, monotonic bracket key ----------
+    perform pg_temp.be(hana);
+    begin
+        perform public.push_save(
+            jsonb_build_object('x', repeat('a', 300000)), 110, 8, 0, 0, '{1,1,1,0,0}');
+        ok := false;   -- should not reach here
+    exception when others then
+        ok := true;
+    end;
+    perform pg_temp.ck('push_save REFUSES a multi-hundred-KB save blob', ok);
+
+    r := public.push_save('{"coins": 2}'::jsonb, 120, 2, 0, 0, array_fill(1, array[5000]));
+    perform pg_temp.ck('a normal-sized save still stores', r->>'status' = 'ok', r::text);
+    select array_length(buildings, 1) into n from public.players where id = p_hana;
+    perform pg_temp.ck('a 5000-element buildings array is sliced to 16', n = 16, n::text);
+    select island_level into n from public.players where id = p_hana;
+    perform pg_temp.ck('island_level (the tournament bracket key) cannot be lowered to farm a weaker league',
+        n = 8, n::text);
+
+    -- --- find_target: an absurd band does not scan the whole table ----------
+    perform pg_temp.be(greg);
+    begin
+        perform public.find_target('steal', 999999);
+        ok := true;
+    exception when others then
+        ok := false;
+    end;
+    perform pg_temp.ck('find_target survives an out-of-range band (clamped, not the whole table)', ok);
+
+    -- --- diagnostics views: one forged non-numeric row cannot break them ----
+    insert into public.diagnostics (player, install_id, kind, detail) values
+        (null, 'inst-forge', 'usage',
+         '{"secs":"notanumber","counters":{"foo":"bar","real":3}}'::jsonb),
+        (null, 'inst-forge', 'milestone',
+         '{"name":"poison","since_install_s":"nope"}'::jsonb);
+    begin
+        perform (select count(*) from public.diag_usage_daily);
+        perform (select count(*) from public.diag_features_daily);
+        perform (select count(*) from public.diag_funnel);
+        ok := true;
+    exception when others then
+        ok := false;
+    end;
+    perform pg_temp.ck('a forged non-numeric diagnostics row does not break the analytics views', ok);
+
+    raise notice 'SECURITY HARDENING TESTS PASSED';
+end;
+$$;
