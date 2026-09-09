@@ -93,6 +93,91 @@ var head_turn := 0.0          # radians, on top of the counter-rotation
 # into arcs and the jaw comes open.
 var mood := 0.0
 
+# =============================================================================
+#  Expressions
+# =============================================================================
+#
+# `mood` is one axis -- scowl at -1, glee at +1 -- and one axis cannot say the
+# difference between "delighted" and "astonished", which on a slot machine's
+# mascot are the two faces that matter most. Both are positive events; one
+# squeezes his eyes shut and the other blows them open, and an axis that runs
+# through neutral can only ever do one of them.
+#
+# So there is a named set on top of it. A performance writes `face` once and
+# gets eight channels at their right values together, sprung so a change of
+# expression takes about a sixth of a second rather than cutting.
+#
+# `mood` is untouched and still means what it meant: it ADDS to the face's brow.
+# Every existing act writes mood and no face at all, so they behave exactly as
+# they did -- see island_visit, where the whole raid is authored that way.
+#
+# THE COLUMNS, and each is a thing the drawing can actually do:
+#
+#   brow    the mood axis this face sits at (-1 scowl .. +1 glee)
+#   sq      how much glee is allowed to squeeze the eyes shut. 1 for a laugh,
+#           0 for astonishment -- this is the column that lets one axis carry
+#           two opposite faces.
+#   lid     extra closing, on top of everything. Sleepy, sly, half-lidded.
+#   wide    extra opening. There is not much room: head.png has the socket
+#           painted into it, so past about a third the eye grows out of its own
+#           hole. 0.34 is the measured ceiling.
+#   pupil   scale. Pinpoint reads as shock or menace, saucer as greed or
+#           affection -- it is the single cheapest expression channel there is
+#           and the rig had no use of it before.
+#   gape    baseline jaw opening, max'd with whatever the performance asks for.
+#   ear     +1 pricked forward, -1 pinned flat. Held inside EAR_SWING like
+#           every other ear write, because the seam is where it always was.
+#   tilt    a small head cock, in radians. Not a body rotation -- the head is
+#           already allowed to turn and this rides that same joint.
+#   wink    closes ONE eye further than the other. Measured off the first
+#           contact sheet, where neutral, happy, sly and smug came out as very
+#           nearly one face: this drawing has a broad dark mask painted into
+#           head.png, no eyebrow anywhere, and a jaw that is smiling before
+#           anybody animates it -- so every SYMMETRIC change lands inside a
+#           narrow band and the mid-range expressions collapse into each other.
+#           Asymmetry is what separates them, and it is the one thing the rig
+#           was not doing: both eyes were given identical treatment on every
+#           frame it had ever drawn.
+#   gaze    where the face looks by default, on the vertical only. Positive is
+#           down. Sad looks at the floor and thrilled looks up, and half of
+#           what those two expressions are is where the pupils are pointing.
+const FACES := {
+	#              brow    sq   lid  wide  pupil  gape    ear   tilt   wink   gaze
+	"neutral":  [ 0.00,  1.0, 0.00, 0.00,  1.00, 0.00,  0.00,  0.00,  0.00,  0.00],
+	# Half-lidded with one eye further down than the other, ears forward, head
+	# cocked. This is the face he wears while the reels are still running and he
+	# already likes what he can see.
+	"sly":      [-0.10,  1.0, 0.18, 0.00,  0.92, 0.00,  0.30,  0.07,  0.55, -0.10],
+	"happy":    [ 0.55,  1.0, 0.00, 0.00,  1.05, 0.28,  0.50,  0.00,  0.00, -0.15],
+	# The big win. Eyes OPEN, not squeezed -- sq is 0, which is the whole
+	# reason the sq column exists.
+	"thrilled": [ 0.75,  0.0, 0.00, 0.30,  1.28, 0.85,  1.00,  0.00,  0.00, -0.22],
+	# Saucers, aimed slightly down at whatever he wants. Coins, a full piggy
+	# bank, a pot he has not been given yet.
+	"greedy":   [ 0.35,  0.0, 0.00, 0.26,  1.35, 0.45,  0.65,  0.03,  0.00,  0.12],
+	# Pinpoint pupils in wide eyes, jaw dropped. The near miss. The pupil is the
+	# whole expression here -- wide eyes alone read as delight.
+	"shocked":  [ 0.00,  1.0, 0.00, 0.34,  0.60, 0.70,  0.85,  0.00,  0.00, -0.05],
+	# Ears down, head cocked, looking at the floor, big pupils. This is the one
+	# expression where a large pupil reads as pleading rather than as greed, and
+	# it is the tilt and the downward gaze that decide which of the two it is.
+	"sad":      [-0.20,  1.0, 0.32, 0.00,  1.18, 0.00, -0.70,  0.13,  0.00,  0.55],
+	"angry":    [-1.00,  1.0, 0.00, 0.00,  0.70, 0.15, -1.00,  0.00,  0.00, -0.10],
+	"sleepy":   [ 0.00,  1.0, 0.74, 0.00,  1.00, 0.10, -0.35,  0.14,  0.22,  0.30],
+	# A held wink. The difference between smug and happy is not how pleased he
+	# is, it is that smug is aimed at somebody.
+	"smug":     [ 0.40,  1.0, 0.22, 0.00,  0.95, 0.05,  0.40,  0.06,  0.70, -0.05],
+}
+
+# Written by the performance. An unknown name is neutral rather than an error:
+# a face is decoration on top of a performance that is already correct, and a
+# typo should cost an expression, not the screen.
+var face := "neutral"
+
+# How much of the named face is applied, 0..1. The entrances turn it down while
+# he is still off screen so he does not arrive mid-expression.
+var face_amount := 1.0
+
 # Set this instead of modulate:a. Modulate is inherited, so it reaches each of
 # the fifteen pieces separately, and half-faded he then arrives as a stack of
 # translucent cut-outs with every overlap showing through. self_modulate on
@@ -214,6 +299,31 @@ func tick(delta: float) -> void:
 	var breath := sin(_t * TAU / 2.60)
 	var crouch := maxf(-squash.y, 0.0)
 
+	# --- the face, resolved and sprung --------------------------------------
+	# Sprung rather than cut, and sprung per channel rather than as a blend
+	# between two table rows: a spring per channel means an expression that is
+	# changed half way through arriving does not have to finish arriving first.
+	# 190/17 is a sixth of a second with a trace of overshoot -- an expression
+	# that lands dead is an expression that was faded in.
+	var fr: Array = FACES.get(face, FACES["neutral"])
+	var fa := clampf(face_amount, 0.0, 1.0)
+	var f_brow := _spring("f_brow", float(fr[0]) * fa, 190.0, 17.0, delta)
+	var f_sq := _spring("f_sq", 1.0 + (float(fr[1]) - 1.0) * fa, 190.0, 17.0, delta)
+	var f_lid := _spring("f_lid", float(fr[2]) * fa, 190.0, 17.0, delta)
+	var f_wide := _spring("f_wide", float(fr[3]) * fa, 190.0, 17.0, delta)
+	var f_pupil := _spring("f_pupil", 1.0 + (float(fr[4]) - 1.0) * fa, 190.0, 17.0, delta)
+	var f_gape := _spring("f_gape", float(fr[5]) * fa, 190.0, 17.0, delta)
+	var f_ear := _spring("f_ear", float(fr[6]) * fa, 150.0, 15.0, delta)
+	var f_tilt := _spring("f_tilt", float(fr[7]) * fa, 170.0, 16.0, delta)
+	var f_wink := _spring("f_wink", float(fr[8]) * fa, 190.0, 17.0, delta)
+	var f_gaze := _spring("f_gaze", float(fr[9]) * fa, 170.0, 16.0, delta)
+	# The face's brow ADDS to whatever the performance asked for, so an act that
+	# writes `mood` and no face behaves exactly as it did before this existed.
+	var brow := clampf(mood + f_brow, -1.0, 1.0)
+	# Same for the jaw: the wider of the two wins, so a face cannot shut a mouth
+	# a performance has deliberately opened.
+	var gape := maxf(mouth, f_gape)
+
 	# --- the body -----------------------------------------------------------
 	var torso: Node2D = _bone["torso"]
 	torso.scale = Vector2(1.0 - 0.014 * breath + squash.x,
@@ -242,7 +352,7 @@ func tick(delta: float) -> void:
 	# late, which is the single cheapest thing that reads as a neck.
 	var head: Node2D = _bone["head"]
 	var yaw := clampf(look.x, -1.0, 1.0)
-	head.rotation = _spring("head", head_turn + yaw * 0.09, 200.0, 15.0, delta)
+	head.rotation = _spring("head", head_turn + f_tilt + yaw * 0.09, 200.0, 15.0, delta)
 	head.position = _home["head"] + Vector2(yaw * 4.0, -1.6 * breath + crouch * 9.0)
 	# A flat drawing cannot turn, so the turn is faked the way it is in every
 	# cut-out rig: the face slides across the skull and the skull narrows.
@@ -259,7 +369,10 @@ func tick(delta: float) -> void:
 		_ear_kick = Vector2(k, 0.0) if randf() < 0.5 else Vector2(0.0, -k)
 	# Pinned back and down when he is cross -- the most legible thing an animal
 	# face does, and free here because the ears are already sprung.
-	var ear_base := -head.rotation * 0.30 + 0.42 * maxf(0.0, -mood)
+	# Pricked forward is the same joint pinning uses, in the other direction,
+	# and it stays inside EAR_SWING like everything else that touches these two
+	# -- the seam they are cut along is invented and it shows past 0.13.
+	var ear_base := -head.rotation * 0.30 + 0.42 * maxf(0.0, -brow) - 0.085 * f_ear
 	_bone["ear_l"].rotation = clampf(_spring("ear_l", ear_base - yaw * 0.04, 165.0,
 		12.0, delta, _ear_kick.x - acc.x * 0.00012), -EAR_SWING, EAR_SWING)
 	_bone["ear_r"].rotation = clampf(_spring("ear_r", ear_base - yaw * 0.04, 165.0,
@@ -282,11 +395,17 @@ func tick(delta: float) -> void:
 			blink = _blink_shape(fmod(_blink_p, 0.17) / 0.17)
 	# He screws his eyes up when he is pleased with himself, which by the time
 	# the bar is full is most of the time.
-	var glee := maxf(0.0, mood)
-	var scowl := maxf(0.0, -mood)
-	var shut := clampf(blink + 0.10 * energy + 0.20 * mouth + 0.50 * glee, 0.0, 1.0)
+	var glee := maxf(0.0, brow)
+	var scowl := maxf(0.0, -brow)
+	# `f_sq` is what lets one axis carry two opposite happy faces: a laugh
+	# squeezes shut, astonishment does not, and both sit at brow > 0.
+	var shut := clampf(blink + 0.10 * energy + 0.20 * gape
+		+ 0.50 * glee * f_sq + f_lid, 0.0, 1.0)
 	for n in ["eye_l", "eye_r"]:
 		var e: Node2D = _bone[n]
+		# ONE EYE ONLY. Which one does not matter much and it is not worth a
+		# column -- what matters is that the two stop agreeing.
+		var wink: float = f_wink if n == "eye_r" else 0.0
 		# WHY THIS IS NOT JUST A SCALE. head.png has the dark eye socket painted
 		# into it and eye_*.png sits on top, so shrinking the eye piece does not
 		# read as a narrowed eye -- it reads as a smaller iris in a socket that
@@ -298,11 +417,18 @@ func tick(delta: float) -> void:
 		# dark rim becomes the lash line. Scale alone is still worth keeping for
 		# the squeeze; it is the travel that sells it.
 		var narrow := 0.34 * scowl
-		e.scale = Vector2(1.0, clampf(1.0 - 0.94 * shut - narrow, 0.06, 1.0))
+		# 1.34 rather than 1.0 at the top: `wide` opens the eye past its rest
+		# height, which is what astonishment is made of. It is capped low on
+		# purpose -- head.png has the socket painted into it, so an eye that
+		# grows much past a third grows out of its own hole.
+		e.scale = Vector2(1.0, clampf(1.0 + f_wide - 0.94 * (shut + wink) - narrow, 0.06, 1.34))
 		# Inner corner down, outer corner up. Mirrored, or he squints sideways.
 		var inward := 1.0 if n == "eye_l" else -1.0
 		e.rotation = _spring("tilt_" + n, inward * 0.34 * scowl, 200.0, 16.0, delta)
-		e.position = _home[n] + Vector2(yaw * 7.0, shut * 5.0 + 15.0 * scowl)
+		e.position = _home[n] + Vector2(yaw * 7.0, (shut + wink) * 5.0 + 15.0 * scowl)
+		# Lifted a little when the eye is wide, so astonishment opens upward
+		# into the socket rather than downward across the cheek.
+		e.position.y -= 9.0 * f_wide
 
 	# Pupils: driven where the performance is looking, and drifting on their
 	# own when it is not. Eyes that hold perfectly still are the deadest thing
@@ -317,15 +443,24 @@ func tick(delta: float) -> void:
 	# keeps it visible and what produces the glare-from-under-the-brow the
 	# lowered eye is pretending to have.
 	gaze.y -= 7.0 * scowl
+	# The face's own resting aim, on top of wherever the performance is looking.
+	gaze.y += 9.0 * f_gaze
 	var pupil := _spring2("pupil", gaze, 420.0, 26.0, delta)
 	# Converged a little, which is the other half of a glare. Mirrored inward,
 	# so it is a focus rather than a drift.
 	var converge := 4.0 * scowl
 	_bone["pupil_l"].position = _home["pupil_l"] + pupil + Vector2(converge, 0.0)
 	_bone["pupil_r"].position = _home["pupil_r"] + pupil - Vector2(converge, 0.0)
+	# SIZE, which the rig never used and which is the cheapest expression
+	# channel on any face. A pinpoint reads as shock or as menace; a saucer
+	# reads as greed, or -- with the ears down and the head cocked, which is
+	# what "sad" does -- as pleading. Same two pixels of art, three readings.
+	var psz := Vector2(f_pupil, f_pupil)
+	_bone["pupil_l"].scale = psz
+	_bone["pupil_r"].scale = psz
 
 	# --- jaw ----------------------------------------------------------------
-	var jaw := _spring("jaw", mouth, 250.0, 19.0, delta)
+	var jaw := _spring("jaw", gape, 250.0, 19.0, delta)
 	_bone["jaw"].rotation = jaw * 0.15
 	_bone["jaw"].position = _home["jaw"] + Vector2(yaw * 5.0, jaw * 6.0)
 

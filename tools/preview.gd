@@ -48,6 +48,13 @@ func _ready() -> void:
 			# sequence gets judged as motion rather than as a still.
 			if OS.has_environment("CLAIM"):
 				_claim.call_deferred(game, OS.get_environment("CLAIM"))
+			# CAMEO=<kind> fires one of main.gd's raccoon entrances on the spin
+			# page. In play these are gated behind a jackpot, a near miss or an
+			# empty meter AND a forty-second cooldown, so there is no way to
+			# watch one twice in a row -- and the whole visit is three seconds
+			# of motion, which a still of either end proves nothing about.
+			if OS.has_environment("CAMEO"):
+				_cameo.call_deferred(game, OS.get_environment("CAMEO"))
 			# DEAL=<taken>[:take] opens the deal ladder with that many rungs
 			# already down. `:take` then presses the live rung, which is the
 			# only way to watch the two beats the ladder is built around --
@@ -97,7 +104,8 @@ func _ready() -> void:
 	if OS.has_environment("SHOT") and not OS.has_environment("GRANT") \
 			and not OS.has_environment("SCORE") and not OS.has_environment("CLAIM") \
 			and not OS.has_environment("GOTO") and not OS.has_environment("TIP") \
-			and not OS.has_environment("DEAL") and not OS.has_environment("POWERUP"):
+			and not OS.has_environment("DEAL") and not OS.has_environment("POWERUP") \
+			and not OS.has_environment("CAMEO"):
 		_shoot.call_deferred()
 
 # A tournament rung being crossed, from the outside.
@@ -229,6 +237,28 @@ func _deal(game: Control, spec: String) -> void:
 		await _reel(OS.get_environment("SHOT"),
 			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 10,
 			float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.22)
+
+func _cameo(game: Control, kind: String) -> void:
+	# WAITS ON THE CUE'S OWN GATE, not on a delay. `_boot` is null for the first
+	# frames -- it does not exist until _run_boot creates it -- so the usual
+	# `while _boot != null` loop falls straight through here and a fixed delay
+	# after it lands mid-splash. `_cameo_blocked` is exactly the question being
+	# asked ("would a cue be accepted right now"), so it is the thing to wait
+	# for, and it covers the splash, the page and any dialog at once.
+	# The same wait every other helper in this file uses, and for the reason
+	# spelled out in _deal: `_boot` going null is not the splash being gone. It
+	# is cleared before `splash.dismiss()` runs so the game can tick while the
+	# title screen dissolves, which leaves a window where a cue would be
+	# accepted and then drawn underneath a full-screen splash.
+	while game.get("_boot") != null:
+		await get_tree().process_frame
+	await get_tree().create_timer(4.6).timeout
+	print("  cameo: blocked=%s" % bool(game.call("_cameo_blocked")))
+	game.call("_mascot_cue", kind)
+	if OS.has_environment("SHOT"):
+		await _reel(OS.get_environment("SHOT"),
+			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 12,
+			float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.16)
 
 func _powerup(game: Control, id: String) -> void:
 	while game.get("_boot") != null:
@@ -573,11 +603,31 @@ func _mascot_reel() -> void:
 	var mood_set := OS.has_environment("MOOD")
 	var mood_val := float(OS.get_environment("MOOD")) if mood_set else 0.0
 
+	# FACE=<name> pins one of MascotRig.FACES, and FACE=all walks the whole set
+	# a frame apiece -- which is the only way to judge an expression SHEET
+	# rather than an expression. Ten faces built out of eight numbers each are
+	# only right relative to one another: "shocked" is not a face on its own,
+	# it is the one that has to be unmistakable next to "thrilled".
+	var face_env := OS.get_environment("FACE") if OS.has_environment("FACE") else ""
+	var face_list: Array = MascotRig.FACES.keys() if face_env == "all" else []
+	if face_env == "all":
+		frames = face_list.size()
+
 	for i in frames:
 		if mood_set and mood_art is MascotRig:
 			# Written every frame: the rig springs toward it, so one write at
 			# the top would be sprung away from before the first shot lands.
 			(mood_art as MascotRig).mood = mood_val
+		if face_env != "" and mood_art is MascotRig:
+			var want_face: String = face_list[i] if face_env == "all" else face_env
+			# Settled before the shot, not written and photographed on the same
+			# frame: the channels are springs and a face caught 30ms in is a
+			# picture of the transition, which is exactly the thing that makes
+			# a contact sheet useless for judging an expression.
+			(mood_art as MascotRig).face = want_face
+			for _s in 40:
+				await get_tree().process_frame
+			print("  face: %s" % want_face)
 		if want != "auto" and acts.has(want) and int(boot.get("_act")) == 0:
 			boot.call("_begin_act", acts[want])
 			boot.set("_rest", 0.0)

@@ -2218,6 +2218,7 @@ func _process(delta: float) -> void:
 				_notify("spins", "+%d spins refilled  (%d/%d)" % [gained, spins, SPIN_CAP], "⚡")
 	if _save_pending and float(Time.get_ticks_msec()) / 1000.0 - _save_flushed >= SAVE_FLUSH_GAP:
 		_flush_save()
+	_cameo_tick(delta)
 	_ui_tick += delta
 	if _ui_tick >= 1.0:
 		_ui_tick = 0.0
@@ -8572,6 +8573,7 @@ func _piggy_add(amount: int) -> void:
 	piggy_coins = mini(cap, piggy_coins + _scaled(amount))
 	if piggy_coins >= cap:
 		_notify("spins", "Your piggy bank is full — %s coins inside!" % _fmt_compact(piggy_coins), "🐷")
+		_mascot_cue("full")
 	if _current_page == pages.get("shop"):
 		_fill_page("shop")
 
@@ -10234,6 +10236,10 @@ func _powerup_credit_purchase(pack_id: String) -> void:
 # Leads with the free refill that is already coming, because burying it would
 # make this a paywall -- the pack is the shortcut, not the only road.
 func _offer_out_of_spins(bet := 1) -> void:
+	# BEFORE the dialog, not after: `_cameo_blocked` refuses while a popup is
+	# up, and this function's whole job is to open one. He gets the beat where
+	# the meter runs dry, and the shop offer follows him.
+	_mascot_cue("empty")
 	var live := _active_offer()
 	var pack: Dictionary = live if not live.is_empty() else _default_spin_pack()
 	var short := bet > 1 and spins > 0
@@ -16773,6 +16779,27 @@ func _on_spin_finished(result: Array) -> void:
 			FX.fly_coins(self, slot.reels_center(), _hud_labels[0]["coins"].global_position,
 				clampi(gain / 250, 4, 10))
 		)
+	# WHERE THE RACCOON COMES IN, and the ordering matters: after the win
+	# read-out is up and after any raid has taken the screen, so a cameo can
+	# only ever land on a spin page that has finished talking. `_mascot_cue`
+	# refuses on its own if a raid took over, so this needs no gate of its own.
+	#
+	# A JACKPOT AND A NEAR MISS, AND NOTHING IN BETWEEN. Every threshold here is
+	# an event a player would mention to somebody: the top triple, a win worth
+	# more than a couple of hundred spins, and the two-of-three that did not
+	# pay. An ordinary +300 does not get him, because a mascot who appears on
+	# every third spin is scenery by the end of the first session.
+	if triple and String(result[0]) == "bag":
+		_mascot_cue("jackpot")
+	elif gain >= _scaled(20000):
+		_mascot_cue("bigwin")
+	elif not triple and (result[0] == result[1] or result[1] == result[2]) \
+			and String(result[1]) in ["bag", "steal", "hammer"]:
+		# Two of the three, and the pair is one of the symbols worth wanting.
+		# This is the only cue in the game for something that did NOT happen,
+		# and it is the one a slot machine is really made of.
+		_mascot_cue("nearmiss")
+
 	# The card roll is not a raid concern and belongs outside the gate. It sat
 	# inside it, and because an attack triple sets up its raid synchronously
 	# while a steal triple did not, the two behaved differently: hammers
@@ -18722,6 +18749,213 @@ func _node_center(node: Variant, fallback: Vector2) -> Vector2:
 	return fallback
 
 # A callback, later, without four lines of tween at every call site.
+# =============================================================================
+#  The raccoon, as a guest
+# =============================================================================
+#
+# He was on the title screen and inside a raid, and nowhere else. The spin page
+# -- the screen a player looks at for hours -- had him as a 40-pixel flat
+# sticker on the corner of the steal card and nothing more. Coin Master and
+# Island King both keep their character on screen reacting, and Guy's note on
+# 2026-09-09 was that the mascot is the most important thing in the game right
+# now.
+#
+# HE DOES NOT LIVE HERE, HE VISITS. Guy's call, given the alternatives: the
+# spin page is already carrying a top bar, five rail discs, a steal card, a
+# cabinet, a nav slab and a hero button, and the honest options were to take
+# space off one of them or to make his presence an event. A mascot who is
+# always in the corner is furniture within a day; one who vaults in when
+# something happens is a reaction.
+#
+# So this is an entrance, a beat and an exit, over the cabinet and under the
+# dialogs. Three rules keep it from becoming wallpaper anyway:
+#
+#   * NOTHING SMALL GETS HIM. `_mascot_cue` is called from a handful of places
+#     and every one of them is an event the player would tell somebody about --
+#     a big win, a near miss, an empty meter. An ordinary win does not.
+#   * ONE AT A TIME, AND NEVER OVER SOMETHING ELSE. A raid, a popup, a page
+#     change or a takeover all refuse the cue outright rather than queueing it.
+#     A cameo that arrives on top of a dialog is a bug that looks like a bug.
+#   * A COOLDOWN, so a run of big wins gets one visit and not five.
+const CAMEO_GAP := 40.0          # seconds between visits, at the very least
+# 264, measured rather than picked. The cabinet's bottom-left corner is the only
+# place on this page he can stand, and at 300 he covered the BET button and a
+# third of the hero button with it. He still overlaps the corner -- there is
+# nowhere on this screen that he does not -- but a guest in front of the machine
+# is the right read, and the machine's two controls stay legible.
+const CAMEO_H := 264.0           # how tall he stands, in design units
+
+# name -> [face, how long he holds, which way he comes in]
+#
+# `enter` is -1 for the left corner and +1 for the right. Which side is not
+# arbitrary: he comes in on the side the event happened on where there is one,
+# and the reels are the middle of the screen, so wins bring him up the left
+# where the bet button is and the meter's news brings him up the right.
+const CAMEOS := {
+	"bigwin":   ["thrilled", 2.20, -1.0],
+	"jackpot":  ["thrilled", 2.60, -1.0],
+	"nearmiss": ["shocked",  1.70,  1.0],
+	"empty":    ["sad",      2.00,  1.0],
+	"full":     ["greedy",   1.90,  1.0],
+	"island":   ["smug",     2.30, -1.0],
+	"robbed":   ["angry",    2.10,  1.0],
+}
+
+var _cameo: MascotRig
+var _cameo_kind := ""
+var _cameo_t := 0.0
+var _cameo_hold := 0.0
+var _cameo_side := -1.0
+var _cameo_last := -1e9
+
+# True while anything owns the screen that a cameo must not land on top of.
+func _cameo_blocked() -> bool:
+	# The slot page specifically, not "some page": he vaults out from under the
+	# cabinet, and the cabinet is only on this one. `_transitioning` covers the
+	# slide between pages, which is the window where `_current_page` is already
+	# the destination and the destination is not yet where it will be.
+	return _boot != null or _popup != null or _raiding() or _transitioning \
+		or _journey_layer != null or _current_page != slot_page
+
+func _mascot_cue(kind: String) -> void:
+	if not CAMEOS.has(kind) or _cameo_kind != "" or _cameo_blocked():
+		return
+	var now := float(Time.get_ticks_msec()) / 1000.0
+	if now - _cameo_last < CAMEO_GAP:
+		return
+	if _cameo == null:
+		var rig := MascotRig.new()
+		# A rig that cannot build its fifteen pieces is a rig that draws
+		# nothing -- there is no undivided fallback drawing on this screen the
+		# way there is on the splash, so a failed build simply means no cameos.
+		if not rig.build():
+			rig.queue_free()
+			_cameo_kind = ""
+			return
+		rig.z_index = 110
+		rig.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(rig)
+		_cameo = rig
+	_cameo_last = now
+	_cameo_kind = kind
+	_cameo_t = 0.0
+	var row: Array = CAMEOS[kind]
+	_cameo.face = String(row[0])
+	_cameo_hold = float(row[1])
+	_cameo_side = float(row[2])
+	_cameo.custom_minimum_size = Vector2(CAMEO_H * 0.78, CAMEO_H)
+	_cameo.size = _cameo.custom_minimum_size
+	_cameo.visible = true
+	_cameo.fade = 0.0
+	Sfx.play("pop", -12.0, 0.02, 1.0)
+
+# The whole visit, written once a frame like every other performance in this
+# game -- MascotRig owns the breathing, the blink, the tail and the ears
+# arriving late on top of it.
+#
+# Four beats over about three seconds: he vaults up from under the cabinet,
+# lands with the squash the vault earned, holds the expression, then drops back
+# out the way he came. The landing is where the whole thing lives: a figure that
+# rises to a stop has no weight, and weight on flat art is squash and legs --
+# see MascotRig's note on why it is never a rotation.
+func _cameo_tick(delta: float) -> void:
+	if _cameo_kind == "" or _cameo == null or not is_instance_valid(_cameo):
+		return
+	# Something took the screen mid-visit. He goes now rather than being drawn
+	# under a dialog for the rest of his hold.
+	if _cameo_blocked():
+		_cameo_kind = ""
+		_cameo.visible = false
+		return
+	_cameo_t += delta
+	var t := _cameo_t
+	var rise := 0.34
+	var fall := 0.30
+	var total := rise + _cameo_hold + fall
+	if t >= total:
+		_cameo_kind = ""
+		_cameo.visible = false
+		return
+
+	var vs := view_size()
+	# HIS FLOOR IS THE NAV BAR, NOT THE BOTTOM OF THE SCREEN. The first cut of
+	# this stood him at `vs.y - CAMEO_H * 0.52` and he landed inside the nav
+	# slab with his body behind it and his ears sticking out of the top -- the
+	# bottom 210 units of this screen belong to chrome that is drawn over
+	# everything and cannot be stood on.
+	#
+	# `nav_slab_top` is the line art must not cross; his feet land a little
+	# above it so the contact reads, and he starts below it so the vault comes
+	# out of cover rather than sliding across open floor.
+	var floor_y := nav_slab_top() - 6.0
+	var rest_y := floor_y - CAMEO_H
+	var hide_y := floor_y - CAMEO_H * 0.18
+	var x := vs.x * (0.17 if _cameo_side < 0.0 else 0.83) - _cameo.size.x * 0.5
+
+	var u := 0.0
+	var land := 0.0          # 1.0 exactly at the moment he arrives
+	if t < rise:
+		# Out fast, easing to a stop. BACK easing overshoots by design: the
+		# overshoot IS the vault, and the squash below catches it.
+		u = 1.0 - pow(1.0 - t / rise, 2.6)
+		_cameo.fade = clampf(t / (rise * 0.55), 0.0, 1.0)
+	elif t < rise + _cameo_hold:
+		u = 1.0
+		land = clampf(1.0 - (t - rise) / 0.34, 0.0, 1.0)
+		_cameo.fade = 1.0
+	else:
+		var d := (t - rise - _cameo_hold) / fall
+		u = 1.0 - d * d
+		_cameo.fade = clampf(1.0 - d * 1.25, 0.0, 1.0)
+	_cameo.position = Vector2(x, hide_y + (rest_y - hide_y) * u)
+
+	# The landing, and everything that answers it. He compresses on arrival and
+	# springs back out of it, the knees take the load, and the arms fly up --
+	# which is the same order a real landing happens in and the reason it does
+	# not read as a picture being moved up the screen.
+	var settle := land * land
+	_cameo.squash = Vector2(0.16 * settle, -0.20 * settle)
+	_cameo.leg = Vector2(0.34 * settle, -0.34 * settle)
+	_cameo.body = Vector2(0.0, 26.0 * settle)
+
+	# What he does with his arms is the difference between the cameos, and it is
+	# the one thing here that is per-kind: a cheer throws both up, a wince
+	# covers, a slump lets them hang.
+	var beat := sin(t * 5.4)
+	match _cameo_kind:
+		"bigwin", "jackpot", "island":
+			# ONE ARM UP, NOT TWO, AND IT IS THE EMPTY ONE.
+			#
+			# 1.15 radians was a shrug -- a shoulder on a piece that hangs down
+			# needs about 115 degrees before the paw clears the head. But at
+			# 2.0 on BOTH arms the celebration covered his face, because the
+			# big gold coin is painted into arm_l and goes wherever that arm
+			# goes. So the coin arm holds it out at shoulder height, where it
+			# is the thing being celebrated and is legible, and the empty arm
+			# punches. Asymmetry is the better pose anyway -- see the wink in
+			# MascotRig.FACES for the same argument about the face.
+			_cameo.arm = Vector2(0.86 + 0.10 * beat, -2.10 - 0.18 * beat)
+			_cameo.mouth = 0.85
+			_cameo.look = Vector2(-0.25 * _cameo_side, -0.35)
+		"nearmiss":
+			# Paws up at his own face. Both arms swing inward, which is the one
+			# gesture this rig can make that reads as "oh no" without a hand
+			# that can open.
+			_cameo.arm = Vector2(-0.75, 0.75)
+			_cameo.mouth = 0.55
+			_cameo.look = Vector2(-0.6 * _cameo_side, -0.1)
+		"empty":
+			_cameo.arm = Vector2(0.10 * beat, -0.10 * beat)
+			_cameo.mouth = 0.0
+			_cameo.look = Vector2(-0.35 * _cameo_side, 0.45)
+		"full", "robbed":
+			_cameo.arm = Vector2(0.55 + 0.20 * beat, -0.95 - 0.20 * beat)
+			_cameo.mouth = 0.45
+			_cameo.look = Vector2(-0.5 * _cameo_side, -0.05)
+		_:
+			_cameo.arm = Vector2(0.30 * beat, -0.30 * beat)
+	_cameo.tick(delta)
+
 func _after(secs: float, what: Callable) -> void:
 	var tw := create_tween()
 	tw.tween_interval(secs)
