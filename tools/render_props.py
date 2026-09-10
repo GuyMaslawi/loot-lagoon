@@ -58,7 +58,7 @@ def reset():
     return s
 
 
-def world_sky(top=(0.55, 0.72, 0.95), bottom=(0.95, 0.92, 0.86), strength=0.42):
+def world_sky(top=(0.42, 0.65, 0.98), bottom=(0.98, 0.90, 0.80), strength=0.52):
     """A gradient the metal can reflect. Invisible to camera, visible in specular."""
     w = bpy.data.worlds.new("sky")
     bpy.context.scene.world = w
@@ -427,12 +427,43 @@ def hoard(n=150, seed=7):
 # and on a bright island page both, so the object has to carry its own edge --
 # see loot-lagoon-keyline-and-contrast for why every object in the game got one.
 
-def rig(key=260.0, warm=(1.0, 0.95, 0.86)):
-    light((-3.4, -3.2, 6.6), key, size=4.0, color=warm, aim=(0, 0, 0.5))
-    light((5.0, -3.4, 1.4), key * 0.28, size=6.0, color=(0.80, 0.88, 1.0),
+def rig(key=290.0, warm=(1.0, 0.94, 0.84)):
+    """Four lights, upgraded 2026-09-10 from the original three.
+
+    What changed and why -- this is the "one pass upgrades every icon" rung of
+    the juice plan, so the reasoning lives here rather than in a commit message:
+
+      * The key came DOWN in size (4.0 -> 3.2) and up a touch in energy. A
+        smaller source draws a crisper terminator and a tighter specular ping,
+        which is most of the difference between toy-commercial lighting and
+        product-catalogue lighting. Toy colour holds saturation in the light
+        and drops toward shadow with an edge you can see.
+      * The fill dropped from 0.28x to 0.18x of key. At 0.28 the shadow side
+        was half as bright as the lit side and the form read flat; at 0.18 the
+        dark side is genuinely dark and the rim has something to cut against.
+      * The rim is its own light now, COOL and hard (small size), placed high
+        behind on the camera's right. The old third light was warm and huge, so
+        it acted as a second fill from behind; this one draws a bright cool
+        line down the shadow edge, which is what separates the object from the
+        dark board -- the same job the HULL keyline does for the UI, done in
+        light. Cool on purpose: a warm rim melts into brass and gold, a cool
+        one reads against them.
+      * A ground BOUNCE was added, warm, shadowless and weak, from below the
+        camera. Undersides used to fall to mud; a bounce is what real ground
+        does to a real object, and it is the difference between "sitting on
+        something" and "cut out and pasted".
+
+    Exposure discipline: total wattage is within a few percent of the old rig
+    (the fill gave back what the key and rim took), so nothing clips -- the
+    1800W paper-white trap documented at the top of this file still holds.
+    """
+    light((-3.4, -3.2, 6.6), key, size=3.2, color=warm, aim=(0, 0, 0.5))
+    light((5.0, -3.4, 1.4), key * 0.18, size=6.0, color=(0.78, 0.87, 1.0),
           aim=(0, 0, 0.7), shadow=False)
-    light((1.6, 5.2, 4.2), key * 0.55, size=5.0, color=(1.0, 0.93, 0.82),
-          aim=(0, 0, 1.0), shadow=False)
+    light((2.6, 4.8, 5.6), key * 0.62, size=2.2, color=(0.93, 0.97, 1.0),
+          aim=(0, 0, 0.9))
+    light((0.0, -4.6, -1.4), key * 0.10, size=7.0, color=(1.0, 0.92, 0.78),
+          aim=(0, 0, 0.6), shadow=False)
 
 
 def contact_shadow(path, strength=0.42, spread=1.06, squash=0.115, lift=0.010):
