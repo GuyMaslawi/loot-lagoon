@@ -639,6 +639,10 @@ var _offer_timer_label: Label
 # the same chain rolling twice in a row, and a fresh launch has nothing to
 # repeat.
 var _deal_timer_label: Label
+# The teaser's countdown, while the events disc is opened between chains. The
+# same tick that feeds the ladder's clock feeds this one, and when it reaches
+# zero the tick swaps the teaser for the ladder that just went live.
+var _deal_next_timer_label: Label
 # The daily dialog's countdown, and the three prize nodes its flights launch
 # from. The parts are held on the node rather than passed through the press,
 # because the press is now two different controls -- the hero and today's rung
@@ -2307,9 +2311,24 @@ func _process(delta: float) -> void:
 		_deal_tick()
 		if _deal_timer_label != null and is_instance_valid(_deal_timer_label):
 			_deal_timer_label.text = "ENDS  IN  %s" % _deal_countdown_text()
+		# The teaser's clock, while it is up. The ancestor test for the same
+		# reason the daily's clock has one: _close_popup fades the old popup
+		# out before freeing it, so a stale label stays valid for a beat.
+		if _deal_next_timer_label != null and is_instance_valid(_deal_next_timer_label) \
+				and _popup != null and _popup.is_ancestor_of(_deal_next_timer_label):
+			if not _active_deal().is_empty():
+				# The chain the countdown promised just went live under the
+				# player's nose -- swap the promise for the thing itself.
+				_open_deal()
+			else:
+				_deal_next_timer_label.text = _countdown_text(
+					maxi(0, int(deal_next - _now())))
 		_powerup_tick()
 		if _powerup_timer_label != null and is_instance_valid(_powerup_timer_label):
 			_powerup_timer_label.text = "ENDS  IN  %s" % _powerup_countdown_text()
+		# The crate coming back with the tide. A bool and a visible flag once a
+		# second; the cooldown maths lives in _update_beach_gift.
+		_update_beach_gift()
 		if _current_page == pages.get("quests"):
 			# roll missions over live if a cycle ends while the page is open
 			if mission_state.get(quests_tab, {}).is_empty() or int(mission_state[quests_tab]["key"]) != _period_key(quests_tab):
@@ -3741,6 +3760,9 @@ void fragment() {
 	# actually stands. See "The raccoon, in residence".
 	_add_slot_mascot()
 
+	# The bonus chest, on the raccoon's opposite corner. See "The bonus chest".
+	_add_slot_chest()
+
 	_pick_next_target()
 
 
@@ -3897,11 +3919,11 @@ func _add_side_rail(parent: Control, top: float) -> void:
 			["gift",   "Daily",      "daily",  _open_daily],
 			["trophy", "Tournament", "ranks",  _open_tourney, true],
 			["piggy",  "Piggy Bank", "piggy",  _open_piggy],
-			# The deal chain. Last in the lane rather than first because it is
-			# the only disc here that is sometimes not a thing at all -- see
-			# _update_badges, which hides it outright while no chain is live.
-			# A disc that comes and goes has to do it at the END of a run, or
-			# every other disc in the rail moves when it does.
+			# The events. It used to vanish with the chain and come back with
+			# the next one, which was survivable while the shop carried its own
+			# event rows -- with those gone this disc is the only door the two
+			# events have, so it is permanent now and the cooldown opens the
+			# next-event teaser instead. See _open_deal.
 			["spark",  "Event",      "deal",   _open_deal]]))
 
 # One lane. The run grows downward from its top, so adding a button lengthens
@@ -4303,21 +4325,14 @@ func _update_badges() -> void:
 	if _badges.has("deal"):
 		# The dot means "a free rung is waiting", never "an event exists".
 		_badges["deal"].visible = _deal_free_ready()
-		# And the disc itself goes when no chain is live -- a badge hidden on a
-		# visible disc would leave a button opening a screen with nothing on it.
-		#
-		# The BOX is hidden, not the button. `_rail_discs` holds the button, and
-		# the button is one child of a VBox that also carries the counter
-		# plaque; hiding the button alone leaves the box in the run with the
-		# separation still spent, so the discs below it sit a few units low for
-		# no visible reason.
-		var live := not _active_deal().is_empty()
-		for disc in _rail_discs.get("deal", []):
-			if not is_instance_valid(disc):
-				continue
-			var box: Node = (disc as Control).get_parent()
-			if box is Control:
-				(box as Control).visible = live
+		# The disc used to go out entirely between chains, so a button opening
+		# an empty screen never existed -- and then the shop's event rows were
+		# retired (2026-09-09) and this disc became the events' ONLY door, which
+		# it cannot be while it spends the 30-hour cooldown invisible. Guy,
+		# 2026-09-10: it was supposed to disappear from the shop, not from the
+		# game. So it stays, and _open_deal answers the cooldown with the
+		# next-event teaser instead of with nothing -- a countdown is a screen,
+		# an absence is not.
 	# The gold inside the disc's pig, on the same pass. Not tweened: this runs
 	# on every refresh, and a 200ms fill replayed after every spin is a rail
 	# that never stops moving.
@@ -4342,6 +4357,11 @@ func _update_badges() -> void:
 			var olabel := other.get_child(0) as Label
 			if olabel != null and mlabel != null:
 				olabel.text = mlabel.text
+	# The two shore-side bonuses ride the same pass: the pages are built before
+	# the save is read, so their first honest values arrive with the badge
+	# refresh that follows the load rather than with the build.
+	_chest_meter_update()
+	_update_beach_gift()
 
 # The number under the trophy. Kept in one place because three things move it:
 # a raid or a build scoring, the cycle rolling over, and a save arriving from
@@ -8799,15 +8819,107 @@ var _deal_bar: Range
 var _deal_count: Label
 var _deal_finale_art: Control
 
+# WHAT THE EVENTS DISC OPENS BETWEEN CHAINS. The disc is permanent (Guy,
+# 2026-09-10: the shop rows were what was supposed to go, not the door itself),
+# so the 30-hour cooldown needs a screen -- and a countdown to the next chain
+# is the honest one: it turns dead air into anticipation, which is the same
+# trade the piggy's fill meter makes. If a 1+2 power-up happens to be running
+# it gets a row here too, because retiring the shop rows left the takeover as
+# its only door, and an offer dismissed in the first two seconds of a launch
+# was otherwise gone for twelve hours -- the exact problem the shop rows
+# existed to solve, handed back one page over.
+func _open_event_teaser() -> void:
+	var vbox := _open_popup("EVENTS", 560.0, false)
+	if not vbox.is_inside_tree():
+		return
+	_deal_timer_label = null
+	_deal_next_timer_label = null
+
+	_powerup_door_row(vbox)
+
+	# The next chain, as a promise with a clock on it.
+	var mark2 := _prize_art("spark", 108.0)
+	mark2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	vbox.add_child(mark2)
+	FX.pulse_forever(mark2, 1.06, 1.6)
+	var head := Lagoon.label("THE  NEXT  EVENT  SETS  SAIL  IN", UI.F_LABEL, Lagoon.INK, true)
+	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(head)
+	var plate2 := Lagoon.stamp_plate(Lagoon.KELP_HI)
+	plate2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	vbox.add_child(plate2)
+	_deal_next_timer_label = Lagoon.label(
+		_countdown_text(maxi(0, int(deal_next - _now()))), UI.F_SUBHEAD, Lagoon.KELP_HI, true)
+	plate2.add_child(_deal_next_timer_label)
+	var sub := _popup_row_label("Six rewards on one ladder — the free ones cost nothing but showing up.", UI.F_CAPTION)
+	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(sub)
+
+# The 1+2's door, wherever events are looked at. Nothing if no power-up is
+# live. This row is what the shop rows' retirement owed the power-up: without
+# it the once-per-offer takeover was the only sighting, and an offer dismissed
+# in the first two seconds of a launch was gone for twelve hours.
+func _powerup_door_row(vbox: VBoxContainer) -> void:
+	var pu := _active_powerup()
+	if pu.is_empty():
+		return
+	var card := _tinted_card(vbox, Lagoon.BRASS, true)
+	var btn := Button.new()
+	btn.flat = true
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.custom_minimum_size = Vector2(0, 112)
+	btn.pressed.connect(_open_powerup)
+	FX.press_feedback(btn)
+	card.add_child(btn)
+	# The row lives INSIDE the flat button -- the same trick the old shop
+	# rows used: it is the only way to make the whole card pressable
+	# without an overlay eating taps or a container swallowing the press.
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 14)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	btn.add_child(row)
+	row.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for m in [["offset_left", 16.0], ["offset_right", -16.0],
+			["offset_top", 12.0], ["offset_bottom", -12.0]]:
+		row.set(m[0], m[1])
+	var mark := _prize_art("gift", 70.0)
+	mark.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(mark)
+	FX.pulse_forever(mark, 1.07, 1.5)
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	col.add_theme_constant_override("separation", 2)
+	row.add_child(col)
+	col.add_child(Lagoon.label(String(pu["name"]), UI.F_BODY, Lagoon.INK, true))
+	var sl := Lagoon.label("1 + 2  —  buy one pack, get two free", UI.F_CAPTION, Lagoon.INK_SOFT)
+	sl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(sl)
+	var right := VBoxContainer.new()
+	right.alignment = BoxContainer.ALIGNMENT_CENTER
+	right.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	right.add_theme_constant_override("separation", 6)
+	row.add_child(right)
+	var plate := Lagoon.stamp_plate(Lagoon.CORAL_HI)
+	plate.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	right.add_child(plate)
+	plate.add_child(Lagoon.label(_powerup_countdown_text(), UI.F_TINY, Lagoon.CORAL_HI, true))
+	var go := Lagoon.chip("OPEN", Lagoon.KELP, UI.F_TINY)
+	go.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	right.add_child(go)
+
 func _open_deal() -> void:
 	var chain := _active_deal()
 	if chain.is_empty():
+		_open_event_teaser()
 		return
 	var hue: Color = chain["hue"]
 	var vbox := _open_popup(String(chain["name"]), 648.0, true)
 	if not vbox.is_inside_tree():
 		return
 	_deal_timer_label = null
+	_deal_next_timer_label = null
 	_deal_cell_nodes.clear()
 	_deal_arrow_nodes.clear()
 	_deal_bar = null
@@ -16200,6 +16312,9 @@ func _build_village_page() -> void:
 		# and they grey out on their own when the island's coins run short.
 		_candy_button(slot_dict["button"], Lagoon.KELP)
 
+	# The crate on the shore. See "The beach gift".
+	_add_beach_gift()
+
 
 func _add_background(page: Control, bg_id: String, top_color: Color, bottom_color: Color) -> TextureRect:
 	var t := CV.bg_tex(bg_id)
@@ -16955,6 +17070,11 @@ func _on_spin_finished(result: Array) -> void:
 		_mascot_cue("nearmiss")
 	elif tier == 0 and gain > 0:
 		_mascot_cue("win")
+
+	# The bonus chest takes its notch whatever the reels said -- it is the one
+	# payout in the loop that a losing spin still advances, which is exactly
+	# what it is for. See "The bonus chest".
+	_chest_notch()
 
 	# The card roll is not a raid concern and belongs outside the gate. It sat
 	# inside it, and because an attack triple sets up its raid synchronously
@@ -19543,6 +19663,223 @@ func _candy_button(btn: Button, color: Color) -> void:
 	Lagoon.button(btn, Lagoon.kind_for(color))
 	Lagoon.button_gloss(btn, 22)
 
+# =============================================================================
+#  The bonus chest
+# =============================================================================
+#
+# Guy, 2026-09-10: what keeps people in these games is getting bonuses all the
+# time -- add more of them. The daily, the streak, the piggy, the missions and
+# the events all pay on the scale of hours or days; nothing between two spins
+# ever hands the player something EXTRA, and "all the time" lives exactly
+# there. So: a golden chest by the machine, filling by one notch per spin,
+# bursting open every CHEST_SPINS spins. At the measured 86-113 spins per
+# island that is two or three chests an island -- one every few minutes of
+# real play, which is frequent enough to always be "almost there" and rare
+# enough to stay an event.
+#
+# Deliberately COINS, never spins. The 2026-09-07 tightening was aimed at
+# spins, steals and attacks being too easy, and qa_full's tournament margin
+# rests on free spins per cycle -- a spin-paying chest would spend both. Coins
+# only push island progress, which the same tightening left LONGER as a side
+# effect (113 meter spins for islands 1-30, against 88 before); the chest
+# hands a measured slice of that back: 1500/40 is +-37 coins a spin against a
+# reel income of ~490, about +7%, all of it landing as a felt bonus rather
+# than as quiet per-spin drip.
+#
+# No popup. A takeover every forty spins would interrupt auto spin forty times
+# an hour -- the exact nuisance the power-up's own guards exist to prevent.
+# The chest bursts in place, the coins fly to the purse (held delivery, like
+# every counter), and play never stops.
+const CHEST_SPINS := 40
+const CHEST_REWARD := 1500     # island-1 units; _scaled at payout like the reels
+const CHEST_X := 0.865         # of view width; the right lane's centre line
+const CHEST_H := 122.0
+
+# Notches into the current chest. Saved -- thirty-nine spins of progress lost
+# to a phone call would read as the game stealing, which is the one reading a
+# bonus mechanic cannot survive.
+var chest_fill := 0
+var _chest: ChestArt
+var _chest_meter_well: Panel
+var _chest_meter_bar: Panel
+
+const CHEST_METER_W := 104.0
+
+func _add_slot_chest() -> void:
+	var floor_y := nav_slab_top() - 6.0
+	var cx := view_size().x * CHEST_X
+
+	# The same grounding the raccoon gets, for the same reason: a prop on the
+	# floor without a contact shadow floats in front of the page instead of
+	# standing on it.
+	var shade := ColorRect.new()
+	shade.material = CV.contact_shadow_material()
+	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	shade.size = Vector2(150, 40)
+	shade.position = Vector2(cx - 75.0, floor_y - 32.0)
+	shade.z_index = 60
+	slot_page.add_child(shade)
+
+	var art := ChestArt.new()
+	art.tier = 1
+	art.z_index = 60
+	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	art.custom_minimum_size = Vector2(CHEST_H, CHEST_H)
+	art.size = Vector2(CHEST_H, CHEST_H)
+	# Bottom-centre pivot: the payout squash has to sit down onto the floor,
+	# not shrink toward its own top-left corner.
+	art.pivot_offset = Vector2(CHEST_H * 0.5, CHEST_H)
+	art.position = Vector2(cx - CHEST_H * 0.5, floor_y - CHEST_H)
+	slot_page.add_child(art)
+	_chest = art
+
+	# The fill meter, banded across the chest's base like a strap. The notch
+	# count is the anticipation loop -- a chest that just sat there until it
+	# paid would be a timer wearing a costume.
+	var well := Panel.new()
+	var wsb := StyleBoxFlat.new()
+	wsb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.82)
+	wsb.set_corner_radius_all(6)
+	wsb.set_border_width_all(2)
+	wsb.border_color = Lagoon.BRASS
+	well.add_theme_stylebox_override("panel", wsb)
+	well.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	well.size = Vector2(CHEST_METER_W, 12.0)
+	well.position = Vector2(cx - CHEST_METER_W * 0.5, floor_y - 24.0)
+	well.z_index = 61
+	slot_page.add_child(well)
+	_chest_meter_well = well
+
+	var bar := Panel.new()
+	var bsb := StyleBoxFlat.new()
+	bsb.bg_color = Lagoon.BRASS_HI
+	bsb.set_corner_radius_all(4)
+	bar.add_theme_stylebox_override("panel", bsb)
+	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bar.position = Vector2(3.0, 3.0)
+	bar.size = Vector2(0.0, 6.0)
+	well.add_child(bar)
+	_chest_meter_bar = bar
+	_chest_meter_update()
+
+func _chest_meter_update() -> void:
+	if _chest_meter_bar == null or not is_instance_valid(_chest_meter_bar):
+		return
+	var frac := clampf(float(chest_fill) / float(CHEST_SPINS), 0.0, 1.0)
+	_chest_meter_bar.size.x = (CHEST_METER_W - 6.0) * frac
+	# The rattle is the last-lap tell: contents bumping the lid from six spins
+	# out, the same signal the shop's shelf chests use for "there is something
+	# in here".
+	if _chest != null and is_instance_valid(_chest):
+		_chest.live = chest_fill >= CHEST_SPINS - 6 and chest_fill > 0
+
+# One spin's notch, called from _on_spin_finished. The payout rides 0.85s
+# behind the reels so the chest's moment is not on top of the win readout's.
+func _chest_notch() -> void:
+	chest_fill += 1
+	if chest_fill >= CHEST_SPINS:
+		chest_fill = 0
+		_after(0.85, _pay_bonus_chest)
+	_chest_meter_update()
+
+func _pay_bonus_chest() -> void:
+	var amount := _scaled(CHEST_REWARD)
+	var at := _node_center(_chest, slot.reels_center() if slot != null else view_size() * 0.5)
+	# Theatre only while the flights cap has room. Under turbo auto spin -- or
+	# a harness playing thousands of spins a frame -- rings and bursts every
+	# forty spins pile up faster than their tweens die, which is the soak
+	# failure the coin flights already learned to duck.
+	if _coin_flights_up < COIN_FLIGHTS_MAX:
+		if _chest != null and is_instance_valid(_chest) and _chest.is_visible_in_tree():
+			var tw := _chest.create_tween()
+			tw.tween_property(_chest, "scale", Vector2(1.16, 0.84), 0.09) \
+				.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+			tw.tween_property(_chest, "scale", Vector2.ONE, 0.34) \
+				.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		FX.ring(self, at, Lagoon.BRASS_HI, 82.0, 0.38, 8.0, 12.0)
+		FX.burst(self, at, Color(1.0, 0.85, 0.35), 10)
+		FX.rise_label(self, at + Vector2(0, -76), "BONUS  CHEST!", Lagoon.BRASS_HI, 34)
+		Sfx.play("coins", -4.0)
+		_mascot_cue("win")
+	_grant_coins(amount, at)
+	_save_game()
+
+# =============================================================================
+#  The beach gift
+# =============================================================================
+#
+# The island's half of the same 2026-09-10 ask. The spin page got the chest;
+# the island page's only reasons to visit were building and damage, so a
+# wooden crate washes up on the south-west shore every four hours and pays a
+# small purse for tapping it. Small ON PURPOSE: at ~4 claims a day it is under
+# 2% of income, which buys a reason to visit the island page several times a
+# session without moving the economy anyone measured.
+#
+# Trusted time, like the daily -- an every-few-hours tap bonus is exactly the
+# stamp a clock cheat goes for. And the crate simply is not there while it is
+# cooling down: a greyed-out gift with a timer on it is a nag, an empty shore
+# that sometimes has a crate on it is a pleasant habit.
+const BEACH_GIFT_COOLDOWN := 4.0 * 3600.0
+const BEACH_GIFT_COINS := 800  # island-1 units; _scaled at claim
+# Design-space, on the open water clear of every build plot: the plots end at
+# y=850 on the left column and start at x=230 on the bottom row, so the
+# south-west corner is the one patch of sea nothing reaches into.
+const BEACH_GIFT_POS := Vector2(72.0, 968.0)
+const BEACH_GIFT_SIZE := 124.0
+
+var beach_gift_next := 0.0
+var _beach_gift: Button
+
+func _add_beach_gift() -> void:
+	var btn := Button.new()
+	btn.flat = true
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.custom_minimum_size = Vector2(BEACH_GIFT_SIZE, BEACH_GIFT_SIZE)
+	btn.size = Vector2(BEACH_GIFT_SIZE, BEACH_GIFT_SIZE)
+	btn.position = BEACH_GIFT_POS
+	btn.pressed.connect(_claim_beach_gift)
+	FX.press_feedback(btn)
+	_village_stage.add_child(btn)
+	_beach_gift = btn
+
+	var art := ChestArt.new()
+	art.tier = 0
+	# The shelf chests' idle rattle -- the crate has something in it and says
+	# so now and then, which is the whole sales pitch a free gift needs.
+	art.live = true
+	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	btn.add_child(art)
+	art.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	# Adrift, not parked: a slow bob sells "washed up on the tide" and costs
+	# one looping tween. The hit box rides along, which at eight units matters
+	# to nobody's thumb.
+	var tw := btn.create_tween().set_loops()
+	tw.tween_property(btn, "position:y", BEACH_GIFT_POS.y + 8.0, 1.6) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	tw.tween_property(btn, "position:y", BEACH_GIFT_POS.y, 1.6) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	_update_beach_gift()
+
+func _update_beach_gift() -> void:
+	if _beach_gift == null or not is_instance_valid(_beach_gift):
+		return
+	_beach_gift.visible = _trusted_now() >= beach_gift_next
+
+func _claim_beach_gift() -> void:
+	# The double-tap guard: the second press of a mashed pair arrives before
+	# the first one's visible=false lands.
+	if _trusted_now() < beach_gift_next:
+		return
+	beach_gift_next = _trusted_now() + BEACH_GIFT_COOLDOWN
+	var at := _node_center(_beach_gift, view_size() * 0.5)
+	FX.ring(self, at, Lagoon.KELP_HI, 74.0, 0.36, 8.0, 12.0)
+	FX.burst(self, at, Color(1.0, 0.85, 0.35), 9)
+	Sfx.play("coins", -6.0)
+	_grant_coins(_scaled(BEACH_GIFT_COINS), at)
+	_update_beach_gift()
+	_save_game()
+
 # --- save / load ---
 
 # Every cooldown in the game is a wall-clock stamp compared against
@@ -19571,6 +19908,7 @@ func _sanitize_clock() -> void:
 	deal_next = minf(deal_next, now + Deals.CHAIN_COOLDOWN)
 	powerup_until = minf(powerup_until, now + Deals.POWERUP_DURATION)
 	powerup_next = minf(powerup_next, now + Deals.POWERUP_COOLDOWN)
+	beach_gift_next = minf(beach_gift_next, now + BEACH_GIFT_COOLDOWN)
 	col_deadline = minf(col_deadline, now + CV.COLLECTION_SEASON_DAYS * 86400.0)
 	for entry in notif_log:
 		if typeof(entry) == TYPE_DICTIONARY:
@@ -19696,6 +20034,8 @@ func _save_dict() -> Dictionary:
 		"deal_next": deal_next,
 		"deal_taken": deal_taken,
 		"deal_finale": deal_finale,
+		"chest_fill": chest_fill,
+		"beach_gift_next": beach_gift_next,
 		"powerup_id": powerup_id,
 		"powerup_until": powerup_until,
 		"powerup_next": powerup_next,
@@ -20040,6 +20380,10 @@ func _load_game() -> void:
 	deal_next = _f(data.get("deal_next", 0.0))
 	deal_taken = _i(data.get("deal_taken", 0))
 	deal_finale = bool(data.get("deal_finale", false))
+	# Clamped into the meter's own range: a hand-edited overshoot would pay a
+	# chest on every spin for as long as the excess lasted.
+	chest_fill = clampi(_i(data.get("chest_fill", 0)), 0, CHEST_SPINS - 1)
+	beach_gift_next = _f(data.get("beach_gift_next", 0.0))
 	powerup_id = _s(data.get("powerup_id", ""))
 	powerup_until = _f(data.get("powerup_until", 0.0))
 	powerup_next = _f(data.get("powerup_next", 0.0))
