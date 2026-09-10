@@ -4399,20 +4399,47 @@ func _award_stars(n: int, from_global := Vector2.ZERO) -> void:
 	_update_badges()
 	_star_flight(n, from_global)
 
-# The celebration half of _award_stars, on its own, for the one caller that has
-# to bank the stars now and show them arriving later -- see
-# _on_upgrade_requested, where the gap between the two is a scaffold animation
-# the app may not survive.
+# The delivery half of _award_stars: hold NOW, fly now. The one caller that
+# banks its stars long before it can show them -- _on_upgrade_requested, where
+# the gap is a scaffold animation the app may not survive -- holds at bank
+# time and calls _star_release from the scaffold's callback, exactly the
+# split _coin_flight/_coin_release make for coins.
 func _star_flight(n: int, from_global := Vector2.ZERO) -> void:
-	if n <= 0 or _hud_labels.is_empty():
+	if n <= 0:
+		return
+	_hud_hold("stars", n)
+	_refresh()
+	_star_release(n, from_global)
+
+# The flight half alone. THE NUMBER MOVES WHEN THE STAR LANDS -- this used to
+# be FX.fly_coins over a counter that had already changed, which is the
+# decoration the delivery rule forbids (see FX.deliver); the card path obeyed
+# the rule and the build/quest/set path did not. The pill now takes each
+# share as its star arrives, like every other counter on the bar.
+func _star_release(n: int, from_global := Vector2.ZERO) -> void:
+	if n <= 0:
+		return
+	if _hud_labels.is_empty():
+		_settle_hud("stars")
 		return
 	# _hud_at, not _hud_labels[0]: every page carries its own topbar and all but
 	# one of them are hidden, so a star earned by building flew at the spin
 	# page's pill while the player was standing on the island.
 	var to: Vector2 = _hud_at("stars")
 	var src := from_global if from_global != Vector2.ZERO else Vector2(view_size().x * 0.5, view_size().y * 0.45)
-	FX.fly_coins(self, src, to, clampi(n, 3, 10), "star", "\u2b50")
+	var flights := clampi(n, 1, 10)
+	var per := n / flights
+	var extra := n % flights
+	# z 130: quest claims and a completed set pay from inside a dialog at
+	# z 120, and a flight at the default arcs underneath the card it left.
+	FX.deliver(self, src, to, "star", flights, func(i: int) -> void:
+		_hud_land("stars", per + (1 if i < extra else 0), Color(1.0, 0.87, 0.45))
+		Sfx.play("pop", -14.0)
+	, "", 200.0, 0.13, "\u2b50", 130)
 	Sfx.play("levelup", -10.0)
+	# The backstop every delivery carries: a flight interrupted by a page
+	# change or a quit must not leave the counter short of the save.
+	_after(float(flights) * 0.13 + 2.0, func() -> void: _settle_hud("stars"))
 
 func _economy_mult() -> float:
 	return CV.curve(island_level)
@@ -18070,6 +18097,10 @@ func _on_upgrade_requested(index: int) -> void:
 	# and a finished hut has paid out 15 over its life.
 	var gained: int = buildings[index]
 	_earn_stars(gained)
+	# Banked now, SHOWN when each star lands -- the scaffold takes two seconds
+	# and the counter jumping the moment the button is pressed would make the
+	# flight below pure decoration, which is the thing FX.deliver forbids.
+	_hud_hold("stars", gained)
 	_mission_add("builds")
 	Diag.note("build")
 	Diag.milestone("first_build")
@@ -18091,9 +18122,10 @@ func _on_upgrade_requested(index: int) -> void:
 	# slot as under construction, and village.refresh skips those. The other way
 	# round the hut snaps to its new size a frame before the scaffold goes up.
 	village.start_construction(index, buildings[index], func() -> void:
-		# Only the celebration is left: the stars flying to the counter they
-		# were already added to, and the check for a finished island.
-		_star_flight(gained, village.global_position
+		# Only the delivery is left: the stars were banked and held above, so
+		# the counter moves as each one lands -- and the check for a finished
+		# island.
+		_star_release(gained, village.global_position
 			+ (built_rect.position + built_rect.size * 0.4) * village.scale)
 		_check_island_complete()
 		_refresh()
@@ -18581,6 +18613,37 @@ func _open_new_world(level: int) -> void:
 
 # --- shared UI ---
 
+# The counter digits are a display font whose digits are not one width, so a
+# number ticking through a delivery changed the label's width by a few pixels
+# on every landing -- and the bar is an HBox, so the shield capsule walked
+# with the purse and the star capsule walked against the gear for as long as
+# the stream lasted. The label is pinned to the width of its own text with
+# every digit swapped for the widest one: the box now changes only when the
+# number gains a digit or changes format, which is rare and genuine, instead
+# of on every tick.
+var _hud_wide_digit := ""
+
+func _hud_set_value(lbl: Label, text: String) -> void:
+	if lbl == null or not is_instance_valid(lbl):
+		return
+	var f := lbl.get_theme_font("font")
+	var fs := lbl.get_theme_font_size("font_size")
+	if _hud_wide_digit == "":
+		var widest := -1.0
+		for d in "0123456789":
+			var dw := f.get_string_size(d, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+			if dw > widest:
+				widest = dw
+				_hud_wide_digit = d
+	var tpl := ""
+	for ch in text:
+		tpl += _hud_wide_digit if (ch >= "0" and ch <= "9") else ch
+	lbl.custom_minimum_size.x = ceilf(f.get_string_size(tpl, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x)
+	# Centred in the reserved box, so the digits breathe inside a still pill
+	# rather than hugging its left edge with the slack all on one side.
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.text = text
+
 func _refresh() -> void:
 	# Shown, not held: see _hud_lag. Everything below the two labels reads the
 	# real numbers -- only what is printed waits for the reward to land.
@@ -18593,13 +18656,13 @@ func _refresh() -> void:
 		# any coin flight was decoration over a number that had already moved.
 		# Nothing held coins before _grant_coins existed, so this line was
 		# correct and inert until the daily bonus started delivering them.
-		labels["coins"].text = _fmt_compact(_hud_shown("coins", coins))
+		_hud_set_value(labels["coins"], _fmt_compact(_hud_shown("coins", coins)))
 		if labels.has("spins"):
-			labels["spins"].text = ("%d/%d" % [shown_spins, SPIN_CAP]) if shown_spins <= SPIN_CAP else str(shown_spins)
-		labels["shields"].text = str(shown_shields)
+			_hud_set_value(labels["spins"], ("%d/%d" % [shown_spins, SPIN_CAP]) if shown_spins <= SPIN_CAP else str(shown_spins))
+		_hud_set_value(labels["shields"], str(shown_shields))
 		# Held like the others: a card's stars are banked the moment the card is
 		# drawn, but the number does not move until the star reaches the pill.
-		labels["stars"].text = _fmt_compact(_hud_shown("stars", rank_stars))
+		_hud_set_value(labels["stars"], _fmt_compact(_hud_shown("stars", rank_stars)))
 	_update_tourney_score()
 	village.refresh(buildings, coins, _star_costs())
 	if slot != null:
@@ -18651,8 +18714,11 @@ func _style_shield_chip(chip, full: bool) -> void:
 	sb.shadow_size = 11 if full else 8
 	sb.shadow_color = Color(Lagoon.BRASS.r, Lagoon.BRASS.g, Lagoon.BRASS.b, 0.50) if full 		else Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.34)
 	sb.shadow_offset = Vector2(0, 3)
-	sb.content_margin_left = 8.0
-	sb.content_margin_right = 8.0
+	# 7, matching Lagoon._capsule_style exactly. This face used to carry 8 a
+	# side, so every full<->room transition changed the pill's width by two
+	# pixels and walked the whole left group with it.
+	sb.content_margin_left = 7.0
+	sb.content_margin_right = 7.0
 	sb.content_margin_top = 4.0
 	sb.content_margin_bottom = 4.0
 	chip.add_theme_stylebox_override("panel", sb)

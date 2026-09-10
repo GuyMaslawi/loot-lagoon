@@ -407,4 +407,17 @@ static func counter_pop(node: Control, tint := Color(1, 1, 1, 0)) -> void:
 	tw.tween_property(node, "scale", Vector2(1.24, 1.24), 0.09).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	tw.tween_property(node, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	if tint.a > 0.0:
-		burst(node.get_parent(), node.position + node.size * 0.5, tint, 7)
+		# NOT node.get_parent(). The chips live in an HBoxContainer, and a
+		# container lays out every visible Control it is handed -- so seven
+		# burst panels parented there became row items for the half-second of
+		# their tween and shoved the capsules sideways, once per landing. A
+		# stream of landings (a card paying its stars one at a time) kept the
+		# whole bar rattling for seconds. Climb out of the containers and
+		# burst in the first ancestor that will leave the panels alone.
+		var host := node.get_parent() as Control
+		while host is Container and host.get_parent() is Control:
+			host = host.get_parent() as Control
+		if host == null:
+			return
+		var center := node.global_position + node.size * 0.5
+		burst(host, host.get_global_transform().affine_inverse() * center, tint, 7)
