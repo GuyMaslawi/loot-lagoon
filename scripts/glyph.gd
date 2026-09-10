@@ -64,6 +64,7 @@ func _draw() -> void:
 		"bell":    _bell()
 		"trophy":  _trophy()
 		"gear":    _gear()
+		"trash":   _trash()
 		"star":    _star_icon()
 		"plus":    _plus()
 		"close":   _close()
@@ -302,6 +303,27 @@ func _gear() -> void:
 	_disc(c, 34, body, 6.0, dark)
 	# The hub is a hole. A filled centre on a toothed disc is a flower.
 	_disc(c, 14, Lagoon.LAGOON_DEEP, 5.0, Lagoon.ABYSS)
+
+func _trash() -> void:
+	# The bin on the alerts page's clear-all button. Drawn in the gear's
+	# material -- panel white with the soft ink line -- because both are
+	# controls, not goods: brass here would say "valuable" about the one
+	# button that destroys something.
+	var body := _hue(Lagoon.SHELL)
+	var dark := Lagoon.INK_SOFT
+	# Handle before lid, so the lid's own outline covers the join.
+	_bar(Vector2(42, 13), Vector2(58, 13), 9.0, body, 5.0)
+	_bar(Vector2(24, 25), Vector2(76, 25), 11.0, body, 5.0)
+	# The can tapers, and the bottom corners are chamfered rather than square
+	# -- the set has no tight corners.
+	var can := PackedVector2Array([
+		Vector2(29, 34), Vector2(71, 34), Vector2(68, 78),
+		Vector2(62, 84), Vector2(38, 84), Vector2(32, 78),
+	])
+	_shape(can, body, 6.0, dark)
+	# Slats cut into the face, the way the gear's hub is a hole.
+	for x in [40.0, 50.0, 60.0]:
+		_bar(Vector2(x, 44), Vector2(x, 74), 6.0, dark, 0.0)
 
 # --- marks -------------------------------------------------------------------
 

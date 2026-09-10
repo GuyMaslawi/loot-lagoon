@@ -1096,7 +1096,10 @@ static func _capsule_style() -> StyleBoxFlat:
 # a pill that is wider than it needs to be.
 static func icon_capsule(icon_kind: String, action: Callable, tip := "") -> Button:
 	var btn := Button.new()
-	btn.flat = true
+	# NOT flat. `flat = true` tells Godot to skip drawing the button's stylebox
+	# in every state -- including the overrides installed below -- so the pill
+	# this function exists to draw never appeared and the glyph sat naked in
+	# the counter row. The overrides ARE the decoration; flat vetoes them.
 	btn.focus_mode = Control.FOCUS_NONE
 	btn.custom_minimum_size = Vector2(70, 0)
 	btn.tooltip_text = tip

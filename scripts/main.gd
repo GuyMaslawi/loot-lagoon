@@ -1136,6 +1136,18 @@ func _after_boot() -> void:
 # Two SHOT setups that need state rather than just a call. Kept beside the
 # harness rather than in the dialogs, so nothing the player reaches can end up
 # depending on them.
+# Three entries with one unread is the smallest log that shows everything the
+# page can put up at once: the NEW chip, the bin, a lit card and two read ones.
+func _shot_alerts() -> void:
+	notif_log = [
+		{"type": "raid", "text": "Boris attacked your island and took 12,400 coins.",
+			"emoji": "\U01F3F4", "ts": _now() - 3600.0, "read": false},
+		{"type": "refill", "text": "Your spins refilled while you were away.",
+			"emoji": "⚡", "ts": _now() - 7200.0, "read": true},
+		{"type": "raid", "text": "Mimi raided your island.",
+			"emoji": "\U01FA93", "ts": _now() - 86400.0, "read": true},
+	]
+
 func _shot_mark() -> void:
 	_stock_rivals()
 	if not npcs.is_empty():
@@ -1231,6 +1243,12 @@ func _capture_page(key: String) -> void:
 	# filled rather than after.
 	if key == "clan":
 		_fake_clan()
+	# The alerts page draws its bar -- the count chip and the bin -- only over
+	# a log with entries in it, and a harness save has none: nothing has ever
+	# raided it. So SHOT=alerts on a fresh save photographed the empty-state
+	# card and nothing this page actually does.
+	if key == "alerts":
+		_shot_alerts()
 	# SHOT=popup:ranks shoots a dialog rather than a page. Modals are where most
 	# of the game's chrome lives and none of it could be screenshotted without
 	# opening the thing by hand first.
@@ -6694,45 +6712,41 @@ func _open_give_card(who: Dictionary) -> void:
 # It is a bar rather than the two full-width buttons it used to be. Full-width
 # candy at the top of a page reads as the page's headline, and the headline
 # here is the news, not the housekeeping. So: the state on the left as a chip,
-# the two actions on the right at their own width, and the whole row shorter
+# the one action on the right at its own width, and the whole row shorter
 # than a card. It scrolls away with everything else, which is correct -- these
 # are errands you run on arrival, not controls you reach for mid-read.
+#
+# The Settings button that used to share this bar is gone -- Guy, 2026-09-10:
+# the top bar's gear is on every page, including this one, so a second door
+# forty pixels under it was the exact redundancy that killed the island
+# capsule. One page, one way to settings.
 #
 # Built BEFORE the log below marks everything read, so the chip reports the
 # state the page was opened in rather than the state building it produced.
 func _alerts_bar(vb: VBoxContainer) -> void:
+	# With no log there is nothing to count and nothing to clear, and since
+	# settings left this bar it has no third job: build nothing rather than
+	# an empty row that pads the top of the empty-state card.
+	if notif_log.is_empty():
+		return
+
 	var bar := HBoxContainer.new()
 	bar.add_theme_constant_override("separation", 10)
 	vb.add_child(bar)
 
 	# The chip is the answer to "why is there a dot on the bell", so it says
 	# the unread count when there is one and falls back to the size of the log
-	# when there is not. An empty log gets no chip at all -- the page below is
-	# already a bell and the words "no notifications yet".
+	# when there is not.
 	var unread := _unread_count()
 	if unread > 0:
 		bar.add_child(Lagoon.chip("%d NEW" % unread, Lagoon.REEF, UI.F_CAPTION))
-	elif not notif_log.is_empty():
+	else:
 		bar.add_child(Lagoon.chip("%d ALERTS" % notif_log.size(), Lagoon.BRASS_MID, UI.F_CAPTION))
 
 	var gap := Control.new()
 	gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	bar.add_child(gap)
-
-	# Which alerts the phone is allowed to send is a settings question, and it
-	# is the reason most people arrive here twice. Glass rather than a colour:
-	# it is a door to somewhere else, not something that happens.
-	var settings := Button.new()
-	settings.text = "Settings"
-	settings.custom_minimum_size = Vector2(0, UI.TAP)
-	_candy_button(settings, Color(0.62, 0.68, 0.72))
-	FX.press_feedback(settings)
-	settings.pressed.connect(func() -> void: _goto(pages["options"]))
-	bar.add_child(settings)
-
-	if notif_log.is_empty():
-		return
 
 	# CLEAR ALL ASKS FIRST, NOW THAT IT IS EASY TO REACH.
 	#
@@ -6755,12 +6769,18 @@ func _alerts_bar(vb: VBoxContainer) -> void:
 	# MATERIAL is the 45-70 band, so a call site asking for it has to name a
 	# colour in that band. Passing the constant here produced the game's
 	# primary-action orange on the one button that destroys something.
+	# A bin glyph rather than the words "Clear all" -- Guy, 2026-09-10. The
+	# words made this the widest object on the row and the only text in a bar
+	# of chrome; a bin is the same sentence at a quarter the width, and the
+	# confirm dialog below still says the whole thing in words before anything
+	# is destroyed. Square at TAP so the target loses nothing with the label.
 	var clear := Button.new()
-	clear.text = "Clear all"
-	clear.custom_minimum_size = Vector2(0, UI.TAP)
+	clear.custom_minimum_size = Vector2(UI.TAP, UI.TAP)
+	clear.tooltip_text = "Clear all"
 	_candy_button(clear, Color(0.86, 0.74, 0.26))
 	FX.press_feedback(clear)
 	clear.pressed.connect(_confirm_clear_alerts)
+	Glyph.fill(clear, "trash", 18.0)
 	bar.add_child(clear)
 
 func _confirm_clear_alerts() -> void:
