@@ -19695,10 +19695,32 @@ const CHEST_REWARD := 1500     # island-1 units; _scaled at payout like the reel
 const CHEST_X := 0.865         # of view width; the right lane's centre line
 const CHEST_H := 122.0
 
-# Notches into the current chest. Saved -- thirty-nine spins of progress lost
-# to a phone call would read as the game stealing, which is the one reading a
-# bonus mechanic cannot survive.
+# EVERY FOURTH CHEST PAYS SPINS, and the player can see it coming. Guy,
+# 2026-09-10, round two: spins are the game's centre -- no spins, no player --
+# so the bonus layer has to hand those out too. Spins spend the tournament
+# margin in a way coins never can (see qa_full's free-spins-per-cycle check,
+# which now counts this source from these constants), so the spin chest is
+# the RARE one: six spins every hundred and sixty, ~+4% on the meter, priced
+# against the ~870-spin headroom the margin had left.
+#
+# The count is FLAT across islands on purpose, exactly like the daily's real
+# nineteen: a spin's value already scales itself -- bigger bets, bigger
+# island payouts -- so a flat count is constant real value, and scaling it
+# would compound twice.
+#
+# Tier 2 is the magical chest -- violet, lid open, light coming out -- so
+# which prize is filling is readable from across the room, which is the whole
+# anticipation trade: the player watches the purple one come.
+const CHEST_SPIN_EVERY := 4
+const CHEST_SPINS_BONUS := 6
+
+# Notches into the current chest, and which chest in the rotation is filling.
+# Both saved -- thirty-nine spins of progress lost to a phone call would read
+# as the game stealing, which is the one reading a bonus mechanic cannot
+# survive; and a spin chest demoted to gold by a relaunch is the same theft
+# one door over.
 var chest_fill := 0
+var chest_round := 0
 var _chest: ChestArt
 var _chest_meter_well: Panel
 var _chest_meter_bar: Panel
@@ -19762,6 +19784,10 @@ func _add_slot_chest() -> void:
 	_chest_meter_bar = bar
 	_chest_meter_update()
 
+# True while the chest currently filling is the spin-paying one.
+func _chest_spin_round() -> bool:
+	return chest_round % CHEST_SPIN_EVERY == CHEST_SPIN_EVERY - 1
+
 func _chest_meter_update() -> void:
 	if _chest_meter_bar == null or not is_instance_valid(_chest_meter_bar):
 		return
@@ -19772,6 +19798,7 @@ func _chest_meter_update() -> void:
 	# in here".
 	if _chest != null and is_instance_valid(_chest):
 		_chest.live = chest_fill >= CHEST_SPINS - 6 and chest_fill > 0
+		_chest.tier = 2 if _chest_spin_round() else 1
 
 # One spin's notch, called from _on_spin_finished. The payout rides 0.85s
 # behind the reels so the chest's moment is not on top of the win readout's.
@@ -19783,7 +19810,7 @@ func _chest_notch() -> void:
 	_chest_meter_update()
 
 func _pay_bonus_chest() -> void:
-	var amount := _scaled(CHEST_REWARD)
+	var spin_round := _chest_spin_round()
 	var at := _node_center(_chest, slot.reels_center() if slot != null else view_size() * 0.5)
 	# Theatre only while the flights cap has room. Under turbo auto spin -- or
 	# a harness playing thousands of spins a frame -- rings and bursts every
@@ -19796,12 +19823,30 @@ func _pay_bonus_chest() -> void:
 				.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 			tw.tween_property(_chest, "scale", Vector2.ONE, 0.34) \
 				.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-		FX.ring(self, at, Lagoon.BRASS_HI, 82.0, 0.38, 8.0, 12.0)
-		FX.burst(self, at, Color(1.0, 0.85, 0.35), 10)
-		FX.rise_label(self, at + Vector2(0, -76), "BONUS  CHEST!", Lagoon.BRASS_HI, 34)
-		Sfx.play("coins", -4.0)
-		_mascot_cue("win")
-	_grant_coins(amount, at)
+		if spin_round:
+			FX.ring(self, at, Color(0.72, 0.94, 1.0), 82.0, 0.38, 8.0, 12.0)
+			FX.burst(self, at, Color(0.6, 0.9, 1.0), 10)
+			FX.rise_label(self, at + Vector2(0, -76),
+				"+%d  SPINS!" % CHEST_SPINS_BONUS, Color(0.6, 0.9, 1.0), 34)
+			Sfx.play("jackpot", -6.0)
+			# The spins-coming-back face, not the coin grin -- the meter
+			# refilling is its own kind of good news and he already has an
+			# expression for it.
+			_mascot_cue("refill")
+		else:
+			FX.ring(self, at, Lagoon.BRASS_HI, 82.0, 0.38, 8.0, 12.0)
+			FX.burst(self, at, Color(1.0, 0.85, 0.35), 10)
+			FX.rise_label(self, at + Vector2(0, -76), "BONUS  CHEST!", Lagoon.BRASS_HI, 34)
+			Sfx.play("coins", -4.0)
+			_mascot_cue("win")
+	if spin_round:
+		_grant_spins(CHEST_SPINS_BONUS, at)
+	else:
+		_grant_coins(_scaled(CHEST_REWARD), at)
+	# The rotation advances on PAYMENT, not on fill: a kill between the two
+	# would otherwise skip the spin chest without ever paying it.
+	chest_round = (chest_round + 1) % CHEST_SPIN_EVERY
+	_chest_meter_update()
 	_save_game()
 
 # =============================================================================
@@ -19821,6 +19866,13 @@ func _pay_bonus_chest() -> void:
 # that sometimes has a crate on it is a pleasant habit.
 const BEACH_GIFT_COOLDOWN := 4.0 * 3600.0
 const BEACH_GIFT_COINS := 800  # island-1 units; _scaled at claim
+# Every third crate carries spins instead -- the crate is a surprise by
+# nature (it is either on the shore or it is not), so unlike the chest it
+# does not telegraph which it is; opening it IS the reveal. Wall-clock
+# bounded at ~6 claims a day, so the worst case is 18 spins a day, which the
+# tournament-margin check in qa_full counts from these constants.
+const BEACH_GIFT_EVERY := 3
+const BEACH_GIFT_SPINS := 3
 # Design-space, on the open water clear of every build plot: the plots end at
 # y=850 on the left column and start at x=230 on the bottom row, so the
 # south-west corner is the one patch of sea nothing reaches into.
@@ -19828,6 +19880,7 @@ const BEACH_GIFT_POS := Vector2(72.0, 968.0)
 const BEACH_GIFT_SIZE := 124.0
 
 var beach_gift_next := 0.0
+var beach_round := 0
 var _beach_gift: Button
 
 func _add_beach_gift() -> void:
@@ -19873,10 +19926,19 @@ func _claim_beach_gift() -> void:
 		return
 	beach_gift_next = _trusted_now() + BEACH_GIFT_COOLDOWN
 	var at := _node_center(_beach_gift, view_size() * 0.5)
-	FX.ring(self, at, Lagoon.KELP_HI, 74.0, 0.36, 8.0, 12.0)
-	FX.burst(self, at, Color(1.0, 0.85, 0.35), 9)
-	Sfx.play("coins", -6.0)
-	_grant_coins(_scaled(BEACH_GIFT_COINS), at)
+	if beach_round % BEACH_GIFT_EVERY == BEACH_GIFT_EVERY - 1:
+		FX.ring(self, at, Color(0.72, 0.94, 1.0), 74.0, 0.36, 8.0, 12.0)
+		FX.burst(self, at, Color(0.6, 0.9, 1.0), 9)
+		FX.rise_label(self, at + Vector2(0, -70),
+			"+%d  SPINS!" % BEACH_GIFT_SPINS, Color(0.6, 0.9, 1.0), 32)
+		Sfx.play("jackpot", -8.0)
+		_grant_spins(BEACH_GIFT_SPINS, at)
+	else:
+		FX.ring(self, at, Lagoon.KELP_HI, 74.0, 0.36, 8.0, 12.0)
+		FX.burst(self, at, Color(1.0, 0.85, 0.35), 9)
+		Sfx.play("coins", -6.0)
+		_grant_coins(_scaled(BEACH_GIFT_COINS), at)
+	beach_round = (beach_round + 1) % BEACH_GIFT_EVERY
 	_update_beach_gift()
 	_save_game()
 
@@ -20035,7 +20097,9 @@ func _save_dict() -> Dictionary:
 		"deal_taken": deal_taken,
 		"deal_finale": deal_finale,
 		"chest_fill": chest_fill,
+		"chest_round": chest_round,
 		"beach_gift_next": beach_gift_next,
+		"beach_round": beach_round,
 		"powerup_id": powerup_id,
 		"powerup_until": powerup_until,
 		"powerup_next": powerup_next,
@@ -20381,9 +20445,13 @@ func _load_game() -> void:
 	deal_taken = _i(data.get("deal_taken", 0))
 	deal_finale = bool(data.get("deal_finale", false))
 	# Clamped into the meter's own range: a hand-edited overshoot would pay a
-	# chest on every spin for as long as the excess lasted.
+	# chest on every spin for as long as the excess lasted. The rotation
+	# counters wrap for the same reason -- posmod, not clamp, because every
+	# position in the cycle is legitimate and only an out-of-range one is not.
 	chest_fill = clampi(_i(data.get("chest_fill", 0)), 0, CHEST_SPINS - 1)
+	chest_round = posmod(_i(data.get("chest_round", 0)), CHEST_SPIN_EVERY)
 	beach_gift_next = _f(data.get("beach_gift_next", 0.0))
+	beach_round = posmod(_i(data.get("beach_round", 0)), BEACH_GIFT_EVERY)
 	powerup_id = _s(data.get("powerup_id", ""))
 	powerup_until = _f(data.get("powerup_until", 0.0))
 	powerup_next = _f(data.get("powerup_next", 0.0))

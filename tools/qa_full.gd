@@ -2371,8 +2371,24 @@ func _t_tide() -> void:
 	var free_before := 10459.0
 	var to_clear := 13491.0
 	var free_now: float = free_before + extra
-	print("    free spins per cycle: %.0f -> %.0f   (need %.0f to clear track 4)"
-		% [free_before, free_now, to_clear])
+	# THE AMBIENT BONUSES PAY SPINS TOO (2026-09-10), and this sum must not
+	# pretend they do not. Read off the live constants, never transcribed --
+	# a transcribed copy is the qa_reels failure all over again: it measures
+	# the old design and passes.
+	#
+	# The chest is spin-count driven, so its grant COMPOUNDS: every spin it
+	# pays is itself played and fills the next chest -- hence the geometric
+	# r/(1-r), applied to everything the free player can put through the
+	# reels. The crate is wall-clock driven, so the cycle alone bounds it and
+	# nothing compounds.
+	var chest_r: float = float(m.CHEST_SPINS_BONUS) \
+		/ float(m.CHEST_SPINS * m.CHEST_SPIN_EVERY)
+	var chest_spins: float = free_now * chest_r / (1.0 - chest_r)
+	var crate_spins: float = cycle / m.BEACH_GIFT_COOLDOWN \
+		/ float(m.BEACH_GIFT_EVERY) * float(m.BEACH_GIFT_SPINS)
+	free_now += chest_spins + crate_spins
+	print("    free spins per cycle: %.0f -> %.0f   (chest +%.0f, crate +%.0f; need %.0f to clear track 4)"
+		% [free_before, free_now, chest_spins, crate_spins, to_clear])
 	_chk("...and the top tournament track is STILL unreachable on free spins",
 		free_now < to_clear, "%.0f free vs %.0f needed" % [free_now, to_clear])
 	_chk("...with room left before that line is in danger",
