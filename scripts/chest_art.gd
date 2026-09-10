@@ -62,9 +62,59 @@ const INK := Color(0.086, 0.063, 0.086)
 func _init() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	custom_minimum_size = Vector2(90, 90)
+	set_process(false)
 
 func _ready() -> void:
 	resized.connect(queue_redraw)
+
+# =============================================================================
+#  Idle life
+# =============================================================================
+#
+# A chest on a shelf that never moves is a picture of a product. `live` gives
+# it an occasional rattle -- the contents bumping the lid -- which is the one
+# thing a closed box can do that says there is something in it. Same rules as
+# the pig's hop: squash about its own feet, never rotation, and the node only
+# repaints while a rattle is actually running, so a shelf of three costs
+# nothing between beats. The interval is rolled per rattle, which also keeps a
+# row of chests from ever falling into step with each other.
+@export var live := false:
+	set(value):
+		live = value
+		set_process(live)
+		if not live and _sq != 1.0:
+			_sq = 1.0
+			queue_redraw()
+
+const RATTLE_LEN := 0.5
+const RATTLE_AMP := 0.045
+
+var _live_t := 0.0
+var _next_rattle := 0.0
+var _sq := 1.0
+
+func _process(delta: float) -> void:
+	_live_t += delta
+	if _next_rattle <= 0.0:
+		_next_rattle = _live_t + randf_range(3.5, 8.0)
+	if _live_t < _next_rattle:
+		return
+	var u := (_live_t - _next_rattle) / RATTLE_LEN
+	if u >= 1.0:
+		_next_rattle = _live_t + randf_range(3.5, 8.0)
+		_sq = 1.0
+	else:
+		# Three knocks fading out -- a thing inside knocking, not a box wobbling.
+		_sq = 1.0 + RATTLE_AMP * sin(u * TAU * 3.0) * (1.0 - u)
+	queue_redraw()
+
+# Squash about the bottom centre, so the box stays on its feet while the lid
+# end does the moving.
+func _squash_transform(base_off: Vector2, base_scale: float) -> void:
+	var wx := 1.0 + (1.0 - _sq) * 0.9
+	var sq_off := Vector2(size.x * 0.5 * (1.0 - wx), size.y * (1.0 - _sq))
+	draw_set_transform(sq_off + base_off * Vector2(wx, _sq), 0.0,
+		Vector2(base_scale * wx, base_scale * _sq))
 
 # --- the rendered art --------------------------------------------------------
 #
@@ -163,12 +213,14 @@ func _draw() -> void:
 		return
 	var shot := _rendered(tier)
 	if shot != null:
+		if _sq != 1.0:
+			_squash_transform(Vector2.ZERO, 1.0)
 		_blit(shot)
 		return
 
 	var s := minf(size.x, size.y) / SPACE
 	var off := (size - Vector2(SPACE, SPACE) * s) * 0.5
-	draw_set_transform(off, 0.0, Vector2(s, s))
+	_squash_transform(off, s)
 
 	if tier == 2:
 		_aura()

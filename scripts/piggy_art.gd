@@ -72,9 +72,62 @@ const GOLD_LO := Color(0.706, 0.412, 0.075)
 func _init() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	custom_minimum_size = Vector2(120, 120)
+	set_process(false)
 
 func _ready() -> void:
 	resized.connect(queue_redraw)
+
+# =============================================================================
+#  Idle life
+# =============================================================================
+#
+# A render is a still, and a character that never moves is furniture. `live`
+# gives the pig an occasional excited little hop -- a squash-and-recover about
+# its own trotters, which is the one channel flat art is allowed (never
+# rotation: the picture turning reads as a sticker being waggled, the weight
+# shifting reads as the animal moving).
+#
+# Fired every few seconds rather than looping, and the node only redraws while
+# a hop is actually running -- the rail carries one of these on every page, and
+# a character that breathes constantly is a control that repaints constantly.
+@export var live := false:
+	set(value):
+		live = value
+		set_process(live)
+		if not live and _sq != 1.0:
+			_sq = 1.0
+			queue_redraw()
+
+const HOP_LEN := 0.55
+const HOP_AMP := 0.055
+
+var _live_t := 0.0
+var _next_hop := 0.0
+var _sq := 1.0
+
+func _process(delta: float) -> void:
+	_live_t += delta
+	if _next_hop <= 0.0:
+		_next_hop = _live_t + randf_range(4.0, 9.0)
+	if _live_t < _next_hop:
+		return
+	var u := (_live_t - _next_hop) / HOP_LEN
+	if u >= 1.0:
+		_next_hop = _live_t + randf_range(4.0, 9.0)
+		_sq = 1.0
+	else:
+		# Two quick beats fading out: a jiggle with an envelope, not a wobble.
+		_sq = 1.0 + HOP_AMP * sin(u * TAU * 2.0) * (1.0 - u)
+	queue_redraw()
+
+# The squash, applied as a draw transform about the bottom centre so the pig
+# compresses onto its feet instead of about its middle -- weight goes down
+# before a hop, and down is where the ground is.
+func _squash_transform(base_off: Vector2, base_scale: float) -> void:
+	var wx := 1.0 + (1.0 - _sq) * 0.9
+	var sq_off := Vector2(size.x * 0.5 * (1.0 - wx), size.y * (1.0 - _sq))
+	draw_set_transform(sq_off + base_off * Vector2(wx, _sq), 0.0,
+		Vector2(base_scale * wx, base_scale * _sq))
 
 # --- the rendered art --------------------------------------------------------
 #
@@ -218,6 +271,8 @@ func _draw() -> void:
 		return
 	var shot := _rendered()
 	if not shot.is_empty():
+		if _sq != 1.0:
+			_squash_transform(Vector2.ZERO, 1.0)
 		# `face` is an override for the drawing's three expressions; against the
 		# renders it means "hold the full one", which is the frame at the top.
 		var lv := 1.0 if face == "full" else fill
@@ -231,7 +286,7 @@ func _draw() -> void:
 
 	var s := minf(size.x, size.y) / SPACE
 	var off := (size - Vector2(SPACE, SPACE) * s) * 0.5
-	draw_set_transform(off, 0.0, Vector2(s, s))
+	_squash_transform(off, s)
 
 	var m := mood()
 	_shadow()

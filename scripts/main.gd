@@ -4011,6 +4011,10 @@ func _rail_icon(btn: Button, icon_kind: String, pad: float) -> Control:
 		return Glyph.fill(btn, icon_kind, pad)
 	var pig := PiggyArt.new()
 	pig.fill = _piggy_frac()
+	# ...and it moves. An excited little hop every few seconds -- the character
+	# on the button behaving like a character, and the only motion on the rail,
+	# which is what makes it read as the pig and not as a blinking widget.
+	pig.live = true
 	pig.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	# PiggyArt asks for 120x120 of its own, which is bigger than the 88 the
 	# disc is -- a minimum on a child is a minimum on the button, so left alone
@@ -8109,6 +8113,11 @@ func _shop_hero_offer(vb: VBoxContainer) -> void:
 func _chest_art(pack: Dictionary, _size := 54) -> Control:
 	var art := ChestArt.new()
 	art.tier = int(pack.get("tier", 0))
+	# The shelf chests rattle now and then -- the contents bumping the lid.
+	# Enabled here rather than inside ChestArt because this is the one place a
+	# chest is merchandise being weighed up; a chest inside a result dialog is
+	# already being opened and does not need to sell itself.
+	art.live = true
 	return art
 
 # --- odds disclosure -------------------------------------------------------

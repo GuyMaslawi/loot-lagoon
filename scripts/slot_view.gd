@@ -679,9 +679,31 @@ func meter_center() -> Vector2:
 # It is said on this label rather than anywhere else on the page because this
 # is the one piece of chrome whose only job is to answer "when do I get more
 # spins", and during a Tide that answer is the event.
+# The highest rung count this session has ever offered. bet_steps() is gated on
+# the balance, so a balance hovering around a threshold crosses it on every
+# other spin -- celebrating each re-crossing would turn the cue into a tic. The
+# high-water mark fires it exactly once per rung actually reached, and seeding
+# it on the first call keeps a loaded save from being congratulated for rungs
+# it has held for weeks.
+var _rungs_seen := 0
+
 func set_meter(held: int, cap: int, secs_to_refill: float, refill: int, tide := false) -> void:
 	_held = held
 	_clamp_bet()
+	# A new rung on the BET ladder is the one reward this machine hands out
+	# without a triple -- the button that grew a gear says so itself, because
+	# nothing else on the page will.
+	var rungs := bet_steps().size()
+	if _rungs_seen == 0:
+		_rungs_seen = rungs
+	elif rungs > _rungs_seen:
+		_rungs_seen = rungs
+		FX.counter_pop(bet_button)
+		Sfx.play("pop", -6.0, 0.0, 1.25)
+		FX.rise_label(self,
+			bet_button.global_position - global_position \
+				+ Vector2(bet_button.size.x * 0.5 - 96.0, -30.0),
+			"BET  x%d  UNLOCKED" % int(bet_steps().back()), Lagoon.BRASS_HI, 26)
 	_meter.max_value = float(cap)
 	_meter.value = float(mini(held, cap))
 	# Over the cap the "/ 50" is not a limit any more, it is a smaller number
@@ -899,6 +921,16 @@ func _on_reel_stopped(index: int) -> void:
 			FX.burst(self, payline_pos(), Lagoon.BRASS_HI, 10)
 	if index < 2:
 		return
+	# The hold that missed by one cell. The reels have already rimmed the cell
+	# the wanted symbol stopped in; the sign is the machine admitting it out
+	# loud, and the sag is the cabinet letting its breath out. Before
+	# spin_finished, so the raccoon's own near-miss cameo lands on a machine
+	# that has already spoken. A miss can never coexist with a triple, so the
+	# sign is never fighting a win announcement for the plate.
+	if reels.consume_near_miss():
+		announce("SO  CLOSE!", Lagoon.CORAL_HI)
+		Sfx.play("tick", -4.0, 0.0, 0.58)
+		FX.shake(_cabinet, 5.0, 4)
 	spin_button.disabled = false
 	bet_button.disabled = false
 	if _result.size() == 3 and _result[0] == _result[1] and _result[1] == _result[2]:

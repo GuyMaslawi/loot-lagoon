@@ -86,11 +86,16 @@ var _t := 0.0
 var _spinning := false
 var _settle := 0.0
 var _win := 0.0
+var _want := ""         # the held pair's symbol, so the miss can point at it
+var _miss := 0.0        # the "it was RIGHT THERE" beat, 0 while quiet
+var _miss_up := true    # whether the wanted symbol stopped above the payline
+var _near := false      # latched for slot_view to read once, after the stop
 var _glow: Color = Lagoon.BRASS_HI
 var _face: Color = Lagoon.SHELL
 var _tex := {}
 var _shade_top: GradientTexture2D
 var _shade_bottom: GradientTexture2D
+var _sweep_tex: GradientTexture2D
 var _col_style: StyleBoxFlat
 
 func _ready() -> void:
@@ -102,6 +107,7 @@ func _ready() -> void:
 	_col_style.set_corner_radius_all(16)
 	_shade_top = _shade(true)
 	_shade_bottom = _shade(false)
+	_sweep_tex = _sweep()
 	# park each reel on a different symbol so a fresh machine looks rolled, not reset
 	for c in COLS:
 		_pos[c] = float(c * 3 + 1)
@@ -149,6 +155,8 @@ func start_spin(result: Array) -> void:
 	_t = 0.0
 	_settle = 0.0
 	_win = 0.0
+	_miss = 0.0
+	_near = false
 	_heat = 0.0
 	_tick_cell = -1
 	# Decided here, off the roll, because the reel needs its extra strip from
@@ -156,6 +164,7 @@ func start_spin(result: Array) -> void:
 	# lands has nowhere left to travel and would have to stall in place.
 	_held = result.size() >= 2 and result[0] == result[1] \
 		and HOLD_SYMBOLS.has(String(result[0]))
+	_want = String(result[0]) if _held else ""
 	for c in COLS:
 		_stop_at[c] = HOLD_AT if (_held and c == 2) else float(STOP_AT[c])
 		_stopped[c] = 0
@@ -185,14 +194,17 @@ func start_spin(result: Array) -> void:
 
 func _process(delta: float) -> void:
 	if not _spinning:
-		if _settle > 0.0 or _win > 0.0 or _heat > 0.0:
+		if _settle > 0.0 or _win > 0.0 or _heat > 0.0 or _miss > 0.0:
 			_settle = maxf(0.0, _settle - delta)
 			_win = maxf(0.0, _win - delta / 0.9)
+			# Slower than the win: the miss is read, not celebrated, and the
+			# eye needs a beat longer to find a cell it was not looking at.
+			_miss = maxf(0.0, _miss - delta / 1.3)
 			# Faster than the settle, so the column has cooled by the time a
 			# win takes the payline over and the two glows never stack.
 			_heat = maxf(0.0, _heat - delta * 3.2)
 			queue_redraw()
-			if _settle == 0.0 and _win == 0.0 and _heat == 0.0:
+			if _settle == 0.0 and _win == 0.0 and _heat == 0.0 and _miss == 0.0:
 				set_process(false)
 		return
 
@@ -213,6 +225,22 @@ func _process(delta: float) -> void:
 			_stopped[c] = 1
 			_pos[c] = _to[c]
 			_speed[c] = 0.0
+			# The hold that came to nothing gets its own read-out. The player
+			# just watched this reel crawl for a second and a half; if the symbol
+			# they were waiting for stopped one cell off the payline, saying
+			# nothing is the machine pretending the crawl was about nothing. The
+			# cell is rimmed where it actually landed -- above or below -- so the
+			# miss is shown, not asserted. Detected off the strip the reel really
+			# stopped on, so it can only fire when it is true.
+			if holding and _want != "":
+				var strip2: Array = STRIPS[2]
+				var landed_on := String(strip2[posmod(int(_to[2]), STRIP)])
+				var above := String(strip2[posmod(int(_to[2]) + 1, STRIP)])
+				var below := String(strip2[posmod(int(_to[2]) - 1, STRIP)])
+				if landed_on != _want and (above == _want or below == _want):
+					_miss = 1.0
+					_miss_up = above == _want
+					_near = true
 			Sfx.play("tick", -5.0)
 			reel_stopped.emit(c)
 		else:
@@ -263,6 +291,14 @@ func celebrate() -> void:
 	_win = 1.0
 	set_process(true)
 	queue_redraw()
+
+# Whether the spin that just ended held the third reel and missed by one cell.
+# Read-once, because the machine's sign should call it exactly once per spin --
+# a flag that stays up would say SO CLOSE again on the next refresh.
+func consume_near_miss() -> bool:
+	var n := _near
+	_near = false
+	return n
 
 # =============================================================================
 #  Drawing
@@ -320,6 +356,19 @@ func _draw() -> void:
 			draw_rect(Rect2(x + 5.0, pay.position.y, cw - 10.0, ch).grow(1.0),
 				Color(_glow.r, _glow.g, _glow.b, 0.85 * heat), false, 2.0 + 3.0 * heat)
 
+		# The miss, on the cell the wanted symbol actually stopped in. Coral,
+		# not the island glow -- the glow is the colour of things going right on
+		# this machine, and borrowing it for a miss would teach the player it
+		# means nothing. Drawn over the shade for the same reason the heat rim
+		# is: the whole point is to drag the eye one cell off the payline.
+		if c == 2 and _miss > 0.0:
+			var mr := Rect2(x + 5.0, pay.position.y + (-ch if _miss_up else ch),
+				cw - 10.0, ch)
+			draw_rect(mr, Color(Lagoon.CORAL_HI.r, Lagoon.CORAL_HI.g,
+				Lagoon.CORAL_HI.b, 0.20 * _miss))
+			draw_rect(mr.grow(-2.0), Color(Lagoon.CORAL_HI.r, Lagoon.CORAL_HI.g,
+				Lagoon.CORAL_HI.b, 0.9 * _miss), false, 4.0)
+
 		if _win > 0.0:
 			var r := Rect2(x + 5.0, pay.position.y, cw - 10.0, ch).grow(-3.0 + 9.0 * (1.0 - _win))
 			draw_rect(r, Color(_glow.r, _glow.g, _glow.b, _win * 0.9), false, 5.0)
@@ -333,3 +382,64 @@ func _draw() -> void:
 	var rail := Lagoon.BRASS
 	draw_line(Vector2(0, pay.position.y), Vector2(size.x, pay.position.y), rail, 3.0)
 	draw_line(Vector2(0, pay.end.y), Vector2(size.x, pay.end.y), rail, 3.0)
+
+	# =========================================================================
+	#  The winning LINE, not three winning cells
+	# =========================================================================
+	#
+	# celebrate() used to light each column's payline cell on its own, and three
+	# separate rings around three separate cells is a win told three times in a
+	# whisper. What pays is the line, so the line is what lights: the rails come
+	# up in the island's glow for the whole width of the window, one bright pass
+	# sweeps along the row the way a finger would trace it, and a handful of
+	# glints ride the rails while it cools. The per-cell rings stay -- they say
+	# WHICH cells -- this says THAT THEY ARE ONE THING.
+	if _win > 0.0:
+		var rc := Color(_glow.r, _glow.g, _glow.b, _win * 0.9)
+		draw_line(Vector2(0, pay.position.y), Vector2(size.x, pay.position.y), rc, 6.0)
+		draw_line(Vector2(0, pay.end.y), Vector2(size.x, pay.end.y), rc, 6.0)
+		var u := 1.0 - _win
+		var su := clampf(u / 0.5, 0.0, 1.0)
+		if su < 1.0 and _sweep_tex != null:
+			var bw := cw * 0.9
+			draw_texture_rect(_sweep_tex,
+				Rect2(lerpf(-bw, size.x, su), pay.position.y + 2.0, bw, ch - 4.0),
+				false, Color(1.0, 1.0, 1.0, 0.35 + 0.5 * _win))
+		# Fixed seats and phases, never randf: _draw runs every frame of the
+		# fade, and dice rolled in a draw call are static noise, not sparkle.
+		for i in _WIN_STARS.size():
+			var st: Array = _WIN_STARS[i]
+			var sc := Vector2(size.x * float(st[0]), cy + ch * float(st[1]))
+			var sa := _win * (0.35 + 0.65 * absf(sin(u * 9.0 + float(i) * 1.7)))
+			_star(sc, float(st[2]) * (0.7 + 0.6 * _win), Color(1.0, 1.0, 1.0, sa))
+
+# Where the glints sit along the payline: x as a share of the width, y as a
+# share of the cell height off the line, and a radius. Odd spacings on purpose
+# so five of them do not read as a picket fence.
+const _WIN_STARS := [[0.10, -0.30, 7.0], [0.28, 0.26, 5.5], [0.50, -0.22, 8.0],
+	[0.72, 0.28, 5.5], [0.90, -0.26, 7.0]]
+
+# A four-point glint, same construction as the prop art uses.
+func _star(c: Vector2, r: float, col: Color) -> void:
+	var pts := PackedVector2Array()
+	for i in 8:
+		var a := -PI * 0.5 + PI * float(i) / 4.0
+		var rr := r if i % 2 == 0 else r * 0.32
+		pts.append(c + Vector2(cos(a) * rr, sin(a) * rr))
+	draw_colored_polygon(pts, col)
+
+# The bright pass the win sweeps along the payline: soft-edged white, built
+# once. A ColorRect cannot fade at its ends and a shader is a pipeline for what
+# one gradient texture already is.
+static func _sweep() -> GradientTexture2D:
+	var g := Gradient.new()
+	g.set_color(0, Color(1, 1, 1, 0.0))
+	g.set_color(1, Color(1, 1, 1, 0.0))
+	g.add_point(0.5, Color(1, 1, 1, 1.0))
+	var t := GradientTexture2D.new()
+	t.gradient = g
+	t.fill_from = Vector2(0, 0)
+	t.fill_to = Vector2(1, 0)
+	t.width = 128
+	t.height = 8
+	return t
