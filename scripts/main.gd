@@ -2576,6 +2576,7 @@ func _goto(target: Control) -> void:
 			if key == "clan":
 				_enter_clan_page()
 			_fill_page(key)
+			_scroll_top(key)
 	_transitioning = true
 	Sfx.play("pop", -10.0)
 	var from := _current_page
@@ -2854,6 +2855,7 @@ func _swipe_page(dir: int) -> void:
 	if dir > 0 and _current_page == pages.get("collections") and not col_open.is_empty():
 		col_open = ""
 		_fill_page("collections")
+		_scroll_top("collections")
 		Sfx.play("pop", -12.0)
 		return
 	var here := _strip_index(_current_page)
@@ -7004,6 +7006,21 @@ func _make_page(key: String, title: String) -> void:
 # offer sits, and the cards on top are unchanged. It is the same island at
 # night, which is a different room to be sold in without being a different
 # game. Nothing else uses this -- a dark Quests page would just be dark.
+
+# A page's ScrollContainer lives as long as the page does -- only the body
+# inside it is rebuilt -- so it kept the position of the last visit, and
+# arriving anywhere could show the middle of whatever was being read before.
+# Called on every NAVIGATION: entering a page, drilling into a card set,
+# backing out of one, switching a missions tab. Deliberately NOT called by the
+# in-place repaints (a claim, a clan answer landing, the shop badge) -- those
+# redraw under a reading finger, and yanking the list to the top would turn
+# every refresh into a lost place.
+func _scroll_top(key: String) -> void:
+	var vb: VBoxContainer = _page_bodies.get(key)
+	var sc := vb.get_parent() as ScrollContainer if vb != null else null
+	if sc != null:
+		sc.scroll_vertical = 0
+
 func _fill_page(key: String) -> void:
 	var vb: VBoxContainer = _page_bodies[key]
 	# Detached first, then freed. queue_free only schedules the free for the end
@@ -11266,6 +11283,7 @@ func _quests_tab_button(period: String) -> Button:
 		quests_tab = period
 		Sfx.play("pop", -10.0)
 		_fill_page("quests")
+		_scroll_top("quests")
 	)
 	if period != quests_tab and _period_claimable(period):
 		var dot := Panel.new()
@@ -13224,6 +13242,7 @@ func _collection_tile(c: Dictionary) -> Control:
 	tile.pressed.connect(func() -> void:
 		col_open = id
 		_fill_page("collections")
+		_scroll_top("collections")
 	)
 
 	var pad := MarginContainer.new()
