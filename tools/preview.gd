@@ -18,6 +18,12 @@ func _ready() -> void:
 		"game":
 			var game: Control = load("res://scripts/main.gd").new()
 			add_child(game)
+			# GUEST=1 answers the first-run sign-in screen the way a player
+			# would, because a harness run on a fresh user:// otherwise sits
+			# behind it forever. SPINS=<n> then sets the meter -- SPINS=0 is
+			# the only way to look at the out-of-spins state on demand.
+			if OS.has_environment("GUEST") or OS.has_environment("SPINS"):
+				_seed.call_deferred(game)
 			# PAGE=shop|collections|quests|options|island jumps straight there
 			if OS.has_environment("PAGE"):
 				_open_page.call_deferred(game, OS.get_environment("PAGE"))
@@ -48,11 +54,11 @@ func _ready() -> void:
 			# sequence gets judged as motion rather than as a still.
 			if OS.has_environment("CLAIM"):
 				_claim.call_deferred(game, OS.get_environment("CLAIM"))
-			# CAMEO=<kind> fires one of main.gd's raccoon entrances on the spin
-			# page. In play these are gated behind a jackpot, a near miss or an
-			# empty meter AND a forty-second cooldown, so there is no way to
-			# watch one twice in a row -- and the whole visit is three seconds
-			# of motion, which a still of either end proves nothing about.
+			# CAMEO=<kind> fires one of the resident raccoon's reactions on
+			# the spin page (the env var keeps its old name; the raccoon does
+			# not leave any more). In play each is gated behind the event it
+			# is named for, and a reaction is one to three seconds of motion,
+			# which a still of either end proves nothing about.
 			if OS.has_environment("CAMEO"):
 				_cameo.call_deferred(game, OS.get_environment("CAMEO"))
 			# DEAL=<taken>[:take] opens the deal ladder with that many rungs
@@ -238,22 +244,29 @@ func _deal(game: Control, spec: String) -> void:
 			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 10,
 			float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.22)
 
+func _seed(game: Control) -> void:
+	while game.get("_boot") != null:
+		await get_tree().process_frame
+	if OS.has_environment("GUEST") and (game.get("profile") as Dictionary).is_empty():
+		game.set("profile", {"name": "Guest", "email": "", "provider": "guest"})
+		game.call("_save_profile")
+		game.call("_close_login")
+	if OS.has_environment("SPINS"):
+		game.set("spins", int(OS.get_environment("SPINS")))
+		game.call("_refresh")
+
 func _cameo(game: Control, kind: String) -> void:
-	# WAITS ON THE CUE'S OWN GATE, not on a delay. `_boot` is null for the first
-	# frames -- it does not exist until _run_boot creates it -- so the usual
-	# `while _boot != null` loop falls straight through here and a fixed delay
-	# after it lands mid-splash. `_cameo_blocked` is exactly the question being
-	# asked ("would a cue be accepted right now"), so it is the thing to wait
-	# for, and it covers the splash, the page and any dialog at once.
 	# The same wait every other helper in this file uses, and for the reason
 	# spelled out in _deal: `_boot` going null is not the splash being gone. It
 	# is cleared before `splash.dismiss()` runs so the game can tick while the
-	# title screen dissolves, which leaves a window where a cue would be
-	# accepted and then drawn underneath a full-screen splash.
+	# title screen dissolves, which leaves a window where a cue would land on
+	# a mascot still frozen underneath a full-screen splash. The 4.6s on top
+	# clears the dissolve and lets him settle into his idle first, so the reel
+	# shows a reaction interrupting a resident rather than a rig fading in.
 	while game.get("_boot") != null:
 		await get_tree().process_frame
 	await get_tree().create_timer(4.6).timeout
-	print("  cameo: blocked=%s" % bool(game.call("_cameo_blocked")))
+	print("  react: %s" % kind)
 	game.call("_mascot_cue", kind)
 	if OS.has_environment("SHOT"):
 		await _reel(OS.get_environment("SHOT"),

@@ -2253,7 +2253,7 @@ func _process(delta: float) -> void:
 				_notify("spins", "+%d spins refilled  (%d/%d)" % [gained, spins, SPIN_CAP], "⚡")
 	if _save_pending and float(Time.get_ticks_msec()) / 1000.0 - _save_flushed >= SAVE_FLUSH_GAP:
 		_flush_save()
-	_cameo_tick(delta)
+	_mascot_tick(delta)
 	_ui_tick += delta
 	if _ui_tick >= 1.0:
 		_ui_tick = 0.0
@@ -3736,6 +3736,10 @@ void fragment() {
 		if on:
 			_schedule_auto_spin(0.25)
 	)
+
+	# The resident, after the machine so he is measured against where it
+	# actually stands. See "The raccoon, in residence".
+	_add_slot_mascot()
 
 	_pick_next_target()
 
@@ -10256,9 +10260,9 @@ func _powerup_credit_purchase(pack_id: String) -> void:
 # Leads with the free refill that is already coming, because burying it would
 # make this a paywall -- the pack is the shortcut, not the only road.
 func _offer_out_of_spins(bet := 1) -> void:
-	# BEFORE the dialog, not after: `_cameo_blocked` refuses while a popup is
-	# up, and this function's whole job is to open one. He gets the beat where
-	# the meter runs dry, and the shop offer follows him.
+	# BEFORE the dialog: he slumps as the meter runs dry and the shop offer
+	# opens over him -- and when it closes, the sit he slumped into is what
+	# the player comes back to. See the `empty` reaction and the sad state.
 	_mascot_cue("empty")
 	var live := _active_offer()
 	var pack: Dictionary = live if not live.is_empty() else _default_spin_pack()
@@ -16934,19 +16938,13 @@ func _on_spin_finished(result: Array) -> void:
 			# every other counter already follows. The reel win was the last
 			# flight in the game still decorating a number that had moved.
 			_coin_flight(gain, slot.reels_center(), 1.25)
-	# WHERE THE RACCOON COMES IN, and the ordering matters: after the win
-	# read-out is up and after any raid has taken the screen, so a cameo can
-	# only ever land on a spin page that has finished talking. `_mascot_cue`
-	# refuses on its own if a raid took over, so this needs no gate of its own.
-	#
-	# A JACKPOT AND A NEAR MISS, AND NOTHING IN BETWEEN. Every threshold here is
-	# an event a player would mention to somebody: the top triple, a win worth
-	# more than a couple of hundred spins, and the two-of-three that did not
-	# pay. An ordinary +300 does not get him, because a mascot who appears on
-	# every third spin is scenery by the end of the first session.
-	# A spin that raised the takeover holds its cameo until the takeover comes
-	# down -- _show_big_win fires it from its own dismissal, or the raccoon
-	# vaults in behind a dim he cannot be seen through.
+	# WHERE THE RACCOON COMES IN. He lives on this page now, so these are
+	# reactions rather than entrances, and the ladder runs all the way down:
+	# the full cheer for a win worth telling somebody about (the takeover's
+	# own tiers fire theirs from _show_big_win's dismissal), the shocked
+	# recoil for the two-of-three that did not pay, and a plain grin-and-
+	# bounce for every ordinary win -- Guy's 2026-09-10 note: if the player is
+	# earning, the raccoon is pleased about it.
 	if tier == 0 and gain >= _scaled(20000):
 		_mascot_cue("bigwin")
 	elif not triple and (result[0] == result[1] or result[1] == result[2]) \
@@ -16955,6 +16953,8 @@ func _on_spin_finished(result: Array) -> void:
 		# This is the only cue in the game for something that did NOT happen,
 		# and it is the one a slot machine is really made of.
 		_mascot_cue("nearmiss")
+	elif tier == 0 and gain > 0:
+		_mascot_cue("win")
 
 	# The card roll is not a raid concern and belongs outside the gate. It sat
 	# inside it, and because an attack triple sets up its raid synchronously
@@ -17365,6 +17365,8 @@ func _maybe_revenge() -> void:
 	if shields > 0:
 		shields -= 1
 		Sfx.play("shield", -4.0)
+		# The shield did the work; his job is the gloat.
+		_mascot_cue("blocked")
 		var verb := "attacked" if mode == "attack" else "tried to steal"
 		var blocked_txt := "%s %s — blocked by your shield!" % [npc["name"], verb]
 		if not _notify(mode, blocked_txt, npc["emoji"]):
@@ -17375,6 +17377,8 @@ func _maybe_revenge() -> void:
 		_add_grudge(npc, mode, stolen)
 		Sfx.play("attack", -4.0)
 		FX.shake(slot_page, 10.0, 6)
+		# The page carries the impact; he carries the anger.
+		_mascot_cue("robbed")
 		var hit_txt: String
 		if mode == "attack":
 			hit_txt = "%s raided your island!  -%s coins" % [npc["name"], _fmt_compact(stolen)]
@@ -18981,211 +18985,461 @@ func _node_center(node: Variant, fallback: Vector2) -> Vector2:
 
 # A callback, later, without four lines of tween at every call site.
 # =============================================================================
-#  The raccoon, as a guest
+#  The raccoon, in residence
 # =============================================================================
 #
-# He was on the title screen and inside a raid, and nowhere else. The spin page
-# -- the screen a player looks at for hours -- had him as a 40-pixel flat
-# sticker on the corner of the steal card and nothing more. Coin Master and
-# Island King both keep their character on screen reacting, and Guy's note on
-# 2026-09-09 was that the mascot is the most important thing in the game right
-# now.
+# He used to visit -- an entrance, a beat and an exit, forty seconds apart at
+# best. Guy's call on 2026-09-10 moves him in: the left of the cabinet is his
+# spot now, he is alive whether or not anything is happening, and the moments
+# that used to earn a three-second cameo are reactions from somebody who was
+# already standing there. The old doctrine said a mascot who is always in the
+# corner is furniture within a day; what actually keeps him from becoming
+# furniture is that he never holds still and never repeats -- the rig's
+# involuntary layer underneath, an act picked at random on top, and the same
+# recipe already carries the whole title screen.
 #
-# HE DOES NOT LIVE HERE, HE VISITS. Guy's call, given the alternatives: the
-# spin page is already carrying a top bar, five rail discs, a steal card, a
-# cabinet, a nav slab and a hero button, and the honest options were to take
-# space off one of them or to make his presence an event. A mascot who is
-# always in the corner is furniture within a day; one who vaults in when
-# something happens is a reaction.
+# Three layers, written imperatively once a frame like every performance in
+# this game, so they add instead of fighting:
 #
-# So this is an entrance, a beat and an exit, over the cabinet and under the
-# dialogs. Three rules keep it from becoming wallpaper anyway:
+#   * MascotRig owns the involuntary: breath, blinks, ear flicks, gaze drift,
+#     the tail and hat arriving late. It runs even while he "does nothing",
+#     which is most of why he reads as alive between spins.
+#   * The idle owns the deliberate background: a weight sway, a thief's
+#     glance, a small hop, a rare wave -- and while the reels are actually
+#     turning he leans in and watches them, sly, which is the one act the
+#     title screen never needed.
+#   * A reaction interrupts the idle: a win gets a grin and a bounce, a big
+#     win the full cheer, a near miss the paws at the face, a robbery the
+#     fist, a robbery blocked the smirk. An empty meter is not a reaction but
+#     a STATE -- he sits down sad and stays sat until the spins come back,
+#     and getting up again is its own little event.
 #
-#   * NOTHING SMALL GETS HIM. `_mascot_cue` is called from a handful of places
-#     and every one of them is an event the player would tell somebody about --
-#     a big win, a near miss, an empty meter. An ordinary win does not.
-#   * ONE AT A TIME, AND NEVER OVER SOMETHING ELSE. A raid, a popup, a page
-#     change or a takeover all refuse the cue outright rather than queueing it.
-#     A cameo that arrives on top of a dialog is a bug that looks like a bug.
-#   * A COOLDOWN, so a run of big wins gets one visit and not five.
-const CAMEO_GAP := 40.0          # seconds between visits, at the very least
-# 264, measured rather than picked. The cabinet's bottom-left corner is the only
-# place on this page he can stand, and at 300 he covered the BET button and a
-# third of the hero button with it. He still overlaps the corner -- there is
-# nowhere on this screen that he does not -- but a guest in front of the machine
-# is the right read, and the machine's two controls stay legible.
-const CAMEO_H := 264.0           # how tall he stands, in design units
+# He stands at the cabinet's bottom-left corner, feet a little above the nav
+# slab -- the same floor and the same measured height as the cameo he
+# replaces: at 300 he covered the BET button, at 264 the machine's two
+# controls stay legible. He is a child of the spin page, so every other page
+# hides him for free and he rides the page slide instead of being deleted by
+# it; overlays that own the whole screen (a raid, the boot) freeze him
+# instead, because they are drawn over the page he is standing on.
+const MASCOT_H := 264.0
+const MASCOT_X := 0.17           # of view width; the left lane's centre line
 
-# name -> [face, how long he holds, which way he comes in]
-#
-# `enter` is -1 for the left corner and +1 for the right. Which side is not
-# arbitrary: he comes in on the side the event happened on where there is one,
-# and the reels are the middle of the screen, so wins bring him up the left
-# where the bet button is and the meter's news brings him up the right.
-const CAMEOS := {
-	"bigwin":   ["thrilled", 2.20, -1.0],
-	"jackpot":  ["thrilled", 2.60, -1.0],
-	"nearmiss": ["shocked",  1.70,  1.0],
-	"empty":    ["sad",      2.00,  1.0],
-	"full":     ["greedy",   1.90,  1.0],
-	"island":   ["smug",     2.30, -1.0],
-	"robbed":   ["angry",    2.10,  1.0],
+# kind -> [face, seconds it holds, priority]. A cue only replaces a running
+# reaction of equal or higher rank, so the jackpot cheer cannot be trimmed by
+# the small-win grin of the same spin arriving a frame later.
+const REACTS := {
+	"win":      ["happy",    1.15, 1],
+	"refill":   ["happy",    1.50, 2],
+	"nearmiss": ["shocked",  1.70, 2],
+	"empty":    ["sad",      1.60, 2],
+	"full":     ["greedy",   1.90, 2],
+	"island":   ["smug",     2.30, 2],
+	"blocked":  ["smug",     2.00, 3],
+	"robbed":   ["angry",    2.40, 3],
+	"bigwin":   ["thrilled", 2.20, 3],
+	"jackpot":  ["thrilled", 2.80, 3],
 }
 
-var _cameo: MascotRig
-var _cameo_kind := ""
-var _cameo_t := 0.0
-var _cameo_hold := 0.0
-var _cameo_side := -1.0
-var _cameo_last := -1e9
+var _mas: MascotRig
+var _mas_shadow: ColorRect
+var _mas_home := Vector2.ZERO
+var _mas_shadow_home := Vector2.ZERO
+var _mas_react := ""             # which REACTS row is running, "" for none
+var _mas_hold := 0.0
+var _mas_t := 0.0                # time inside the current reaction / sit
+var _mas_clock := 0.0            # his own continuous clock, never reset
+var _mas_sad := false            # sitting out an empty meter
+var _mas_act := ""               # the idle's current act, "" between acts
+var _mas_act_t := 0.0
+var _mas_act_len := 0.0
+var _mas_last_act := ""          # never the same act twice running
+var _mas_rest := 1.2             # seconds of plain standing before the next act
+var _mas_watch := 0.0            # 0..1, eased; how far into watching the reels
+var _mas_cheer := 0.0            # decaying excitement; feeds the rig's tempo
+# What the current state is doing to him this frame, on top of the rig's idle.
+var _mas_off := Vector2.ZERO
+var _mas_sq := Vector2.ZERO      # -y is compressed; he is never tilted or turned
+var _mas_arm := Vector2.ZERO
+var _mas_leg := Vector2.ZERO
+var _mas_look := Vector2.ZERO
+var _mas_mouth := 0.0
+var _mas_head := 0.0
 
-# True while anything owns the screen that a cameo must not land on top of.
-func _cameo_blocked() -> bool:
-	# The slot page specifically, not "some page": he vaults out from under the
-	# cabinet, and the cabinet is only on this one. `_transitioning` covers the
-	# slide between pages, which is the window where `_current_page` is already
-	# the destination and the destination is not yet where it will be.
-	return _boot != null or _popup != null or _raiding() or _transitioning \
-		or _journey_layer != null or _current_page != slot_page
-
-func _mascot_cue(kind: String) -> void:
-	if not CAMEOS.has(kind) or _cameo_kind != "" or _cameo_blocked():
+func _add_slot_mascot() -> void:
+	# Fifteen pieces on joints or nobody: there is no undivided fallback
+	# drawing on this screen, and a missing part costs the page its mascot,
+	# never its layout.
+	var rig := MascotRig.new()
+	if not rig.build():
+		rig.queue_free()
 		return
-	var now := float(Time.get_ticks_msec()) / 1000.0
-	if now - _cameo_last < CAMEO_GAP:
-		return
-	if _cameo == null:
-		var rig := MascotRig.new()
-		# A rig that cannot build its fifteen pieces is a rig that draws
-		# nothing -- there is no undivided fallback drawing on this screen the
-		# way there is on the splash, so a failed build simply means no cameos.
-		if not rig.build():
-			rig.queue_free()
-			_cameo_kind = ""
-			return
-		rig.z_index = 110
-		rig.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		add_child(rig)
-		_cameo = rig
-	_cameo_last = now
-	_cameo_kind = kind
-	_cameo_t = 0.0
-	var row: Array = CAMEOS[kind]
-	_cameo.face = String(row[0])
-	_cameo_hold = float(row[1])
-	_cameo_side = float(row[2])
-	_cameo.custom_minimum_size = Vector2(CAMEO_H * 0.78, CAMEO_H)
-	_cameo.size = _cameo.custom_minimum_size
-	_cameo.visible = true
-	_cameo.fade = 0.0
-	Sfx.play("pop", -12.0, 0.02, 1.0)
-
-# The whole visit, written once a frame like every other performance in this
-# game -- MascotRig owns the breathing, the blink, the tail and the ears
-# arriving late on top of it.
-#
-# Four beats over about three seconds: he vaults up from under the cabinet,
-# lands with the squash the vault earned, holds the expression, then drops back
-# out the way he came. The landing is where the whole thing lives: a figure that
-# rises to a stop has no weight, and weight on flat art is squash and legs --
-# see MascotRig's note on why it is never a rotation.
-func _cameo_tick(delta: float) -> void:
-	if _cameo_kind == "" or _cameo == null or not is_instance_valid(_cameo):
-		return
-	# Something took the screen mid-visit. He goes now rather than being drawn
-	# under a dialog for the rest of his hold.
-	if _cameo_blocked():
-		_cameo_kind = ""
-		_cameo.visible = false
-		return
-	_cameo_t += delta
-	var t := _cameo_t
-	var rise := 0.34
-	var fall := 0.30
-	var total := rise + _cameo_hold + fall
-	if t >= total:
-		_cameo_kind = ""
-		_cameo.visible = false
-		return
-
-	var vs := view_size()
-	# HIS FLOOR IS THE NAV BAR, NOT THE BOTTOM OF THE SCREEN. The first cut of
-	# this stood him at `vs.y - CAMEO_H * 0.52` and he landed inside the nav
-	# slab with his body behind it and his ears sticking out of the top -- the
-	# bottom 210 units of this screen belong to chrome that is drawn over
-	# everything and cannot be stood on.
-	#
-	# `nav_slab_top` is the line art must not cross; his feet land a little
-	# above it so the contact reads, and he starts below it so the vault comes
-	# out of cover rather than sliding across open floor.
 	var floor_y := nav_slab_top() - 6.0
-	var rest_y := floor_y - CAMEO_H
-	var hide_y := floor_y - CAMEO_H * 0.18
-	var x := vs.x * (0.17 if _cameo_side < 0.0 else 0.83) - _cameo.size.x * 0.5
+	var w := MASCOT_H * 0.78
+	_mas_home = Vector2(view_size().x * MASCOT_X - w * 0.5, floor_y - MASCOT_H)
 
-	var u := 0.0
-	var land := 0.0          # 1.0 exactly at the moment he arrives
-	if t < rise:
-		# Out fast, easing to a stop. BACK easing overshoots by design: the
-		# overshoot IS the vault, and the squash below catches it.
-		u = 1.0 - pow(1.0 - t / rise, 2.6)
-		_cameo.fade = clampf(t / (rise * 0.55), 0.0, 1.0)
-	elif t < rise + _cameo_hold:
-		u = 1.0
-		land = clampf(1.0 - (t - rise) / 0.34, 0.0, 1.0)
-		_cameo.fade = 1.0
+	# The contact shadow is not his child: it has to stay put while he hops
+	# and leans over it, which is the whole reason it reads as ground.
+	var shade := ColorRect.new()
+	shade.material = CV.contact_shadow_material()
+	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	shade.size = Vector2(176, 48)
+	shade.position = Vector2(view_size().x * MASCOT_X - 88.0, floor_y - 38.0)
+	shade.pivot_offset = shade.size * 0.5
+	shade.z_index = 60
+	slot_page.add_child(shade)
+	_mas_shadow = shade
+	_mas_shadow_home = shade.position
+
+	# Above the cabinet and its glow, below the banners (110), a raid (130)
+	# and every dialog -- the same band the cameo held, now held permanently.
+	rig.z_index = 60
+	rig.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	rig.custom_minimum_size = Vector2(w, MASCOT_H)
+	rig.size = Vector2(w, MASCOT_H)
+	rig.position = _mas_home
+	rig.fade = 0.0                # faded up by his first ticks, not popped in
+	slot_page.add_child(rig)
+	_mas = rig
+
+# The cues. Call sites are unchanged from the cameo days -- a caller asks for
+# a moment by name and does not care that the raccoon no longer has to arrive
+# before he can react. An unknown kind is ignored for the same reason an
+# unknown face is: a typo should cost an expression, not the screen.
+func _mascot_cue(kind: String) -> void:
+	if _mas == null or not is_instance_valid(_mas) or not REACTS.has(kind):
+		return
+	var row: Array = REACTS[kind]
+	if _mas_react != "" and int(row[2]) < int(REACTS[_mas_react][2]):
+		return
+	_mas_react = kind
+	_mas_t = 0.0
+	_mas_hold = float(row[1])
+	_mas.face = String(row[0])
+	_mas_act = ""
+	match kind:
+		"bigwin", "jackpot", "refill":
+			_mas_cheer = 1.0
+		"win", "full":
+			_mas_cheer = minf(1.0, _mas_cheer + 0.30)
+
+func _mascot_tick(delta: float) -> void:
+	if _mas == null or not is_instance_valid(_mas):
+		return
+	# Frozen under whatever owns the whole screen. Every other page hides him
+	# for free, because he is the spin page's child -- and a popup deliberately
+	# does NOT stop him: he is under its dim, still breathing, which is what a
+	# resident does and a guest never could.
+	if _boot != null or _raiding() or _journey_layer != null \
+			or not _mas.is_visible_in_tree():
+		return
+	delta = minf(delta, 0.05)
+	_mas_clock += delta
+	_mas_t += delta
+	_mas_cheer = maxf(0.0, _mas_cheer - delta / 30.0)
+	_mas.fade = minf(_mas.fade + delta * 2.5, 1.0)
+
+	var spinning := slot != null and is_instance_valid(slot) and slot.is_spinning()
+
+	# A reaction runs to its end, then hands back to whichever resting state
+	# the meter says is true. Sitting is a state and not a reaction: he stays
+	# down for as long as the spins stay gone -- and the last spin is spent
+	# while the reels are still turning, so the sit waits for them to stop
+	# rather than mourning a spin that might be about to pay bolts.
+	if _mas_react != "" and _mas_t >= _mas_hold:
+		_mas_react = ""
+		_mas_t = 0.0
+		_mas_rest = randf_range(0.8, 1.8)
+		# Or the last reaction's face outlives it -- a grin that lingers a
+		# beat is charming, a scowl that never ends is a haunted machine.
+		_mas.face = "neutral"
+	if _mas_react == "":
+		var broke := spins <= 0 and not spinning
+		if broke and not _mas_sad:
+			_mas_sad = true
+			_mas_t = 0.0
+			_mas_act = ""
+			_mas.face = "sad"
+		elif _mas_sad and spins > 0:
+			_mas_sad = false
+			_mascot_cue("refill")
+
+	_mas_off = Vector2.ZERO
+	_mas_sq = Vector2.ZERO
+	_mas_arm = Vector2.ZERO
+	_mas_leg = Vector2.ZERO
+	_mas_look = Vector2.ZERO
+	_mas_mouth = 0.0
+	_mas_head = 0.0
+
+	if _mas_react != "":
+		_mascot_react_pose(_mas_t)
+	elif _mas_sad:
+		_mascot_sad_pose()
 	else:
-		var d := (t - rise - _cameo_hold) / fall
-		u = 1.0 - d * d
-		_cameo.fade = clampf(1.0 - d * 1.25, 0.0, 1.0)
-	_cameo.position = Vector2(x, hide_y + (rest_y - hide_y) * u)
+		_mascot_idle_pose(delta, spinning)
 
-	# The landing, and everything that answers it. He compresses on arrival and
-	# springs back out of it, the knees take the load, and the arms fly up --
-	# which is the same order a real landing happens in and the reason it does
-	# not read as a picture being moved up the screen.
-	var settle := land * land
-	_cameo.squash = Vector2(0.16 * settle, -0.20 * settle)
-	_cameo.leg = Vector2(0.34 * settle, -0.34 * settle)
-	_cameo.body = Vector2(0.0, 26.0 * settle)
+	# `body` is only an input to the rig's springs -- it tells the tail, ears
+	# and hat what the body just did. Actually displacing him is this line's
+	# job, and without it the hop would drive his fur and nothing else.
+	_mas.position = _mas_home + _mas_off
+	_mas.body = _mas_off
+	_mas.squash = _mas_sq
+	_mas.arm = _mas_arm
+	_mas.leg = _mas_leg
+	_mas.look = _mas_look
+	_mas.mouth = _mas_mouth
+	_mas.head_turn = _mas_head
+	_mas.tick(delta)
 
-	# What he does with his arms is the difference between the cameos, and it is
-	# the one thing here that is per-kind: a cheer throws both up, a wince
-	# covers, a slump lets them hang.
+	# The shadow answers his height rather than copying it: as he goes up it
+	# pulls in and lightens, and it slides only part of the way when he steps.
+	# That one relationship is most of what makes a cut-out feel like it is
+	# standing on ground.
+	var lift := clampf(-_mas_off.y / 60.0, 0.0, 1.0)
+	_mas_shadow.position.x = _mas_shadow_home.x + _mas_off.x * 0.55
+	var k := 1.0 - 0.30 * lift
+	_mas_shadow.scale = Vector2(k, k)
+	_mas_shadow.modulate.a = 1.0 - 0.45 * lift
+
+# The reactions, each a small pose over the face the cue already set. Arm
+# signs: positive on the left shoulder swings the coin arm out, negative on
+# the right raises it -- see the old cameo's note on why a celebration is one
+# arm up and it is the empty one: the big gold coin is painted into arm_l and
+# two arms up covered his face with it.
+func _mascot_react_pose(t: float) -> void:
+	_mas.energy = 0.30 + 0.55 * _mas_cheer
 	var beat := sin(t * 5.4)
-	match _cameo_kind:
-		"bigwin", "jackpot", "island":
-			# ONE ARM UP, NOT TWO, AND IT IS THE EMPTY ONE.
-			#
-			# 1.15 radians was a shrug -- a shoulder on a piece that hangs down
-			# needs about 115 degrees before the paw clears the head. But at
-			# 2.0 on BOTH arms the celebration covered his face, because the
-			# big gold coin is painted into arm_l and goes wherever that arm
-			# goes. So the coin arm holds it out at shoulder height, where it
-			# is the thing being celebrated and is legible, and the empty arm
-			# punches. Asymmetry is the better pose anyway -- see the wink in
-			# MascotRig.FACES for the same argument about the face.
-			_cameo.arm = Vector2(0.86 + 0.10 * beat, -2.10 - 0.18 * beat)
-			_cameo.mouth = 0.85
-			_cameo.look = Vector2(-0.25 * _cameo_side, -0.35)
+	match _mas_react:
+		"bigwin", "jackpot":
+			# The cheer: the coin arm holds at shoulder height where the coin
+			# is legible, the empty arm punches, and under it he bounces on
+			# legs that tuck at the top. The bounce decays instead of
+			# stopping, so the celebration runs out of him like a laugh does.
+			var decay := exp(-t * 0.9)
+			var hop := absf(sin(t * 7.0)) * decay
+			_mas_off.y = -44.0 * hop
+			_mas_sq = Vector2(-0.05 * hop, 0.07 * hop)
+			_mas_leg = Vector2(-0.24 * hop, 0.24 * hop)
+			_mas_arm = Vector2(0.86 + 0.10 * beat, -2.10 - 0.18 * beat)
+			_mas_mouth = 0.85
+			_mas_look = Vector2(0.25, -0.35)
+		"win", "refill":
+			# One bounce and a grin. An ordinary win is a nod, not a party --
+			# he reacts to every coin now that he is standing here, and the
+			# only thing keeping that from being scenery is scale.
+			var v := clampf(t / 0.55, 0.0, 1.0)
+			var h := 4.0 * v * (1.0 - v)
+			_mas_off.y = -24.0 * h
+			_mas_sq = Vector2(-0.035 * h, 0.045 * h)
+			_mas_arm = Vector2(0.15 * h, -1.35 * h)
+			_mas_leg = Vector2(-0.10 * h, 0.10 * h)
+			_mas_mouth = 0.55 * clampf(sin(t / maxf(_mas_hold, 0.01) * PI) * 1.6, 0.0, 1.0)
+			_mas_look = Vector2(0.30, -0.30)
 		"nearmiss":
-			# Paws up at his own face. Both arms swing inward, which is the one
-			# gesture this rig can make that reads as "oh no" without a hand
-			# that can open.
-			_cameo.arm = Vector2(-0.75, 0.75)
-			_cameo.mouth = 0.55
-			_cameo.look = Vector2(-0.6 * _cameo_side, -0.1)
+			# Paws up at his own face -- the one gesture this rig can make
+			# that reads as "oh no" without a hand that can open -- and a
+			# small recoil away from the machine that did it to him.
+			var e := minf(t / 0.18, 1.0)
+			_mas_off.x = -8.0 * e
+			_mas_arm = Vector2(-0.75, 0.75) * e
+			_mas_mouth = 0.55 * e
+			_mas_look = Vector2(0.55, -0.10)
 		"empty":
-			_cameo.arm = Vector2(0.10 * beat, -0.10 * beat)
-			_cameo.mouth = 0.0
-			_cameo.look = Vector2(-0.35 * _cameo_side, 0.45)
-		"full", "robbed":
-			_cameo.arm = Vector2(0.55 + 0.20 * beat, -0.95 - 0.20 * beat)
-			_cameo.mouth = 0.45
-			_cameo.look = Vector2(-0.5 * _cameo_side, -0.05)
-		_:
-			_cameo.arm = Vector2(0.30 * beat, -0.30 * beat)
-	_cameo.tick(delta)
+			# The slump the sit grows out of: shoulders drop, hips sink, and
+			# the sad state under this holds the shape when the hold runs out.
+			var sg := sin(minf(t / 0.45, 1.0) * PI * 0.5)
+			_mas_off.y = 12.0 * sg
+			_mas_sq = Vector2(0.07, -0.09) * sg
+			_mas_arm = Vector2(-0.45, 0.45) * sg
+			_mas_look = Vector2(0.15, 0.45 * sg)
+			_mas_mouth = 0.15 * sg
+		"full":
+			# Rubbing his paws, eyes on the piggy across the cabinet.
+			var rub := sin(t * 9.0)
+			_mas_arm = Vector2(-0.55 + 0.12 * rub, 0.55 + 0.12 * rub)
+			_mas_sq = Vector2(0.02, 0.02)
+			_mas_look = Vector2(0.60, 0.12)
+			_mas_mouth = 0.40
+		"robbed":
+			# The fist, a stomp, and a tremble he cannot keep out of his
+			# shoulders. The page itself is already shaking -- see
+			# _maybe_revenge -- so his job is the anger, not the impact.
+			_mas_arm = Vector2(0.30, -1.85 - 0.25 * sin(t * 10.0))
+			_mas_leg = Vector2(0.30 * maxf(0.0, sin(t * 6.0)), 0.0)
+			_mas_off.x = 2.5 * sin(t * 14.0)
+			_mas_mouth = 0.35
+			_mas_look = Vector2(0.30, -0.15)
+		"blocked":
+			# Arms folded and a slow nod. Smug is aimed at somebody -- the
+			# rival who just bounced off the shield -- and the wink is already
+			# in the face.
+			var e := minf(t / 0.30, 1.0)
+			_mas_arm = Vector2(-0.95, 0.95) * e
+			_mas_sq = Vector2(0.02, 0.03) * e
+			_mas_head = 0.05 * sin(t * 3.0)
+			_mas_look = Vector2(0.40, -0.10)
+			_mas_mouth = 0.10
+		"island":
+			var e := minf(t / 0.30, 1.0)
+			_mas_arm = Vector2(0.50, -1.20) * e
+			_mas_look = Vector2(-0.30, -0.20)
+			_mas_mouth = 0.45
+
+# Out of spins. He sits: a deep crouch the rig turns into splayed, shortened
+# legs, hips dropped, arms limp, eyes on the floor. The sigh is the one
+# deliberate thing he does, and it runs on a clock that shares no period with
+# the drift, so the sulk never visibly loops.
+func _mascot_sad_pose() -> void:
+	_mas.energy = 0.0
+	_mas_sq = Vector2(0.13, -0.16)
+	_mas_off.y = 18.0
+	_mas_off.x = 1.5 * sin(_mas_clock * TAU / 6.3)
+	var sigh := pow(maxf(0.0, sin(_mas_clock * TAU / 7.1)), 3.0)
+	_mas_sq += Vector2(0.012, -0.018) * sigh
+	_mas_mouth = 0.14 * sigh
+	var droop := sin(_mas_clock * 0.9)
+	_mas_arm = Vector2(-0.22 + 0.04 * droop, 0.22 - 0.04 * droop)
+	_mas_look = Vector2(-0.15, 0.5)
+	# Sat long enough, sadness becomes a nap. The meter is refilling on its
+	# own, and "asleep until the spins are back" is a kinder read than five
+	# minutes of misery -- and the wake-up plays through `refill` for free.
+	if _mas_t > 24.0 and _mas.face != "sleepy":
+		_mas.face = "sleepy"
+
+# The idle: a weight sway underneath everything, the reels watched while they
+# turn, and otherwise a short act every few seconds with plain standing in
+# between. The rig's involuntary layer is what fills the gaps -- the acts only
+# ever have to say the deliberate part.
+func _mascot_idle_pose(delta: float, spinning: bool) -> void:
+	_mas.energy = 0.20 + 0.55 * _mas_cheer
+	# A step, not a tilt: his weight shifts a few units side to side and the
+	# tail and ears trail it. 3.7s shares no period with the rig's 2.6s
+	# breath, so the eye never finds a loop point.
+	_mas_off.x = 4.0 * sin(_mas_clock * TAU / 3.70 + 0.7)
+
+	# While the reels are turning he is watching them and doing nothing else:
+	# a lean toward the glass (a scale-up, never a tilt), ears forward,
+	# half-lidded. Eased both ways so a quick stop does not snap him upright.
+	_mas_watch = move_toward(_mas_watch, 1.0 if spinning else 0.0, delta * 3.0)
+	var w := _mas_watch
+	if w > 0.05:
+		_mas_act = ""
+		_mas_off.x += 10.0 * w
+		_mas_sq = Vector2(0.02, 0.02) * w
+		_mas_look = Vector2(0.85, -0.10) * w
+		_mas_head = 0.13 * w
+		_mas_arm = Vector2(-0.16, 0.16) * w
+		_mas_mouth = 0.18 * w
+		if spinning and _mas.face != "sly":
+			_mas.face = "sly"
+		elif not spinning and _mas.face == "sly":
+			_mas.face = "neutral"
+		return
+	if _mas.face == "sly":
+		_mas.face = "neutral"
+
+	if _mas_act == "":
+		# Excitement shortens the wait, the same lever the title screen pulls.
+		_mas_rest -= delta * (1.0 + 0.8 * _mas_cheer)
+		if _mas_rest <= 0.0:
+			_mascot_pick_act()
+		return
+
+	_mas_act_t += delta
+	var u := clampf(_mas_act_t / _mas_act_len, 0.0, 1.0)
+	match _mas_act:
+		"glance":
+			# The thief's look: left, hold, right, settle. He is a character
+			# who is about to steal something, and this is the cheapest
+			# possible way to keep saying so.
+			var a := 0.0
+			if u < 0.18:
+				a = -smoothstep(0.0, 1.0, u / 0.18)
+			elif u < 0.42:
+				a = -1.0
+			elif u < 0.60:
+				a = -1.0 + 2.0 * smoothstep(0.0, 1.0, (u - 0.42) / 0.18)
+			elif u < 0.82:
+				a = 1.0
+			else:
+				a = 1.0 - smoothstep(0.0, 1.0, (u - 0.82) / 0.18)
+			_mas_off.x += 10.0 * a
+			_mas_sq = Vector2(0.015, -0.015) * absf(a)
+			_mas_head = deg_to_rad(6.0) * a
+			_mas_look = Vector2(a, -0.10)
+			_mas_arm = Vector2(deg_to_rad(5.0), deg_to_rad(5.0)) * a
+			_mas_mouth = 0.12
+		"reels":
+			# A glance up at the machine he lives beside, sly for the length
+			# of it -- the resting version of the watch above.
+			var e := sin(u * PI)
+			_mas_off.x += 6.0 * e
+			_mas_look = Vector2(0.75, -0.12) * e
+			_mas_head = 0.12 * e
+			_mas_mouth = 0.15 * e
+		"hop":
+			if u < 0.30:
+				var c := smoothstep(0.0, 1.0, u / 0.30)
+				_mas_sq = Vector2(0.06, -0.07) * c
+				_mas_arm = Vector2(deg_to_rad(-12.0), deg_to_rad(12.0)) * c
+				_mas_look = Vector2(0.0, 0.4) * c
+			else:
+				var v := (u - 0.30) / 0.70
+				var h := 4.0 * v * (1.0 - v)
+				_mas_off.y = -34.0 * h
+				_mas_sq = Vector2(-0.045 * h, 0.055 * h)
+				# Arms up and legs tucked at the top: the two things a body
+				# does in the air that a sliding drawing cannot.
+				_mas_arm = Vector2(deg_to_rad(26.0), deg_to_rad(-26.0)) * h
+				_mas_leg = Vector2(deg_to_rad(-10.0), deg_to_rad(10.0)) * h
+				_mas_mouth = 0.5 * h
+		"wave":
+			# Aimed at whoever is holding the phone, so it is rare on
+			# purpose: aimed-at-you twice a minute is a greeter, not a
+			# character. Same one-armed act the title screen settled on.
+			var e := smoothstep(0.0, 0.20, u) * smoothstep(1.0, 0.76, u)
+			var swing := sin(u * TAU * 2.0)
+			_mas_arm = Vector2(deg_to_rad(11.0) * e,
+				(deg_to_rad(-62.0) + deg_to_rad(16.0) * swing) * e)
+			_mas_off.x += 3.0 * swing * e
+			_mas_off.y = -8.0 * e
+			_mas_sq = Vector2(-0.018, 0.026) * e
+			_mas_head = deg_to_rad(3.5) * swing * e
+			_mas_look = Vector2(0.10 * swing, -0.18) * e
+			_mas_mouth = 0.75 * e
+	if _mas_act_t >= _mas_act_len:
+		if _mas_act == "hop":
+			# Dust off his soles, not off the middle of his box.
+			FX.burst(slot_page, Vector2(_mas_home.x + _mas.size.x * 0.5 + _mas_off.x,
+				_mas_home.y + MASCOT_H - 4.0), Lagoon.SAND_DEEP, 5)
+		if _mas.face != "neutral":
+			_mas.face = "neutral"
+		_mas_act = ""
+		_mas_rest = randf_range(2.2, 5.0)
+
+func _mascot_pick_act() -> void:
+	# Glances and reel-watching are the bread; the hop is seasoning and the
+	# wave is rare -- see its note. Never the same act twice running.
+	var pool: Array[String] = ["glance", "reels", "glance", "reels", "hop"]
+	if randf() < 0.30:
+		pool.append("wave")
+	var choices := pool.filter(func(a: String) -> bool: return a != _mas_last_act)
+	if choices.is_empty():
+		choices = pool
+	_mas_act = choices.pick_random()
+	_mas_last_act = _mas_act
+	_mas_act_t = 0.0
+	match _mas_act:
+		"glance":
+			_mas_act_len = 1.65
+		"reels":
+			_mas_act_len = 1.50
+			_mas.face = "sly"
+		"hop":
+			_mas_act_len = 1.00
+		"wave":
+			_mas_act_len = 1.55
+			_mas.face = "happy"
 
 func _after(secs: float, what: Callable) -> void:
 	var tw := create_tween()
