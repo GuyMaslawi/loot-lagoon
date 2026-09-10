@@ -377,6 +377,14 @@ func _t_deal_chain() -> void:
 				paid_rungs += 1
 				# Money never advances the ladder on the tap; the receipt does.
 				m._take_deal(i)
+				# BACK OUT OF THE PRETEND SHEET. The tap above armed the desktop
+				# sim, which would otherwise pay a real receipt 0.7s from now --
+				# long after this loop has moved on -- and that stray grant lands
+				# inside whatever test is measuring by then. It hit the power-up
+				# assertions at random and read exactly like the free columns
+				# being paid twice; the loyalty leak documented in _t_powerup was
+				# this same receipt wearing a different number.
+				IAP.sim_cancel()
 				m._close_popup(true)
 				_chk("%s rung %d waits for the receipt" % [chain["id"], i + 1],
 					m.deal_taken == i)

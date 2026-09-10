@@ -76,6 +76,8 @@ var busy := false
 # deliver the pack on this launch or the next one.
 const PURCHASE_TIMEOUT := 180.0
 var _watchdog: SceneTreeTimer = null
+# The desktop sim's pending sheet, so sim_cancel can dismiss it. See _simulate.
+var _sim: SceneTreeTimer = null
 
 var _store: Object = null
 # Android's. Never both: a build has one store or none.
@@ -242,11 +244,31 @@ func restore() -> void:
 
 func _simulate(pid: String) -> void:
 	var t := get_tree().create_timer(SIM_DELAY)
+	_sim = t
+	# Guarded like the watchdog, and for the same reason: this timer used to
+	# pay out unconditionally, so every pretend sheet ever opened WOULD grant,
+	# 0.7s later, into whatever was happening by then. qa_flows found it the
+	# expensive way -- its ladder test taps six paid rungs without awaiting
+	# any of them, and the stale receipts landed inside the power-up test's
+	# measurements, which then read exactly like the free columns paying twice.
 	t.timeout.connect(func() -> void:
+		if _sim != t or not busy or _pending != pid:
+			return
+		_sim = null
 		busy = false
 		_pending = ""
 		_emit("ok", pid, "")
 	)
+
+# The pretend sheet being backed out of. Only meaningful where simulated() is
+# true -- on a real store the sheet belongs to Apple or Google and a
+# cancellation arrives as a store response, never as a call from the game.
+func sim_cancel() -> void:
+	if not simulated():
+		return
+	_sim = null
+	busy = false
+	_pending = ""
 
 func _fail(pid: String, message: String) -> void:
 	busy = false
