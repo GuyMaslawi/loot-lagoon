@@ -970,7 +970,12 @@ func _after_boot() -> void:
 	# and dialogs. A takeover on the same frame lands on top of the lot, and
 	# _maybe_show_powerup's own guard cannot help because at that instant there
 	# is genuinely nothing up yet.
-	_after(2.2, _maybe_show_powerup)
+	# ...unless a SHOT is being taken. The takeover's 2.2s delay lands inside
+	# the harness's settle window, so a fresh save photographed "the spin
+	# page" and got the power-up door instead. A harness that WANTS the
+	# takeover asks for it by name: SHOT=popup:powerup.
+	if OS.get_environment("SHOT") == "":
+		_after(2.2, _maybe_show_powerup)
 	# DEMO_RAID sails straight to a raid. An attack needs three hammers on the
 	# reels to happen for real, which is not a thing you can spin up on demand
 	# while looking at the animation it plays.

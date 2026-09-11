@@ -241,12 +241,18 @@ def ball(r, loc=(0, 0, 0), material=None, scale=(1, 1, 1), subd=2):
     return _finish(o, material, 0, 0, True)
 
 
-def render(path, dist, yaw=-32.0, pitch=22.0, lens=85.0, target=(0, 0, 0)):
+def render(path, dist, yaw=-32.0, pitch=22.0, lens=85.0, target=(0, 0, 0),
+           shadow=True):
+    """`shadow=False` for pieces that are MOUNTED on something in the game --
+    a strand lashed to the cabinet's edge or a porthole bolted to its face has
+    no ground under it, and an ellipse of shadow floating under a mounted
+    object reads as a smudge, not a shadow."""
     camera(dist, yaw, pitch, lens, target)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     bpy.context.scene.render.filepath = path
     bpy.ops.render.render(write_still=True)
-    contact_shadow(path)
+    if shadow:
+        contact_shadow(path)
     print("WROTE", path)
 
 
@@ -457,13 +463,26 @@ def rig(key=290.0, warm=(1.0, 0.94, 0.84)):
     (the fill gave back what the key and rim took), so nothing clips -- the
     1800W paper-white trap documented at the top of this file still holds.
     """
-    light((-3.4, -3.2, 6.6), key, size=3.2, color=warm, aim=(0, 0, 0.5))
-    light((5.0, -3.4, 1.4), key * 0.18, size=6.0, color=(0.78, 0.87, 1.0),
-          aim=(0, 0, 0.7), shadow=False)
-    light((2.6, 4.8, 5.6), key * 0.62, size=2.2, color=(0.93, 0.97, 1.0),
-          aim=(0, 0, 0.9))
-    light((0.0, -4.6, -1.4), key * 0.10, size=7.0, color=(1.0, 0.92, 0.78),
-          aim=(0, 0, 0.6), shadow=False)
+    rig_at(0.0, key, warm)
+
+
+def rig_at(cz, key=290.0, warm=(1.0, 0.94, 0.84), spread=1.0):
+    """The same four lights lifted to light an object centred at height `cz`.
+
+    The stock rig aims at the half-metre band above the ground because every
+    prop before the machine dressing LIVED in that band. The rope strand is
+    five units tall: under the stock rig its top third fell out of the key
+    into the fill and went flat. Lifting positions and aims together keeps
+    the ratios (and the exposure discipline) identical. `spread` scales the
+    lights' distance for objects wider than a chest."""
+    light((-3.4 * spread, -3.2 * spread, 6.6 + cz), key, size=3.2, color=warm,
+          aim=(0, 0, 0.5 + cz))
+    light((5.0 * spread, -3.4 * spread, 1.4 + cz), key * 0.18, size=6.0,
+          color=(0.78, 0.87, 1.0), aim=(0, 0, 0.7 + cz), shadow=False)
+    light((2.6 * spread, 4.8 * spread, 5.6 + cz), key * 0.62, size=2.2,
+          color=(0.93, 0.97, 1.0), aim=(0, 0, 0.9 + cz))
+    light((0.0, -4.6 * spread, -1.4 + cz), key * 0.10, size=7.0,
+          color=(1.0, 0.92, 0.78), aim=(0, 0, 0.6 + cz), shadow=False)
 
 
 def contact_shadow(path, strength=0.42, spread=1.06, squash=0.115, lift=0.010):
@@ -808,6 +827,320 @@ def lock(path):
     render(path, dist=5.6, yaw=-24.0, pitch=13.0, target=(0, 0, 0.82))
 
 
+# =============================================================================
+#  The machine dressing -- the deep-salvage cabinet
+# =============================================================================
+#
+# Guy asked for the machine to be WRAPPED in illustration the way the games he
+# likes wrap theirs, and the direction he approved is "מכונת מצולות": a brass
+# cabinet hauled up off the seabed, with the sea still holding on to it. The
+# vocabulary is deliberately the game's own -- brass, rope, coral, pearl, kelp
+# -- and deliberately NOT the reference games' carved wood and ribbon.
+#
+# It ships as separate mounted pieces rather than one big frame, because the
+# cabinet's height is a share of whatever the phone leaves (slot_view.gd says
+# so at length) while its WIDTH is constant. So EVERY piece is fixed-size and
+# rides an edge or a corner, and nothing stretches. (A first pass tried
+# full-height rope strands up the edges; a 1:16 render was clipped by its own
+# frame, and worse, the cabinet's height varies by device so the rope's twist
+# would stretch with it. The wrap-the-sides job moved into the reef's own
+# shoulders, which climb the cabinet's lower edges instead.)
+#
+#   slot_reef      -- 2:1 strip the machine stands in: rocks, coral, the rope
+#                     that lashes it down, and kelp shoulders that climb the
+#                     lower edges. Ground shadow ON.
+#   slot_porthole  -- one brass porthole, reused where the coral spares a spot.
+#   slot_coral     -- the top-right corner cluster.
+
+def _dressing_mats():
+    """One saturated palette for every dressing piece. Bases are DEEPER than
+    the colour wanted on screen -- the gift's two pink passes are the incident:
+    under this key a saturated base renders about a step brighter than its
+    swatch, and a coat would brighten it again (so: no coats here)."""
+    return {
+        "rock":  mat("rock", (0.36, 0.27, 0.16), rough=0.88),
+        "rock2": mat("rock2", (0.15, 0.19, 0.24), rough=0.92),
+        "coral": mat("coralr", (0.66, 0.10, 0.16), rough=0.48),
+        "coral2": mat("coralo", (0.82, 0.34, 0.08), rough=0.50),
+        "kelp":  mat("kelpm", (0.07, 0.32, 0.17), rough=0.45, sheen=0.6),
+        "rope":  mat("ropem", (0.60, 0.47, 0.30), rough=0.85, sheen=0.35),
+        # deep enough that the white pearl SEPARATES -- a pale shell under
+        # this key renders white, and white-on-white was a marshmallow
+        "shell": mat("shellm", (0.55, 0.33, 0.24), rough=0.40, coat=0.25),
+        "pearl": mat("pearlm", (0.93, 0.92, 0.96), rough=0.08, coat=1.0),
+        "star":  mat("starm", (0.80, 0.30, 0.10), rough=0.62),
+        "gold":  brushed(mat("dgold", (0.94, 0.71, 0.24), rough=0.18, metal=1.0),
+                         scale=90, strength=0.03),
+        "brass": brushed(mat("dbrass", (0.86, 0.63, 0.22), rough=0.22, metal=1.0),
+                         strength=0.04),
+        "glass": mat("dglass", (0.70, 0.90, 0.94), rough=0.04,
+                     transmission=0.92, ior=1.35),
+        "ink":   mat("dink", (0.010, 0.075, 0.110), rough=0.55),
+    }
+
+
+def coral_branch(base, heading, r0, material, rnd, segs=6):
+    """A branch is touching balls shrinking along a curve that seeks UP.
+    Touching is the point -- the shackle's caterpillar lesson inverted: knobby
+    beads that merge into one another is exactly what branching coral IS."""
+    p = Vector(base)
+    d = Vector(heading).normalized()
+    for i in range(segs):
+        t = i / max(segs - 1.0, 1.0)
+        r = r0 * (1.0 - 0.52 * t)
+        ball(r, loc=tuple(p), material=material)
+        d = (d + Vector((rnd.uniform(-0.20, 0.20), rnd.uniform(-0.10, 0.10),
+                         0.30))).normalized()
+        p = p + d * (r * 1.35)
+
+
+def starfish(loc, r, material, rot_z=0.0):
+    for i in range(5):
+        a = rot_z + i * math.tau / 5.0
+        arm = ball(r * 0.40, loc=(loc[0] + math.cos(a) * r * 0.62,
+                                  loc[1] + math.sin(a) * r * 0.62, loc[2]),
+                   material=material, scale=(1.7, 0.60, 0.42))
+        arm.rotation_euler = Euler((0, 0, a))
+    ball(r * 0.5, loc=loc, material=material, scale=(1.05, 1.05, 0.50))
+
+
+def clam(loc, r, shell_m, pearl_m, yaw=0.0):
+    """Half-open, pearl nested between the valves. The first pass floated a
+    pearl two-fifths the shell's size in a shallow bowl and it read as an
+    eyeball; the pearl is small and SUNK now, and the upper valve leans back
+    like a lid rather than hovering."""
+    ball(r, loc=loc, material=shell_m, scale=(1.0, 0.85, 0.30))
+    up = ball(r, loc=(loc[0], loc[1] + r * 0.72, loc[2] + r * 0.34),
+              material=shell_m, scale=(1.0, 0.85, 0.30))
+    up.rotation_euler = Euler((math.radians(74), 0, yaw))
+    ball(r * 0.44, loc=(loc[0], loc[1] - r * 0.16, loc[2] + r * 0.30),
+         material=pearl_m)
+
+
+def kelp_sprig(loc, h, material, rnd, lean=0.0, leaves=3):
+    """A fan of blades off one holdfast. Each blade is a squashed ellipsoid --
+    rounded tip, belly in the middle -- which is what a kelp blade is; the
+    first pass used cones and got a bed of green party hats."""
+    for k in range(leaves):
+        a = lean + rnd.uniform(-0.55, 0.55)
+        bh = h * rnd.uniform(0.72, 1.1)
+        o = ball(1.0, loc=(loc[0] + math.sin(a) * bh * 0.30, loc[1],
+                           loc[2] + bh * 0.48),
+                 material=material, scale=(bh * 0.11, bh * 0.035, bh * 0.52))
+        o.rotation_euler = Euler((rnd.uniform(-0.10, 0.10), a * 0.55, 0))
+
+
+def rope_drape(pts, material, r=0.10):
+    """One continuous rope through `pts`, sagging where the points say so.
+    A curve with a bevel, not a chain of cylinders -- the shackle rule."""
+    cu = bpy.data.curves.new("rope", 'CURVE')
+    cu.dimensions = '3D'
+    cu.bevel_depth = r
+    cu.bevel_resolution = 6
+    sp = cu.splines.new('BEZIER')
+    sp.bezier_points.add(len(pts) - 1)
+    for bp, co in zip(sp.bezier_points, pts):
+        bp.co = co
+        bp.handle_left_type = bp.handle_right_type = 'AUTO'
+    o = bpy.data.objects.new("rope", cu)
+    bpy.context.scene.collection.objects.link(o)
+    o.data.materials.append(material)
+    return o
+
+
+def build_reef():
+    """The strip the machine stands in, and the shoulders that climb it.
+
+    Composed heavy at the ends and low in the middle: the middle sits under
+    the SPIN button's row and has to stay quiet, but LOW is not EMPTY -- the
+    first pass left a hole there and the strip fell into two islands. The
+    ridge is continuous now, the rope ties the whole span together, and the
+    tall kelp at the ends is what wraps the cabinet's lower edges."""
+    M = _dressing_mats()
+    rnd = random.Random(19)
+    # The geometry contract with slot_view.gd: the strip is displayed 723
+    # design units wide behind a 528-wide cabinet, so the cabinet's edges land
+    # at ±73% of the frame's half-width. Everything meant to CLIMB the machine
+    # (the tall kelp, the shoulder coral) lives at ±3.4..3.6 world, which the
+    # camera below maps onto exactly that line; everything meant to peek out
+    # UNDERNEATH lives on the front slope, y < -0.35 and z < 0.5.
+    #
+    # the rock ridge: overlapping, squashed, unbroken from end to end
+    for x, r, m in [(-3.85, 0.60, "rock2"), (-3.45, 0.62, "rock"),
+                    (-2.85, 0.52, "rock2"),
+                    (-2.24, 0.44, "rock"), (-1.64, 0.36, "rock2"),
+                    (-1.10, 0.32, "rock"), (-0.58, 0.28, "rock2"),
+                    (-0.06, 0.30, "rock"), (0.48, 0.28, "rock2"),
+                    (1.00, 0.32, "rock"), (1.54, 0.38, "rock2"),
+                    (2.14, 0.46, "rock"), (2.76, 0.54, "rock2"),
+                    (3.38, 0.64, "rock"), (3.85, 0.62, "rock2")]:
+        ball(r, loc=(x, rnd.uniform(-0.10, 0.10), r * 0.46),
+             material=M[m], scale=(1.35, 1.0, 0.66))
+    # THE ROPE: one continuous lashing over the ridge, sagging between rocks.
+    # It is what makes the strip read as "the machine is tied into this reef"
+    # rather than "rocks were arranged near a machine".
+    pts = []
+    for i in range(15):
+        x = -4.0 + 8.0 * i / 14.0
+        sag = 0.16 if i % 2 == 1 else 0.0
+        pts.append((x, -0.30 - 0.10 * math.sin(i * 1.7),
+                    0.62 - sag + 0.18 * math.cos(i * 0.9)))
+    rope_drape(pts, M["rope"], r=0.095)
+    # ...and a coiled spare lying flat on the sand in front, where a coil
+    # actually ends up. On the shoulder it floated and read as a doughnut.
+    coil = []
+    for i in range(26):
+        t = i / 25.0
+        a = t * 3.1 * math.tau
+        cr = 0.30 - 0.11 * t
+        coil.append((2.15 + math.cos(a) * cr, -0.60 + math.sin(a) * cr * 0.8,
+                     0.07 + t * 0.12))
+    rope_drape(coil, M["rope"], r=0.070)
+    # branching coral owns the two shoulders
+    for base, head, r0, c, n in [
+            ((-3.95, -0.10, 0.95), (-0.5, -0.1, 1.0), 0.17, "coral", 7),
+            ((-3.75, 0.15, 1.0), (0.3, 0.1, 1.0), 0.14, "coral", 6),
+            ((-3.30, -0.20, 0.8), (0.6, -0.2, 1.0), 0.11, "coral2", 5),
+            ((3.75, -0.05, 1.0), (0.5, -0.1, 1.0), 0.16, "coral", 7),
+            ((3.95, 0.15, 0.95), (-0.3, 0.1, 1.0), 0.13, "coral2", 6),
+            ((3.30, -0.25, 0.75), (-0.6, -0.2, 1.0), 0.10, "coral", 4),
+            ((-0.06, 0.05, 0.52), (0.15, -0.1, 1.0), 0.085, "coral2", 4)]:
+        coral_branch(base, head, r0, M[c], rnd, n)
+    # tube coral: a family of open pipes, one spot each side of centre
+    for cx, m in [(-1.55, "coral2"), (1.60, "coral")]:
+        for _ in range(5):
+            h = rnd.uniform(0.30, 0.60)
+            cyl(rnd.uniform(0.09, 0.13), h,
+                loc=(cx + rnd.uniform(-0.28, 0.28), rnd.uniform(-0.2, 0.2),
+                     0.30 + h * 0.5),
+                rot=(rnd.uniform(-0.2, 0.2), rnd.uniform(-0.2, 0.2), 0),
+                material=M[m], bevel=0.02, seg=2, verts=24)
+    # THE SHOULDERS: tall kelp at both ends, the part that climbs the cabinet.
+    # Tall enough to clear the two things that live at the machine's feet on
+    # a real screen: the resident raccoon on the left and the ambient chest on
+    # the right -- at 2.6 the fronds topped out behind both and the wrap
+    # vanished entirely on device.
+    kelp_sprig((-3.55, 0.25, 0.55), 3.7, M["kelp"], rnd, lean=-0.24, leaves=4)
+    kelp_sprig((3.50, 0.25, 0.55), 3.5, M["kelp"], rnd, lean=0.26, leaves=4)
+    kelp_sprig((-3.00, 0.30, 0.45), 1.3, M["kelp"], rnd, lean=-0.1)
+    kelp_sprig((2.95, 0.30, 0.45), 1.2, M["kelp"], rnd, lean=0.15)
+    kelp_sprig((0.85, 0.30, 0.35), 0.85, M["kelp"], rnd, lean=0.1)
+    # the clam sits left of centre on its own rock, pearl toward camera
+    clam((-1.10, -0.38, 0.55), 0.30, M["shell"], M["pearl"], yaw=0.2)
+    starfish((0.50, -0.42, 0.50), 0.26, M["star"], rot_z=0.5)
+    # spilled gold: the machine leaks a little of what it pays. On the FRONT
+    # SLOPE of the ridge, tilted toward camera -- flat on the ground they
+    # vanished behind the rocks' own bellies.
+    for _ in range(22):
+        x = rnd.uniform(-3.8, 3.8)
+        cyl(rnd.uniform(0.10, 0.14), 0.035,
+            loc=(x, rnd.uniform(-0.60, -0.38), 0.16 + rnd.uniform(0.0, 0.14)),
+            rot=(rnd.uniform(-0.4, 0.4), rnd.uniform(-0.4, 0.4),
+                 rnd.uniform(0, 3.14)),
+            material=M["gold"], bevel=0.008, seg=2, verts=24)
+    # a modest pile of it by the starfish, like it slid off the machine
+    for _ in range(7):
+        cyl(rnd.uniform(0.11, 0.14), 0.035,
+            loc=(1.15 + rnd.uniform(-0.2, 0.2), -0.48 + rnd.uniform(-0.1, 0.1),
+                 0.08 + rnd.uniform(0.0, 0.14)),
+            rot=(rnd.uniform(-0.5, 0.5), rnd.uniform(-0.5, 0.5),
+                 rnd.uniform(0, 3.14)),
+            material=M["gold"], bevel=0.008, seg=2, verts=24)
+
+
+def build_porthole():
+    """A brass porthole for the cabinet's corners: flange, bolt ring, deep
+    water behind the glass. The pane is ONE glazed deep-lagoon disc rather
+    than clear glass over an ink back -- a transmissive pane at this framing
+    is a mirror for the sky, and it rendered as olive fog; a dark gloss under
+    a coat gives the same "wet glass" ping and stays the colour of the deep."""
+    M = _dressing_mats()
+    cz = 1.0
+    cyl(1.00, 0.10, loc=(0, 0.05, cz), rot=(math.pi / 2, 0, 0),
+        material=M["brass"], bevel=0.05, seg=4, verts=64)
+    pane = mat("pane", (0.018, 0.13, 0.19), rough=0.10, coat=1.0)
+    pane.node_tree.nodes["Principled BSDF"].inputs["Coat Roughness"] \
+        .default_value = 0.03
+    # IN FRONT of the flange's face, not sunk into it: the flange is a solid
+    # disc, so a pane behind its front face is simply invisible and the
+    # "glass" the first render showed was brass.
+    cyl(0.62, 0.08, loc=(0, -0.09, cz), rot=(math.pi / 2, 0, 0),
+        material=pane, bevel=0.02, seg=2, verts=48)
+    # The ring is FAT on purpose. This ships at 44px, where a slender rim
+    # leaves the dark pane as the whole silhouette -- it read as a navy dot
+    # on the first device shot. A third of the radius is ring now.
+    bpy.ops.mesh.primitive_torus_add(major_radius=0.74, minor_radius=0.21,
+                                     major_segments=64, minor_segments=24,
+                                     location=(0, -0.02, cz),
+                                     rotation=(math.pi / 2, 0, 0))
+    _finish(bpy.context.object, M["brass"], 0.0, 0, True)
+    for i in range(8):
+        a = i * math.tau / 8.0 + 0.39
+        ball(0.085, loc=(math.cos(a) * 0.92, -0.14, cz + math.sin(a) * 0.92),
+             material=M["brass"], scale=(1, 0.6, 1))
+
+
+def build_corner_coral():
+    """The top-right corner cluster, composed for WHERE it mounts: the steal
+    card overlaps the cluster's inner-left third on screen, so everything
+    worth seeing -- the tall red branches, the kelp, the pearl -- is weighted
+    to the RIGHT of the cluster, where it peeks past the card and over the
+    cabinet's corner. The inner-left is expendable tubes and rock."""
+    M = _dressing_mats()
+    rnd = random.Random(31)
+    ball(0.34, loc=(0.95, 0, 0.30), material=M["rock"], scale=(1.3, 1.0, 0.8))
+    ball(0.26, loc=(0.35, 0.05, 0.22), material=M["rock2"], scale=(1.2, 1.0, 0.75))
+    coral_branch((1.28, -0.05, 0.42), (0.45, -0.1, 1.0), 0.14, M["coral"], rnd, 6)
+    coral_branch((1.00, 0.10, 0.45), (-0.25, 0.1, 1.0), 0.12, M["coral"], rnd, 5)
+    coral_branch((0.62, -0.10, 0.36), (-0.60, -0.15, 1.0), 0.10, M["coral2"], rnd, 5)
+    for _ in range(4):
+        h = rnd.uniform(0.22, 0.40)
+        cyl(rnd.uniform(0.07, 0.10), h,
+            loc=(rnd.uniform(0.10, 0.42), rnd.uniform(-0.15, 0.1), 0.12 + h * 0.5),
+            rot=(rnd.uniform(-0.2, 0.2), rnd.uniform(-0.2, 0.2), 0),
+            material=M["coral2"], bevel=0.015, seg=2, verts=20)
+    clam((1.42, -0.30, 0.16), 0.22, M["shell"], M["pearl"], yaw=0.3)
+    starfish((0.88, -0.30, 0.30), 0.19, M["star"], rot_z=0.3)
+    kelp_sprig((1.18, 0.14, 0.10), 0.85, M["kelp"], rnd, lean=0.3)
+
+
+def reef(path):
+    s = reset()
+    s.render.resolution_x = RES * 2
+    s.render.resolution_y = RES * 5 // 4   # headroom for the shoulder kelp
+    world_sky()
+    rig_at(0.8, key=280.0, spread=1.8)
+    build_reef()
+    # half-width ~5.06 world, so the ±3.55 shoulders land at ±70% of the
+    # frame -- the line slot_view's 765-unit display maps onto the cabinet's
+    # edges. Widen the scene and this dist must follow, or the kelp lands on
+    # the reels instead of the rim.
+    render(path, dist=16.2, yaw=-10.0, pitch=13.0, lens=58.0,
+           target=(0, 0, 1.72))
+
+
+def porthole(path):
+    s = reset()
+    s.render.resolution_x = s.render.resolution_y = RES // 2
+    world_sky()
+    rig_at(1.0, key=270.0)
+    build_porthole()
+    render(path, dist=6.0, yaw=-16.0, pitch=8.0, lens=85.0,
+           target=(0, 0, 1.0), shadow=False)
+
+
+def corner_coral(path):
+    s = reset()
+    s.render.resolution_x = s.render.resolution_y = int(RES * 0.75)
+    world_sky()
+    rig_at(0.4, key=270.0)
+    build_corner_coral()
+    # Tight framing: this ships at ~150px and the first pass left the cluster
+    # under half its own frame, which put a 70px cluster on the corner.
+    render(path, dist=4.9, yaw=-20.0, pitch=16.0, lens=70.0,
+           target=(0.85, 0, 0.55), shadow=False)
+
+
 TARGETS = {
     "gift": lambda: gift(os.path.join(OUT, "gift.png")),
     "lock": lambda: lock(os.path.join(OUT, "lock.png")),
@@ -821,6 +1154,9 @@ TARGETS = {
     "pig3": lambda: pig(0.6, os.path.join(OUT, "piggy_3.png")),
     "pig4": lambda: pig(0.8, os.path.join(OUT, "piggy_4.png")),
     "pig5": lambda: pig(1.0, os.path.join(OUT, "piggy_5.png")),
+    "reef": lambda: reef(os.path.join(OUT, "slot_reef.png")),
+    "porthole": lambda: porthole(os.path.join(OUT, "slot_porthole.png")),
+    "coral": lambda: corner_coral(os.path.join(OUT, "slot_coral.png")),
 }
 
 if __name__ == "__main__":

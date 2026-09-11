@@ -49,7 +49,17 @@ const REQUIRED_PROPS := [
 	"chest_t0", "chest_t1", "chest_t2", "chest_t0_open",
 	"piggy_0", "piggy_1", "piggy_2", "piggy_3", "piggy_4", "piggy_5",
 	"scaffold",
+	"slot_reef", "slot_porthole", "slot_coral",
 ]
+
+# Check 2's escape hatch: renders that are non-square ON PURPOSE, with the
+# exact size the pipeline is contracted to produce. The square rule exists to
+# catch a half-set resolution override; for these, asserting the exact pair
+# catches the same mistake better than squareness would. Border and size
+# floors still apply.
+const NONSQUARE_DECLARED := {
+	"slot_reef.png": Vector2i(2048, 1280),
+}
 
 # Drawn before the render pipeline existed; kept only as art history in git.
 # They are fallbacks no code path can reach (their replacements always exist,
@@ -107,10 +117,16 @@ func _check_renders(dir_path: String, exempt: Array) -> void:
 			continue
 		var w := img.get_width()
 		var h := img.get_height()
-		if w != h:
-			_fail("%s: %dx%d is not square" % [f, w, h])
-		if w < 256:
-			_fail("%s: %dpx is an iteration render, not a shippable one" % [f, w])
+		if NONSQUARE_DECLARED.has(f):
+			var want: Vector2i = NONSQUARE_DECLARED[f]
+			if w != want.x or h != want.y:
+				_fail("%s: %dx%d, declared %dx%d -- a resolution override was left half-set" \
+					% [f, w, h, want.x, want.y])
+		else:
+			if w != h:
+				_fail("%s: %dx%d is not square" % [f, w, h])
+			if w < 256:
+				_fail("%s: %dpx is an iteration render, not a shippable one" % [f, w])
 		var border := 0
 		for x in w:
 			border = maxi(border, maxi(_a(img, x, 0), _a(img, x, h - 1)))

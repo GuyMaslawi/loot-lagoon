@@ -187,10 +187,98 @@ class Ribbon:
 # =============================================================================
 
 func _ready() -> void:
+	_build_reef()
 	_build_cabinet()
 	_build_card()
+	_build_dressing()
 	_style_bet()
 	set_auto(false)
+
+# =============================================================================
+#  The dressing -- the sea holding on to the machine
+# =============================================================================
+#
+# Guy asked for the machine to be WRAPPED in illustration rather than framed
+# by tinted rectangles, and the approved direction is a salvage cabinet: the
+# reef it stands in, kelp climbing its lower edges, portholes where the rivets
+# were, coral claiming the top-right corner. The pieces are Blender renders
+# from tools/render_props.py -- the pig's diagnosis applies to the cabinet
+# too: what separated OUR machine from the games Guy pointed at was never the
+# palette, it was that a renderer computes light and draw_polygon cannot.
+#
+# Every piece is optional at runtime: prop_tex returns null for a missing
+# file and each site skips itself, so the drawn cabinet underneath remains a
+# complete machine -- the same incremental contract the card faces use.
+
+# The reef strip is displayed at this width, centred on the cabinet. The
+# number is the geometry contract with build_reef() in render_props.py: at
+# 765 wide the render's ±70% line -- where the tall kelp grows -- lands
+# exactly on the cabinet's edges, so the shoulders read as climbing the
+# machine rather than standing beside it. 646 is MEASURED off a device shot,
+# not derived from the camera maths -- the first pass derived 765 from the
+# lens angle and the kelp landed fifty units out in the lanes.
+const REEF_W := 646.0
+# How far the strip's bottom sits BELOW the cabinet's bottom edge. The
+# render's own front slope -- sand, spilled coins, the rope's low sags --
+# occupies rows 104..128 (in display units, measured off the PNG the same way
+# slot_point() was); this drop puts that band in the open air of the
+# CABINET_FOOT gap, hides the ridge crest behind the brass, and lets the nav
+# slab swallow the strip's own ground shadow.
+const REEF_DROP := 120.0
+
+func _build_reef() -> void:
+	var tex := CV.prop_tex("slot_reef")
+	if tex == null:
+		return
+	var reef := TextureRect.new()
+	reef.texture = tex
+	reef.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	reef.stretch_mode = TextureRect.STRETCH_SCALE
+	reef.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(reef)
+	# Behind the cabinet on purpose: the machine STANDS IN the reef. In front,
+	# the ridge crest lands on the cabinet's hint line -- rocks over a caption
+	# is exactly the kind of failure qa_contrast exists to catch.
+	var h := REEF_W * 0.625   # the render is 2048x1280
+	reef.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	# Centred on the page (the cabinet is too): the strip is wider than the
+	# view by design, so its rock ends run under both side lanes and off the
+	# glass. Offsets are edge-relative under this preset -- left from the left
+	# edge, right from the RIGHT edge.
+	reef.offset_left = -(REEF_W - 720.0) * 0.5
+	reef.offset_right = (REEF_W - 720.0) * 0.5
+	reef.offset_bottom = -CABINET_FOOT + REEF_DROP
+	reef.offset_top = reef.offset_bottom - h
+
+# The mounted pieces draw OVER the cabinet, so they ride on top of its column.
+func _build_dressing() -> void:
+	var coral := CV.prop_tex("slot_coral")
+	if coral == null or _cabinet == null:
+		return
+	# A plain holder between the piece and the PanelContainer, like the studs
+	# have: a PanelContainer relays out its DIRECT children to its own rect,
+	# so presets set on one are overwritten on the next layout pass -- the
+	# first build put this cluster in the middle of the reel window.
+	var holder := Control.new()
+	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_cabinet.add_child(holder)
+	var tr := TextureRect.new()
+	tr.texture = coral
+	tr.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	tr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	holder.add_child(tr)
+	tr.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	# Straddling the corner: it pokes 24 past the edge and no further -- the
+	# right lane's discs start 8 units off the cabinet and anything deeper
+	# into the lane is behind them (they ride the shell). Tall enough that
+	# the branch tips clear the steal card's roofline, because the card
+	# covers the cluster's inner third and the render is composed for exactly
+	# that (see build_corner_coral).
+	tr.offset_left = -160.0
+	tr.offset_top = -70.0
+	tr.offset_right = tr.offset_left + 184.0
+	tr.offset_bottom = tr.offset_top + 184.0
 
 func _build_cabinet() -> void:
 	_cabinet = PanelContainer.new()
@@ -277,20 +365,38 @@ func _build_cabinet() -> void:
 	var studs := Control.new()
 	studs.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_cabinet.add_child(studs)
+	# Portholes where the rivets were, when the render exists -- a corner
+	# fastener grew into a fitting the salvage cabinet would actually carry.
+	# The TOP-RIGHT corner is skipped: the coral cluster owns it, and a brass
+	# ring peeking out from under a reef is two ideas on one corner.
+	var port := CV.prop_tex("slot_porthole")
 	for corner in [Control.PRESET_TOP_LEFT, Control.PRESET_TOP_RIGHT,
 			Control.PRESET_BOTTOM_LEFT, Control.PRESET_BOTTOM_RIGHT]:
-		var rivet := Glyph.new()
-		rivet.kind = "rivet"
-		rivet.custom_minimum_size = Vector2(24, 24)
-		rivet.size = rivet.custom_minimum_size
-		studs.add_child(rivet)
-		rivet.set_anchors_and_offsets_preset(corner)
 		var left: bool = corner in [Control.PRESET_TOP_LEFT, Control.PRESET_BOTTOM_LEFT]
 		var top: bool = corner in [Control.PRESET_TOP_LEFT, Control.PRESET_TOP_RIGHT]
-		rivet.offset_left += 18.0 if left else -42.0
-		rivet.offset_top += 18.0 if top else -42.0
-		rivet.offset_right = rivet.offset_left + 24.0
-		rivet.offset_bottom = rivet.offset_top + 24.0
+		if port != null and corner == Control.PRESET_TOP_RIGHT:
+			continue
+		var px := 44.0 if port != null else 24.0
+		var stud: Control
+		if port != null:
+			var tp := TextureRect.new()
+			tp.texture = port
+			tp.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+			tp.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+			stud = tp
+		else:
+			var rivet := Glyph.new()
+			rivet.kind = "rivet"
+			stud = rivet
+		stud.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		stud.custom_minimum_size = Vector2(px, px)
+		stud.size = stud.custom_minimum_size
+		studs.add_child(stud)
+		stud.set_anchors_and_offsets_preset(corner)
+		stud.offset_left += 14.0 if left else -(px + 14.0)
+		stud.offset_top += 14.0 if top else -(px + 14.0)
+		stud.offset_right = stud.offset_left + px
+		stud.offset_bottom = stud.offset_top + px
 
 # The half of the leftover height the window gave back, above it and below it.
 # Two of these and the window between them come to a whole, so the split is
