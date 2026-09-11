@@ -32,8 +32,15 @@ Rules that fall out of it, all measured:
 
 - **Tertiary text is size and weight, never paleness.** The ink ladder is
   three inks; measure inks against tinted cards, not bare SHELL.
-- **Chips fill 40% toward HULL and keep the pure hue on the rim** — white
-  type at chip size never clears 4.5:1 on a saturated fill.
+- **Chips fill 58% toward HULL and keep the pure hue on the rim** — white
+  type at chip size never clears 4.5:1 on a saturated fill. (0.40 → 0.52 →
+  0.58, each step a measurement; the last one was the box shelf's gold
+  price chip at 4.42.)
+- **Display type on a saturated mid fill is rimmed in `RIM_INK`, not HULL.**
+  A kelp bar's count, the active tab's title, a hint on the cabinet's brass:
+  those fills sit mid-value, so white tops out near 4 and HULL itself only
+  measures ~3.9 — the rim has to go a step deeper than the keyline. Same
+  hue family; a shadow, not a borrowed black.
 - **A value printed on unknown stock gets a `stamp()`** — a deep plate with
   bright numerals carries its own contrast onto any card.
 - **Disabled is a shape, not a colour.** The same lozenge lying flat in cool

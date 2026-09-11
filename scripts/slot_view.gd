@@ -370,8 +370,9 @@ func _build_meter() -> Control:
 	pair.add_child(spin_mark)
 	# White over a deep well and a kelp fill alike, which is what the shared
 	# track style is built for -- sand was picked when this number sat on the
-	# cabinet's brass instead.
-	_meter_label = Lagoon.title("0 / 50", UI.F_CAPTION, Color.WHITE, Lagoon.HULL)
+	# cabinet's brass instead. RIM_INK, not HULL: over the filled end this
+	# number sits on kelp, where a HULL rim tops out at 3.9.
+	_meter_label = Lagoon.title("0 / 50", UI.F_CAPTION, Color.WHITE, Lagoon.RIM_INK)
 	_meter_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_meter_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	pair.add_child(_meter_label)

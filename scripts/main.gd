@@ -5638,7 +5638,10 @@ func _open_daily() -> void:
 		# pulse and both answer; this only has to say which gesture takes it.
 		var cue := _popup_row_label("Tap  your  gift  to  claim  day  %d" % day, UI.F_CAPTION)
 		cue.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		cue.add_theme_color_override("font_color", Lagoon.CORAL_LO)
+		# CORAL_LO straight from the palette measured 3.98 on this card's mint
+		# wash -- a warm red gives up more on a cool tint than it looks like it
+		# should. A quarter darker keeps it the same call to action and clears.
+		cue.add_theme_color_override("font_color", Lagoon.CORAL_LO.darkened(0.25))
 		vbox.add_child(cue)
 	else:
 		var left := maxi(0, int(DAILY_COOLDOWN - (_trusted_now() - daily_last)))
@@ -7757,12 +7760,15 @@ func _offer_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	text.add_child(_reward_row(pack, Color(0.86, 0.93, 0.95)))
 	# Card odds, said on the card that sells them -- there is no confirm
 	# dialog left to say it on. Faint but light: dark INK_FAINT vanishes on
-	# the deep-water card the same way the old reward row did.
+	# the deep-water card the same way the old reward row did. The tone is
+	# the one the chest shelf already uses for the same strip -- the old
+	# (0.62, 0.77, 0.82) measured 4.18 on the gold stock's wood, and this
+	# text is quiet by SIZE, not by paleness.
 	if _is_randomized(pack):
-		var ostrip := Lagoon.label(_odds_strip(pack), UI.F_TINY, Color(0.62, 0.77, 0.82))
+		var ostrip := Lagoon.label(_odds_strip(pack), UI.F_TINY, Color(0.78, 0.87, 0.90))
 		ostrip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		text.add_child(ostrip)
-	var struck := _struck_price_row(pack, Color(0.62, 0.77, 0.82))
+	var struck := _struck_price_row(pack, Color(0.78, 0.87, 0.90))
 	if struck != null:
 		struck.alignment = BoxContainer.ALIGNMENT_BEGIN
 		text.add_child(struck)
@@ -10295,12 +10301,14 @@ func _powerup_column(col: Dictionary, pack: Dictionary) -> Control:
 	# The paid column's cards draw from the star table, and this dialog is the
 	# last screen before Apple's sheet now that the confirm dialog is gone.
 	# Translucent white, not INK_FAINT: the takeover stock is dark and every
-	# other line on it is white type.
+	# other line on it is white type. 0.78, not 0.65 -- composited onto the
+	# jewel stock 0.65 measured 4.50 dead on the line, which is a fail that
+	# comes and goes with sampling noise. Quiet by size, not by paleness.
 	if paid and _is_randomized(pack):
 		var strip := _popup_row_label(_odds_strip(pack), UI.F_TINY)
 		strip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		strip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		strip.add_theme_color_override("font_color", Color(1, 1, 1, 0.65))
+		strip.add_theme_color_override("font_color", Color(1, 1, 1, 0.78))
 		body.add_child(strip)
 
 	var pad := Control.new()
@@ -11352,9 +11360,11 @@ func _quests_tab_button(period: String) -> Button:
 	# The selected tab is white on its own saturated fill, which is the one
 	# combination in this palette that will not reach 4.5 without turning the
 	# hue into something nobody wants a tab to be. It gets the outline every
-	# other piece of display type on a colour gets, so it is read off its rim.
+	# other piece of display type on a colour gets, so it is read off its rim
+	# -- RIM_INK, because against the daily tab's kelp HULL itself only
+	# measures 3.9 and the rim has to be the side that clears.
 	var ft := Lagoon.title(str(info["title"]), UI.F_CAPTION,
-		Color.WHITE, Lagoon.HULL) if period == quests_tab \
+		Color.WHITE, Lagoon.RIM_INK) if period == quests_tab \
 		else Lagoon.label(str(info["title"]), UI.F_CAPTION, Lagoon.INK_SOFT, true)
 	frow.add_child(ft)
 	FX.press_feedback(b)

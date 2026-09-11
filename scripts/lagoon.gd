@@ -124,6 +124,14 @@ const PODIUM := [
 # from somewhere else.
 const HULL        := Color(0.031, 0.180, 0.235)  # the rim on every object
 
+# The rim for DISPLAY TYPE that lands on a saturated mid fill -- a count on a
+# kelp progress bar, the active tab's title, a hint on the cabinet's brass.
+# Those fills sit near the middle of the value range, so NEITHER side of the
+# letterform can clear 4.5 against them: white measures ~3.7-4.2 and HULL
+# itself only ~3.9, which is why this is its own step below HULL rather than
+# HULL reused. Still the lagoon's hue -- a shadow, not a borrowed black stroke.
+const RIM_INK     := Color(0.008, 0.043, 0.062)
+
 # --- ink ---------------------------------------------------------------------
 # Every value here is measured against SHELL, which is what text in this game
 # almost always lands on. tools/qa_contrast.tscn re-measures them in place --
@@ -261,7 +269,10 @@ static func wordmark(text: String, size := 64) -> Label:
 # a green hillside -- and against a warm mid tone sand gives up more than it
 # looks like it should. The outline is what does most of the work either way.
 static func art_label(text: String, size := UI.F_CAPTION, ink := Color.WHITE) -> Label:
-	var l := title(text, size, ink, ABYSS)
+	# RIM_INK, not ABYSS: painted art peaks brighter than any chrome (the
+	# cabinet's lit brass) and ABYSS only measured 2.9 against it -- the fill
+	# was outscoring the rim that is supposed to carry the letterform.
+	var l := title(text, size, ink, RIM_INK)
 	l.add_theme_constant_override("outline_size", maxi(9, int(size * 0.36)))
 	l.add_theme_constant_override("shadow_offset_x", 0)
 	l.add_theme_constant_override("shadow_offset_y", maxi(3, int(size * 0.12)))
@@ -1220,7 +1231,12 @@ static func chip(text: String, color := CORAL, font_size := UI.F_TINY) -> PanelC
 	# still on the list, but every chip in the game moved the safe way for one
 	# constant: white on a darker fill can only gain, and none of them stop
 	# reading as their own colour, because the rim is still the pure hue.
-	sb.bg_color = color.lerp(HULL, 0.52)
+	#
+	# AND THEN 0.58, same method: the box shelf's gold "* 25" price chip was
+	# the one hue bright enough to hold a mid olive at 0.52 -- 4.42 measured.
+	# At 0.58 that chip clears 5.1 and, as before, every other chip can only
+	# have gained.
+	sb.bg_color = color.lerp(HULL, 0.58)
 	sb.set_corner_radius_all(12)
 	sb.set_border_width_all(2)
 	sb.border_color = color
@@ -1326,7 +1342,10 @@ static func progress_value(bar: ProgressBar, text: String, size := UI.F_CAPTION)
 	l.add_theme_font_override("font", display_font())
 	l.add_theme_font_size_override("font_size", size)
 	l.add_theme_color_override("font_color", Color.WHITE)
-	l.add_theme_color_override("font_outline_color", HULL)
+	# RIM_INK: over the filled end the count sits on the bar's own bright hue,
+	# and against kelp a HULL rim tops out at 3.9 -- the rim has to go a step
+	# deeper than the keyline to carry white type there.
+	l.add_theme_color_override("font_outline_color", RIM_INK)
 	l.add_theme_constant_override("outline_size", 6)
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
