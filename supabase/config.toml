@@ -8,3 +8,11 @@ project_id = "loot-lagoon"
 
 [db]
 major_version = 17
+
+# Receipt verification takes reports from guests too -- a receipt is its own
+# credential (the store lookup is the auth), so the platform's JWT check must
+# not turn guests' reports away at the gate. If this function is ever deployed
+# from the dashboard instead of the CLI/integration, the "Verify JWT" toggle
+# there must be OFF to match.
+[functions.verify_purchase]
+verify_jwt = false

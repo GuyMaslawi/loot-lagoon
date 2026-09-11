@@ -1142,3 +1142,57 @@ begin
     raise notice 'SECURITY HARDENING TESTS PASSED';
 end;
 $$;
+
+-- =============================================================================
+--  iap_receipts -- the server-side receipt ledger
+-- =============================================================================
+--
+-- The table's whole security model is "nobody but the edge function": RLS on,
+-- no grants to the client roles, service_role explicit. If any of that drifts,
+-- a client could write its own verdict rows and the ledger becomes decorative.
+do $$
+declare
+    ok boolean;
+begin
+    perform pg_temp.ck('iap_receipts has RLS enabled',
+        (select relrowsecurity from pg_class where oid = 'public.iap_receipts'::regclass));
+    perform pg_temp.ck('anon cannot touch the receipt ledger',
+        not has_table_privilege('anon', 'public.iap_receipts',
+            'select, insert, update, delete'));
+    perform pg_temp.ck('authenticated cannot touch it either',
+        not has_table_privilege('authenticated', 'public.iap_receipts',
+            'select, insert, update, delete'));
+    perform pg_temp.ck('the edge function role can read and write it',
+        has_table_privilege('service_role', 'public.iap_receipts', 'select')
+        and has_table_privilege('service_role', 'public.iap_receipts', 'insert')
+        and has_table_privilege('service_role', 'public.iap_receipts', 'update'));
+
+    insert into public.iap_receipts (platform, receipt_id, product_id, install_id)
+        values ('ios', 'txn-test-1', 'p', 'inst-r');
+    begin
+        insert into public.iap_receipts (platform, receipt_id)
+            values ('ios', 'txn-test-1');
+        ok := false;   -- should not reach here
+    exception when unique_violation then
+        ok := true;
+    end;
+    perform pg_temp.ck('a replayed receipt cannot become a second row', ok);
+
+    begin
+        insert into public.iap_receipts (platform, receipt_id, verdict)
+            values ('ios', 'txn-test-2', 'not-a-verdict');
+        ok := false;
+    exception when check_violation then
+        ok := true;
+    end;
+    perform pg_temp.ck('a verdict outside the enum is refused', ok);
+
+    -- The receipt is a financial record: deleting a player must release it
+    -- (set null), never take it down with the account.
+    perform pg_temp.ck('a deleted player releases the receipt rather than taking it',
+        (select confdeltype from pg_constraint
+          where conrelid = 'public.iap_receipts'::regclass and contype = 'f') = 'n');
+
+    raise notice 'IAP RECEIPT TESTS PASSED';
+end;
+$$;

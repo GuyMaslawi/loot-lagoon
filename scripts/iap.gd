@@ -592,13 +592,21 @@ func _grant_next() -> void:
 # Called once the pack has been granted and the save written. The plugin has
 # already closed the transaction with Apple, so nothing is sent anywhere -- what
 # this records is that our side of the bargain is now on disk.
-func finish(_product_id_str: String) -> void:
+func finish(product_id_str: String) -> void:
 	if _pending_txn == "":
 		return
 	var txn := _pending_txn
 	_granted[txn] = true
 	_pending_txn = ""
 	_save_ledger()
+	# Grant-first, verify-after: the pack is granted and on disk, so now the
+	# receipt goes to the server to be checked against the store that
+	# supposedly issued it. Fire-and-forget by design -- Receipts owns the
+	# retry queue, and nothing about this purchase waits on the answer.
+	if _store != null:
+		Receipts.enqueue("ios", txn, product_id_str)
+	elif _billing != null:
+		Receipts.enqueue("android", txn, product_id_str)
 	# Play only, and the order matters. Consuming is what tells Google we have
 	# handed the pack over; until it lands the purchase stays owned, which is
 	# precisely the crash-safety net Apple does not give us. So it happens

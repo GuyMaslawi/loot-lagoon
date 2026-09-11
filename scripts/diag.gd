@@ -164,6 +164,13 @@ func at(where: String) -> void:
 #  What the game reports
 # ---------------------------------------------------------------------------
 
+# The install id, for the one other reporter (Receipts) that needs to name
+# this install without inventing a second identity for it. Same privacy
+# properties as everything else here: random, per-install, reset by reinstall.
+func install_id() -> String:
+	return _install
+
+
 # A feature was used. Counted, not sent -- the batch goes out with the session.
 func note(feature: String, times: int = 1) -> void:
 	if feature == "":
