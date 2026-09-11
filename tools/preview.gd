@@ -223,15 +223,25 @@ func _deal(game: Control, spec: String) -> void:
 	# started on that alone opens over a loading bar rather than over the ladder.
 	await get_tree().create_timer(3.0).timeout
 	var parts := spec.split(":")
-	# CHAIN=<id> picks which of the four runs; they differ in hue and in where
-	# their paid rungs sit, which is most of what the screen looks like.
-	var chain: String = OS.get_environment("CHAIN") if OS.has_environment("CHAIN") else "tide_hunt"
-	game.set("deal_id", chain)
-	game.set("deal_until", game.call("_now") + Deals.CHAIN_DURATION)
-	game.set("deal_taken", clampi(int(parts[0]), 0, Deals.STEPS))
-	game.set("deal_finale", false)
-	game.set("spins", 400)
-	game.call("_open_deal")
+	# DEAL=done seeds the cooldown after a CLEARED chain — the teaser with the
+	# six spent miniatures over the countdown, not the ladder.
+	if parts[0] == "done":
+		game.set("deal_id", "")
+		game.set("deal_until", 0.0)
+		game.set("deal_taken", 0)
+		game.set("deal_done", true)
+		game.set("deal_next", game.call("_now") + 7.0 * 3600.0 + 1234.0)
+		game.call("_open_deal")
+	else:
+		# CHAIN=<id> picks which of the four runs; they differ in hue and in where
+		# their paid rungs sit, which is most of what the screen looks like.
+		var chain: String = OS.get_environment("CHAIN") if OS.has_environment("CHAIN") else "tide_hunt"
+		game.set("deal_id", chain)
+		game.set("deal_until", game.call("_now") + Deals.CHAIN_DURATION)
+		game.set("deal_taken", clampi(int(parts[0]), 0, Deals.STEPS))
+		game.set("deal_finale", false)
+		game.set("spins", 400)
+		game.call("_open_deal")
 	await get_tree().create_timer(0.6).timeout
 	if parts.size() > 1 and parts[1] == "take":
 		var btn := _find_button(game.get("_popup"), "FREE")

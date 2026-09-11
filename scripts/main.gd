@@ -605,6 +605,12 @@ var deal_taken := 0
 # `deal_taken == 6` because the sixth rung and the finale are two grants and
 # the app can be killed between them.
 var deal_finale := false
+# Whether the chain that just went dark went out CLEARED. Guy, 2026-09-11: he
+# finished a ladder, opened the events disc during the cooldown, and found
+# nothing but a clock — the game had forgotten the thing he did. Persisted,
+# because the cooldown is thirty hours and an achievement that survives a
+# restart is the only kind that is one. Cleared when the next chain rolls in.
+var deal_done := false
 # The live power-up takeover: which one, when it dies, the earliest the next may
 # roll, and whether this one has already been put in front of the player.
 #
@@ -8765,6 +8771,7 @@ func _deal_tick() -> void:
 		if now >= deal_until:
 			if deal_taken >= Deals.STEPS and not deal_finale:
 				_deal_pay_finale(true)
+			deal_done = deal_taken >= Deals.STEPS
 			deal_id = ""
 			deal_until = 0.0
 			deal_taken = 0
@@ -8790,6 +8797,7 @@ func _deal_tick() -> void:
 	deal_until = now + Deals.CHAIN_DURATION
 	deal_taken = 0
 	deal_finale = false
+	deal_done = false
 	_save_game()
 	_notify("spins", "%s has begun — six rewards, %d hours!" % [pick["name"], int(Deals.CHAIN_HOURS)], "🎁")
 	_update_badges()
@@ -8874,11 +8882,24 @@ func _open_event_teaser() -> void:
 
 	_powerup_door_row(vbox)
 
-	# The next chain, as a promise with a clock on it.
-	var mark2 := _prize_art("spark", 108.0)
-	mark2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	vbox.add_child(mark2)
-	FX.pulse_forever(mark2, 1.06, 1.6)
+	# What stands above the clock depends on how the last chain went out. A
+	# player who cleared it gets their cleared ladder back — Guy, 2026-09-11:
+	# finishing every rung and then finding nothing here but a countdown erased
+	# the finishing. Everyone else gets the spark: for them the cooldown really
+	# is only a promise.
+	if deal_done:
+		_teaser_done_strip(vbox)
+		# A stamp, not a label: bright green type wants a deep well under it —
+		# on the cream card it is the pale-on-pale problem all over again.
+		var done := Lagoon.stamp("ALL  SIX  REWARDS  TAKEN", Lagoon.KELP_HI, UI.F_CAPTION)
+		done.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		vbox.add_child(done)
+	else:
+		# The next chain, as a promise with a clock on it.
+		var mark2 := _prize_art("spark", 108.0)
+		mark2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		vbox.add_child(mark2)
+		FX.pulse_forever(mark2, 1.06, 1.6)
 	var head := Lagoon.label("THE  NEXT  EVENT  SETS  SAIL  IN", UI.F_LABEL, Lagoon.INK, true)
 	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(head)
@@ -8888,10 +8909,50 @@ func _open_event_teaser() -> void:
 	_deal_next_timer_label = Lagoon.label(
 		_countdown_text(maxi(0, int(deal_next - _now()))), UI.F_SUBHEAD, Lagoon.KELP_HI, true)
 	plate2.add_child(_deal_next_timer_label)
-	var sub := _popup_row_label("Six rewards on one ladder — the free ones cost nothing but showing up.", UI.F_CAPTION)
+	var sub := _popup_row_label(
+		"The whole ladder, cleared — another six sail in with the next tide."
+		if deal_done else
+		"Six rewards on one ladder — the free ones cost nothing but showing up.", UI.F_CAPTION)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vbox.add_child(sub)
+
+# The cleared ladder, kept on the wall through the cooldown: six spent slabs
+# walked by the same chevron the full ladder uses, struck in the same stock.
+# Miniatures of the real thing rather than a fresh mark, so the player is
+# looking at what they cleared and not at a new abstraction — and one straight
+# row, not the serpentine, because at this size the path has nothing left to
+# lead anywhere.
+func _teaser_done_strip(vbox: VBoxContainer) -> void:
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 5)
+	vbox.add_child(row)
+	for i in Deals.STEPS:
+		if i > 0:
+			var head := Glyph.new()
+			head.kind = "chevron"
+			head.tint = Lagoon.KELP_HI
+			head.custom_minimum_size = Vector2(20, 20)
+			head.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			row.add_child(head)
+		var cube := _event_stock(row, "taken", false)
+		cube.custom_minimum_size = Vector2(62, 58)
+		cube.modulate = Color(1, 1, 1, 0.85)
+		# The medallion in its own box — a PanelContainer re-fits anchored
+		# children to its whole rect, the same trap the full-size rung hit.
+		var slot := Control.new()
+		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		cube.add_child(slot)
+		var tick := Glyph.new()
+		tick.kind = "tick"
+		tick.modulate = Lagoon.KELP_HI
+		slot.add_child(tick)
+		tick.set_anchors_preset(Control.PRESET_CENTER)
+		tick.offset_left = -17.0
+		tick.offset_right = 17.0
+		tick.offset_top = -17.0
+		tick.offset_bottom = 17.0
 
 # The 1+2's door, wherever events are looked at. Nothing if no power-up is
 # live. This row is what the shop rows' retirement owed the power-up: without
@@ -20135,6 +20196,7 @@ func _save_dict() -> Dictionary:
 		"deal_next": deal_next,
 		"deal_taken": deal_taken,
 		"deal_finale": deal_finale,
+		"deal_done": deal_done,
 		"chest_fill": chest_fill,
 		"chest_round": chest_round,
 		"beach_gift_next": beach_gift_next,
@@ -20483,6 +20545,7 @@ func _load_game() -> void:
 	deal_next = _f(data.get("deal_next", 0.0))
 	deal_taken = _i(data.get("deal_taken", 0))
 	deal_finale = bool(data.get("deal_finale", false))
+	deal_done = bool(data.get("deal_done", false))
 	# Clamped into the meter's own range: a hand-edited overshoot would pay a
 	# chest on every spin for as long as the excess lasted. The rotation
 	# counters wrap for the same reason -- posmod, not clamp, because every
