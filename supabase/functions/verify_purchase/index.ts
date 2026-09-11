@@ -34,6 +34,11 @@
 // GOOGLE_SA_JSON. SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are injected by
 // the platform.
 
+// Types only, for editors: the edge runtime provides `Deno` at run time, and
+// this import is what stops a TypeScript checker outside that runtime from
+// underlining every Deno.env line as an error. Nothing about behaviour.
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const BUNDLE_ID = Deno.env.get("APP_BUNDLE_ID") ?? "com.guymaslawi.lootlagoon";
