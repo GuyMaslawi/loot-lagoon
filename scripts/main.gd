@@ -979,6 +979,27 @@ func _after_boot() -> void:
 	# and dialogs. A takeover on the same frame lands on top of the lot, and
 	# _maybe_show_powerup's own guard cannot help because at that instant there
 	# is genuinely nothing up yet.
+	# ARM IT HERE, BEFORE THE TAKEOVER IS SCHEDULED. This line is the whole fix
+	# for "the new player's 1+2 offer never appears".
+	#
+	# The offer is armed by _powerup_tick, which runs on the once-a-second tick
+	# inside _process -- and _process returns early for the whole of boot. So on
+	# a COLD LAUNCH the order was: boot ends (~2.0s), the takeover one-shot
+	# fires at 2.2s, and the first tick only reaches _powerup_tick at ~3.0s.
+	# _maybe_show_powerup found _active_powerup() empty, returned, and NEVER
+	# RETRIED -- it is a one-shot. The offer then armed a second later with no
+	# takeover and, for a player who had not earned a disc yet, nothing to say
+	# it existed. Guy, 2026-09-12: the new player's triple "does not show as an
+	# icon on the main page and does not show when you connect."
+	#
+	# A returning player was hidden from this: their offer is already in the
+	# save, so _active_powerup() answers immediately. It only ever bit the case
+	# where the offer has to be created -- which is exactly the new player.
+	#
+	# _powerup_tick is idempotent and gated on `powerup_next`, so calling it
+	# once more here cannot double-arm or shorten a live offer.
+	_powerup_tick()
+	_update_badges()
 	# ...unless a SHOT is being taken. The takeover's 2.2s delay lands inside
 	# the harness's settle window, so a fresh save photographed "the spin
 	# page" and got the power-up door instead. A harness that WANTS the
@@ -7683,6 +7704,71 @@ func _reward_row(pack: Dictionary, ink := Lagoon.INK, size := UI.F_BODY) -> Cont
 		item.add_child(num)
 	return row
 
+# THE CONTENTS TRAY -- a pack's goods as objects on a shelf, not as a caption.
+#
+# Guy sent Coin Master reference and asked for their DEAL PRESENTATION, plus:
+# "a pack that contains cards and gold and spins -- make sure all three kinds
+# of prize are shown nicely and properly."
+#
+# NOT A COPY OF THAT GAME. Per the standing rule, reference is inspiration and
+# never a target -- the look here is ours (deep board, brass frame, sea glass,
+# the Sea Glass token). What is worth taking is the STRUCTURE, and it is one
+# idea: the contents get their own framed tray, separate from the artwork and
+# from the price, with each item as a BIG icon over a BIG number.
+#
+# `_reward_row` -- the inline "icon 36px + caption number" strip -- stays for
+# the places that genuinely have only a line of room (the deal rung, the shop's
+# narrow tiles). It is the wrong answer for a hero offer, where the goods ARE
+# the product and were being set at caption size under the name.
+#
+# All four kinds are laid out, not three. `_reward_row` and the deal rung both
+# cap at three because they are width-limited; a tray is a grid, so a pack with
+# spins, coins, cards AND shields shows all four rather than silently dropping
+# one. Nothing in CV carries four today -- this is so that the day something
+# does, the tray is not where it goes wrong.
+func _reward_tray(pack: Dictionary, ink := Lagoon.SHELL) -> Control:
+	var tray := PanelContainer.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.42)
+	sb.set_corner_radius_all(Lagoon.R_CHIP + 4)
+	sb.set_border_width_all(3)
+	sb.border_color = Color(Lagoon.BRASS_HI.r, Lagoon.BRASS_HI.g,
+		Lagoon.BRASS_HI.b, 0.55)
+	sb.content_margin_left = 10.0
+	sb.content_margin_right = 10.0
+	sb.content_margin_top = 8.0
+	sb.content_margin_bottom = 6.0
+	tray.add_theme_stylebox_override("panel", sb)
+	tray.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var grid := HBoxContainer.new()
+	grid.alignment = BoxContainer.ALIGNMENT_CENTER
+	grid.add_theme_constant_override("separation", 18)
+	tray.add_child(grid)
+
+	var spins_n := int(pack.get("spins", 0))
+	var coins_n: int = int(pack["coins_exact"]) if pack.has("coins_exact") \
+		else _scaled(int(pack.get("coins", 0)))
+	for entry in [["bolt", spins_n], ["coin", coins_n],
+			["cards", int(pack.get("cards", 0))],
+			["shield", int(pack.get("shields", 0))]]:
+		var n: int = entry[1]
+		if n <= 0:
+			continue
+		var col := VBoxContainer.new()
+		col.alignment = BoxContainer.ALIGNMENT_CENTER
+		col.add_theme_constant_override("separation", -2)
+		grid.add_child(col)
+		var icon := _prize_art(String(entry[0]), 68.0)
+		icon.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		col.add_child(icon)
+		var num := Lagoon.title(_fmt_compact(n), UI.F_SUBHEAD, ink,
+			Lagoon.RIM_INK)
+		num.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		col.add_child(num)
+	return tray
+
+
 # What the same goods would have cost at the shelf's own entry rate, struck
 # through, beside what they cost here.
 #
@@ -7881,9 +7967,12 @@ func _offer_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	text.add_theme_constant_override("separation", 4)
 	row.add_child(text)
 	text.add_child(Lagoon.title(pack["name"], UI.F_BODY, Color.WHITE, Lagoon.BRASS_LO.darkened(0.4)))
-	# Light ink, because the card underneath is deep water now. The old call
-	# took the default dark INK, which on this background is invisible.
-	text.add_child(_reward_row(pack, Color(0.86, 0.93, 0.95)))
+	# THE TRAY, not the caption strip. This is the one card on the shop that is
+	# a limited-time offer, so its contents are the entire argument for buying
+	# it -- and they were set at caption size under the name, which made the
+	# most valuable line on the card the third-quietest thing on it. See
+	# _reward_tray. Light ink: the card underneath is deep water.
+	text.add_child(_reward_tray(pack, Color(0.94, 0.97, 0.98)))
 	var struck := _struck_price_row(pack, Color(0.78, 0.87, 0.90))
 	if struck != null:
 		struck.alignment = BoxContainer.ALIGNMENT_BEGIN
@@ -20259,6 +20348,8 @@ const BEACH_GIFT_SIZE := 124.0
 var beach_gift_next := 0.0
 var beach_round := 0
 var _beach_gift: Button
+# What the crate is about to pay, said on the crate. See _beach_gift_label.
+var _beach_gift_tag: PanelContainer
 
 func _add_beach_gift() -> void:
 	var btn := Button.new()
@@ -20289,12 +20380,74 @@ func _add_beach_gift() -> void:
 		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	tw.tween_property(btn, "position:y", BEACH_GIFT_POS.y, 1.6) \
 		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+	# THE CRATE NOW SAYS WHAT IS IN IT.
+	#
+	# Guy, 2026-09-12: "how is the user supposed to know what the prize is? at
+	# the moment it is not stated." It was a box on the sand that rattled and
+	# paid something when tapped, and the player had no way to tell a handful
+	# of coins from a spin refill until after it was spent. That is fine for a
+	# surprise and wrong for a thing you are being asked to come back for.
+	#
+	# It CAN be stated exactly, which is the point: the reward is not random.
+	# `beach_round` walks 0,1,2 and every third crate pays spins instead of
+	# coins, so the next one is always known -- see _beach_gift_label.
+	#
+	# A child of the button, so it rides the bob and cannot drift away from the
+	# crate it belongs to. Anchored below the art rather than over it: a label
+	# across the box hides the object the player is being sold.
+	_beach_gift_tag = PanelContainer.new()
+	var tsb := StyleBoxFlat.new()
+	tsb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.90)
+	tsb.set_corner_radius_all(Lagoon.R_CHIP)
+	tsb.set_border_width_all(3)
+	tsb.border_color = Lagoon.BRASS
+	tsb.content_margin_left = 10.0
+	tsb.content_margin_right = 10.0
+	tsb.content_margin_top = 2.0
+	tsb.content_margin_bottom = 3.0
+	tsb.shadow_size = 8
+	tsb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.44)
+	_beach_gift_tag.add_theme_stylebox_override("panel", tsb)
+	_beach_gift_tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	btn.add_child(_beach_gift_tag)
+	# ABOVE the crate, not below it. Below put the tag at y~1090 on a 1280
+	# canvas, which is under the navigation slab -- the label was built, and
+	# invisible. Above it there is open sky, and the reward reads before the
+	# object it is attached to rather than after it.
+	_beach_gift_tag.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	_beach_gift_tag.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_beach_gift_tag.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_beach_gift_tag.offset_bottom = -2.0
+
 	_update_beach_gift()
+
+
+# The crate's next payout, as an icon and a figure.
+#
+# Read off the same expression `_claim_beach_gift` pays on, rather than a copy
+# of it -- if the rotation ever changes, a label that disagrees with the reward
+# is worse than no label, because the player has been promised something.
+func _beach_gift_label() -> Array:
+	if beach_round % BEACH_GIFT_EVERY == BEACH_GIFT_EVERY - 1:
+		return ["spin", "+%d" % BEACH_GIFT_SPINS]
+	return ["coin", "+%s" % _fmt_compact(_scaled(BEACH_GIFT_COINS))]
 
 func _update_beach_gift() -> void:
 	if _beach_gift == null or not is_instance_valid(_beach_gift):
 		return
 	_beach_gift.visible = _trusted_now() >= beach_gift_next
+	# Rebuilt on every refresh rather than written once: the figure is _scaled
+	# to the island, and the kind flips as `beach_round` walks -- so a tag built
+	# at load time would be wrong by the next island and lying by the third
+	# crate.
+	if _beach_gift_tag == null or not is_instance_valid(_beach_gift_tag):
+		return
+	for c in _beach_gift_tag.get_children():
+		c.queue_free()
+	var what := _beach_gift_label()
+	_beach_gift_tag.add_child(_reward_chip(String(what[0]), String(what[1]),
+		Lagoon.SAND))
 
 func _claim_beach_gift() -> void:
 	# The double-tap guard: the second press of a mashed pair arrives before

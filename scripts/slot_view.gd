@@ -121,9 +121,10 @@ var _ribbon: Ribbon
 var _ribbon_label: Label
 var _ribbon_home := ""
 var _card: PanelContainer
-var _card_avatar: Control
+# _card_slot stays declared and stays null: the raccoon that lived in it went
+# with the rest of the card's furniture, and the steal lunge is already guarded
+# on it being valid.
 var _card_slot: Control
-var _card_cap: Label
 var _card_name: Label
 var _card_coins: Label
 var _meter: ProgressBar
@@ -518,59 +519,41 @@ func _build_card() -> void:
 	_card.offset_bottom = CARD.y
 	Lagoon.add_gloss(_card, 44)
 
+	# TWO LINES, AND NOTHING ELSE ON IT.
+	#
+	# Guy, 2026-09-12: "the box above the machine -- the player's name and below
+	# it the amount, and that's it." It carried five things: an avatar token, a
+	# STEAL TARGET caption, the name, the haul in its own brass pot, and a
+	# raccoon pinned to the corner. Five pieces of furniture to say who and how
+	# much, on a strip 438 x 96, sitting above the machine that is the actual
+	# subject of the screen.
+	#
+	# The avatar, the caption, the pot and the raccoon are gone. What is left is
+	# the two facts the card is FOR, centred and given the whole width.
 	var pad := MarginContainer.new()
-	pad.add_theme_constant_override("margin_left", 12)
-	pad.add_theme_constant_override("margin_right", 18)
-	pad.add_theme_constant_override("margin_top", 10)
-	pad.add_theme_constant_override("margin_bottom", 10)
+	pad.add_theme_constant_override("margin_left", 16)
+	pad.add_theme_constant_override("margin_right", 16)
+	pad.add_theme_constant_override("margin_top", 8)
+	pad.add_theme_constant_override("margin_bottom", 8)
 	_card.add_child(pad)
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 12)
-	pad.add_child(row)
-
-	_card_avatar = Control.new()
-	_card_avatar.custom_minimum_size = Vector2(74, 74)
-	_card_avatar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	row.add_child(_card_avatar)
 
 	var text := VBoxContainer.new()
-	text.add_theme_constant_override("separation", -2)
+	text.add_theme_constant_override("separation", -4)
 	text.alignment = BoxContainer.ALIGNMENT_CENTER
-	text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(text)
-	_card_cap = Lagoon.label("STEAL  TARGET", UI.F_TINY, Lagoon.INK_FAINT, true)
-	text.add_child(_card_cap)
+	pad.add_child(text)
+
 	_card_name = Lagoon.label("—", UI.F_LABEL, Lagoon.INK, true)
+	_card_name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_card_name.clip_text = true
 	text.add_child(_card_name)
 
-	_card_coins = Lagoon.title("0", UI.F_SUBHEAD, Lagoon.SAND, Lagoon.BRASS_LO.darkened(0.3))
-	var pot := PanelContainer.new()
-	pot.add_theme_stylebox_override("panel", _pot_style())
-	pot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	row.add_child(pot)
-	var ppad := MarginContainer.new()
-	ppad.add_theme_constant_override("margin_left", 14)
-	ppad.add_theme_constant_override("margin_right", 14)
-	ppad.add_theme_constant_override("margin_top", 4)
-	ppad.add_theme_constant_override("margin_bottom", 5)
-	pot.add_child(ppad)
-	ppad.add_child(_card_coins)
-
-	# The raccoon is pinned to the card's corner rather than laid out in the
-	# row, so the pot reads as loot on the table and not a leaderboard entry.
-	_card_slot = Control.new()
-	_card_slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_card.add_child(_card_slot)
-	var mark := TextureRect.new()
-	mark.texture = CV.symbol_tex("steal")
-	mark.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	mark.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	_card_slot.add_child(mark)
-	mark.set_anchors_and_offsets_preset(Control.PRESET_TOP_LEFT)
-	mark.offset_left = -14.0
-	mark.offset_top = 42.0
-	mark.offset_right = 42.0
-	mark.offset_bottom = 98.0
+	# DEEP BRASS, NOT SAND. The figure was near-white with a dark outline
+	# because it sat on a brass pot; the card itself is pale sea glass, so the
+	# same colour on it would be white on near-white. Deep brass keeps the
+	# "this is gold" reading and is a real contrast against the glass.
+	_card_coins = Lagoon.label("0", UI.F_SUBHEAD, Lagoon.BRASS_LO, true)
+	_card_coins.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	text.add_child(_card_coins)
 
 # =============================================================================
 #  Materials
@@ -653,14 +636,6 @@ func _card_style() -> StyleBoxFlat:
 	sb.shadow_size = 16
 	sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.40)
 	sb.shadow_offset = Vector2(0, 7)
-	return sb
-
-func _pot_style() -> StyleBoxFlat:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Lagoon.BRASS_MID
-	sb.set_corner_radius_all(18)
-	sb.set_border_width_all(3)
-	sb.border_color = Lagoon.BRASS_LO
 	return sb
 
 # Bet steps up through four materials rather than four arbitrary colours, so
@@ -757,22 +732,19 @@ func set_target(npc: Dictionary, coin_mult := 1.0, owes := false) -> void:
 	_target_coins = int(npc.get("coins", 0))
 	_target_mult = coin_mult
 	_style_pot()
-	# Ahead of the name check below, not after it: the same rival can go from
-	# stranger to owing you while their name is still on the card, and an early
-	# return would leave the caption a spin behind the list.
-	if _card_cap != null and is_instance_valid(_card_cap):
-		_card_cap.text = "THEY  OWE  YOU" if owes else "STEAL  TARGET"
-		_card_cap.add_theme_color_override("font_color",
-			Lagoon.CORAL_LO if owes else Lagoon.INK_FAINT)
+	# REVENGE STILL HAS TO BE VISIBLE, and the caption that used to say it is
+	# gone. It is the name's COLOUR now: coral for a rival who owes you, ink for
+	# a stranger. Set ahead of the name check below, not after it -- the same
+	# rival can go from stranger to owing you while their name is already on the
+	# card, and an early return would leave the tint a spin behind the list.
+	if _card_name != null and is_instance_valid(_card_name):
+		_card_name.add_theme_color_override("font_color",
+			Lagoon.CORAL_LO if owes else Lagoon.INK)
 	var who: String = npc.get("name", "—")
 	if who == _target_name:
 		return
 	_target_name = who
 	_card_name.text = who
-	for c in _card_avatar.get_children():
-		c.queue_free()
-	var token := Lagoon.token(npc.get("emoji", "🏴"), 74.0, Lagoon.BRASS)
-	_card_avatar.add_child(token)
 
 var _held := 0
 
