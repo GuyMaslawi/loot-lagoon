@@ -178,6 +178,9 @@ var _chest_seq: ChestOpen = null
 # The boxless takeover, held for the same reason _chest_seq is: something has
 # to be able to take the screen back. See PayoutShow.skip.
 var _payout_seq: PayoutShow = null
+# The league's prize stage, which waits for a tap now rather than a timer.
+var _prize_stage: Control = null
+var _prize_stage_done := Callable()
 var village_page: Control
 var slot: SlotView
 var village: VillageView
@@ -5856,6 +5859,8 @@ func _show_currency_payout(title: String, coin_amt: int, spin_amt: int,
 		_chest_seq = null
 	if _payout_seq != null and is_instance_valid(_payout_seq):
 		_payout_seq.skip()
+	if _prize_stage != null:
+		_close_prize_stage()
 	var seq := PayoutShow.play(self, title, rows)
 	_payout_seq = seq
 	seq.finished.connect(func() -> void:
@@ -11285,6 +11290,11 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 	if _payout_seq != null and is_instance_valid(_payout_seq):
 		_payout_seq.skip()
 		_payout_seq = null
+	# The league's haul waits for a tap now, so it can still be standing when
+	# something else wants the screen. Closing it here settles its held
+	# counters, which is the half that matters.
+	if _prize_stage != null:
+		_close_prize_stage()
 	var seq := ChestOpen.play(self, t, title)
 	_chest_seq = seq
 
@@ -15149,13 +15159,14 @@ func _tourney_auto_claim(holder: VBoxContainer, tiers: Array, pips: Array) -> vo
 	_hud_hold("coins", refund)
 	_refresh()
 
-	_tourney_prize_stage(got_spins, cards, from, taken)
-
-	# The board underneath catches up once the stage is clear: the bar redraws
-	# with the rungs claimed, and on the last rung as a different track
-	# entirely. `anim = false` -- the fill has just been watched arriving and
-	# replaying it from zero would undo that.
-	_after(PRIZE_TOTAL + 0.1, func() -> void:
+	# The board underneath catches up ON DISMISS, not on a timer. It redraws
+	# with the rungs claimed -- and on the last rung as a different track
+	# entirely -- and the stage now stays up until the player taps, so a fixed
+	# delay would roll the track over underneath a haul still being read, or
+	# pop it into place seconds after the player had already moved on.
+	# `anim = false`: the fill has just been watched arriving and replaying it
+	# from zero would undo that.
+	_tourney_prize_stage(got_spins, cards, from, taken, func() -> void:
 		if _popup != null and is_instance_valid(holder):
 			_tourney_track_card(holder, false))
 
@@ -15179,11 +15190,41 @@ func _tourney_throw_point(pips: Array, tiers: Array) -> Vector2:
 const PRIZE_LEAD := 0.18       # ring, then the first prize leaves the rung
 const PRIZE_GAP := 0.20        # ...and the next, and the next
 const PRIZE_FLIGHT := 0.62     # how long one of them is in the air
-const PRIZE_HOLD := 1.45       # how long the player gets to look at the haul
 const PRIZE_OUT := 0.42        # the stage clearing
-const PRIZE_TOTAL := 4.6       # a safe upper bound on the whole sequence
+# PRIZE_HOLD (1.45s, "how long the player gets to look at the haul") and
+# PRIZE_TOTAL (4.6s, "a safe upper bound on the whole sequence") are GONE. The
+# stage has no bounded duration any more -- it waits for a tap -- so a constant
+# claiming to bound it would be a lie that the next reader builds on.
 
-func _tourney_prize_stage(got_spins: int, cards: Array, from: Vector2, rungs: int) -> void:
+# Take the prize stage down and settle up, whether a finger did it or not.
+#
+# The counters are HELD while the haul is on screen, so this is the only place
+# they come back -- which is why it must be callable from outside as well as
+# from the tap. Offline processing, a forced-update gate, auto-spin and a
+# headless harness all need to be able to clear a celebration nobody is going
+# to tap, and a counter left held is permanently short of the save.
+func _close_prize_stage() -> void:
+	var stage := _prize_stage
+	var done := _prize_stage_done
+	_prize_stage = null
+	_prize_stage_done = Callable()
+	if stage != null and is_instance_valid(stage):
+		stage.set_deferred("mouse_filter", Control.MOUSE_FILTER_IGNORE)
+		var fade := stage.create_tween()
+		fade.tween_property(stage, "modulate:a", 0.0, PRIZE_OUT)
+		fade.tween_callback(stage.queue_free)
+	_settle_hud("spins")
+	_settle_hud("stars")
+	_settle_hud("coins")
+	if done.is_valid():
+		done.call()
+
+
+# `on_done` runs when the player dismisses the stage -- NOT on a timer. The
+# board underneath redraws there, so a rolled-over track can never pop into
+# place while the haul is still on screen.
+func _tourney_prize_stage(got_spins: int, cards: Array, from: Vector2,
+		rungs: int, on_done := Callable()) -> void:
 	# Over the popup, which is z 120. Everything on this stage draws above the
 	# dialog it is celebrating, and nothing under it is tappable while it runs
 	# -- a prize the player can dismiss by accident mid-flight leaves a held
@@ -15307,6 +15348,8 @@ func _tourney_prize_stage(got_spins: int, cards: Array, from: Vector2, rungs: in
 		_settle_hud("spins")
 		_settle_hud("stars")
 		_settle_hud("coins")
+		if on_done.is_valid():
+			on_done.call()
 		return
 	# Three across at most. Four rungs of a late track can pay a spin cell and
 	# four cards, and five tiles in a row on a 720-wide screen is 130 a tile --
@@ -15344,20 +15387,43 @@ func _tourney_prize_stage(got_spins: int, cards: Array, from: Vector2, rungs: in
 					Sfx.play("pop", -4.0)
 					land.call(cell)))
 
-	# The exit, and then the counters are settled whatever happened on the way.
-	# A stage the player backgrounded the app during must not leave the spin
-	# meter permanently short of the save.
-	var out_at := PRIZE_LEAD + float(cells.size() - 1) * PRIZE_GAP + PRIZE_FLIGHT + PRIZE_HOLD
-	_after(out_at, func() -> void:
+	# IT WAITS FOR THE PLAYER NOW.
+	#
+	# Guy, 2026-09-12: the league prize "works great, but the user does not get
+	# to see the prizes and it has already closed -- leave the window open until
+	# the user presses." It used to fade on a timer, PRIZE_HOLD seconds after
+	# the last prize landed, and 1.45s is not long enough to read three card
+	# names. A reward that removes itself while you are still looking at it is
+	# the same failure as one that never appeared.
+	#
+	# The tap only arms AFTER everything has landed, which is the one thing the
+	# old code got right and is worth keeping: a prize dismissed mid-flight
+	# leaves a held counter and no way to see what paid it.
+	var hint := Label.new()
+	hint.text = "tap to collect"
+	hint.add_theme_font_size_override("font_size", UI.F_TINY)
+	hint.add_theme_color_override("font_color", Color(1, 1, 1, 0.62))
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hint.modulate.a = 0.0
+	stage.add_child(hint)
+	hint.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	hint.position.y = view_size().y - 96.0
+
+	# Held so something else can take the screen back -- see _close_prize_stage
+	# and trap one in the QA notes: a full-screen overlay that only a tap can
+	# clear owns the screen for ever when nothing is tapping.
+	_prize_stage = stage
+	_prize_stage_done = on_done
+
+	var landed := PRIZE_LEAD + float(cells.size() - 1) * PRIZE_GAP + PRIZE_FLIGHT
+	_after(landed + 0.20, func() -> void:
 		if not is_instance_valid(stage):
 			return
-		var fade := stage.create_tween()
-		fade.tween_property(stage, "modulate:a", 0.0, PRIZE_OUT)
-		fade.tween_callback(stage.queue_free))
-	_after(out_at + PRIZE_OUT + 0.9, func() -> void:
-		_settle_hud("spins")
-		_settle_hud("stars")
-		_settle_hud("coins"))
+		hint.create_tween().tween_property(hint, "modulate:a", 1.0, 0.30)
+		stage.gui_input.connect(func(ev: InputEvent) -> void:
+			if ev is InputEventMouseButton and ev.is_pressed():
+				_close_prize_stage()))
 
 # One prize, thrown from the rung to its tile. Bigger than FX.deliver's 76 and
 # on its own arc, because this one is the event rather than a token on the way
