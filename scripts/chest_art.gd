@@ -37,6 +37,21 @@ const SPACE := 200.0
 		tier = clampi(value, 0, 2)
 		queue_redraw()
 
+# Lid up or lid down.
+#
+# Every tier now has BOTH states as a render, which it did not before -- there
+# was only `chest_t0_open`, and tier 2 faked "open" by being permanently
+# open-lidded. That made the ladder lie: the magical chest looked opened before
+# you had opened it, and the other two could not be opened at all. The opening
+# sequence needs to swap one texture on one node, so the state lives here
+# rather than in six call sites.
+@export var open := false:
+	set(value):
+		if open == value:
+			return
+		open = value
+		queue_redraw()
+
 # --- per-tier materials ------------------------------------------------------
 #
 # Two colours for the wood and three for the metal, which between them are the
@@ -128,15 +143,24 @@ func _squash_transform(base_off: Vector2, base_scale: float) -> void:
 # the texture is missing, which keeps a shipped build honest if an export ever
 # drops the asset -- a shelf with a plain box on it beats a shelf with a hole.
 
-static var _shot: Array[Texture2D] = [null, null, null]
+# Six renders: closed 0..2 then open 0..2, in one flat array so the lookup is
+# an index rather than a branch.
+static var _shot: Array[Texture2D] = [null, null, null, null, null, null]
 static var _shot_read := false
 
-static func _rendered(t: int) -> Texture2D:
+static func _rendered(t: int, is_open := false) -> Texture2D:
 	if not _shot_read:
 		_shot_read = true
 		for i in 3:
 			_shot[i] = CV.tex("res://assets/art/props/chest_t%d.png" % i)
-	return _shot[clampi(t, 0, 2)]
+			_shot[3 + i] = CV.tex("res://assets/art/props/chest_t%d_open.png" % i)
+	var i := clampi(t, 0, 2)
+	# An absent open render falls back to the closed one rather than to nothing:
+	# a chest that does not visibly open is a smaller failure than a hole where
+	# the reward should be.
+	if is_open and _shot[3 + i] != null:
+		return _shot[3 + i]
+	return _shot[i]
 
 # Fitted, never stretched: these are square renders and the callers are not all
 # square boxes.
@@ -211,7 +235,7 @@ func _star(c: Vector2, r: float, col: Color) -> void:
 func _draw() -> void:
 	if size.x <= 0.0 or size.y <= 0.0:
 		return
-	var shot := _rendered(tier)
+	var shot := _rendered(tier, open)
 	if shot != null:
 		if _sq != 1.0:
 			_squash_transform(Vector2.ZERO, 1.0)
@@ -222,10 +246,14 @@ func _draw() -> void:
 	var off := (size - Vector2(SPACE, SPACE) * s) * 0.5
 	_squash_transform(off, s)
 
+	# The fallback drawing follows the same state. Tier 2 keeps its aura and
+	# beam whichever way the lid sits, because those are what make it magical
+	# rather than what make it open.
+	var lid_up := open or tier == 2
 	if tier == 2:
 		_aura()
 	_shadow()
-	if tier == 2:
+	if lid_up:
 		_open_lid()
 		_hold()
 	else:

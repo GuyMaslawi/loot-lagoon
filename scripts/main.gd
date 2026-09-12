@@ -172,6 +172,9 @@ var _win_slug: Control
 # The big-win takeover, when one is up. Checked by the auto-spin tick the same
 # way a popup is: a celebration is a blocker that ends, not a reason to stop.
 var _bigwin: Control
+# The chest-opening takeover, while one is on screen. Nullable and always
+# checked -- it is a celebration, not state anything depends on.
+var _chest_seq: ChestOpen = null
 var village_page: Control
 var slot: SlotView
 var village: VillageView
@@ -11124,7 +11127,53 @@ func _show_pack_result(pack: Dictionary) -> void:
 # by the deal ladder, which banks a rung's cards a beat before it shows them so
 # the ladder can finish its own animation first -- see _deal_show_cards. Holding
 # twice would leave the rank pill short by the amount the tiles then deliver.
-func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := "", completed_sets: Array = [], held := false) -> void:
+# Every chest in the game opens here.
+#
+# This used to BE the dialog: six different grant paths called it and a popup
+# appeared with the contents already listed, so the box the player had been
+# watching never actually opened. The lid coming off is the reward fantasy, and
+# it was the one beat missing. Now the sequence plays first and the old panel --
+# which is still the right way to show a handful of cards -- comes up behind it.
+#
+# THE HOLD HAPPENS HERE, BEFORE THE ANIMATION, and that is the whole reason this
+# wrapper exists rather than the panel just calling ChestOpen itself. The stars
+# were banked back in _grant_chest_card; if the freeze waited for the panel, the
+# pill at the top would sit there showing the new total for the entire length of
+# the opening and give the reveal away. The panel is then called with held=true
+# so it does not hold a second time.
+func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := "", completed_sets: Array = [], held := false, tier := -1) -> void:
+	var gain := 0
+	for c in cards:
+		if not c.get("dup", false):
+			gain += int(c.get("stars", 0))
+	if not held:
+		_hud_hold("stars", gain)
+	_refresh()
+
+	# Which chest to show when the caller did not say. Rarity of the best card
+	# is the honest proxy -- a handful with a 5-star in it came out of something
+	# worth more than a wooden box, whoever granted it.
+	var t := tier
+	if t < 0:
+		var best := 0
+		for c in cards:
+			best = maxi(best, int(c.get("stars", 1)))
+		t = 2 if best >= 5 else (1 if best >= 4 else 0)
+
+	# Held on the instance so anything that needs the screen back can take it --
+	# see ChestOpen.skip and trap one in the QA notes. A celebration nobody can
+	# cancel is a modal that owns the game.
+	if _chest_seq != null and is_instance_valid(_chest_seq):
+		_chest_seq.skip(false)
+	var seq := ChestOpen.play(self, t, title)
+	_chest_seq = seq
+	seq.finished.connect(func() -> void:
+		if _chest_seq == seq:
+			_chest_seq = null
+		_chest_result_panel(cards, title, bonus_text, completed_sets, true))
+
+
+func _chest_result_panel(cards: Array, title := "Chest Opened!", bonus_text := "", completed_sets: Array = [], held := false) -> void:
 	# What the handful was worth to your standing, counted before anything is
 	# drawn -- because the pill at the top of the screen has to be holding the
 	# OLD number by the time the first tile appears. The stars were banked in
