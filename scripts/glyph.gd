@@ -55,6 +55,7 @@ func _draw() -> void:
 	match kind:
 		"coin":    _coin()
 		"wheel":   _wheel()
+		"spin":    _spin()
 		"shield":  _shield()
 		"island":  _island()
 		"shop":    _shop()
@@ -167,6 +168,60 @@ func _wheel() -> void:
 		_bar(c, c + Vector2(cos(a), sin(a)) * 31.0, 7.0, body, 4.0)
 	_disc(c, 12, Lagoon.SHELL, 5.0, dark)
 	_spec(c, 31, 0.5)
+
+# ONE FACE FOR SPINS, AND IT IS A TOKEN.
+#
+# Spins had five different faces at once: a rendered bolt on the reels, in the
+# meter and on every prize row; a ship's wheel on the nav bar; a "\u26a1" in the
+# mission rows and the refill notifications; and a "\U0001F300" on the smallest spin
+# pack in the shop. Five faces for one currency is five currencies as far as
+# the player is concerned. Guy caught it off his own phone on 2026-09-12 and
+# asked for one icon, used everywhere.
+#
+# IT IS NOT A WHEEL, and that is not a style preference -- slot_view.gd settled
+# this already and the split is load-bearing: THE BOLT IS THE CURRENCY, THE
+# WHEEL IS THE ACTION. The wheel lives on the SPIN button, where it means the
+# verb. Putting a wheel on the counter too is how the meter ended up labelled
+# with one picture and filled by another.
+#
+# So it is a struck token, and that shape is doing deliberate work. It is round
+# and stamped like `_coin`, so the two currencies read as a matched pair rather
+# than as a coin and an unrelated symbol. It keeps the bolt as its relief, so
+# the meaning is instant to anyone who has ever played one of these games. And
+# its face is SEA GLASS -- frosted glowing turquoise is the locked house
+# signature (ART_BIBLE, "Sea Glass"), which is what makes it ours instead of
+# the same bolt every other game on the store uses.
+#
+# This is the vector fallback and the small-size version. The full-size face is
+# `assets/art/symbols/bolt.png`, which `_prize_art` prefers wherever it exists
+# -- so the token and the render have to stay the same object.
+func _spin() -> void:
+	var c := Vector2(50, 50)
+	var body := _hue(Lagoon.BRASS)
+	# ART_BIBLE Part B sea glass: face, bright edge, and the deep tone under it.
+	var glass := Color(0.659, 0.894, 0.871)
+	var glass_hi := Color(0.875, 0.969, 0.957)
+	var glass_lo := Color(0.373, 0.722, 0.706)
+
+	# The brass rim, then the inner land, matching `_coin`'s construction so a
+	# purse icon and a spin icon are visibly struck at the same mint.
+	_disc(c, 44, body, 7, Lagoon.BRASS_LO)
+	_disc(c, 34, Lagoon.BRASS_HI, 4, Lagoon.BRASS_MID)
+	# The glass face is inset, with its own bright edge -- edges brighter than
+	# faces is the rule for sea glass everywhere in the set.
+	draw_circle(c, 30.0, Color(glass.r, glass.g, glass.b, 0.34))
+	_disc(c, 27, glass, 4, glass_lo)
+
+	# The bolt, struck in brass on the glass. Drawn as one polygon rather than
+	# two bars: a bolt built from segments loses its kink at small sizes and
+	# comes out as a bent stick.
+	_shape(PackedVector2Array([
+		Vector2(56, 22), Vector2(38, 52), Vector2(49, 52),
+		Vector2(44, 78), Vector2(63, 46), Vector2(52, 46),
+	]), body, 4.0, Lagoon.BRASS_LO)
+
+	_spec(c, 36, 0.7)
+
 
 func _shield() -> void:
 	var body := _hue(Lagoon.SHELL)

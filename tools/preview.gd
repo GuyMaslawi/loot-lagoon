@@ -353,6 +353,31 @@ func _grant(game: Control, spec: String) -> void:
 			game.call("_grant_shields", n, Vector2(360, 760))
 		"spins":
 			game.call("_grant_spins", n, Vector2(360, 760))
+		# GRANT=pack:spins_m grants a shop product and shows the payout screen
+		# it arrives on -- the boxless takeover, the rows sailing in from
+		# alternating edges, the counters held until the tap. In play this costs
+		# real money, so a harness is the only way to see it at all. A comma
+		# list merges packs, which is how the two-row and three-row layouts get
+		# looked at: GRANT=pack:spins_m,coins_m.
+		"pack":
+			var spec_ids := str(parts[1]) if parts.size() > 1 else "spins_m"
+			var merged := {"id": "harness_pack", "name": "Harness Pack"}
+			for want in spec_ids.split(","):
+				for group in [CV.SPIN_PACKS, CV.COIN_PACKS, CV.BUNDLE_PACKS]:
+					for pk in group:
+						if str((pk as Dictionary).get("id", "")) != want:
+							continue
+						for key in ["spins", "coins", "shields"]:
+							if (pk as Dictionary).has(key):
+								merged[key] = int(merged.get(key, 0)) \
+									+ int((pk as Dictionary)[key])
+						merged["name"] = str((pk as Dictionary).get("name", ""))
+			game.call("_grant_pack", merged)
+			if OS.has_environment("SHOT"):
+				await _reel(OS.get_environment("SHOT"),
+					int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 10,
+					float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.38)
+			return
 		# GRANT=cards:3 draws a handful and shows the chest dialog they arrive
 		# in -- the NEW badge on each first copy, and the stars leaving those
 		# cards for the pill at the top. In play it costs a chest.
@@ -382,6 +407,17 @@ func _grant(game: Control, spec: String) -> void:
 			var where := str(parts[2]) if parts.size() > 2 else ""
 			if where == "":
 				game.call("_show_chest_result", cards, "Chest Opened!")
+				# AND IT HAS TO SHOOT ITSELF. GRANT owns the capture (see the
+				# note by the SHOT guard at the top), and this branch used to
+				# return without ever calling _reel -- so GRANT=cards:3 SHOT=...
+				# opened the chest on a window nobody was photographing and then
+				# hung there for ever, with no frames and no error. The box
+				# opening is now a five-second sequence, which is exactly what
+				# SHOTS/SHOT_GAP over a capture is for.
+				if OS.has_environment("SHOT"):
+					await _reel(OS.get_environment("SHOT"),
+						int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 10,
+						float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.42)
 				return
 			if where == "set":
 				for c in cards:
@@ -532,7 +568,7 @@ func _open_page(game: Control, key: String) -> void:
 			game.call("_goto", pages[key])
 
 func _glyph_sheet() -> void:
-	var kinds := ["coin", "wheel", "shield", "island", "shop", "cards", "quests",
+	var kinds := ["coin", "spin", "wheel", "shield", "island", "shop", "cards", "quests",
 		"gift", "bell", "trophy", "gear", "star", "plus", "close", "rivet", "anchor",
 		"piggy", "box", "medal", "tick", "spark", "crown", "sun", "moon",
 		"calendar", "warn", "clan"]

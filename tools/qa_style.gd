@@ -42,6 +42,13 @@ extends Node
 
 const PROPS_DIR := "res://assets/art/props"
 const CARDS_DIR := "res://assets/art/cards"
+# THE REEL SYMBOLS WERE NOT BEING CHECKED, and they are the assets where a bad
+# key hurts most: a symbol is the smallest thing in the game and the most
+# repeated, so a grey halo or a baked cast shadow on one shows up nine times in
+# one 3x3. Found 2026-09-12 while replacing the spin token -- one of the four
+# candidates for it had a shadow rendered into the plate, which would have
+# reached the frame edge and gone straight past this harness.
+const SYMBOLS_DIR := "res://assets/art/symbols"
 
 # Check 4's contract: what must exist for the game's prop_tex calls to land.
 const REQUIRED_PROPS := [
@@ -67,12 +74,28 @@ const NONSQUARE_DECLARED := {
 # named here rather than silently skipped by pattern.
 const LEGACY_EXEMPT := ["chest.png", "chest_open.png"]
 
+# FOUR PRE-REBOOT SYMBOLS RUN OFF THE EDGE OF THEIR PLATE.
+#
+# Border alpha 255 with a min of 0 means the artwork is not full-bleed -- it is
+# CLIPPED: the object reaches the frame edge in places and is cut there. Named
+# rather than hidden, because it is a real defect and it is visible in play (the
+# gem is cut off along its bottom on the reels). Exempted rather than fixed
+# here for one reason only: they are pre-reboot renders and the whole symbol
+# set is due to be re-rendered in the locked Sea Glass style, at which point
+# the fix is the re-render and this list goes away.
+#
+# NOTHING NEW GOES ON THIS LIST. `bolt.png` -- the spin token, the first symbol
+# rendered in the new style -- passes at border alpha 0, which is the standard
+# the rest of them have to meet. See [[loot-lagoon-spin-currency-icon]].
+const SYMBOLS_CLIPPED_LEGACY := ["gem.png", "steal.png", "shield.png", "pig.png"]
+
 var fails := 0
 var checks := 0
 
 func _ready() -> void:
 	_check_renders(PROPS_DIR, LEGACY_EXEMPT)
 	_check_renders(CARDS_DIR, [])
+	_check_renders(SYMBOLS_DIR, SYMBOLS_CLIPPED_LEGACY)
 	_check_card_names()
 	_check_required_props()
 	_check_kind_for_misuse()

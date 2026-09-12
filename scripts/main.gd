@@ -175,6 +175,9 @@ var _bigwin: Control
 # The chest-opening takeover, while one is on screen. Nullable and always
 # checked -- it is a celebration, not state anything depends on.
 var _chest_seq: ChestOpen = null
+# The boxless takeover, held for the same reason _chest_seq is: something has
+# to be able to take the screen back. See PayoutShow.skip.
+var _payout_seq: PayoutShow = null
 var village_page: Control
 var slot: SlotView
 var village: VillageView
@@ -3942,7 +3945,15 @@ func _add_side_rail(parent: Control, top: float) -> void:
 	# player last found the bell on is worth more than a tidy count.
 	_shell_rails.append(_side_rail_lane(parent, top, false, [
 			["bell",   "Alerts",     "alerts", func() -> void: _goto(pages["alerts"])],
-			["clan",   "Clan",       "clan",   func() -> void: _goto(pages["clan"])]]))
+			["clan",   "Clan",       "clan",   func() -> void: _goto(pages["clan"])],
+			# The takeover's own door. The offer used to have exactly one
+			# showing -- the session-start takeover -- so a player who closed
+			# it, or bought from it and wanted the two FREE columns back, had
+			# no way to reach it again. Guy, 2026-09-12: give these deals a
+			# main icon of their own. The disc stands while an offer is live
+			# and leaves with it (see _update_badges); between offers the
+			# spark disc's teaser is the door, same as for the chains.
+			["box",    "Offer",      "powerup", _open_powerup]]))
 	# The trophy is the one disc that carries a number, and the reason is that
 	# the tournament is the only event in the game whose progress is invisible
 	# from the outside. A daily is ready or it is not; the piggy fills where you
@@ -4359,6 +4370,18 @@ func _update_badges() -> void:
 	if _badges.has("deal"):
 		# The dot means "a free rung is waiting", never "an event exists".
 		_badges["deal"].visible = _deal_free_ready()
+	# The takeover's disc on the left rail exists exactly as long as the offer
+	# does -- unlike the spark disc there is nothing to open in the dark (the
+	# next-offer countdown already lives in the spark's teaser), and a disc
+	# opening nothing is worse than no disc. The BOX is hidden, not the button
+	# alone: the button sits in a caption box whose ghost would otherwise hold
+	# a gap open in the lane.
+	var pu_live := not _active_powerup().is_empty()
+	for pu_btn in _rail_discs.get("powerup", []):
+		if is_instance_valid(pu_btn):
+			var pu_box := pu_btn.get_parent() as Control
+			if pu_box != null:
+				pu_box.visible = pu_live
 		# The disc used to go out entirely between chains, so a button opening
 		# an empty screen never existed -- and then the shop's event rows were
 		# retired (2026-09-09) and this disc became the events' ONLY door, which
@@ -4776,15 +4799,27 @@ func _open_popup(title: String, width := 580.0, scroll := false) -> VBoxContaine
 		sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 		sc.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
 		# The screen, less the two ends the system owns, less the nameplate and
-		# the panel's own margins. Whatever is left is what a dialog may be.
-		sc.custom_minimum_size = Vector2(0, maxf(360.0,
-			view_size().y - safe_top() - safe_bottom() - 260.0))
+		# the panel's own margins. Whatever is left is the CEILING a dialog may
+		# reach -- not its size. This used to be set as the minimum outright,
+		# so any scroll dialog stood floor-to-ceiling however little it held;
+		# the 1+2 takeover wore it worst, three columns stretched thin down a
+		# screen-high sheet. The content is measured once the caller has filled
+		# the vbox (deferred lands after this frame's build), and the well
+		# takes the smaller of the two. A dialog that outgrows the ceiling --
+		# the deal ladder -- behaves exactly as before.
+		var ceiling := maxf(360.0, view_size().y - safe_top() - safe_bottom() - 260.0)
+		sc.custom_minimum_size = Vector2(0, 360.0)
 		margin.add_child(sc)
 		# A ScrollContainer does not stretch its child across its own width --
 		# the child has to ask -- and without this the cards inside come out at
 		# their minimum and huddle against the left edge.
 		vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		sc.add_child(vbox)
+		var fit := func() -> void:
+			if is_instance_valid(sc) and is_instance_valid(vbox):
+				sc.custom_minimum_size.y = clampf(
+					vbox.get_combined_minimum_size().y, 360.0, ceiling)
+		fit.call_deferred()
 	else:
 		margin.add_child(vbox)
 	Lagoon.add_gloss(panel, Lagoon.R_PANEL)
@@ -4821,6 +4856,11 @@ func _open_popup(title: String, width := 580.0, scroll := false) -> VBoxContaine
 			return
 		_popup_close.position = _popup_panel.global_position \
 			+ Vector2(_popup_panel.size.x - 40.0, -32.0)
+		# Kept on the glass. A panel near the canvas's full width puts the
+		# corner-riding cross partly off the screen edge -- the 1+2 takeover
+		# at 692 wide would lose a third of it.
+		_popup_close.position.x = minf(_popup_close.position.x,
+			view_size().x - _popup_close.size.x - 2.0)
 	panel.resized.connect(place_close)
 	panel.item_rect_changed.connect(place_close)
 	place_close.call_deferred()
@@ -5337,7 +5377,13 @@ func _prize_column(kind: String, px: float, text: String, ink: Color,
 # of the file rather than an edit to it -- nothing on the reels moves.
 const SYMBOL_CROP := {
 	"coin": Rect2(78.0, 84.0, 370.0, 364.0),
-	"bolt": Rect2(87.0, 39.0, 329.0, 459.0),
+	# NO CROP FOR THE BOLT ANY MORE. That rect was 329x459 -- a tall narrow
+	# window, measured around the old art, which was a bare lightning bolt with
+	# a lot of empty margin above and below it. The spin currency is a round
+	# struck token now (see Glyph._spin and tools/layer/prompts.py
+	# ICON_SUBJECTS), so a tall window slices both sides off it. The cutout tool
+	# already trims to the object and re-centres it in a square, which is what
+	# these crops were compensating for in the first place.
 	"gem":  Rect2(50.0, 79.0, 411.0, 317.0),
 	"bag":  Rect2(26.0, 10.0, 442.0, 475.0),
 }
@@ -7184,7 +7230,10 @@ func _fill_shop(vb: VBoxContainer) -> void:
 	_shop_section(vb, "chests", "TREASURE  CHESTS")
 	for pack in CV.CHEST_PACKS:
 		_chest_card(vb, pack)
-	vb.add_child(_page_note("Pricier chests hold more cards and better odds — every card above shows its full per-card odds. Duplicates are possible; a guaranteed 5★ replaces one draw", UI.F_TINY))
+	vb.add_child(_page_note("Pricier chests hold more cards and rarer stars. Duplicates are possible; a guaranteed 5★ replaces one draw", UI.F_TINY))
+	# The one door to the rate tables on this page -- it stands in for the
+	# strips every card above used to carry. See the odds-disclosure note.
+	vb.add_child(_odds_info_link())
 	# The expiry disclosure the confirm dialog used to carry. The cards sold on
 	# this page reset with the season, and the one screen where money changes
 	# hands must be a screen that says so -- a disclosure the buyer reaches
@@ -7766,16 +7815,6 @@ func _offer_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	# Light ink, because the card underneath is deep water now. The old call
 	# took the default dark INK, which on this background is invisible.
 	text.add_child(_reward_row(pack, Color(0.86, 0.93, 0.95)))
-	# Card odds, said on the card that sells them -- there is no confirm
-	# dialog left to say it on. Faint but light: dark INK_FAINT vanishes on
-	# the deep-water card the same way the old reward row did. The tone is
-	# the one the chest shelf already uses for the same strip -- the old
-	# (0.62, 0.77, 0.82) measured 4.18 on the gold stock's wood, and this
-	# text is quiet by SIZE, not by paleness.
-	if _is_randomized(pack):
-		var ostrip := Lagoon.label(_odds_strip(pack), UI.F_TINY, Color(0.78, 0.87, 0.90))
-		ostrip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		text.add_child(ostrip)
 	var struck := _struck_price_row(pack, Color(0.78, 0.87, 0.90))
 	if struck != null:
 		struck.alignment = BoxContainer.ALIGNMENT_BEGIN
@@ -8091,13 +8130,6 @@ func _bundle_card(vb: VBoxContainer, pack: Dictionary) -> void:
 		head.add_child(_tag_chip(pack["tag"], pack["tag_color"], UI.F_TINY))
 
 	col.add_child(_reward_row(pack))
-	# The cards in the box draw from the star table, and with the confirm
-	# dialog gone this card is where that has to be said before the sheet.
-	# Wrapped, or the strip's own width pushes the whole shelf off the screen.
-	if _is_randomized(pack):
-		var bstrip := Lagoon.label(_odds_strip(pack), UI.F_TINY, Lagoon.INK_FAINT)
-		bstrip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		col.add_child(bstrip)
 	# In the text column, not beside the button. The pay column's minimum width
 	# is the button's; hanging "$29.36  SAVE 76%" off it instead made this the
 	# widest row on the page, and a VBoxContainer gives its widest child's
@@ -8161,12 +8193,6 @@ func _shop_hero_offer(vb: VBoxContainer) -> void:
 	name_row.add_child(nm)
 	name_row.add_child(_tag_chip(pack["tag"], Lagoon.REEF))
 	col.add_child(_reward_row(pack))
-	# The starter's chest draws from the star table too, and the confirm
-	# dialog that used to publish it is gone.
-	if _is_randomized(pack):
-		var hstrip := Lagoon.label(_odds_strip(pack), UI.F_TINY, Lagoon.INK_FAINT)
-		hstrip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		col.add_child(hstrip)
 	# REEF_LO, not CORAL_LO. The starter card is pale green and coral's own dark
 	# is a mid tone on it -- 3.77 : 1 for the one line on the card that says the
 	# offer will not come back.
@@ -8204,33 +8230,77 @@ func _chest_art(pack: Dictionary, _size := 54) -> Control:
 # --- odds disclosure -------------------------------------------------------
 #
 # App Store Review Guideline 3.1.1: an app selling randomized items must
-# disclose the odds before the purchase. Read as a rule it is an obligation;
-# read as a player it is the difference between a chest and a shell game. So it
-# goes where the decision is actually made -- a rate on the tile, and the whole
-# table inside the confirm dialog, above the pay button rather than under it.
-#
-# Everything that grants cards is covered, not only the products with "chest"
-# in the name: the starter pack, the bundles and the timed offers all draw from
-# the same table, and most of the money is in those.
+# disclose the odds before the purchase. That has not moved. What moved, on
+# Guy's call of 2026-09-12, is WHERE: the per-star tables used to be printed
+# on every card that sells cards -- the shop's bundles, the chest shelf, the
+# starter hero, the deal ladder, the 1+2 takeover, even the star-currency
+# boxes -- and five copies of "1★ 20% · 2★ 32% ..." on one shop page is not
+# disclosure, it is wallpaper. Every one of those surfaces now carries a
+# single small door instead (_odds_info_link), and the door opens the one
+# dialog that prints every table (_open_odds_info). The odds are still one
+# tap from every buy button that rolls on them, which is what the guideline
+# is for; they are simply no longer the decor.
 func _is_randomized(pack: Dictionary) -> bool:
 	return int(pack.get("cards", 0)) > 0
 
-# The one line a narrow tile has room for: the rate people are actually buying.
-# The full breakdown is the _odds_strip printed on the same card -- there is no
-# dialog between the shelf and the payment sheet any more.
-func _odds_line(pack: Dictionary) -> String:
-	var odds := CV.star_odds(int(pack.get("tier", 0)))
-	if pack.get("guarantee5", false):
-		return "5★ GUARANTEED"
-	return "5★ CHANCE  %s" % CV.odds_pct(odds[CV.MAX_STAR - 1])
-
-# Every rate on one line, for anywhere with the width to carry it.
+# Every rate on one line. Feeds _open_odds_info only, now that no card prints
+# the table on its own face.
 func _odds_strip(pack: Dictionary) -> String:
 	var odds := CV.star_odds(int(pack.get("tier", 0)))
 	var parts: Array[String] = []
 	for i in CV.MAX_STAR:
 		parts.append("%d★ %s" % [i + 1, CV.odds_pct(odds[i])])
 	return "  ·  ".join(parts)
+
+# The small door. A flat text button rather than a styled card, because on a
+# shelf of things asking to be bought the one thing that must not compete is
+# the fine print. `light` is for the dark stocks -- the takeover and the
+# out-of-spins card -- where the cream inks vanish.
+func _odds_info_link(light := false) -> Control:
+	var wrap := CenterContainer.new()
+	var btn := Button.new()
+	btn.text = "CARD  DROP  RATES"
+	btn.flat = true
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.custom_minimum_size = Vector2(0, 40)
+	btn.add_theme_font_size_override("font_size", UI.F_TINY)
+	var ink := Color(0.82, 0.90, 0.93, 0.85) if light else Lagoon.INK_FAINT
+	btn.add_theme_color_override("font_color", ink)
+	btn.add_theme_color_override("font_hover_color", ink.lightened(0.2) if light else Lagoon.INK_SOFT)
+	btn.add_theme_color_override("font_pressed_color", ink)
+	btn.add_theme_color_override("font_focus_color", ink)
+	btn.pressed.connect(_open_odds_info)
+	wrap.add_child(btn)
+	return wrap
+
+# The one dialog that prints every table, per product, straight off the same
+# CV constants the draws roll on -- listing the products rather than naming
+# the tiers means a pack added later shows up here by existing.
+func _open_odds_info() -> void:
+	var vbox := _open_popup("Card Drop Rates", 620.0, true)
+	if not vbox.is_inside_tree():
+		return
+	var intro := _popup_row_label(
+		"Every card drawn from a pack, chest or box rolls a star from its own table. Duplicates are possible.",
+		UI.F_CAPTION)
+	intro.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	vbox.add_child(intro)
+	var sold: Array = [CV.STARTER_PACK]
+	sold += CV.BUNDLE_PACKS + CV.CHEST_PACKS + CV.TIMED_OFFERS + CV.CARD_BOXES
+	for p in sold:
+		var pack: Dictionary = p
+		if not _is_randomized(pack):
+			continue
+		var row := VBoxContainer.new()
+		row.add_theme_constant_override("separation", 0)
+		vbox.add_child(row)
+		row.add_child(Lagoon.label(str(pack.get("name", "")), UI.F_CAPTION, Lagoon.INK, true))
+		var line := str(_odds_strip(pack))
+		if pack.get("guarantee5", false):
+			line += "   —   one draw is a guaranteed 5★"
+		var strip := Lagoon.label(line, UI.F_TINY, Lagoon.INK_FAINT)
+		strip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		row.add_child(strip)
 
 # THE CHEST SHELF IS A COLUMN NOW, NOT THREE TILES ACROSS.
 #
@@ -8312,34 +8382,11 @@ func _chest_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	cards_row.add_child(deck)
 	cards_row.add_child(Lagoon.label("%d CARDS" % int(pack["cards"]), UI.F_LABEL, Lagoon.INK_SOFT, true))
 
-	# No star row here any more. It was drawn from `star_cap`, which reads as a
-	# ceiling -- the Wooden Chest rendered ★★☆☆☆ -- and sat directly above that
-	# same chest's true line, "5★ CHANCE 1%". Two claims on one tile,
-	# disagreeing, on the surface that exists to publish the odds. `star_cap`
-	# never capped anything: _grant_chest_card rolls from CHEST_STAR_WEIGHTS and
-	# has never looked at it.
-	#
-	# The odds line below is the honest half and is a better ladder anyway --
-	# 0.5% -> 3% -> GUARANTEED orders the three chests with real numbers, and
-	# the tag, the colour and the art already carry the tier visually.
-	# At label size rather than caption. This is the number the shelf exists to
-	# publish and it was the smallest type on the card -- which is exactly the
-	# arrangement Guideline 3.1.1 is written against, whatever the letter of it
-	# says about disclosure.
-	var odds := Lagoon.label(_odds_line(pack), UI.F_LABEL,
-		Lagoon.BRASS_LO if guaranteed else Lagoon.INK_SOFT, guaranteed)
-	info.add_child(odds)
-	if guaranteed:
-		FX.pulse_forever(odds, 1.06, 1.2)
-
-	# Every rate, per card drawn. The full table lived on a confirm dialog
-	# between this card and the payment sheet; that dialog is gone -- the price
-	# button raises the sheet directly -- so the card is now the disclosure,
-	# and it is a full-width row with the room to carry one.
-	var strip := Lagoon.label(_odds_strip(pack), UI.F_TINY, Lagoon.INK_FAINT)
-	strip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	info.add_child(strip)
-
+	# No rates on the face any more -- no star row (`star_cap` read as a
+	# ceiling and never capped anything), no "5★ CHANCE 1%" line, no per-star
+	# strip. The tag, the colour and the art carry the tier ladder visually;
+	# the tables live behind the shelf's one CARD DROP RATES door, see the
+	# odds-disclosure note above _is_randomized.
 	var buy := Button.new()
 	buy.text = IAP.price_for(pack)
 	buy.custom_minimum_size = Vector2(150, UI.TAP_COMFY)
@@ -9112,31 +9159,12 @@ func _open_deal() -> void:
 	foot.add_child(_reward_row(Deals.FINALE, Lagoon.INK, UI.F_LABEL))
 
 	# The paid rungs sell cards, and with the confirm dialog gone this screen
-	# is the last one before Apple's sheet -- so the ladder itself carries the
-	# per-card odds. One line per star table actually sold on this chain,
-	# named by rung when there is more than one.
-	var odds_rungs := {}
+	# is the last one before Apple's sheet -- so it keeps a door to the rate
+	# tables. A door, not the tables: see the odds-disclosure note.
 	for i in chain["steps"].size():
-		var sp: Dictionary = Deals.step_pack(chain["steps"][i])
-		if _is_randomized(sp):
-			var t := int(sp.get("tier", 0))
-			# A plain Array, not a PackedStringArray: packed arrays come out of
-			# a Dictionary by value, so appending through the lookup would
-			# grow a copy and leave the stored one empty.
-			if not odds_rungs.has(t):
-				odds_rungs[t] = []
-			odds_rungs[t].append(str(i + 1))
-	if not odds_rungs.is_empty():
-		var tiers := odds_rungs.keys()
-		tiers.sort()
-		for t in tiers:
-			var prefix: String = "CARD  ODDS" if odds_rungs.size() == 1 \
-				else "RUNG  %s  CARD  ODDS" % "  &  ".join(odds_rungs[t])
-			var strip := _popup_row_label("%s:  %s" % [prefix, _odds_strip({"tier": t})], UI.F_TINY)
-			strip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-			strip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-			strip.add_theme_color_override("font_color", Lagoon.INK_FAINT)
-			vbox.add_child(strip)
+		if _is_randomized(Deals.step_pack(chain["steps"][i])):
+			vbox.add_child(_odds_info_link())
+			break
 
 	if beat >= 0:
 		_deal_anim_from = -1
@@ -10111,6 +10139,10 @@ func _powerup_tick() -> void:
 			powerup_shown = false
 			powerup_next = now + Deals.POWERUP_COOLDOWN
 			_save_game()
+			# The rail disc leaves with the offer; the once-a-second tick only
+			# refreshes badges when the shop dot flips, so an offer expiring
+			# mid-session would otherwise leave a disc opening nothing.
+			_update_badges()
 			if _current_page == pages.get("shop"):
 				_fill_page("shop")
 		return
@@ -10131,6 +10163,7 @@ func _powerup_tick() -> void:
 	powerup_until = now + Deals.POWERUP_DURATION
 	powerup_shown = false
 	_save_game()
+	_update_badges()
 	if _current_page == pages.get("shop"):
 		_fill_page("shop")
 
@@ -10184,9 +10217,18 @@ func _open_powerup() -> void:
 		return
 	var cols := Deals.powerup_columns(pu)
 	var pack: Dictionary = cols[1]["pack"]
-	var vbox := _open_popup(String(pu["name"]), 660.0, true)
+	# 692, the widest dialog in the game. Guy, 2026-09-12: the three columns
+	# were "very long and very narrow" -- the length half is fixed in
+	# _open_popup (the sheet hugs its content now), and the width half is
+	# bought here: 32 more panel, 16 back from the two plus marks, which
+	# together hand each column ~20 units it did not have.
+	var vbox := _open_popup(String(pu["name"]), 692.0, true)
 	if not vbox.is_inside_tree():
 		return
+	# 10, not the popup's default 14: this dialog has six rows and a hard
+	# height budget on the design floor; four units a seam buys the foot row
+	# a place above the fold.
+	vbox.add_theme_constant_override("separation", 10)
 	_powerup_timer_label = null
 
 	# "1 + 2", which is the whole offer in three characters, STAMPED ON A PLATE.
@@ -10210,13 +10252,16 @@ func _open_powerup() -> void:
 	eq_sb.set_corner_radius_all(22)
 	eq_sb.set_border_width_all(4)
 	eq_sb.border_color = Lagoon.BRASS
-	eq_sb.content_margin_left = 40.0
-	eq_sb.content_margin_right = 40.0
+	eq_sb.content_margin_left = 34.0
+	eq_sb.content_margin_right = 34.0
 	eq_sb.content_margin_top = 2.0
 	eq_sb.content_margin_bottom = 8.0
 	eq_plate.add_theme_stylebox_override("panel", eq_sb)
 	eq_wrap.add_child(eq_plate)
-	var eq := Lagoon.title("1  +  2", 78, Lagoon.BRASS_HI, Lagoon.ABYSS)
+	# 64, down from 78 -- part of the 2026-09-12 re-proportioning: on the
+	# 720x1280 design floor the sheet has ~1020 units to spend, and every unit
+	# the headline keeps is a unit the countdown at the foot does not get.
+	var eq := Lagoon.title("1  +  2", 64, Lagoon.BRASS_HI, Lagoon.ABYSS)
 	eq.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	eq_plate.add_child(eq)
 
@@ -10236,7 +10281,7 @@ func _open_powerup() -> void:
 	for i in cols.size():
 		if i > 0:
 			var plus := Lagoon.title("+", UI.F_TITLE, Lagoon.BRASS_HI, Lagoon.BRASS_LO)
-			plus.custom_minimum_size = Vector2(34, 0)
+			plus.custom_minimum_size = Vector2(26, 0)
 			plus.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 			plus.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 			row.add_child(plus)
@@ -10244,14 +10289,26 @@ func _open_powerup() -> void:
 
 	# The countdown, at the foot. On the ladder it goes at the top because the
 	# clock is the reason to open the screen at all; here the reason is the
-	# offer itself and the clock is the closing argument.
-	var clock := CenterContainer.new()
-	vbox.add_child(clock)
+	# offer itself and the clock is the closing argument. The door to the rate
+	# tables rides in the same row -- the paid column's cards draw from the
+	# star table and this dialog is the last screen before Apple's sheet, so
+	# the disclosure stays one tap away (see the odds-disclosure note), and a
+	# row of its own was the row that pushed the clock under the fold on a
+	# 720x1280 canvas.
+	var foot := HBoxContainer.new()
+	foot.alignment = BoxContainer.ALIGNMENT_CENTER
+	foot.add_theme_constant_override("separation", 12)
+	vbox.add_child(foot)
 	var plate := Lagoon.stamp_plate(Lagoon.CORAL_HI)
-	clock.add_child(plate)
+	plate.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	foot.add_child(plate)
 	_powerup_timer_label = Lagoon.title("", UI.F_CAPTION, Color.WHITE, Lagoon.ABYSS)
 	_powerup_timer_label.text = "ENDS  IN  %s" % _powerup_countdown_text()
 	plate.add_child(_powerup_timer_label)
+	if _is_randomized(pack):
+		var door := _odds_info_link()
+		door.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		foot.add_child(door)
 
 func _powerup_column(col: Dictionary, pack: Dictionary) -> Control:
 	var paid: bool = col["paid"]
@@ -10268,16 +10325,20 @@ func _powerup_column(col: Dictionary, pack: Dictionary) -> Control:
 	var card := _event_stock(holder, "gold" if paid else "free", paid)
 	card.size_flags_vertical = Control.SIZE_EXPAND_FILL
 
+	# Tight on purpose. On the 720x1280 design floor WITH a display cutout the
+	# whole sheet has ~932 units, and the probe run of 2026-09-12 measured the
+	# column stack as the tallest row in it -- every unit shaved here is
+	# headroom between the countdown and the fold.
 	var margin := MarginContainer.new()
 	margin.add_theme_constant_override("margin_left", 8)
 	margin.add_theme_constant_override("margin_right", 8)
-	margin.add_theme_constant_override("margin_top", 12)
-	margin.add_theme_constant_override("margin_bottom", 12)
+	margin.add_theme_constant_override("margin_top", 8)
+	margin.add_theme_constant_override("margin_bottom", 8)
 	card.add_child(margin)
 
 	var body := VBoxContainer.new()
 	body.alignment = BoxContainer.ALIGNMENT_CENTER
-	body.add_theme_constant_override("separation", 6)
+	body.add_theme_constant_override("separation", 4)
 	margin.add_child(body)
 
 	# A HEAD ON EVERY COLUMN. Without one the two free stacks are anonymous
@@ -10302,22 +10363,13 @@ func _powerup_column(col: Dictionary, pack: Dictionary) -> Control:
 		var n: int = entry[1]
 		if n <= 0:
 			continue
-		body.add_child(_prize_column(String(entry[0]), 76.0, _fmt_compact(n),
+		# 84, up from 76: the columns are wider than they were and the goods
+		# are what should spend it -- a bigger drawing, not more dark stock.
+		# Not 90: at 90 the paid column's three prizes pushed the whole sheet
+		# past the 720x1280 ceiling and the countdown scrolled under the fold.
+		body.add_child(_prize_column(String(entry[0]), 84.0, _fmt_compact(n),
 			Color.WHITE, 1.0, UI.F_LABEL,
 			Color(1.0, 0.88, 0.52, 0.50) if paid else Color(1.0, 0.94, 0.72, 0.20)))
-
-	# The paid column's cards draw from the star table, and this dialog is the
-	# last screen before Apple's sheet now that the confirm dialog is gone.
-	# Translucent white, not INK_FAINT: the takeover stock is dark and every
-	# other line on it is white type. 0.78, not 0.65 -- composited onto the
-	# jewel stock 0.65 measured 4.50 dead on the line, which is a fail that
-	# comes and goes with sampling noise. Quiet by size, not by paleness.
-	if paid and _is_randomized(pack):
-		var strip := _popup_row_label(_odds_strip(pack), UI.F_TINY)
-		strip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		strip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		strip.add_theme_color_override("font_color", Color(1, 1, 1, 0.78))
-		body.add_child(strip)
 
 	var pad := Control.new()
 	pad.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -10442,6 +10494,8 @@ func _powerup_credit_purchase(pack_id: String) -> void:
 		powerup_shown = false
 		powerup_next = _now() + Deals.POWERUP_COOLDOWN
 		_powerup_timer_label = null
+		# The rail disc goes down with the offer it opened.
+		_update_badges()
 	var from := Vector2(view_size().x * 0.5, view_size().y * 0.42)
 	var cards := []
 	for bonus in pu["bonus"]:
@@ -10757,13 +10811,10 @@ func _spin_offer_card(vbox: VBoxContainer, pack: Dictionary, timed: bool) -> voi
 		extras_wrap.add_child(_reward_row(extras, Color(0.88, 0.95, 0.97), UI.F_LABEL))
 
 	# Any cards in the box draw from the star table, and with the confirm
-	# dialog gone this card is the last thing read before Apple's sheet. Same
-	# light ink as the extras row above it -- the card is dark.
+	# dialog gone this card is the last thing read before Apple's sheet -- so
+	# it keeps a door to the rate tables. Light ink: the card is dark.
 	if _is_randomized(pack):
-		var strip := Lagoon.label(_odds_strip(pack), UI.F_TINY, Color(0.78, 0.87, 0.90))
-		strip.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		strip.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		col.add_child(strip)
+		col.add_child(_odds_info_link(true))
 
 	var save_slot := CenterContainer.new()
 	save_slot.custom_minimum_size = Vector2(0, 40)
@@ -11058,8 +11109,14 @@ func _show_pack_result(pack: Dictionary) -> void:
 	var rows := []
 	var spins_n := int(pack.get("spins", 0))
 	if spins_n > 0:
-		rows.append(["\U01F300", "+%s" % _fmt_compact(spins_n),
-			"SPINS", Color(0.35, 0.75, 1.0)])
+		# "spin", NOT "bolt". `bolt` is the name of a symbol TEXTURE -- it is a
+		# reel face and what _prize_art looks up -- and it is not a Glyph kind
+		# at all, so PayoutShow's Glyph drew nothing and the spins row came out
+		# as a figure with a hole where its icon goes. Glyph draws unknown kinds
+		# as nothing on purpose, which is how a typo stays cosmetic; it is also
+		# how this one got past a read-through. See Glyph._spin.
+		rows.append(["spin", "+%s" % _fmt_compact(spins_n),
+			"SPINS", Color(0.42, 0.78, 1.0)])
 	# The figure the wallet actually moved by, not the catalogue number: a coin
 	# pack is scaled to the island it is bought from, and the top-up settles up
 	# through `coins_exact`. Printing the raw table value here would name a
@@ -11067,61 +11124,56 @@ func _show_pack_result(pack: Dictionary) -> void:
 	var coins_n: int = int(pack["coins_exact"]) if pack.has("coins_exact") \
 		else _scaled(int(pack.get("coins", 0)))
 	if coins_n > 0:
-		rows.append(["\U01FA99", "+%s" % _fmt_compact(coins_n),
-			"COINS", Color(1.0, 0.78, 0.25)])
+		rows.append(["coin", "+%s" % _fmt_compact(coins_n),
+			"COINS", Color(1.0, 0.80, 0.30)])
 	var shields_n := int(pack.get("shields", 0))
 	if shields_n > 0:
-		rows.append(["\U01F6E1", "+%d" % shields_n, "SHIELDS", Lagoon.KELP_LO])
+		rows.append(["shield", "+%d" % shields_n, "SHIELDS", Lagoon.KELP_HI])
 
 	# Nothing countable in it -- a pack shape this build does not understand.
-	# The banner is still the right answer there: a dialog with no rows is worse
-	# than a line of text.
+	# The banner is still the right answer there: a takeover with no rows is a
+	# full-screen wash with nothing on it.
 	if rows.is_empty():
 		_banner("Purchase complete — %s!" % pack["name"], Color(0.5, 0.9, 0.5),
 			String(pack.get("emoji", "")))
 		return
 
-	var vbox := _open_popup("Purchase complete!")
-	var name_row := _popup_row_label(String(pack.get("name", "")), UI.F_LABEL)
-	name_row.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	name_row.add_theme_color_override("font_color", Lagoon.BRASS_LO)
-	vbox.add_child(name_row)
+	# HELD BEFORE THE SCREEN GOES UP, not after. `_grant_pack` has already
+	# banked these -- it has to, because IAP.finish() records the transaction as
+	# delivered the moment it returns -- so without the hold the HUD would be
+	# showing the new purse and the new meter behind a takeover whose entire
+	# subject is those numbers arriving. The player would watch an animation of
+	# something that had visibly already happened.
+	_hud_hold("coins", coins_n)
+	_hud_hold("spins", spins_n)
+	_refresh()
 
-	var center := CenterContainer.new()
-	vbox.add_child(center)
-	var grid := GridContainer.new()
-	grid.columns = rows.size()
-	grid.add_theme_constant_override("h_separation", 10)
-	grid.add_theme_constant_override("v_separation", 10)
-	center.add_child(grid)
+	# Anything already holding the screen loses it -- two takeovers stacked is
+	# one takeover nobody can dismiss. See ChestOpen.skip and QA trap one.
+	if _chest_seq != null and is_instance_valid(_chest_seq):
+		_chest_seq.skip(false)
+		_chest_seq = null
+	if _payout_seq != null and is_instance_valid(_payout_seq):
+		_payout_seq.skip()
+	var seq := PayoutShow.play(self, "Purchase complete!", rows)
+	_payout_seq = seq
+	seq.finished.connect(func() -> void:
+		if _payout_seq == seq:
+			_payout_seq = null
+		# The flights start from the middle of the screen, which is where the
+		# rows the player was just looking at were standing. Coins and spins
+		# were held above; these are the flight-only halves, so neither one
+		# banks a second time.
+		var at := Vector2(view_size().x * 0.5, view_size().y * 0.52)
+		_coin_flight(coins_n, at)
+		_spin_flight(spins_n, at)
+		# Shields are NOT delivered here. `_grant_pack` runs `_grant_shields`
+		# before this screen exists, because that helper banks and animates in
+		# one call and deferring it would leave `_flush_save` writing a save
+		# with the shields missing -- paid content lost to a crash. Their row
+		# above is the disclosure; their flight happened behind the takeover.
+		_update_badges())
 
-	for i in rows.size():
-		var r: Array = rows[i]
-		var tile := _tinted_card(grid, r[3] as Color, true, Lagoon.R_CHIP + 4)
-		tile.custom_minimum_size = Vector2(166, 0)
-		var pad := MarginContainer.new()
-		for mg in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
-			pad.add_theme_constant_override(mg, 8)
-		tile.add_child(pad)
-		var colv := VBoxContainer.new()
-		colv.alignment = BoxContainer.ALIGNMENT_CENTER
-		colv.add_theme_constant_override("separation", 2)
-		pad.add_child(colv)
-		var e := _emoji_label(String(r[0]), 40)
-		e.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		colv.add_child(e)
-		var amount := Lagoon.label(String(r[1]), UI.F_LABEL, Lagoon.INK, true)
-		amount.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		colv.add_child(amount)
-		var cap := Lagoon.label(String(r[2]), UI.F_TINY, Lagoon.INK_FAINT, true)
-		cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		colv.add_child(cap)
-		# The same staggered reveal the chest tiles get, so the two dialogs
-		# read as one family rather than two features.
-		tile.modulate.a = 0.0
-		var tw := tile.create_tween()
-		tw.tween_interval(0.07 * i)
-		tw.tween_property(tile, "modulate:a", 1.0, 0.22)
 
 # `held` says the caller has already put this handful's stars on hold. It is set
 # by the deal ladder, which banks a rung's cards a beat before it shows them so
@@ -11165,15 +11217,60 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 	# cancel is a modal that owns the game.
 	if _chest_seq != null and is_instance_valid(_chest_seq):
 		_chest_seq.skip(false)
+	if _payout_seq != null and is_instance_valid(_payout_seq):
+		_payout_seq.skip()
+		_payout_seq = null
 	var seq := ChestOpen.play(self, t, title)
 	_chest_seq = seq
+
+	# THE CARDS COME OUT OF THE BOX, AND THAT IS THE REVEAL NOW.
+	#
+	# Guy, off his own phone on 2026-09-12: a box has to fall in, open when you
+	# tap it, and RELEASE the cards -- every action a movement, nothing
+	# immediate. The lid was already coming off; what still happened instantly
+	# was the part that matters, because the handful arrived as a dialog sliding
+	# up over the top of the opened chest. So the tiles are thrown out of the
+	# lid instead, and the dialog is demoted to a footnote that only appears
+	# when it has something the cards themselves cannot say.
+	var sorted := cards.duplicate()
+	sorted.sort_custom(func(a, b): return int(a["stars"]) > int(b["stars"]))
+	# [position, stars] per first copy, filled once the cards have landed --
+	# see _star_harvest_at for why the position is kept and not the tile.
+	var earned := []
+	seq.opened.connect(func() -> void:
+		var tiles := []
+		for c in sorted:
+			tiles.append(_card_burst_tile(c))
+		seq.burst_out(tiles, Vector2(170, 200), 3)
+		# After the last arc has landed, so a card is never measured mid-flight.
+		_after(0.30 + 0.11 * float(tiles.size()) + 0.60, func() -> void:
+			for ci in tiles.size():
+				if bool(sorted[ci].get("dup", false)):
+					continue
+				var node = tiles[ci]
+				if not is_instance_valid(node):
+					continue
+				var tile := node as Control
+				earned.append([tile.global_position + tile.size * 0.5,
+					int(sorted[ci].get("stars", 1))])))
+
 	seq.finished.connect(func() -> void:
 		if _chest_seq == seq:
 			_chest_seq = null
-		_chest_result_panel(cards, title, bonus_text, completed_sets, true))
+		_star_harvest_at(earned, gain)
+		# The panel still exists, because two things the thrown cards genuinely
+		# cannot carry: what the box cost and paid back (`bonus_text`), and a
+		# collection that just completed. With neither, the takeover was the
+		# whole reward and a dialog after it is a receipt nobody asked for.
+		if bonus_text != "" or not completed_sets.is_empty():
+			_chest_result_panel(cards, title, bonus_text, completed_sets, true, false))
 
 
-func _chest_result_panel(cards: Array, title := "Chest Opened!", bonus_text := "", completed_sets: Array = [], held := false) -> void:
+# `harvest` is false when the takeover in front of this already flew the stars
+# off the cards as they landed. Running it twice fires a second flight for
+# stars that have already been delivered -- the counter survives it, because
+# _hud_land floors at zero, but the player gets two bursts for one reward.
+func _chest_result_panel(cards: Array, title := "Chest Opened!", bonus_text := "", completed_sets: Array = [], held := false, harvest := true) -> void:
 	# What the handful was worth to your standing, counted before anything is
 	# drawn -- because the pill at the top of the screen has to be holding the
 	# OLD number by the time the first tile appears. The stars were banked in
@@ -11276,7 +11373,91 @@ func _chest_result_panel(cards: Array, title := "Chest Opened!", bonus_text := "
 	ok.pressed.connect(func() -> void: _close_popup())
 	vbox.add_child(ok)
 
-	_star_harvest(fresh, rank_gain)
+	if harvest:
+		_star_harvest(fresh, rank_gain)
+	else:
+		# The stars are already in the air or landed. The lag still has to be
+		# guaranteed clear, or a counter sits one short of the save for ever.
+		_after(1.4, func() -> void: _settle_hud("stars"))
+
+# ONE CARD, AS AN OBJECT THAT CAN BE THROWN.
+#
+# The result panel builds its tiles inside a GridContainer, which measures and
+# places them. These are thrown out of a chest lid by ChestOpen.burst_out, so
+# they are placed by hand and never see a container -- which means the size is
+# fixed here rather than negotiated, and everything printed on the face has to
+# fit inside it. Same content as the panel tile, deliberately: the reveal is
+# now the takeover, so this IS the card the player reads.
+func _card_burst_tile(card: Dictionary) -> Control:
+	var stars := int(card.get("stars", 1))
+	var sc: Color = CV.STAR_COLORS[stars - 1]
+	var tile := PanelContainer.new()
+	var sb := Lagoon.sheet(Lagoon.R_CHIP + 4)
+	sb.bg_color = sb.bg_color.lerp(sc, 0.18)
+	sb.set_border_width_all(4)
+	sb.border_color = sc.lerp(Lagoon.HULL, 0.42)
+	# Heavier than the panel tile's: this one is read against moving water and
+	# a lit shaft rather than against a flat dialog, so it needs the separation.
+	sb.shadow_size = 12
+	sb.shadow_color = Color(0, 0, 0, 0.52)
+	sb.shadow_offset = Vector2(0, 5)
+	tile.add_theme_stylebox_override("panel", sb)
+	Lagoon.add_gloss(tile, Lagoon.R_CHIP + 4)
+
+	var pad := MarginContainer.new()
+	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
+		pad.add_theme_constant_override(m, 8)
+	tile.add_child(pad)
+	var colv := VBoxContainer.new()
+	colv.alignment = BoxContainer.ALIGNMENT_CENTER
+	colv.add_theme_constant_override("separation", 2)
+	pad.add_child(colv)
+
+	var face := _card_face(String(card.get("set_id", "")), int(card.get("idx", -1)),
+		String(card["emoji"]), 40)
+	face.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	colv.add_child(face)
+	var nm := Lagoon.label(card["name"], UI.F_TINY, Lagoon.INK, true)
+	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	nm.clip_text = true
+	colv.add_child(nm)
+	colv.add_child(_star_row(stars, UI.F_TINY))
+	# The row stays even when it has nothing to say, so a spare and a first
+	# copy come out of the lid the same height.
+	var status := Label.new()
+	status.add_theme_font_size_override("font_size", UI.F_TINY)
+	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	if card.get("dup", false):
+		status.text = "SPARE  x%d" % int(card.get("held", 1))
+		status.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+	else:
+		_pin_new_badge(tile)
+	colv.add_child(status)
+	return tile
+
+
+# The harvest from fixed points rather than from live tiles.
+#
+# The takeover frees itself on dismiss, so by the time `finished` fires the
+# cards the stars were earned on no longer exist. Their landing places are
+# captured while they are still standing and the flight is run from those --
+# the stars still come off the card, they just come off where the card WAS.
+func _star_harvest_at(points: Array, rank_gain: int) -> void:
+	if rank_gain <= 0 or points.is_empty():
+		_settle_hud("stars")
+		return
+	var to := _hud_at("stars")
+	for entry in points:
+		FX.deliver(self, entry[0] as Vector2, to, "star", int(entry[1]),
+			func(_i: int) -> void:
+				_hud_land("stars", 1, Color(1.0, 0.87, 0.45))
+				Sfx.play("pop", -14.0)
+		, "", 200.0, 0.13, "\u2b50", 130)
+	Sfx.play("levelup", -10.0)
+	# The same backstop the tile version keeps: a counter left one short of the
+	# save survives every reopen of the page.
+	_after(0.14 * float(rank_gain) + 1.4, func() -> void: _settle_hud("stars"))
+
 
 # THE STARS COME OFF THE CARD THEY WERE EARNED ON.
 #
@@ -13774,6 +13955,9 @@ func _fill_boxes(vb: VBoxContainer) -> void:
 	vb.add_child(_page_note("Every box draws real cards — the pricier the box, the better the star odds.", UI.F_CAPTION))
 	for box in CV.CARD_BOXES:
 		_box_card(vb, box)
+	# The shelf's one door to the rate tables, standing in for the strip every
+	# box row used to carry. See the odds-disclosure note.
+	vb.add_child(_odds_info_link())
 
 func _dupe_row(vb: VBoxContainer, r: Dictionary) -> void:
 	var set_d: Dictionary = r["set"]
@@ -13874,14 +14058,10 @@ func _box_card(vb: VBoxContainer, box: Dictionary) -> void:
 	var sub := Lagoon.label(str(box["sub"]), UI.F_CAPTION, Lagoon.INK_SOFT)
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	info.add_child(sub)
-	# A box row is full width, so it can carry the whole table on one line and
-	# skip the dialog the paid chests need. Stars are earned rather than sold,
-	# so this is honesty rather than Guideline 3.1.1 -- but it is the same
-	# table, and a box that hid it while the chest published it would read as
-	# the free currency being the rigged one.
-	var box_odds := Lagoon.label(_odds_strip(box), UI.F_TINY, Lagoon.INK_FAINT)
-	box_odds.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	info.add_child(box_odds)
+	# No table on the face any more -- the boxes are listed in the same rate
+	# dialog as the paid chests (see _open_odds_info), so the free currency
+	# still is not the one with hidden odds; the shelf's door is under the
+	# last box, added by _fill_boxes.
 	var price := HBoxContainer.new()
 	price.add_theme_constant_override("separation", 6)
 	info.add_child(price)
@@ -19187,6 +19367,17 @@ func _grant_spins(n: int, from: Vector2, z := 101) -> void:
 	if n <= 0:
 		return
 	spins += n
+	_spin_flight(n, from, z)
+
+# The flight alone, for spins somebody else already banked -- the same split
+# the coins have had since _coin_flight, and it exists for the same reason: a
+# purchase banks its spins immediately (a save that dies holding an ungranted
+# pack is a pack the player paid for and never gets), but the meter must not
+# move until the takeover in front of it is over and the spins are visibly
+# arriving. Holds NOW, flies when the caller says.
+func _spin_flight(n: int, from: Vector2, z := 101) -> void:
+	if n <= 0:
+		return
 	_hud_hold("spins", n)
 	var flights := clampi(n, 1, 10)
 	var per := n / flights

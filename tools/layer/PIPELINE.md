@@ -5,22 +5,46 @@ Operating manual. Art rules: `ART_BIBLE.md` v2.1. Prompts: `prompts.py`.
 **Objective:** original art direction **+** top-tier casual mobile production
 quality **+** crisp production-ready output. All three, or it has not worked.
 
-**The next milestone is one chest.** Not six acceptable chests — one direction
-strong enough that we would willingly rebuild the entire game around it.
+**That milestone is met.** One chest direction was found strong enough to
+rebuild the game around, and the chest set ships in it. **The next milestone is
+Phase 2 — the golden seven**, proving the language carries onto a character, a
+building, a plate, a panel and a button, not just onto treasure.
 
 ---
 
-## Status: BLOCKED at the account level
+## Status: Phase 1 CLEARED — the style is locked
 
-Layer MCP is authenticated — `get_instructions` returns normally, so OAuth is
-fine. But `list_workspaces` returns an empty list on every call.
+Layer is live. Workspace **`Loot-lagoon`** / `a6d52ae5-b13c-4c33-9983-f5f88392f27e`.
+Pass that `workspace_id` to every generation tool. (There is still no
+`create_workspace` on the MCP surface — a workspace can only be made at
+layer.ai. If `list_workspaces` ever returns `[]` again that is the cause, not an
+auth failure.)
 
-Every generation tool (`execute_forge`, `estimate_forge_price`,
-`list_base_models`, `create_reference_set`, `start_training`) requires
-`workspace_id`, and the MCP surface has no `create_workspace`.
+**Phase 0 result.** Three candidates benchmarked on the identical
+`d1_chunky_toy` brief — GPT Image 2, Nano Banana Pro, and Nano Banana 2. Sheets
+in `explore/05_model_benchmark_at_128px.png`.
+**Winner: `gemini-3.1-flash-image` ("Nano Banana 2")** — 2 CU per generation,
+19-49s, native up to 4096×4096, and it takes up to 8 `reference_image` guidance
+files, which is what Phase 3 is built on.
+Note it does **not** advertise `negative_prompt` support, so the `NEGATIVE`
+string in `prompts.py` is not doing the work the shortlist rule assumed. Style
+is held by reference images instead.
 
-**To unblock:** create a workspace at <https://layer.ai>, or get invited to one.
-Nothing else changes. This is not an auth failure — do not re-diagnose it.
+**Phase 1 result: `d3_sea_glass` won and is LOCKED as the house style.**
+Carved warm wood + polished gold framing + frosted glowing turquoise sea-glass
+panels. Every future asset matches it. Sheets in `explore/01`-`04`; the chest
+set built from it is `explore/10`-`12`.
+
+It won at **thumbnail** size, not at full res. The `d6_carved_tide` wildcard was
+the strongest image at 100% and collapsed into noise at game size — the
+pass-A-fail-B case both checks exist to catch. **Judge every candidate at real
+display size first.** The carving idea survives for large surfaces only (UI
+frames, building facades) where it has room.
+
+**How to make a matching asset now:** pass an approved chest as a
+`reference_image` to `gemini-3.1-flash-image`. Reference-guided runs hold the
+style far better than prompt text alone; they cost the same and take ~40-90s
+instead of ~20s.
 
 ---
 
@@ -136,6 +160,9 @@ is a dead end.
 **Do not proceed past Phase 1 without review.** No buildings, no characters, no
 environments, no reference sets, no training, no volume.
 
+*Cleared 2026-09-12* — Guy reviewed the six directions and chose `d3_sea_glass`.
+The stop stands for every later phase gate; it is not a general licence.
+
 When Layer is available, the run ends with: estimate cost → generate → retrieve
 outputs → build one comparison sheet → **stop and report**.
 
@@ -225,7 +252,11 @@ play.
 
 ## Cost control
 
-Real estimates need a workspace, so there are no CU figures yet.
+Measured: the winning model is **2 CU per generation** regardless of size, so
+a 6-image island set is 12 CU and the whole of Phase 4 (~180 world images) is
+~360 CU. Workspace balance was **166 CU** on 2026-09-12 after Phase 0, Phase 1
+and the chest set — so volume needs a top-up, and it is worth knowing that
+before a batch stalls half way.
 
 1. `estimate_forge_price` **before every batch** — it returns price and
    resulting balance together, so no separate balance check is needed.

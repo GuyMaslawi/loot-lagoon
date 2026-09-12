@@ -48,6 +48,7 @@ const RATTLES := 3
 var _tier := 0
 var _art: ChestArt
 var _dim: ColorRect
+var _sky: TakeoverSky
 var _stage: Control
 var _slot: Control          # where the caller's contents go
 var _hint: Label
@@ -80,6 +81,16 @@ func _build(title: String) -> void:
 	_dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_dim)
 	_dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	# The reward's own place, faded up under the dim. A chest used to open over
+	# a dimmed copy of the shop page that sold it, which is what kept the whole
+	# sequence reading as a popup. See TakeoverSky.
+	_sky = TakeoverSky.new()
+	_sky.tint = Lagoon.LAGOON_DEEP
+	_sky.modulate.a = 0.0
+	add_child(_sky)
+	_sky.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_sky.create_tween().tween_property(_sky, "modulate:a", 1.0, 0.26)
 
 	_stage = Control.new()
 	_stage.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -212,6 +223,98 @@ func set_contents(node: Control) -> void:
 	var vs := get_viewport_rect().size
 	_slot.add_child(node)
 	node.position = Vector2(vs.x * 0.5 - node.size.x * 0.5, vs.y * 0.62)
+
+
+# THE CARDS COME OUT OF THE BOX.
+#
+# `set_contents` fades a finished panel in under the chest, which is right for
+# a caller that has its own layout to show. It is wrong for the thing the box
+# screen is actually for: a box that opens and a handful of cards that do not
+# come out of it is still a list appearing next to a prop. Guy called this on
+# his own phone -- every action has to be a movement.
+#
+# So this takes the tiles the caller has already built and throws them out of
+# the lid, one after another, on an arc, spinning, into a grid. The box does
+# not vanish -- it drifts up and back and dims instead. That way the object the
+# player earned is still on screen holding the frame together while the cards
+# it paid out become the subject, and the screen never has an empty middle.
+#
+# The caller owns the tiles' contents and their size; this owns where they land
+# and how they get there. Tiles must have `custom_minimum_size` set, because
+# they are placed by hand and never see a container.
+func burst_out(tiles: Array, tile_size: Vector2, cols := 3) -> void:
+	if _slot == null or not is_instance_valid(_slot) or tiles.is_empty():
+		return
+	var vs := get_viewport_rect().size
+
+	# The box gets out of the way first. Bottom-centre pivot means a plain
+	# scale would pull its lid DOWN into the cards, so the position moves with
+	# the scale to keep it reading as the box floating back.
+	var s := 0.78
+	var box := _art.size.x
+	var lift := _art.create_tween().set_parallel(true)
+	lift.tween_property(_art, "scale", Vector2(s, s), 0.34) \
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	lift.tween_property(_art, "position:y",
+		vs.y * 0.34 - box + box * s * 0.5, 0.34) \
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	lift.tween_property(_art, "modulate",
+		Color(0.82, 0.88, 0.92, 1.0), 0.34)
+
+	# Everything leaves the lid, not the middle of the box -- the mouth is
+	# where a lid that has just come off would let something out.
+	var from := Vector2(_art.global_position.x + box * 0.5,
+		vs.y * 0.34 - box * s * 0.22)
+
+	var n := tiles.size()
+	var per := mini(cols, n)
+	var rows := int(ceil(float(n) / float(per)))
+	var gap := 10.0
+	var grid_w := float(per) * tile_size.x + float(per - 1) * gap
+	var grid_h := float(rows) * tile_size.y + float(rows - 1) * gap
+	var origin := Vector2(vs.x * 0.5 - grid_w * 0.5,
+		vs.y * 0.66 - grid_h * 0.5)
+
+	for i in n:
+		var tile: Control = tiles[i]
+		if tile == null or not is_instance_valid(tile):
+			continue
+		_slot.add_child(tile)
+		tile.size = tile_size
+		tile.pivot_offset = tile_size * 0.5
+		var r := i / per
+		# The last row is centred under the ones above it, so three cards over
+		# two do not come out left-aligned with a hole on the right.
+		var in_row := mini(per, n - r * per)
+		var row_w := float(in_row) * tile_size.x + float(in_row - 1) * gap
+		var target := Vector2(
+			vs.x * 0.5 - row_w * 0.5 + float(i % per) * (tile_size.x + gap),
+			origin.y + float(r) * (tile_size.y + gap)) + tile_size * 0.5
+
+		tile.scale = Vector2(0.24, 0.24)
+		tile.modulate.a = 0.0
+		var delay := 0.30 + 0.11 * float(i)
+
+		var tw := tile.create_tween()
+		tw.tween_interval(delay)
+		tw.tween_callback(func() -> void:
+			if not is_instance_valid(tile):
+				return
+			tile.modulate.a = 1.0
+			# Height and spin scale down the further the card has to travel, so
+			# a card landing on the near row does not loop over the far one.
+			FX.throw_arc(tile, from, target, 150.0 + 40.0 * float(r), 0.52,
+				TAU * (0.75 if i % 2 == 0 else -0.75))
+			var st := tile.create_tween()
+			st.tween_property(tile, "scale", Vector2.ONE, 0.52) \
+				.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			# Rotation is left at zero by the arc's own spin only if it lands on
+			# a whole turn; it does not, so it is settled explicitly.
+			st.parallel().tween_property(tile, "rotation", 0.0, 0.30) \
+				.set_delay(0.30).set_trans(Tween.TRANS_SINE)
+			FX.burst(_stage, from, Lagoon.BRASS_HI, 5)
+			Sfx.play("pop", -7.0, 0.0, 1.02 + 0.05 * float(i))
+			FX.haptic(9, 0.3))
 
 
 # Where the chest is, for a caller that wants rewards to fly out of it.

@@ -74,12 +74,34 @@ func _buy(short: String, away: float, resume_first: bool) -> void:
 		await get_tree().process_frame
 
 	var rows := body.get_child_count()
+	# WHAT COUNTS AS "THE PURCHASE SAID SOMETHING" IS NO LONGER ONE THING.
+	#
+	# This used to test `_popup` alone, because every purchase ended in a
+	# dialog. Two of them now end in a full-screen takeover instead -- a pack
+	# of coins or spins in PayoutShow, a handful of cards in ChestOpen with the
+	# cards thrown out of the lid -- and a card handful with nothing extra to
+	# report puts up no dialog at all any more.
+	#
+	# The CHECK still matters and is not being relaxed: the thing it exists to
+	# catch is a payment that leaves the screen looking exactly as it did
+	# before, which Guy read as a failed purchase on his own phone. So it now
+	# asks the real question -- is ANY of the three saying what arrived -- and
+	# would still fail if all three were missing.
 	var popup = m.get("_popup")
+	var chest = m.get("_chest_seq")
+	var payout = m.get("_payout_seq")
+	var shown := ""
+	if popup != null:
+		shown = "popup"
+	elif chest != null and is_instance_valid(chest):
+		shown = "chest takeover"
+	elif payout != null and is_instance_valid(payout):
+		shown = "payout takeover"
 	print("   shop rows after:  %d" % rows)
-	print("   popup up:         %s" % ("yes" if popup != null else "NO"))
+	print("   receipt on screen: %s" % (shown if shown != "" else "NOTHING"))
 	if rows < 5:
 		fails += 1
 		print("   [FAIL] the shop page came back EMPTY -- header and nothing under it")
-	if popup == null:
+	if shown == "":
 		fails += 1
 		print("   [FAIL] nothing on screen says what was bought")

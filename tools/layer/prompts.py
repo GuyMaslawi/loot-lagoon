@@ -355,6 +355,39 @@ def icon_prompt(subject: str, direction: str) -> str:
     )
 
 
+# THE CURRENCY SUBJECTS, held here rather than passed in ad hoc.
+#
+# `icon_prompt` takes any subject string, which made it easy to run a one-off
+# brief from a chat message and then be unable to reproduce the winner. These
+# are the briefs that actually got run, so a re-render or a variant starts from
+# the same words.
+#
+# The spin token is the one with an argument behind it. Spins had five faces in
+# the game at once (a rendered bolt, a ship's wheel, a "zap" emoji and a
+# cyclone emoji), and slot_view.gd had already settled the rule that matters:
+# THE BOLT IS THE CURRENCY, THE WHEEL IS THE ACTION. So the token keeps the
+# bolt -- the meaning is instant to anyone who has played one of these games --
+# and earns its originality from the sea-glass face and the struck-coin
+# construction, which makes it a visible sibling of the gold coin instead of an
+# unrelated symbol. Run 2026-09-12, four candidates at 2048, 12 CU.
+ICON_SUBJECTS = {
+    "spin_token": (
+        "a single struck collectible game token, the currency that buys one "
+        "spin -- a matched sibling to a gold treasure coin, unmistakably from "
+        "the same mint. A thick polished gold rim with a milled edge frames a "
+        "deeply inset circular face of frosted translucent turquoise sea glass "
+        "that glows softly from within, brighter at its edges where the glass "
+        "is thick. Struck in relief on the glass face and raised proudly above "
+        "it, one bold chunky lightning bolt in polished gold. Enchanted, "
+        "oceanic, valuable -- luminous, never occult. The bolt silhouette stays "
+        "instantly readable and is the first thing the eye resolves. "
+        "Shown flat to camera, not tilted onto its edge -- a token seen at an "
+        "angle reads as an ellipse once it is 72 pixels wide, and 72 pixels is "
+        "the size it is used at."
+    ),
+}
+
+
 def ui_panel_prompt(direction: str) -> str:
     return (
         f"{FLOOR} "
