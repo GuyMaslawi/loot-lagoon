@@ -103,6 +103,29 @@ func _ready() -> void:
 	await _measure("collection set", m)
 	m.col_open = ""
 
+	# THE CLAN PAGE, BOTH SIDES.
+	#
+	# It was not in `keys` and could not have been: the page is gated on a
+	# session, so a harness running as a guest measures its "Sign in to join a
+	# clan" card and reports three text nodes. That is most of the reason this
+	# page drifted -- every other page in the game has had its ink measured
+	# against its own stock since 2026-09-03, and this one never had.
+	#
+	# _fake_clan is main.gd's own harness state, the same one SHOT=clan uses, so
+	# what gets measured is the page that ships rather than a mock of it. It
+	# fills the roster, the giving budget, an invitation and two join requests,
+	# which between them cover every card this page can draw except the browse
+	# list.
+	m._fake_clan()
+	await _goto("clan")
+	await _measure("clan roster", m)
+	# The other half: no clan, so the create card and the ribbon draw instead.
+	var kept: Dictionary = m.my_clan
+	m.my_clan = {}
+	await _goto("clan")
+	await _measure("clan join", m)
+	m.my_clan = kept
+
 	# The two "buy a bonus" events. Neither was measured here, and both are
 	# struck on dark jewel stock with white figures on it -- which is exactly
 	# the kind of surface this harness exists to check, and the kind a source

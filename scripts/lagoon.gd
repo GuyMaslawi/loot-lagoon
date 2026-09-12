@@ -503,6 +503,53 @@ static func glass_well(radius := R_CARD) -> StyleBoxFlat:
 	sb.border_color = Color(HULL.r, HULL.g, HULL.b, 0.70)
 	return sb
 
+# A TYPED-INTO WELL.
+#
+# Every LineEdit in the game shipped as Godot's default: a flat mid-grey box
+# with grey placeholder text. Three of them -- the clan name, the invite search
+# and the profile name -- and each one is the single moment on its screen where
+# the player is asked to CONTRIBUTE something, which makes "looks like the engine
+# forgot to theme it" an expensive place to be.
+#
+# It is a well, not a card: the thing you type into is a hole in the surface,
+# the same shape the progress track uses, so it reads as somewhere to put
+# something rather than as another raised object. Ink is the card ink, because
+# the well is pale enough to be stock; the placeholder is the SAME ink at the
+# tertiary step -- size and weight, never paleness (see STYLE.md), so it holds
+# its contrast against the fill instead of dissolving into it.
+static func field(le: LineEdit, placeholder := "") -> LineEdit:
+	le.placeholder_text = placeholder
+	le.custom_minimum_size.y = maxf(le.custom_minimum_size.y, UI.TAP)
+	le.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	le.add_theme_font_override("font", ui_bold_font())
+	le.add_theme_font_size_override("font_size", UI.F_LABEL)
+	le.add_theme_color_override("font_color", INK)
+	le.add_theme_color_override("font_placeholder_color", INK_MUTE)
+	le.add_theme_color_override("caret_color", CORAL)
+	le.add_theme_color_override("selection_color", Color(LAGOON.r, LAGOON.g, LAGOON.b, 0.45))
+
+	var well := StyleBoxFlat.new()
+	well.bg_color = SAND.lerp(LAGOON, 0.10)
+	well.set_corner_radius_all(R_CHIP + 2)
+	well.set_border_width_all(3)
+	well.border_color = HULL
+	# Sunk, not raised: the shadow falls INSIDE along the top, which is what
+	# separates a hole from a button. A StyleBoxFlat cannot draw an inner
+	# shadow, so the top border carries it -- one step deeper than the rim.
+	well.border_width_top = 5
+	well.content_margin_left = 16.0
+	well.content_margin_right = 16.0
+	well.content_margin_top = 10.0
+	well.content_margin_bottom = 11.0
+	le.add_theme_stylebox_override("normal", well)
+
+	# Focus is brass: the field is the one that matters right now.
+	var lit := well.duplicate() as StyleBoxFlat
+	lit.border_color = BRASS
+	lit.bg_color = SAND
+	le.add_theme_stylebox_override("focus", lit)
+	return le
+
 # Overlay that turns a flat fill into a piece of glass: a crisp lit edge across
 # the top, cool water pooling at the bottom. Add as the last child of a panel.
 static func gloss(radius := R_CARD, tint := LAGOON) -> ColorRect:

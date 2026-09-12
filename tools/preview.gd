@@ -25,6 +25,20 @@ func _ready() -> void:
 			if OS.has_environment("GUEST") or OS.has_environment("SPINS"):
 				_seed.call_deferred(game)
 			# PAGE=shop|collections|quests|options|island jumps straight there
+			# CLAN=join|roster renders the SIGNED-IN clan page offline.
+			#
+			# Until this existed the page could not be looked at in the harness
+			# at all: it is gated on Cloud.linked(), the harness runs as a guest,
+			# and every capture came back as the "Sign in to join a clan" card.
+			# So the one page in the game that has never been design-reviewed is
+			# the one the harness could not reach -- which is most of the reason
+			# it still looks like scaffolding.
+			#
+			# Both gates are local flags and the body draws from local state, so
+			# faking them is honest here: it renders the real layout, not a
+			# mock-up of it.
+			if OS.has_environment("CLAN"):
+				_clan.call_deferred(game, OS.get_environment("CLAN"))
 			if OS.has_environment("PAGE"):
 				_open_page.call_deferred(game, OS.get_environment("PAGE"))
 			# SCROLL=420 drops the page that far down before the shot. A tall
@@ -116,7 +130,7 @@ func _ready() -> void:
 			and not OS.has_environment("SCORE") and not OS.has_environment("CLAIM") \
 			and not OS.has_environment("GOTO") and not OS.has_environment("TIP") \
 			and not OS.has_environment("DEAL") and not OS.has_environment("POWERUP") \
-			and not OS.has_environment("CAMEO"):
+			and not OS.has_environment("CLAN") and not OS.has_environment("CAMEO"):
 		_shoot.call_deferred()
 
 # A tournament rung being crossed, from the outside.
@@ -724,6 +738,14 @@ func _shoot() -> void:
 	var shots := int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 1
 	var gap := float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.4
 	var path := OS.get_environment("SHOT")
+	# SHOT IS A FILE PATH HERE AND A PAGE KEY IN main.gd, and PREVIEW=game
+	# builds main.gd -- so `SHOT=clan` reaches both harnesses. main.gd already
+	# refuses the value that is not a path; this is the other half of that
+	# guard. Without it this wrote a PNG named "clan" into the repo root and
+	# quit out from under the shot main.gd was still setting up.
+	if not path.contains("/"):
+		push_warning("PREVIEW: SHOT=%s is a page key, not a path -- main.gd owns this one." % path)
+		return
 	for i in shots:
 		if i > 0:
 			await get_tree().create_timer(gap).timeout
@@ -796,11 +818,65 @@ func _scroll_to(game: Control, y: float) -> void:
 		sc.scroll_vertical = int(y)
 
 
+# THE FIRST SCROLLER THAT IS ACTUALLY ON SCREEN.
+#
+# Every page in the shell keeps its own ScrollContainer and the hidden ones are
+# still in the tree, so an unfiltered search returns whichever page happens to
+# be built first -- scrolling a page nobody can see, which looks exactly like
+# SHOT_SCROLL being ignored. main.gd's _scrolls_in has always filtered on
+# visibility; this one did not, and only the clan page was tall enough for the
+# difference to show.
 func _find_scroller(n: Node) -> ScrollContainer:
-	if n is ScrollContainer:
+	if n is ScrollContainer and (n as ScrollContainer).is_visible_in_tree():
 		return n
 	for c in n.get_children():
 		var f := _find_scroller(c)
 		if f != null:
 			return f
 	return null
+
+
+# Fake a signed-in player with clans switched on, so the clan page renders.
+func _clan(game: Control, mode: String) -> void:
+	while game.get("_boot") != null:
+		await get_tree().process_frame
+	# Long enough for the boot's fade to finish -- the same 1.6s _grant waits.
+	# `_boot` going null is the START of the title card leaving, not the end of
+	# it, so a shot taken on that frame is a shot of the raccoon at 100%.
+	await get_tree().create_timer(1.6).timeout
+	# THE FAKE IS main.gd's OWN, never a second one written here.
+	#
+	# The first version of this built its own roster, and got two things wrong
+	# that only a render shows: it keyed members on `stars`, which the roster
+	# does not read -- every clanmate drew as "Island 1" -- and it left
+	# `_clan_fake` false, so the invitation and request cards, which are gated
+	# on it, silently never appeared. A harness that quietly drops two of the
+	# page's four cards is worse than no harness: it photographs an emptier
+	# page than the one that ships and invites a redesign of a problem nobody
+	# has.
+	game.call("_fake_clan")
+	# ...and then the one thing _fake_clan cannot express, because it is the
+	# absence of a clan rather than a state of one.
+	if mode == "join":
+		game.set("my_clan", {})
+	await get_tree().process_frame
+	var pages: Dictionary = game.get("pages")
+	if pages.has("clan"):
+		game.call("_goto", pages["clan"])
+	# The roster's invitation and request cards are filled from a deferred
+	# callback, so the page is still growing for a frame or two after _goto
+	# returns. 1.2s is comfortably past it.
+	await get_tree().create_timer(1.2).timeout
+	# SHOT_SCROLL=<px> winds the page down before the shot. main.gd honours the
+	# same variable, but only on ITS capture path -- this one is a different
+	# harness, and without this the clan page's whole reason for existing, the
+	# roster, sits below the fold and cannot be photographed at all.
+	if OS.has_environment("SHOT_SCROLL"):
+		var sc := _find_scroller(game)
+		if sc != null:
+			sc.scroll_vertical = int(OS.get_environment("SHOT_SCROLL"))
+			await get_tree().create_timer(0.4).timeout
+	if OS.has_environment("SHOT"):
+		await _reel(OS.get_environment("SHOT"),
+			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 1,
+			float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.4)
