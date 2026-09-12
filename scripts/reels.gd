@@ -255,8 +255,9 @@ func _process(delta: float) -> void:
 # reel that started slow -- and then bleeds off for the rest of its run, so the
 # last half second is a visible creep from one cell to the next.
 #
-# No overshoot and no bounce, unlike _decel: a reel arriving at two cells a
-# second has no momentum to bounce with, and giving it one looks like a nudge.
+# No overshoot, for the same reason _decel no longer has one: a reel arriving at
+# two cells a second has no momentum to bounce with, and a symbol that moves
+# after the reel has stopped is a symbol the player cannot trust.
 func _crawl(k: float) -> float:
 	return 1.0 - pow(1.0 - k, HOLD_POWER)
 
@@ -277,14 +278,33 @@ func _detent() -> void:
 	var climb := 1.0 - clampf(_speed[2] / TICK_SPEED, 0.0, 1.0)
 	Sfx.play("tick", -13.0 + 5.0 * climb, 0.04, 1.0 + 0.55 * climb)
 
-# Flat out for most of the run, then a hard brake and a short bounce as the
-# reel drops onto the detent.
+# Flat out for most of the run, then a hard brake straight onto the detent.
+#
+# IT USED TO OVERSHOOT AND COME BACK. The curve ran to 1.028 by k=0.82 -- 2.8%
+# of the travel PAST the landing cell -- and spent the last 18% of the spin
+# easing back down to 1.0. On a reel that scrolls downward that reads as the
+# symbols going a little too far and then lifting back UP at the moment the
+# player is trying to read them, which is exactly what Guy called confusing:
+# the row appears to settle, move, and settle again, and for a fraction of a
+# second the symbol on the payline is not the symbol that won.
+#
+# A bounce is right for an object that was thrown and has weight. It is wrong
+# for a reel, because the reel is not the subject -- the SYMBOLS on it are, and
+# they have to be still and legible the instant the reel claims to have stopped.
+#
+# So it is monotonic now: one ease, arriving exactly at 1.0 at k=1, never past
+# it. The last stretch is a slow creep from cell to cell rather than a
+# snap-and-rebound, and _detent above is what turns that creep into a sound.
+#
+# THE EXPONENT IS 4.0 AND THAT NUMBER IS NOT FREE. `1 - (1-k)^p` leaves at
+# speed p, and the old curve left at 3.2/0.82 x 1.028 = 4.01 because it was
+# crammed into the first 82% of the run. Dropping the bounce and keeping 3.2
+# therefore made every reel LEAVE 20% slower -- which qa_reels caught
+# immediately, because the held reel is calibrated to depart at the same speed
+# as the other two (a held reel that starts slow reads as a stutter, not as
+# suspense). 4.0 restores the departure and keeps the arrival honest.
 func _decel(k: float) -> float:
-	if k < 0.82:
-		var u := k / 0.82
-		return (1.0 - pow(1.0 - u, 3.2)) * 1.028
-	var u2 := (k - 0.82) / 0.18
-	return 1.028 - 0.028 * (1.0 - pow(1.0 - u2, 3.0))
+	return 1.0 - pow(1.0 - k, 4.0)
 
 # Three of a kind on the payline gets its own beat.
 func celebrate() -> void:
