@@ -52,6 +52,7 @@ var _sky: TakeoverSky
 var _stage: Control
 var _slot: Control          # where the caller's contents go
 var _hint: Label
+var _notes: VBoxContainer
 var _tw: Tween
 var _state := 0             # 0 falling/rattling, 1 open, 2 dismissed
 
@@ -122,6 +123,24 @@ func _build(title: String) -> void:
 	_slot.modulate.a = 0.0
 	_stage.add_child(_slot)
 	_slot.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	# WHAT THE DIALOG USED TO SAY, SAID HERE INSTEAD.
+	#
+	# The result panel carried three things the cards themselves cannot: what
+	# the box cost and paid back, a collection that just completed, and the
+	# rank the handful was worth. Keeping the panel for those meant that after
+	# the box had opened and thrown its cards, a dialog came up listing THE
+	# SAME CARDS AGAIN. Guy, 2026-09-12: redundant, get rid of it. So the three
+	# lines moved onto the takeover and the dialog is gone from this path.
+	_notes = VBoxContainer.new()
+	_notes.alignment = BoxContainer.ALIGNMENT_CENTER
+	_notes.add_theme_constant_override("separation", 6)
+	_notes.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_notes.modulate.a = 0.0
+	_stage.add_child(_notes)
+	_notes.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	_notes.offset_top = -196.0
+	_notes.offset_bottom = -104.0
 
 	_hint = Label.new()
 	_hint.text = "tap to collect"
@@ -315,6 +334,27 @@ func burst_out(tiles: Array, tile_size: Vector2, cols := 3) -> void:
 			FX.burst(_stage, from, Lagoon.BRASS_HI, 5)
 			Sfx.play("pop", -7.0, 0.0, 1.02 + 0.05 * float(i))
 			FX.haptic(9, 0.3))
+
+
+# One line under the cards. Centred, faded in as a group once the burst has
+# landed -- notes appearing while cards are still in the air compete with them.
+#
+# `emphasis` is for the one line worth a pulse. Everything pulsing is nothing
+# pulsing, so at most one note should ask for it.
+func note(text: String, color: Color, emphasis := false) -> void:
+	if _notes == null or not is_instance_valid(_notes):
+		return
+	var l := Lagoon.label(text, UI.F_CAPTION, color, true)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.custom_minimum_size = Vector2(get_viewport_rect().size.x * 0.84, 0)
+	_notes.add_child(l)
+	if emphasis:
+		FX.pulse_forever(l, 1.05, 1.1)
+	# Only the first note schedules the fade; the rest join the same group.
+	if _notes.get_child_count() == 1:
+		_notes.create_tween().tween_property(_notes, "modulate:a", 1.0, 0.32) \
+			.set_delay(0.55)
 
 
 # Where the chest is, for a caller that wants rewards to fly out of it.

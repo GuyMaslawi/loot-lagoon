@@ -27,6 +27,11 @@ func _ready() -> void:
 			# PAGE=shop|collections|quests|options|island jumps straight there
 			if OS.has_environment("PAGE"):
 				_open_page.call_deferred(game, OS.get_environment("PAGE"))
+			# SCROLL=420 drops the page that far down before the shot. A tall
+			# tile -- an album cover is 430 -- cannot be judged from a frame
+			# that only ever contains its top edge.
+			if OS.has_environment("SCROLL"):
+				_scroll_to.call_deferred(game, float(OS.get_environment("SCROLL")))
 			if OS.has_environment("SPIN"):
 				_spin.call_deferred(game)
 			# GRANT=shields:5 hands the game a reward on demand. The shield
@@ -359,6 +364,18 @@ func _grant(game: Control, spec: String) -> void:
 		# real money, so a harness is the only way to see it at all. A comma
 		# list merges packs, which is how the two-row and three-row layouts get
 		# looked at: GRANT=pack:spins_m,coins_m.
+		# GRANT=claim:12000:40 fires a mission-style claim -- the boxless payout
+		# screen with the figures rolling up. In play this needs a finished
+		# mission, a period bonus, a reward-track rung or a completed set.
+		"claim":
+			var cn := int(parts[1]) if parts.size() > 1 else 12000
+			var sn := int(parts[2]) if parts.size() > 2 else 40
+			game.call("_grant_mission_reward", cn, sn, "Mission Complete!")
+			if OS.has_environment("SHOT"):
+				await _reel(OS.get_environment("SHOT"),
+					int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 10,
+					float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.3)
+			return
 		"pack":
 			var spec_ids := str(parts[1]) if parts.size() > 1 else "spins_m"
 			var merged := {"id": "harness_pack", "name": "Harness Pack"}
@@ -763,3 +780,27 @@ func _art_sheet() -> void:
 		p.fill = f
 		p.custom_minimum_size = Vector2(120, 110)
 		small.add_child(p)
+
+
+# Drop a page's scroller by `y` once it exists, for shots of anything below
+# the fold.
+func _scroll_to(game: Control, y: float) -> void:
+	while game.get("_boot") != null:
+		await get_tree().process_frame
+	await get_tree().create_timer(1.2).timeout
+	var page: Control = game.get("_current_page")
+	if page == null:
+		return
+	var sc := _find_scroller(page)
+	if sc != null:
+		sc.scroll_vertical = int(y)
+
+
+func _find_scroller(n: Node) -> ScrollContainer:
+	if n is ScrollContainer:
+		return n
+	for c in n.get_children():
+		var f := _find_scroller(c)
+		if f != null:
+			return f
+	return null

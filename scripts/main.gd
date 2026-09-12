@@ -4686,7 +4686,8 @@ func _claim_milestone(period: String, i: int) -> void:
 	miles[str(i)] = true
 	mission_state[period]["miles"] = miles
 	var r := _milestone_reward(period, i)
-	_grant_mission_reward(_scaled(int(r["coins"])), int(r["spins"]))
+	_grant_mission_reward(_scaled(int(r["coins"])), int(r["spins"]),
+		"Reward Unlocked!")
 	FX.confetti(self, 26)
 	_fill_page("quests")
 
@@ -5788,14 +5789,16 @@ func _claim_mission(period: String, m: Dictionary) -> void:
 	if not _mission_ready(period, m):
 		return
 	mission_state[period]["claimed"][m["id"]] = true
-	_grant_mission_reward(_mission_coins(m), int(m.get("spins", 0)))
+	_grant_mission_reward(_mission_coins(m), int(m.get("spins", 0)),
+		"Mission Complete!")
 	_fill_page("quests")
 
 func _claim_mission_bonus(period: String) -> void:
 	if not _bonus_ready(period):
 		return
 	mission_state[period]["bonus"] = true
-	_grant_mission_reward(_bonus_coins(period), int(MISSION_BONUS[period]["spins"]))
+	_grant_mission_reward(_bonus_coins(period), int(MISSION_BONUS[period]["spins"]),
+		"%s Bonus!" % String(MISSION_TAB_INFO[period]["title"]).capitalize())
 	FX.confetti(self, 46)
 	FX.flash(self)
 	_fill_page("quests")
@@ -5804,18 +5807,79 @@ func _claim_mission_bonus(period: String) -> void:
 # flights ride at 130 or they play out underneath the popup they left. This
 # was the last coin reward in the game still thrown as decoration at a counter
 # that had already moved; it holds and delivers now, like everything else.
-func _grant_mission_reward(coin_amt: int, spin_amt: int) -> void:
-	var at := Vector2(view_size().x * 0.5, view_size().y * 0.5)
-	if coin_amt > 0:
-		_grant_coins(coin_amt, at, 130)
-		FX.rise_label(self, Vector2(270, 560), "+%s" % _fmt_compact(coin_amt), Color(1.0, 0.85, 0.3), 36)
+# GOLD AND SPINS GET THE SCREEN TOO, not just a flight and a toast.
+#
+# Guy, 2026-09-12: "if you get gold or spins or gold and spins, let's give them
+# their own screen with a cool animation -- right now it is very direct and
+# boring." He was right, and the reason is that PayoutShow only ever fired on a
+# PURCHASE. Every other way the game hands over currency -- a mission, a
+# mission period bonus, a rung of the reward track, a completed collection --
+# went through `_grant_mission_reward`, which flew the coins, popped a rise
+# label and played a sound. Fine for a reel win; far too little for something
+# the player deliberately went and claimed.
+#
+# NO BOX, and that is a decision rather than an omission (Guy left it to me).
+# Nothing was unwrapped, so a chest would be theatre about an object that does
+# not exist -- and the box screen has to stay meaningfully different from this
+# one or neither reads as special. See PayoutShow for what it does instead.
+#
+# WHAT DOES NOT COME THROUGH HERE: reel wins, raid loot and the daily bonus.
+# The first two happen constantly and a takeover per spin is a game nobody can
+# play; the daily bonus already has its own staging, where the flights leave
+# the actual prize columns of the sheet being dismissed, and that is better
+# than a generic screen rather than worse.
+func _show_currency_payout(title: String, coin_amt: int, spin_amt: int,
+		shield_amt := 0) -> void:
+	var rows := []
 	if spin_amt > 0:
-		_grant_spins(spin_amt, at, 130)
+		rows.append(["spin", spin_amt, "SPINS", Color(0.42, 0.78, 1.0),
+			func(n: int) -> String: return "+%s" % _fmt_compact(n)])
+	if coin_amt > 0:
+		rows.append(["coin", coin_amt, "COINS", Color(1.0, 0.80, 0.30),
+			func(n: int) -> String: return "+%s" % _fmt_compact(n)])
+	if shield_amt > 0:
+		rows.append(["shield", shield_amt, "SHIELDS", Lagoon.KELP_HI,
+			func(n: int) -> String: return "+%d" % n])
+	if rows.is_empty():
+		return
+
+	# Held BEFORE the screen, released when it is dismissed -- the held-counter
+	# rule. The callers below have already banked these figures, so the flights
+	# on the way out are the flight-only halves and neither banks again.
+	_hud_hold("coins", coin_amt)
+	_hud_hold("spins", spin_amt)
+	_refresh()
+
+	# One takeover at a time; two stacked is one nobody can dismiss.
+	if _chest_seq != null and is_instance_valid(_chest_seq):
+		_chest_seq.skip(false)
+		_chest_seq = null
+	if _payout_seq != null and is_instance_valid(_payout_seq):
+		_payout_seq.skip()
+	var seq := PayoutShow.play(self, title, rows)
+	_payout_seq = seq
+	seq.finished.connect(func() -> void:
+		if _payout_seq == seq:
+			_payout_seq = null
+		var at := Vector2(view_size().x * 0.5, view_size().y * 0.52)
+		_coin_flight(coin_amt, at)
+		_spin_flight(spin_amt, at)
+		_update_badges())
+
+
+func _grant_mission_reward(coin_amt: int, spin_amt: int, title := "Reward Claimed!") -> void:
+	# Banked here, shown by the takeover, flown when it is dismissed. The bank
+	# has to happen now rather than on dismiss: a save that dies while a
+	# celebration is on screen must not lose a reward the player already
+	# claimed, which is the same rule `_grant_pack` follows for a purchase.
+	coins += coin_amt
+	spins += spin_amt
 	Sfx.play("jackpot", -3.0)
 	FX.confetti(self, 20)
 	_update_badges()
 	_refresh()
 	_save_game()
+	_show_currency_payout(title, coin_amt, spin_amt)
 
 # --- notifications ---
 
@@ -11115,8 +11179,8 @@ func _show_pack_result(pack: Dictionary) -> void:
 		# as a figure with a hole where its icon goes. Glyph draws unknown kinds
 		# as nothing on purpose, which is how a typo stays cosmetic; it is also
 		# how this one got past a read-through. See Glyph._spin.
-		rows.append(["spin", "+%s" % _fmt_compact(spins_n),
-			"SPINS", Color(0.42, 0.78, 1.0)])
+		rows.append(["spin", spins_n, "SPINS", Color(0.42, 0.78, 1.0),
+			func(n: int) -> String: return "+%s" % _fmt_compact(n)])
 	# The figure the wallet actually moved by, not the catalogue number: a coin
 	# pack is scaled to the island it is bought from, and the top-up settles up
 	# through `coins_exact`. Printing the raw table value here would name a
@@ -11124,11 +11188,12 @@ func _show_pack_result(pack: Dictionary) -> void:
 	var coins_n: int = int(pack["coins_exact"]) if pack.has("coins_exact") \
 		else _scaled(int(pack.get("coins", 0)))
 	if coins_n > 0:
-		rows.append(["coin", "+%s" % _fmt_compact(coins_n),
-			"COINS", Color(1.0, 0.80, 0.30)])
+		rows.append(["coin", coins_n, "COINS", Color(1.0, 0.80, 0.30),
+			func(n: int) -> String: return "+%s" % _fmt_compact(n)])
 	var shields_n := int(pack.get("shields", 0))
 	if shields_n > 0:
-		rows.append(["shield", "+%d" % shields_n, "SHIELDS", Lagoon.KELP_HI])
+		rows.append(["shield", shields_n, "SHIELDS", Lagoon.KELP_HI,
+			func(n: int) -> String: return "+%d" % n])
 
 	# Nothing countable in it -- a pack shape this build does not understand.
 	# The banner is still the right answer there: a takeover with no rows is a
@@ -11242,6 +11307,18 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 		for c in sorted:
 			tiles.append(_card_burst_tile(c))
 		seq.burst_out(tiles, Vector2(170, 200), 3)
+		# The three lines the result dialog used to carry, on the takeover now.
+		# `bonus_text` is what the box cost and paid back; the rank line names
+		# the number the stars are visibly flying to; and a completed set is
+		# the one thing here worth a pulse.
+		if bonus_text != "":
+			seq.note(bonus_text, Lagoon.BRASS_HI)
+		if gain > 0:
+			seq.note("\u2b50  +%d world rank" % gain,
+				CV.STAR_COLORS[CV.MAX_STAR - 1])
+		for set_name in completed_sets:
+			seq.note("\U0001F389  %s complete \u2014 claim it in Collections!" % set_name,
+				Lagoon.KELP_HI, true)
 		# After the last arc has landed, so a card is never measured mid-flight.
 		_after(0.30 + 0.11 * float(tiles.size()) + 0.60, func() -> void:
 			for ci in tiles.size():
@@ -11257,128 +11334,21 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 	seq.finished.connect(func() -> void:
 		if _chest_seq == seq:
 			_chest_seq = null
-		_star_harvest_at(earned, gain)
-		# The panel still exists, because two things the thrown cards genuinely
-		# cannot carry: what the box cost and paid back (`bonus_text`), and a
-		# collection that just completed. With neither, the takeover was the
-		# whole reward and a dialog after it is a receipt nobody asked for.
-		if bonus_text != "" or not completed_sets.is_empty():
-			_chest_result_panel(cards, title, bonus_text, completed_sets, true, false))
+		_star_harvest_at(earned, gain))
+		# NO DIALOG AFTER THIS. It used to open whenever there was a cost line
+		# or a completed set to report -- which is every box opening -- so the
+		# box threw its cards, the screen cleared, and then a popup listed the
+		# same cards a second time. Guy caught it on his phone: redundant.
+		# Everything that dialog said is now said on the takeover itself, by
+		# ChestOpen.note, while the cards it refers to are still on screen.
+		#
+		# The panel and its tile-based star harvest are GONE, not kept for a
+		# rainy day: `_deal_show_cards` -- the only other handful-of-cards
+		# surface -- routes through `_show_chest_result` too, so both had zero
+		# callers the moment this line was deleted. `_card_burst_tile` and
+		# `_star_harvest_at` replace them and the tile-building duplication
+		# between the two versions goes with it.
 
-
-# `harvest` is false when the takeover in front of this already flew the stars
-# off the cards as they landed. Running it twice fires a second flight for
-# stars that have already been delivered -- the counter survives it, because
-# _hud_land floors at zero, but the player gets two bursts for one reward.
-func _chest_result_panel(cards: Array, title := "Chest Opened!", bonus_text := "", completed_sets: Array = [], held := false, harvest := true) -> void:
-	# What the handful was worth to your standing, counted before anything is
-	# drawn -- because the pill at the top of the screen has to be holding the
-	# OLD number by the time the first tile appears. The stars were banked in
-	# _grant_chest_card; see _hud_lag for why the digits wait anyway.
-	var rank_gain := 0
-	for c in cards:
-		if not c.get("dup", false):
-			rank_gain += int(c.get("stars", 0))
-	if not held:
-		_hud_hold("stars", rank_gain)
-	_refresh()
-	var vbox := _open_popup(title)
-	if bonus_text != "":
-		var b := _popup_row_label(bonus_text, UI.F_LABEL)
-		b.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		b.add_theme_color_override("font_color", Lagoon.BRASS_LO)
-		vbox.add_child(b)
-	var sorted := cards.duplicate()
-	sorted.sort_custom(func(a, b): return int(a["stars"]) > int(b["stars"]))
-	var center := CenterContainer.new()
-	vbox.add_child(center)
-	var grid := GridContainer.new()
-	grid.columns = mini(3, sorted.size())
-	grid.add_theme_constant_override("h_separation", 10)
-	grid.add_theme_constant_override("v_separation", 10)
-	center.add_child(grid)
-	# [tile, stars] for each first copy, so the flight below knows where each
-	# card is standing when it pays out.
-	var fresh := []
-	for ci in sorted.size():
-		var card: Dictionary = sorted[ci]
-		var stars := int(card.get("stars", 1))
-		var sc: Color = CV.STAR_COLORS[stars - 1]
-		var tile := _tinted_card(grid, sc, stars >= 4, Lagoon.R_CHIP + 4)
-		tile.custom_minimum_size = Vector2(166, 0)
-		var tile_pad := MarginContainer.new()
-		for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
-			tile_pad.add_theme_constant_override(m, 8)
-		tile.add_child(tile_pad)
-		var colv := VBoxContainer.new()
-		colv.alignment = BoxContainer.ALIGNMENT_CENTER
-		colv.add_theme_constant_override("separation", 2)
-		tile_pad.add_child(colv)
-		var e := _card_face(String(card.get("set_id", "")), int(card.get("idx", -1)),
-			String(card["emoji"]), 40)
-		e.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-		colv.add_child(e)
-		var nm := Lagoon.label(card["name"], UI.F_TINY, Lagoon.INK, true)
-		nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		nm.clip_text = true
-		colv.add_child(nm)
-		colv.add_child(_star_row(stars, UI.F_TINY))
-		# The row stays even when it has nothing to say, so a grid holding one
-		# spare and two first copies does not come out with one tile taller than
-		# its neighbours.
-		var status := Label.new()
-		status.add_theme_font_size_override("font_size", UI.F_TINY)
-		status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		if card["dup"]:
-			status.text = "SPARE  x%d" % int(card.get("held", 1))
-			status.add_theme_color_override("font_color", Lagoon.INK_FAINT)
-		else:
-			# The word is on the badge now. Eleven-point green under the card's
-			# own name is not how you say "you have never had this one".
-			_pin_new_badge(tile)
-			fresh.append([tile, stars])
-		colv.add_child(status)
-		# staggered reveal, rarest first
-		tile.modulate.a = 0.0
-		var tw := tile.create_tween()
-		tw.tween_interval(0.07 * ci)
-		tw.tween_property(tile, "modulate:a", 1.0, 0.22)
-	for set_name in completed_sets:
-		var done_row := HBoxContainer.new()
-		done_row.alignment = BoxContainer.ALIGNMENT_CENTER
-		done_row.add_theme_constant_override("separation", 8)
-		vbox.add_child(done_row)
-		done_row.add_child(_emoji_label("🎉", UI.F_LABEL))
-		var done := _popup_row_label("%s complete — claim it in Collections!" % set_name, UI.F_CAPTION)
-		done.add_theme_color_override("font_color", Lagoon.KELP_LO)
-		done_row.add_child(done)
-		FX.pulse_forever(done_row, 1.04, 1.2)
-
-	# What the handful was worth to your standing. Read off the cards rather
-	# than passed in, so a chest bought with money, a box bought with stars and
-	# the free gift all say it the same way -- and so the spares are visibly
-	# the reason the number is not higher.
-	if rank_gain > 0:
-		var gain := _popup_row_label("\u2b50  +%d world rank" % rank_gain, UI.F_LABEL)
-		gain.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		gain.add_theme_color_override("font_color", CV.STAR_COLORS[CV.MAX_STAR - 1])
-		vbox.add_child(gain)
-		FX.pulse_forever(gain, 1.05, 1.1)
-
-	var ok := Button.new()
-	ok.text = "COLLECT!"
-	ok.custom_minimum_size = Vector2(0, UI.TAP)
-	_candy_button(ok, Color(0.45, 0.75, 0.35))
-	FX.press_feedback(ok)
-	ok.pressed.connect(func() -> void: _close_popup())
-	vbox.add_child(ok)
-
-	if harvest:
-		_star_harvest(fresh, rank_gain)
-	else:
-		# The stars are already in the air or landed. The lag still has to be
-		# guaranteed clear, or a counter sits one short of the save for ever.
-		_after(1.4, func() -> void: _settle_hud("stars"))
 
 # ONE CARD, AS AN OBJECT THAT CAN BE THROWN.
 #
@@ -11458,52 +11428,6 @@ func _star_harvest_at(points: Array, rank_gain: int) -> void:
 	# save survives every reopen of the page.
 	_after(0.14 * float(rank_gain) + 1.4, func() -> void: _settle_hud("stars"))
 
-
-# THE STARS COME OFF THE CARD THEY WERE EARNED ON.
-#
-# Guy, 2026-09-05: "an animation of the stars of the new object I got, from
-# there to the total stars at the top, in the same style." The rank line on this
-# dialog already said "+7 world rank", and the pill at the top of the screen
-# already held the number -- but nothing joined them, so the sentence "this card
-# is worth two of that number" was never said out loud. A five-star pull and a
-# one-star pull produced the same event.
-#
-# One star per star, out of the tile that paid it. The counter is held until
-# each lands, which is the rule every other reward in this game follows and the
-# only reason an arc is worth drawing at all -- see FX.deliver.
-func _star_harvest(fresh: Array, rank_gain: int) -> void:
-	if rank_gain <= 0 or fresh.is_empty():
-		_settle_hud("stars")
-		return
-	# After the staggered reveal has finished, or the stars leave tiles that
-	# have not faded in yet -- and before that the tiles have no position at
-	# all, because the dialog has not been laid out.
-	var lead := 0.34 + 0.07 * float(fresh.size())
-	_after(lead, func() -> void:
-		var to := _hud_at("stars")
-		for entry in fresh:
-			# Read untyped and CHECKED BEFORE it is typed. A `var x: Control =`
-			# against a freed instance raises on the assignment itself, so the
-			# is_instance_valid guard under it never runs -- and COLLECT! pressed
-			# inside the fraction of a second before the first star leaves is
-			# enough to free every tile in this list.
-			var node = entry[0]
-			if not is_instance_valid(node):
-				continue
-			var tile := node as Control
-			var from: Vector2 = tile.global_position + tile.size * 0.5
-			FX.deliver(self, from, to, "star", int(entry[1]), func(_i: int) -> void:
-				_hud_land("stars", 1, Color(1.0, 0.87, 0.45))
-				Sfx.play("pop", -14.0)
-			# 130, over the dialog. The popup sits at z_index 120 and the pill
-			# these are flying to is behind it, so at the default the whole
-			# flight happens underneath the card it came out of.
-			, "", 200.0, 0.13, "\u2b50", 130)
-		Sfx.play("levelup", -10.0))
-	# The backstop, on main rather than on the popup: COLLECT! can be pressed
-	# while the last star is still in the air, and a rank counter left one short
-	# of the save survives every reopen of the page.
-	_after(lead + 0.14 * float(rank_gain) + 1.4, func() -> void: _settle_hud("stars"))
 
 func _fill_quests(vb: VBoxContainer) -> void:
 	_ensure_missions()
@@ -13433,9 +13357,11 @@ func _fill_collection_shelf(vb: VBoxContainer) -> void:
 	if _dupe_card_count() == 0:
 		vb.add_child(_page_note("Every spin has a chance to drop a card, and every new one is worth \u2605 stars!", UI.F_CAPTION))
 	var grid := GridContainer.new()
-	grid.columns = 3
-	grid.add_theme_constant_override("h_separation", 12)
-	grid.add_theme_constant_override("v_separation", 12)
+	# TWO. See the note on _collection_tile: three columns is what held every
+	# card face at 76px, and a 76px picture cannot be fixed with contrast.
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 14)
+	grid.add_theme_constant_override("v_separation", 14)
 	vb.add_child(grid)
 	for c in CV.COLLECTIONS:
 		grid.add_child(_collection_tile(c))
@@ -13533,36 +13459,70 @@ func _collection_fan(c: Dictionary, scale := 1.0) -> Control:
 		card.add_child(em)
 	return holder
 
+# THE ALBUM COVER.
+#
+# Guy has now made the same complaint twice. 2026-09-04: "everything is very
+# small and you can barely see it, and the whole thing is pale and washed out."
+# The answer then was to make the tile taller and darken the well behind the
+# fan -- an adjustment, inside the existing shape. 2026-09-12, off the same
+# phone: the sets are "very small and pale", they need to become "collections
+# at a designed level, like LUXURY BOOK COVERS and special frames", and above
+# all **what is on the card has to be clearly visible**.
+#
+# Twice is the signal that the shape was wrong, not the values. So this is a
+# different object: a bound album cover, not a tinted tile with a fan on it.
+#
+# TWO COLUMNS, NOT THREE, and that is the change everything else rests on. The
+# old fan carried a comment explaining that it was "SIZED OFF THE NARROWEST
+# TILE THE GRID CAN MAKE" -- 215 units, of which the art well got 195 and each
+# card face got 76. Seventy-six pixels is why the cards could not be seen, and
+# no amount of contrast fixes a 76px picture. Three columns was a self-imposed
+# constraint; at two, a tile is ~330 wide and the same fan runs at 1.55x with
+# room to spare. Six tiles above the fold becomes four, which is the price and
+# it is worth paying.
+#
+# WHAT MAKES IT READ AS EXPENSIVE, in the order the eye takes it:
+#
+#   a deep board, not sea glass -- the cover is a solid object, and the pale
+#     translucent panel was half the "washed out" complaint on its own
+#   a brass frame with a hairline inside it and a rivet at each corner, which
+#     is the same vocabulary the plaques and the machine's cabinet use
+#   the set's EMBLEM, rendered, filling the upper two thirds -- every one of
+#     the fifteen sets has one (assets/art/cards/<id>_icon.png) and the shelf
+#     was not using them at all
+#   the real cards fanned across the emblem's foot, big enough to be read
+#   the set's name on a rivetted brass plate, like a spine label
+#   a gauge at the foot, and a difficulty ribbon top-left
 func _collection_tile(c: Dictionary) -> Control:
 	var id: String = c["id"]
 	var items: Array = c["items"]
 	var owned_n := _collection_owned_count(c)
 	var claimed: bool = col_claimed.get(id, false)
 	var ready: bool = owned_n == items.size() and not claimed
+	# The same three the shelf has always used -- kelp for an afternoon, brass
+	# for a week, reef for a month.
+	var diff: Color = {"Easy": Lagoon.KELP, "Medium": Lagoon.BRASS_MID,
+		"Hard": Lagoon.REEF}.get(String(c["diff"]), Lagoon.LAGOON_DEEP)
 
 	var tile := Button.new()
 	tile.focus_mode = Control.FOCUS_NONE
-	# 306, not 250. Guy, 2026-09-04, off a real phone: "everything is very small
-	# and you can barely see it, and the whole thing is pale and washed out
-	# there." Three columns on a 720 canvas gives each tile about 210 units of
-	# width no matter what, so the only room a tile can be given is height --
-	# and the height is what the emblem was starving for. The extra 56 goes
-	# entirely to the fan (see _collection_fan), which is now the thing the eye
-	# lands on rather than a 56px emoji floating in a pale pool.
-	tile.custom_minimum_size = Vector2(0, 292)
+	tile.custom_minimum_size = Vector2(0, 430)
 	tile.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	# A tile is a card, not a candy button: same sea glass as everything else,
-	# with the brass rim reserved for a set that has something to give you.
-	var sb := Lagoon.glass(24, 0.94)
-	sb.set_border_width_all(4)
-	sb.border_color = Lagoon.CORAL if ready else (Lagoon.KELP if claimed else Lagoon.BRASS_MID)
-	sb.shadow_size = 12
-	sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.30)
-	sb.shadow_offset = Vector2(0, 5)
+
+	# The board. Deep and opaque -- a cover is a thing, not a window.
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.043, 0.169, 0.220, 1.0)
+	sb.set_corner_radius_all(26)
+	sb.set_border_width_all(5)
+	sb.border_color = Lagoon.CORAL if ready else (
+		Lagoon.KELP_HI if claimed else Lagoon.BRASS)
+	sb.shadow_size = 16
+	sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.52)
+	sb.shadow_offset = Vector2(0, 6)
 	for state in ["normal", "hover", "focus"]:
 		tile.add_theme_stylebox_override(state, sb)
 	var down := sb.duplicate()
-	down.bg_color = down.bg_color.darkened(0.06)
+	down.bg_color = down.bg_color.lightened(0.06)
 	tile.add_theme_stylebox_override("pressed", down)
 	FX.press_feedback(tile)
 	tile.pressed.connect(func() -> void:
@@ -13571,168 +13531,160 @@ func _collection_tile(c: Dictionary) -> Control:
 		_scroll_top("collections")
 	)
 
+	# The hairline inside the brass, which is what turns one band into a frame.
+	var inner := Panel.new()
+	var isb := StyleBoxFlat.new()
+	isb.bg_color = Color(0, 0, 0, 0)
+	isb.set_corner_radius_all(19)
+	isb.set_border_width_all(2)
+	isb.border_color = Color(Lagoon.BRASS_HI.r, Lagoon.BRASS_HI.g,
+		Lagoon.BRASS_HI.b, 0.40)
+	inner.add_theme_stylebox_override("panel", isb)
+	inner.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tile.add_child(inner)
+	inner.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for m in [["offset_left", 7.0], ["offset_top", 7.0],
+			["offset_right", -7.0], ["offset_bottom", -7.0]]:
+		inner.set(m[0], m[1])
+
 	var pad := MarginContainer.new()
 	pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
-		pad.add_theme_constant_override(m, 10)
+	for m in ["margin_left", "margin_right"]:
+		pad.add_theme_constant_override(m, 14)
+	pad.add_theme_constant_override("margin_top", 14)
+	pad.add_theme_constant_override("margin_bottom", 12)
 	tile.add_child(pad)
 	pad.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 6)
+	col.add_theme_constant_override("separation", 8)
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pad.add_child(col)
 
-	# the set's cards, fanned, sunk into a pool of its own water
-	# The well takes the set's difficulty colour, which is the one thing on a
-	# tile that says how long this set is going to take. Fifteen tiles in one
-	# grey was the real complaint about this page: with every well the same pale
-	# blue, the only difference between an afternoon's set and a month's was a
-	# word in the corner, and the eye had to read all fifteen to find anything.
+	# --- the cover art -------------------------------------------------------
 	#
-	# IT IS NO LONGER A WASH. It was 0.42 alpha of the difficulty hue over sea
-	# glass, which on a phone is three barely-distinguishable pastels -- the
-	# "pale and washed out" half of Guy's note. At 0.86 over a darkened floor
-	# each difficulty is its own material, the fan on top of it has something to
-	# be light against, and the tile is still sea glass everywhere else, so the
-	# brass rim keeps its job of saying whether there is a reward waiting.
-	var dcol: Color = {"Easy": Lagoon.KELP, "Medium": Lagoon.BRASS_MID, "Hard": Lagoon.REEF}.get(
-		String(c["diff"]), Lagoon.LAGOON_DEEP)
+	# The emblem sits in a well of the set's own difficulty colour, at full
+	# strength rather than as a wash: fifteen tiles in three barely different
+	# pastels was the other half of "pale", and a difficulty you have to read
+	# a word to learn is a difficulty nobody reads.
 	var well := PanelContainer.new()
-	var wsb := Lagoon.glass_well(18)
-	wsb.bg_color = Color(dcol.r, dcol.g, dcol.b, 0.86)
-	wsb.border_color = Color(Lagoon.HULL.r, Lagoon.HULL.g, Lagoon.HULL.b, 0.85)
+	var wsb := StyleBoxFlat.new()
+	wsb.bg_color = Color(diff.r * 0.30, diff.g * 0.34, diff.b * 0.38, 1.0)
+	wsb.set_corner_radius_all(16)
 	wsb.set_border_width_all(3)
+	wsb.border_color = Color(diff.r, diff.g, diff.b, 0.78)
 	well.add_theme_stylebox_override("panel", wsb)
-	well.custom_minimum_size = Vector2(0, 138)
 	well.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	well.custom_minimum_size = Vector2(0, 236)
+	well.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	col.add_child(well)
-	well.add_child(_collection_fan(c))
+	# The lacquer. A flat field of colour is a box; the same field with a
+	# highlight raked across its top is a varnished surface, which is most of
+	# what separates "a tile" from "a cover" for one ColorRect.
+	Lagoon.add_gloss(well, 16, diff)
 
-	# Cards that have arrived in this set and not been looked at. Without it the
-	# badge is only ever seen by a player who happens to open the right set --
-	# the shelf is the page they land on, and it was the one screen that could
-	# not say where the new card went.
-	#
-	# On the WELL, not on the tile, and that is the only corner free. Both of
-	# the tile's top corners are spoken for -- the spare pile on the left, the
-	# difficulty chip and the CLAIM flag on the right -- and its bottom two are
-	# the progress track, which is a control with a number written on it. The
-	# well is the one surface here that is a picture.
-	var fresh_n := _set_new_count(c)
-	if fresh_n > 0:
-		_pin_new_badge(well, true, "NEW" if fresh_n == 1 else "%d NEW" % fresh_n)
+	var art := Control.new()
+	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	well.add_child(art)
 
-	# F_LABEL, not F_CAPTION. 13pt on the smallest supported phone for the one
-	# line that says which set this is, under an emblem that was itself too
-	# small to identify it, is the whole of "you can barely see it".
-	var nm := Lagoon.label(c["name"], UI.F_LABEL, Lagoon.INK, true)
-	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	nm.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	nm.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	# Two lines' worth, reserved, so the progress tracks on a row of tiles line
-	# up with each other whether the name wrapped or not -- "Beach Day" and
-	# "Shipwright's Yard" are in the same grid row and must not sit at
-	# different heights.
-	nm.custom_minimum_size = Vector2(0, 74)
-	col.add_child(nm)
+	# The set's own rendered emblem, large. A set with no emblem file yet falls
+	# back to its icon glyph, the way every card face does.
+	var emblem_tex := CV.card_set_tex(id)
+	if emblem_tex != null:
+		var em := TextureRect.new()
+		em.texture = emblem_tex
+		em.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		em.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		em.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		art.add_child(em)
+		em.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		em.offset_bottom = -54.0
+		em.offset_top = -6.0
+	else:
+		var fallback := _emoji_label(str(c.get("icon", "\U0001F0CF")), 92)
+		fallback.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		art.add_child(fallback)
+		fallback.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		fallback.offset_bottom = -54.0
 
-	# One object, not two. The tile used to carry an 18px sliver of a track with
-	# the count printed under it in pale ink -- fifteen tiles of a bar too thin
-	# to read a fill in and a number too faint to read at all. The track is tall
-	# enough to hold its own count now and the footer row is gone.
-	var pb := _styled_progress(Lagoon.KELP if owned_n == items.size() else Lagoon.LAGOON)
-	pb.custom_minimum_size = Vector2(0, 36)
+	# The real cards, across the emblem's foot. 1.55 is the whole point of the
+	# second column: the same fan the three-column shelf ran at 1.0.
+	var fan_slot := Control.new()
+	fan_slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	art.add_child(fan_slot)
+	fan_slot.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	fan_slot.offset_top = -128.0
+	fan_slot.offset_bottom = 4.0
+	fan_slot.add_child(_collection_fan(c, 1.55))
+
+	# A set you have finished stops being a shelf item and becomes a trophy.
+	if claimed:
+		art.modulate = Color(1, 1, 1, 0.72)
+
+	# --- the spine label -----------------------------------------------------
+	var plate := Lagoon.plaque(str(c["name"]).to_upper(), 0.0, 54.0, UI.F_CAPTION)
+	plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	plate.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	col.add_child(plate)
+
+	# --- the gauge -----------------------------------------------------------
+	var pb := _styled_progress(diff)
 	pb.max_value = items.size()
 	pb.value = owned_n
+	pb.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	col.add_child(pb)
-	Lagoon.progress_value(pb, "%d / %d" % [owned_n, items.size()], UI.F_TINY)
+	Lagoon.progress_value(pb, "%d / %d" % [owned_n, items.size()], UI.F_CAPTION)
 
-	var foot := HBoxContainer.new()
-	foot.add_theme_constant_override("separation", 6)
-	foot.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	col.add_child(foot)
-	var cnt := Control.new()
-	cnt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	cnt.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	foot.add_child(cnt)
+	# --- the ribbon ----------------------------------------------------------
+	#
+	# Top LEFT, because the claim badge owns the top right and two chips in one
+	# corner is how the old tile lost its exclamation mark off the edge.
+	var ribbon := _diff_chip(String(c["diff"]), true)
+	ribbon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tile.add_child(ribbon)
+	ribbon.anchor_top = 0.0
+	ribbon.anchor_bottom = 0.0
+	ribbon.offset_left = 16.0
+	ribbon.offset_top = 4.0
+	ribbon.offset_bottom = 4.0
+	ribbon.grow_horizontal = Control.GROW_DIRECTION_END
+	ribbon.grow_vertical = Control.GROW_DIRECTION_END
 
-	# The difficulty chip used to sit in this footer next to the count, and it
-	# hung off the right rim of every Medium and Hard tile on a real phone. Same
-	# trap the spare tag's comment describes and the same fix: a chip asked to
-	# fit in less than its own minimum width does not shrink, it grows -- and a
-	# footer HBox hands its minimum up to the tile, which a GridContainer then
-	# hands to all three columns. Overlaid on a corner it costs the layout
-	# nothing and cannot widen anything. Top right, opposite the spare tag.
-	# Straight onto the tile, with no wrapper. `tile` is a Button, which is a
-	# Control and not a container, so it leaves its children's anchors alone --
-	# this is the same shape the spare tag below uses. A Control wrapper is what
-	# the CARD tiles need, because those are PanelContainers and a container
-	# does overwrite anchors; putting one here instead gave the chip a zero-size
-	# parent to anchor against.
-	# Only while the tile has no news. The difficulty chip and the CLAIM flag
-	# both corner themselves top-right and grow left, so on a finished set they
-	# were drawn one on top of the other -- "CLAIM!" printed across "Easy". The
-	# chip is the one that gives way: a set you have already completed is not
-	# one you are still deciding whether to start, and the well behind the
-	# emblem is tinted by difficulty anyway, so nothing is lost by dropping it.
-	var dchip := _diff_chip(c["diff"], true)
-	dchip.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	dchip.visible = not (ready or claimed)
-	tile.add_child(dchip)
-	dchip.anchor_left = 1.0
-	dchip.anchor_right = 1.0
-	dchip.anchor_top = 0.0
-	dchip.anchor_bottom = 0.0
-	dchip.offset_left = -8.0
-	dchip.offset_right = -8.0
-	dchip.offset_top = 8.0
-	dchip.offset_bottom = 8.0
-	dchip.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-	dchip.grow_vertical = Control.GROW_DIRECTION_END
-
-	# The spare count is a corner tab, not a third thing in the footer. As a
-	# footer chip it added its own width to the row's minimum, an HBoxContainer
-	# hands that minimum to the tile, a GridContainer hands the widest tile's
-	# minimum to all three columns -- and the whole shelf grew 15px wider than
-	# the phone the moment the player held their first duplicate. Nobody sees
-	# that on a fresh save, which is why it sat here until a save with spares
-	# in it was measured. Overlaid on the corner it costs the layout nothing,
-	# and it takes the left so the CLAIM flag can keep the right.
-	var spare_n := _set_dupe_total(c)
-	if spare_n > 0:
-		var stag := Lagoon.chip("+%d" % spare_n, Lagoon.URCHIN, UI.F_TINY)
-		stag.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		tile.add_child(stag)
-		stag.anchor_left = 0.0
-		stag.anchor_right = 0.0
-		stag.anchor_top = 0.0
-		stag.anchor_bottom = 0.0
-		stag.offset_left = 6.0
-		stag.offset_right = 6.0
-		stag.offset_top = -10.0
-		stag.offset_bottom = -10.0
-		stag.grow_horizontal = Control.GROW_DIRECTION_END
-		stag.grow_vertical = Control.GROW_DIRECTION_END
+	# Corner rivets, one per corner. The frame's own hardware -- it is what the
+	# plaques and the cabinet do, and it is cheap: four 10px discs.
+	for corner in [[0.0, 0.0, 15.0, 15.0], [1.0, 0.0, -15.0, 15.0],
+			[0.0, 1.0, 15.0, -15.0], [1.0, 1.0, -15.0, -15.0]]:
+		var rivet := Glyph.new()
+		rivet.kind = "rivet"
+		rivet.custom_minimum_size = Vector2(11, 11)
+		rivet.size = Vector2(11, 11)
+		rivet.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		tile.add_child(rivet)
+		rivet.anchor_left = corner[0]
+		rivet.anchor_right = corner[0]
+		rivet.anchor_top = corner[1]
+		rivet.anchor_bottom = corner[1]
+		rivet.offset_left = corner[2] - 5.5
+		rivet.offset_right = corner[2] + 5.5
+		rivet.offset_top = corner[3] - 5.5
+		rivet.offset_bottom = corner[3] + 5.5
 
 	# One badge in the corner, and only when the tile has news: a reward waiting
 	# to be taken, or a set already banked.
 	if ready or claimed:
-		var flag := Lagoon.chip("CLAIM!" if ready else "\u2713", Lagoon.CORAL if ready else Lagoon.KELP, UI.F_TINY)
+		var flag := Lagoon.chip("CLAIM!" if ready else "\u2713",
+			Lagoon.CORAL if ready else Lagoon.KELP, UI.F_TINY)
 		flag.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		tile.add_child(flag)
-		# Cornered and grown, not sized by hand. The two hardcoded widths this
-		# replaces were measured against a font that has since moved: "CLAIM!"
-		# needed more than 78px and lost its exclamation mark off the right of
-		# the tile, and a guessed width is going to be wrong again the next
-		# time the type changes. Growing left from the corner cannot be.
+		# Cornered and grown, not sized by hand -- a guessed width is going to
+		# be wrong again the next time the type changes.
 		flag.anchor_left = 1.0
 		flag.anchor_right = 1.0
 		flag.anchor_top = 0.0
 		flag.anchor_bottom = 0.0
-		flag.offset_left = -6.0
-		flag.offset_right = -6.0
-		flag.offset_top = -10.0
-		flag.offset_bottom = -10.0
+		flag.offset_left = -14.0
+		flag.offset_right = -14.0
+		flag.offset_top = 4.0
+		flag.offset_bottom = 4.0
 		flag.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 		flag.grow_vertical = Control.GROW_DIRECTION_END
 	if ready:
@@ -14140,10 +14092,14 @@ func _claim_collection(c: Dictionary) -> void:
 	Sfx.play("jackpot", -2.0)
 	FX.confetti(self, 40)
 	FX.flash(self)
-	FX.fly_coins(self, Vector2(360, 640), _spin_counter_at(),
-		clampi(won / 120, 6, 12), "bolt", "⚡")
 	_award_stars(star_bonus, Vector2(360, 620))
-	_banner("%s:  +%s spins  and  +%d \u2605" % [c["name"], _fmt(won), star_bonus], Color(0.6, 0.9, 1.0), c["icon"])
+	# A MONTH OF COLLECTING ENDED IN A BANNER. The set's payout used to be a
+	# strip at the top of the screen and a handful of bolts flying to the
+	# meter -- the same treatment a refilled spin gets. It takes the screen
+	# now, like every other claim does; the stars keep their own flight
+	# above, because those are what the set leaves behind rather than what
+	# it pays.
+	_show_currency_payout("%s Complete!" % str(c["name"]), 0, won)
 	_update_badges()
 	_refresh()
 	_save_game()

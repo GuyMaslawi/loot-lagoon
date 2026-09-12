@@ -41,13 +41,18 @@ var _tw: Tween
 # What each resource sounds like when it lands.
 const ARRIVAL_SFX := {"coin": "coins", "spin": "pop", "shield": "shield"}
 
-var _rows: Array = []            # [[glyph_kind, amount, caption, color], ...]
+# [[glyph_kind, value:int, caption, color, fmt:Callable], ...]
+# The VALUE is carried as an int and formatted through the caller's own
+# formatter, because the figure rolls up from zero rather than appearing --
+# which needs every intermediate number, not just the final string.
+var _rows: Array = []
 var _state := 0                  # 0 arriving, 1 landed, 2 dismissed
 
 
-# `rows` is [[glyph_kind, amount_text, caption, color], ...] in the order they
-# should arrive. The caller decides what a row says; this decides how it gets
-# here.
+# `rows` is [[glyph_kind, value:int, caption, color, fmt:Callable], ...] in the
+# order they should arrive. `fmt` turns an int into the string on the tile, and
+# is the caller's own so that 90,000 reads here exactly as it reads in the HUD.
+# The caller decides what a row says; this decides how it gets here.
 static func play(parent: Control, title: String, rows: Array) -> PayoutShow:
 	var seq := PayoutShow.new()
 	seq._rows = rows
@@ -143,6 +148,7 @@ func _run() -> void:
 		# Where a tap during the arrival should put it. Held on the node rather
 		# than captured in a closure so `_snap` can settle rows it did not build.
 		card.set_meta("rest", rest)
+		card.set_meta("final_text", String((r[4] as Callable).call(int(r[1]))))
 
 		var delay := 0.30 + 0.22 * float(i)
 		var ct := card.create_tween()
@@ -157,20 +163,93 @@ func _run() -> void:
 			# animating, not as something landing.
 			t.tween_property(card, "position", rest, 0.46) \
 				.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-			t.chain().tween_callback(func() -> void:
-				if not is_instance_valid(card):
-					return
-				FX.shake(card, 6.0, 3)
-				FX.burst(_stage, rest + tile * 0.5, r[3] as Color, 9)
-				FX.haptic(14, 0.4)
-				# Each resource lands with its own sound, mapped explicitly:
-				# a fallback that says "shield" for everything that is not a
-				# coin is how the spin row came to thump like armour.
-				Sfx.play(ARRIVAL_SFX.get(String(r[0]), "pop"),
-					-6.0, 0.04, 1.0 + 0.05 * float(i))))
+			t.chain().tween_callback(func() -> void: _land(card, r, rest, tile, i)))
 
 	_tw.tween_interval(0.30 + 0.22 * float(n) + 0.40)
 	_tw.tween_callback(_landed)
+
+
+# WHAT A ROW DOES WHEN IT GETS HERE.
+#
+# Guy, 2026-09-12: the old version was "very direct and boring, without any
+# animation or effect" -- the figure was just present, and that is the whole
+# difference between a receipt and a payout. So four things happen at once and
+# none of them is the number simply existing:
+#
+#   the figure ROLLS UP from zero, on a cubic ease so it sprints and settles
+#   the icon SPINS once, because a struck token is a thing that turns
+#   the goods ERUPT out of the tile and rain back down over it
+#   the tile thumps, rings and kicks the phone
+#
+# The roll is what carries the size of the reward: 400 coins and 400,000 coins
+# arrive with the same animation everywhere else in this game, and here the
+# big one visibly takes longer to count.
+func _land(card: Control, r: Array, rest: Vector2, tile: Vector2, i: int) -> void:
+	if not is_instance_valid(card):
+		return
+	var col: Color = r[3]
+	var centre := rest + tile * 0.5
+
+	FX.shake(card, 6.0, 3)
+	# A TIGHT shockwave, not a hoop. At tile-width radius this drew a circle
+	# most of the screen across, which reads as a stray ring rather than as
+	# something the tile did on impact.
+	FX.ring(_stage, centre, col, tile.y * 0.80, 0.40, 7.0)
+	FX.burst(_stage, centre, col, 12)
+	FX.haptic(14, 0.4)
+	# Each resource lands with its own sound, mapped explicitly: a fallback
+	# that says "shield" for everything that is not a coin is how the spin row
+	# came to thump like armour.
+	Sfx.play(ARRIVAL_SFX.get(String(r[0]), "pop"), -6.0, 0.04,
+		1.0 + 0.05 * float(i))
+
+	# The goods themselves, thrown up out of the tile.
+	#
+	# BEHIND THE TILES, at a negative z. Above them the coins erupt straight
+	# up through whatever row is sitting overhead and bury its figure -- the
+	# spins row spent the whole coin fountain unreadable. Behind, the same
+	# eruption frames the tile instead of covering its neighbour.
+	#
+	# `fountain` drops coins; anything else gets the burst above and nothing
+	# more, because there is no sprite of a flying shield worth the nodes.
+	if String(r[0]) == "coin":
+		FX.fountain(_stage, centre, 16, -1)
+
+	var icon = card.get_meta("icon", null)
+	if icon is Control and is_instance_valid(icon):
+		var ic := icon as Control
+		ic.pivot_offset = ic.size * 0.5
+		var it := ic.create_tween()
+		it.tween_property(ic, "rotation", TAU, 0.62) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		it.tween_callback(func() -> void:
+			if is_instance_valid(ic):
+				ic.rotation = 0.0)
+
+	var label = card.get_meta("amount_label", null)
+	if not (label is Label) or not is_instance_valid(label):
+		return
+	var lbl := label as Label
+	var value := int(r[1])
+	var fmt: Callable = r[4]
+	# Long enough to read as counting, short enough that a tap is never
+	# waiting on it -- and a bigger figure earns a little more time.
+	var dur := clampf(0.42 + log(maxf(float(value), 1.0)) * 0.07, 0.42, 1.05)
+	var rt := lbl.create_tween()
+	rt.tween_method(func(v: float) -> void:
+		if is_instance_valid(lbl):
+			lbl.text = String(fmt.call(int(round(v))))
+	, 0.0, float(value), dur).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	rt.tween_callback(func() -> void:
+		if not is_instance_valid(lbl):
+			return
+		lbl.text = String(fmt.call(value))
+		# The punch on the last digit, so the number stops rather than fading
+		# out of motion.
+		lbl.pivot_offset = lbl.size * 0.5
+		lbl.scale = Vector2(1.18, 1.18)
+		lbl.create_tween().tween_property(lbl, "scale", Vector2.ONE, 0.26) \
+			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT))
 
 
 func _landed() -> void:
@@ -225,8 +304,13 @@ func _tile(r: Array, tile: Vector2) -> Control:
 	text.add_theme_constant_override("separation", 0)
 	text.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(text)
-	var amount := Lagoon.label(String(r[1]), UI.F_DISPLAY, Lagoon.SHELL, true)
+	# Starts at zero and is rolled up by _land. A figure that is simply present
+	# when the tile arrives is a label; a figure that climbs is a payout.
+	var fmt: Callable = r[4]
+	var amount := Lagoon.label(String(fmt.call(0)), UI.F_DISPLAY, Lagoon.SHELL, true)
 	text.add_child(amount)
+	panel.set_meta("amount_label", amount)
+	panel.set_meta("icon", icon)
 	var cap := Lagoon.label(String(r[2]), UI.F_CAPTION,
 		Color(col.r, col.g, col.b, 0.92), true)
 	text.add_child(cap)
@@ -252,9 +336,18 @@ func _on_input(ev: InputEvent) -> void:
 # Every row straight to its resting place, no arrival animation left pending.
 func _snap() -> void:
 	for c in _stage.get_children():
-		if c is Panel and c.has_meta("rest"):
-			(c as Panel).position = c.get_meta("rest")
-			(c as Panel).modulate.a = 1.0
+		if not (c is Panel and c.has_meta("rest")):
+			continue
+		var panel := c as Panel
+		panel.position = panel.get_meta("rest")
+		panel.modulate.a = 1.0
+		# AND THE FIGURE HAS TO BE FINISHED, not left mid-roll. A tap during
+		# the count is the player saying "I have read it"; leaving a row
+		# showing 41,000 of 90,000 for ever is worse than no animation at all.
+		var lbl = panel.get_meta("amount_label", null)
+		var done = panel.get_meta("final_text", null)
+		if lbl is Label and is_instance_valid(lbl) and done != null:
+			(lbl as Label).text = String(done)
 
 
 # Finish now, from outside, without a tap. Exists for the same reason
