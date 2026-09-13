@@ -137,9 +137,18 @@ func _ready() -> void:
 	m.powerup_id = "pu_quartermaster"
 	m.powerup_until = m._now() + 7000.0
 	m.powerup_pending = ""
+	# The fair, mid-run: some stalls spent, some open, the board part paid. All
+	# three of its stocks are on screen at once in that state, and its figures
+	# are white on the brightest of them -- the gold stall.
+	m.fair_id = "harbour_fair"
+	m.fair_until = m._now() + 7000.0
+	m.fair_restock = 0.0
+	m.fair_taken = {"0": true, "1": true}
+	m.fair_pts = 80
+	m.fair_miles = {"0": true}
 
 	for opener in ["_open_tourney", "_open_world_ranks", "_open_daily",
-			"_open_deal", "_open_powerup"]:
+			"_open_deal", "_open_powerup", "_open_fair"]:
 		await _goto("slot")
 		m.call(opener)
 		await get_tree().create_timer(2.0).timeout

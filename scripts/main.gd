@@ -655,6 +655,26 @@ var deal_done := false
 # this job: it is reset to zero the instant the chain rolls out, which is the
 # same instant this screen becomes the one on show.
 var deal_last_taken := 0
+# THE FAIR -- nine one-off stalls on a points board. See scripts/deals.gd for
+# what it is and why it is not simply a longer chain.
+#
+# `fair_taken` and `fair_miles` are dictionaries with STRING keys rather than
+# arrays of ints, and that is not a style choice: JSON has one number type, so
+# an int array comes back off the save as floats and `Array.has(3)` answers
+# false for the 3.0 that is sitting in it. That exact bug was an exploit once.
+# See [[godot-json-save-number-trap]] -- the mission milestones carry the same
+# comment and the same shape.
+var fair_id := ""
+var fair_until := 0.0
+var fair_next := 0.0
+# When the free half of the fair reopens. Paid stalls ignore it.
+var fair_restock := 0.0
+var fair_taken := {}
+var fair_pts := 0
+var fair_miles := {}
+var _fair_last_id := ""
+var _fair_timer_label: Label
+var _fair_restock_label: Label
 # The live power-up takeover: which one, when it dies, the earliest the next may
 # roll, and whether this one has already been put in front of the player.
 #
@@ -1364,6 +1384,26 @@ func _shot_deal() -> void:
 		powerup_next = _now() + float(OS.get_environment("POWERUP_NEXT")) * 3600.0
 	_open_deal()
 
+func _shot_fair() -> void:
+	deal_id = ""
+	deal_until = 0.0
+	fair_next = 0.0
+	fair_id = ""
+	_fair_tick()
+	var fair := _active_fair()
+	if not fair.is_empty():
+		var want := clampi(int(OS.get_environment("DEMO_FAIR_TAKEN")), 0, Deals.FAIR_SLOTS)
+		var deals: Array = fair["deals"]
+		for i in want:
+			fair_taken[str(i)] = true
+			fair_pts += int((deals[i] as Dictionary)["pts"])
+		for i in (fair["miles"] as Array).size():
+			if fair_pts >= int((fair["miles"][i] as Dictionary)["at"]):
+				fair_miles[str(i)] = true
+		if OS.has_environment("DEMO_FAIR_SHUT"):
+			fair_restock = _now() + 4200.0
+	_open_fair()
+
 func _shot_collections() -> void:
 	var ready_n := int(OS.get_environment("DEMO_SET_READY"))
 	var claimed_n := int(OS.get_environment("DEMO_SET_CLAIMED"))
@@ -1452,6 +1492,11 @@ func _capture_page(key: String) -> void:
 			# photographed at all. DEMO_DEAL_DONE=<n> sends the live chain out
 			# with n rungs taken and shoots the teaser instead.
 			"deal":    _shot_deal()
+			# The fair cannot be reached by waiting: a fresh save rolls a CHAIN
+			# in on its first tick and the fair only opens in that chain's dark
+			# window, a day later. DEMO_FAIR_TAKEN=n takes the first n stalls,
+			# DEMO_FAIR_SHUT=1 shows the restocking state.
+			"fair":    _shot_fair()
 			"powerup": _open_powerup()
 			"intro":   _open_intro()
 			"build":   _intro_build_card()
@@ -2509,13 +2554,27 @@ func _process(delta: float) -> void:
 		# out before freeing it, so a stale label stays valid for a beat.
 		if _deal_next_timer_label != null and is_instance_valid(_deal_next_timer_label) \
 				and _popup != null and _popup.is_ancestor_of(_deal_next_timer_label):
-			if not _active_deal().is_empty():
-				# The chain the countdown promised just went live under the
+			if not _active_deal().is_empty() or not _active_fair().is_empty():
+				# The event the countdown promised just went live under the
 				# player's nose -- swap the promise for the thing itself.
+				# _open_deal routes to whichever of the two it is.
 				_open_deal()
 			else:
 				_deal_next_timer_label.text = _countdown_text(
-					maxi(0, int(deal_next - _now())))
+					maxi(0, int(_next_event_at() - _now())))
+		_fair_tick()
+		if _fair_timer_label != null and is_instance_valid(_fair_timer_label):
+			_fair_timer_label.text = "ENDS  IN  %s" % _fair_countdown_text()
+		if _fair_restock_label != null and is_instance_valid(_fair_restock_label) \
+				and _popup != null and _popup.is_ancestor_of(_fair_restock_label):
+			# The stall that reopens while the player is standing in front of it
+			# is the whole point of a restock clock, so the screen rebuilds
+			# itself on the second it lands rather than waiting to be reopened.
+			if _fair_stall_open():
+				_open_fair()
+			else:
+				_fair_restock_label.text = "STALLS  RESTOCK  IN  %s" % _countdown_text(
+					maxi(0, int(fair_restock - _now())))
 		_powerup_tick()
 		if _powerup_timer_label != null and is_instance_valid(_powerup_timer_label):
 			_powerup_timer_label.text = "ENDS  IN  %s" % _powerup_countdown_text()
@@ -9513,7 +9572,11 @@ func _deal_countdown_text() -> String:
 # claim this dot makes.
 func _deal_free_ready() -> bool:
 	var step := _deal_step()
-	return not step.is_empty() and not Deals.is_paid(step)
+	if not step.is_empty() and not Deals.is_paid(step):
+		return true
+	# The fair makes the same claim through the same disc: a free stall, open
+	# and untaken, is "something here that is free and yours".
+	return _fair_free_ready()
 
 # Rolls a chain in, and rolls a dead one out. Called once a second off the same
 # tick that drives the timed offer.
@@ -9538,6 +9601,14 @@ func _deal_tick() -> void:
 			deal_taken = 0
 			deal_finale = false
 			deal_next = now + Deals.CHAIN_COOLDOWN
+			# THE CALENDAR IS ONE CALENDAR. The fair runs inside the chain's
+			# own dark window rather than on a clock of its own, three hours
+			# after the ladder goes out and finishing three hours before the
+			# next one sails -- so the two events alternate and the spark disc
+			# never has to decide which of two live events it opens. The gaps
+			# either side are what keeps "an event is running" information
+			# rather than wallpaper.
+			fair_next = now + FAIR_GAP
 			_save_game()
 			_update_badges()
 		return
@@ -9677,7 +9748,8 @@ func _open_event_teaser() -> void:
 	plate2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	vbox.add_child(plate2)
 	_deal_next_timer_label = Lagoon.label(
-		_countdown_text(maxi(0, int(deal_next - _now()))), UI.F_SUBHEAD, Lagoon.KELP_HI, true)
+		_countdown_text(maxi(0, int(_next_event_at() - _now()))), UI.F_SUBHEAD,
+		Lagoon.KELP_HI, true)
 	plate2.add_child(_deal_next_timer_label)
 	var sub_text := "Six rewards on one ladder — the free ones cost nothing but showing up."
 	if deal_done:
@@ -9732,6 +9804,517 @@ func _teaser_done_strip(vbox: VBoxContainer, taken: int) -> void:
 		mark.offset_right = 17.0
 		mark.offset_top = -17.0
 		mark.offset_bottom = 17.0
+
+# =============================================================================
+#  THE FAIR — nine stalls, any order, on a points board
+# =============================================================================
+#
+# What it is and why it is not a second ladder is argued in scripts/deals.gd.
+# What lives here is the clock, the screen and the two ways a stall is taken.
+#
+# Three hours after the chain goes dark, and three hours clear of the next one.
+const FAIR_GAP := 3.0 * 3600.0
+
+func _active_fair() -> Dictionary:
+	if fair_id == "" or _now() >= fair_until:
+		return {}
+	return Deals.fair_by_id(fair_id)
+
+# WHEN THE NEXT EVENT SAILS, whichever of the two it is. The teaser's clock was
+# `deal_next` outright, which since the fair exists would have counted down to
+# the wrong event for most of the gap -- and then sat at 0:00:00 while a fair
+# the player could not see from that screen ran for a day.
+func _next_event_at() -> float:
+	var nxt := deal_next
+	if fair_next > _now() and fair_next < nxt:
+		nxt = fair_next
+	return nxt
+
+func _fair_countdown_text() -> String:
+	var left := maxi(0, int(fair_until - _now()))
+	return "%d:%02d:%02d" % [left / 3600, (left / 60) % 60, left % 60]
+
+func _fair_took(i: int) -> bool:
+	return bool(fair_taken.get(str(i), false))
+
+# Whether the free half of the fair is open. Paid stalls never close: a queue
+# in front of a till is a sale the store did not make.
+func _fair_stall_open() -> bool:
+	return _now() >= fair_restock
+
+# What lights the rail disc while a fair is running: a stall that is free, open
+# and not yet taken. Same claim the chain's badge makes -- "there is something
+# here that is free and yours" -- and never "an event exists".
+func _fair_free_ready() -> bool:
+	var fair := _active_fair()
+	if fair.is_empty() or not _fair_stall_open():
+		return false
+	var deals: Array = fair["deals"]
+	for i in deals.size():
+		if not _fair_took(i) and String((deals[i] as Dictionary).get("pack", "")) == "":
+			return true
+	return false
+
+func _fair_tick() -> void:
+	var now := _now()
+	if fair_id != "":
+		if now >= fair_until:
+			fair_id = ""
+			fair_until = 0.0
+			fair_taken = {}
+			fair_miles = {}
+			fair_pts = 0
+			fair_restock = 0.0
+			_save_game()
+			_update_badges()
+		return
+	if now < fair_next:
+		return
+	# NEVER TWO EVENTS AT ONCE. The gap either side of the fair is three hours
+	# and a chain runs for a day, so this only bites when a clock has been
+	# moved -- a device whose time changed, or a save carried between phones --
+	# but the failure it prevents is the spark disc having two screens and no
+	# way to choose, which is exactly the shape of bug that only ever appears
+	# on someone else's phone.
+	if not _active_deal().is_empty():
+		return
+	var pool := []
+	for f in Deals.FAIRS:
+		if String(f["id"]) != _fair_last_id:
+			pool.append(f)
+	if pool.is_empty():
+		pool = Deals.FAIRS.duplicate()
+	var pick: Dictionary = pool[randi() % pool.size()]
+	fair_id = String(pick["id"])
+	_fair_last_id = fair_id
+	fair_until = now + Deals.FAIR_DURATION
+	fair_taken = {}
+	fair_miles = {}
+	fair_pts = 0
+	# Open on arrival. A fair that lands shut is a notification about a shop
+	# that is closed.
+	fair_restock = 0.0
+	_save_game()
+	_notify("spins", "%s is open — nine stalls, %d hours!" % [pick["name"], int(Deals.FAIR_HOURS)], "🎪")
+	_update_badges()
+
+# --- taking a stall ----------------------------------------------------------
+
+func _take_fair(i: int) -> void:
+	# Re-checked rather than trusted, for the reason _take_deal spells out: the
+	# screen can outlive the state it was built from, and a purchase comes back
+	# through a store sheet that may have taken minutes.
+	var fair := _active_fair()
+	if fair.is_empty() or _fair_took(i):
+		return
+	var deals: Array = fair["deals"]
+	if i < 0 or i >= deals.size():
+		return
+	var deal: Dictionary = deals[i]
+	if String(deal.get("pack", "")) != "":
+		# Money goes down the same road as every other purchase in the game.
+		# The stall is marked by the RECEIPT, never by the tap --
+		# _fair_credit_purchase.
+		_close_popup()
+		_start_purchase(Deals.fair_pack(deal))
+		return
+	if not _fair_stall_open():
+		Sfx.play("error", -6.0)
+		return
+	var at := Vector2(view_size().x * 0.5, view_size().y * 0.45)
+	var cell = _fair_cell_nodes.get(i)
+	if is_instance_valid(cell) and cell is Control:
+		at = (cell as Control).global_position + (cell as Control).size * 0.5
+	fair_taken[str(i)] = true
+	fair_pts += int(deal["pts"])
+	fair_restock = _now() + Deals.FAIR_RESTOCK
+	_deal_pay(Deals.fair_reward(deal), at)
+	_fair_pay_miles()
+	_save_game()
+	_update_badges()
+	# The cards a stall paid, and then the screen again with the stall spent.
+	_deal_show_cards("%s — stall taken!" % String(fair["name"]))
+	if _popup == null:
+		_open_fair()
+
+# The receipt for a paid stall. Called from _on_purchase_ok, so a transaction
+# that arrives on a later launch still marks the stall it was bought from.
+func _fair_credit_purchase(pack_id: String) -> void:
+	var fair := _active_fair()
+	if fair.is_empty():
+		return
+	var deals: Array = fair["deals"]
+	for i in deals.size():
+		var deal: Dictionary = deals[i]
+		if String(deal.get("pack", "")) != pack_id or _fair_took(i):
+			continue
+		# The goods were already handed over by _grant_pack. All this owes is
+		# the stall and the points it is worth.
+		fair_taken[str(i)] = true
+		fair_pts += int(deal["pts"])
+		_fair_pay_miles()
+		_save_game()
+		_update_badges()
+		return
+
+# THE BOARD PAYS ITSELF. A milestone is not a second thing to go and claim --
+# it is what the stall the player just took added up to, so it lands on the
+# same beat, out of the middle of the screen, with its own noise. Every rung
+# still owed is paid, not just the first: one paid stall can be worth two of
+# them at a stroke.
+func _fair_pay_miles() -> void:
+	var fair := _active_fair()
+	if fair.is_empty():
+		return
+	var miles: Array = fair["miles"]
+	for i in miles.size():
+		var mile: Dictionary = miles[i]
+		if fair_pts < int(mile["at"]) or bool(fair_miles.get(str(i), false)):
+			continue
+		fair_miles[str(i)] = true
+		var last := i >= miles.size() - 1
+		Sfx.play("levelup" if last else "jackpot", -3.0)
+		FX.confetti(self, 60 if last else 30)
+		FX.flash(self)
+		_deal_pay(Deals.fair_reward(mile))
+		_banner("GRAND PRIZE!  The board is full" if last
+			else "BOARD PRIZE!  %d points" % int(mile["at"]),
+			Lagoon.BRASS_HI if last else Lagoon.KELP_HI, "🎪")
+
+# --- the screen --------------------------------------------------------------
+
+# The cells currently on screen, by stall index. Rebuilt with the screen and
+# only ever read for where a prize should fly out of.
+var _fair_cell_nodes := {}
+
+func _open_fair() -> void:
+	var fair := _active_fair()
+	if fair.is_empty():
+		_open_event_teaser()
+		return
+	var hue: Color = fair["hue"]
+	var vbox := _open_popup(String(fair["name"]), 648.0, true)
+	if not vbox.is_inside_tree():
+		return
+	_deal_timer_label = null
+	_deal_next_timer_label = null
+	_powerup_next_timer_label = null
+	_fair_timer_label = null
+	_fair_restock_label = null
+	_fair_cell_nodes.clear()
+
+	# The clock first, for the reason the ladder's is first: a limited event's
+	# countdown is the reason to act and it belongs above what it is a clock
+	# for.
+	var clock := CenterContainer.new()
+	vbox.add_child(clock)
+	var plate := Lagoon.stamp_plate(Lagoon.CORAL_HI)
+	clock.add_child(plate)
+	_fair_timer_label = Lagoon.title("", UI.F_CAPTION, Color.WHITE, Lagoon.ABYSS)
+	_fair_timer_label.text = "ENDS  IN  %s" % _fair_countdown_text()
+	plate.add_child(_fair_timer_label)
+
+	var blurb := _popup_row_label(String(fair["blurb"]).to_upper(), UI.F_CAPTION)
+	blurb.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	blurb.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	vbox.add_child(blurb)
+
+	_fair_board(vbox, fair, hue)
+
+	# THE RESTOCK LINE GOES ABOVE THE STALLS IT EXPLAINS. It was under them
+	# first, which on a 720x1280 screen put it below the fold of a dialog three
+	# rows of stalls tall -- so the player met six padlocks and had to scroll
+	# past all of them to find out what would open them, which is the state a
+	# clock exists to prevent.
+	if not _fair_stall_open():
+		var rest := Lagoon.stamp("", Lagoon.BRASS_HI, UI.F_CAPTION)
+		rest.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		vbox.add_child(rest)
+		_fair_restock_label = rest.get_child(0) as Label
+		if _fair_restock_label != null:
+			_fair_restock_label.text = "STALLS  RESTOCK  IN  %s" % _countdown_text(
+				maxi(0, int(fair_restock - _now())))
+		var why := _popup_row_label(
+			"One free stall every two hours — the paid ones never shut.", UI.F_TINY)
+		why.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		why.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		vbox.add_child(why)
+
+	_fair_grid(vbox, fair)
+
+	# The paid stalls sell cards, so this screen keeps a door to the rate
+	# tables like every other surface with a buy button that rolls them.
+	for d in fair["deals"]:
+		if _is_randomized(Deals.fair_pack(d)):
+			vbox.add_child(_odds_info_link())
+			break
+
+	_powerup_door_row(vbox)
+
+# GOODS IN A COLUMN, ONE CURRENCY A LINE.
+#
+# `_reward_row` lays the same thing out horizontally, and horizontally is what
+# every wide card in the game wants -- but a fair stall is a ninth of a dialog
+# and a board prize is a quarter of a card. A pack with spins, coins and cards
+# in it is three faces and three figures, which is about 210 units laid across
+# and will not fit in either; the first cut of this screen put it in both and
+# the grid came back with its columns stretched to different widths and the
+# board's last prize hanging off the edge of its card.
+#
+# Down the page it fits in anything: the widest line is one face and one
+# number. Returns null for a reward that pays nothing, which nothing in the
+# tables does -- deals.gd's verify() refuses one.
+func _fair_goods(reward: Dictionary, px: float, font: int, ink := Color.WHITE) -> VBoxContainer:
+	var col := VBoxContainer.new()
+	col.alignment = BoxContainer.ALIGNMENT_CENTER
+	col.add_theme_constant_override("separation", 2)
+	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	for entry in [["bolt", int(reward.get("spins", 0))],
+			["coin", _scaled(int(reward.get("coins", 0)))],
+			["cards", int(reward.get("cards", 0))],
+			["shield", int(reward.get("shields", 0))]]:
+		var n := int(entry[1])
+		if n <= 0:
+			continue
+		var row := HBoxContainer.new()
+		row.alignment = BoxContainer.ALIGNMENT_CENTER
+		row.add_theme_constant_override("separation", 5)
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		col.add_child(row)
+		var art := _prize_art(String(entry[0]), px)
+		art.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(art)
+		# WHITE FIGURES TAKE AN OUTLINE, INK FIGURES DO NOT. The stall stock is
+		# a slab lit from its own top edge -- even unlit, the `lift` pass raises
+		# the top of the card to a bright green, and that is exactly where the
+		# goods stand. White on it measured 2.76. `Lagoon.title` is the game's
+		# answer to white type on a lit surface everywhere else (the event
+		# clock, the reel wordmark): the abyss outline gives the glyph its own
+		# dark edge, so what the eye separates is the letter from its rim
+		# rather than the letter from whatever the shader is doing behind it.
+		var lbl: Label = Lagoon.title(_fmt_compact(n), font, ink, Lagoon.ABYSS) \
+			if ink == Color.WHITE else Lagoon.label(_fmt_compact(n), font, ink, true)
+		lbl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(lbl)
+	return col
+
+# THE POINTS BOARD. A bar with the four prizes standing on it at their own
+# marks, and the count of stalls taken above it -- which is the reference's
+# "Rewards Collected 0/9" and is the line that turns nine unrelated deals into
+# a thing being finished.
+func _fair_board(vbox: VBoxContainer, fair: Dictionary, hue: Color) -> void:
+	var miles: Array = fair["miles"]
+	var top := int((miles[miles.size() - 1] as Dictionary)["at"])
+	var deals: Array = fair["deals"]
+	var took := 0
+	for i in deals.size():
+		if _fair_took(i):
+			took += 1
+
+	var card := _tinted_card(vbox, hue, true)
+	var pad := MarginContainer.new()
+	for m in ["margin_left", "margin_right"]:
+		pad.add_theme_constant_override(m, 14)
+	pad.add_theme_constant_override("margin_top", 10)
+	pad.add_theme_constant_override("margin_bottom", 10)
+	card.add_child(pad)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 6)
+	pad.add_child(col)
+
+	var head := Lagoon.label("REWARDS  COLLECTED   %d / %d" % [took, Deals.FAIR_SLOTS],
+		UI.F_LABEL, Lagoon.INK, true)
+	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	col.add_child(head)
+
+	# The prizes, above the bar, each at its own fraction. A row of Controls
+	# rather than anchored boxes: four rungs on a 620 card is 155 units each,
+	# which is exactly what an even split gives -- and an even split cannot put
+	# half of the last one off the edge, which is the trap the mission track
+	# documents at length.
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	col.add_child(row)
+	for i in miles.size():
+		var mile: Dictionary = miles[i]
+		var paid := bool(fair_miles.get(str(i), false))
+		var last := i >= miles.size() - 1
+		var cell := _tinted_card(row, Lagoon.KELP if paid else (
+			Lagoon.BRASS if last else Lagoon.LAGOON_DEEP), last and not paid)
+		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		if paid:
+			cell.modulate = Color(1, 1, 1, 0.72)
+		var mpad := MarginContainer.new()
+		mpad.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		for m in ["margin_left", "margin_right"]:
+			mpad.add_theme_constant_override(m, 5)
+		for m in ["margin_top", "margin_bottom"]:
+			mpad.add_theme_constant_override(m, 6)
+		cell.add_child(mpad)
+		var stack := VBoxContainer.new()
+		stack.alignment = BoxContainer.ALIGNMENT_CENTER
+		stack.add_theme_constant_override("separation", 2)
+		stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		mpad.add_child(stack)
+		# INK, NOT WHITE. _tinted_card is a PALE card -- the whole page's cards
+		# are -- and white figures on cream measured 1.15, which is the
+		# pale-on-pale fault this codebase has already paid for twice. The
+		# stalls below are white BECAUSE their stock is a dark slab; the same
+		# figures a hand's width apart are set in opposite inks for the surface
+		# each one is on, and that is the rule rather than an inconsistency.
+		stack.add_child(_fair_goods(Deals.fair_reward(mile), 24.0, UI.F_TINY, Lagoon.INK))
+		var at_lbl := Lagoon.label("✓" if paid else "%d PTS" % int(mile["at"]),
+			UI.F_TINY, Lagoon.KELP_LO if paid else Lagoon.INK_SOFT, true)
+		at_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		stack.add_child(at_lbl)
+
+	var bar := Lagoon.progress(hue.lerp(Color.WHITE, 0.12))
+	bar.custom_minimum_size = Vector2(0, 34)
+	bar.max_value = top
+	bar.value = mini(fair_pts, top)
+	col.add_child(bar)
+	Lagoon.progress_value(bar, "%d / %d  POINTS" % [mini(fair_pts, top), top], UI.F_CAPTION)
+
+# The nine stalls, three across. Three columns rather than the shelf's two
+# because a stall is one number and one button -- the collection covers had to
+# go to two columns to make a PICTURE readable, and there is no picture here.
+func _fair_grid(vbox: VBoxContainer, fair: Dictionary) -> void:
+	var grid := GridContainer.new()
+	grid.columns = 3
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 8)
+	vbox.add_child(grid)
+	var deals: Array = fair["deals"]
+	for i in deals.size():
+		_fair_cell(grid, i, deals[i])
+
+func _fair_cell(grid: GridContainer, i: int, deal: Dictionary) -> void:
+	var paid_pack := Deals.fair_pack(deal)
+	var is_paid := not paid_pack.is_empty()
+	var took := _fair_took(i)
+	var open_now := is_paid or _fair_stall_open()
+
+	# The same stock the ladder's rungs are struck on, so a stall reads as the
+	# same kind of object as a rung without being one: spent green when taken,
+	# brass when it costs money, sea green when it is free and open.
+	# UNLIT, even for a stall that can be pressed. The ladder lights exactly one
+	# rung because exactly one is live; here six are, and the stock's lit pass
+	# is an add-blended pool with a fan of rays in it -- six of those at once is
+	# both the "page with nothing on it" the ladder's comment warns about AND a
+	# measurable problem: qa_contrast read white figures at 1.48 against the lit
+	# green, where the same figures on the unlit slab clear the line. What a
+	# stall can do is said by its button, which is the thing that does it.
+	var cell := _event_stock(grid, "taken" if took else ("gold" if is_paid else "free"), false)
+	# Straight into the grid rather than inside a holder Control. A panel
+	# anchored FULL_RECT inside a plain Control contributes NO minimum size to
+	# it, so the holder measured zero wide, the GridContainer handed its columns
+	# whatever each cell's contents happened to want, and the nine stalls came
+	# out at four different widths with their contents hanging over the edges.
+	cell.custom_minimum_size = Vector2(0, 218)
+	cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_fair_cell_nodes[i] = cell
+
+	var pad := MarginContainer.new()
+	pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	for m in ["margin_left", "margin_right"]:
+		pad.add_theme_constant_override(m, 7)
+	for m in ["margin_top", "margin_bottom"]:
+		pad.add_theme_constant_override(m, 9)
+	cell.add_child(pad)
+	var col := VBoxContainer.new()
+	col.alignment = BoxContainer.ALIGNMENT_CENTER
+	col.add_theme_constant_override("separation", 4)
+	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pad.add_child(col)
+
+	# THE GOODS STAND IN A WELL, and the well is not decoration. The stall's
+	# stock lifts toward its own top edge -- that is what makes it a slab with
+	# a light over it rather than a swatch -- and the goods stand exactly
+	# there, so white figures were being read against the brightest green on
+	# the card: 2.76 measured, against a 4.5 line, and an outline on the type
+	# only brought it to 4.3. A dark well under them settles it at a stroke and
+	# is what the reference's own cards do: an inner panel, with the contents
+	# sitting in it.
+	var well := PanelContainer.new()
+	var wsb := StyleBoxFlat.new()
+	wsb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.46)
+	wsb.set_corner_radius_all(14)
+	well.add_theme_stylebox_override("panel", wsb)
+	well.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(well)
+	var wpad := MarginContainer.new()
+	wpad.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	for m in ["margin_left", "margin_right"]:
+		wpad.add_theme_constant_override(m, 4)
+	for m in ["margin_top", "margin_bottom"]:
+		wpad.add_theme_constant_override(m, 5)
+	well.add_child(wpad)
+	var wcol := VBoxContainer.new()
+	wcol.alignment = BoxContainer.ALIGNMENT_CENTER
+	wcol.add_theme_constant_override("separation", 2)
+	wcol.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	wpad.add_child(wcol)
+
+	# What the stall pays. A bought stall pays the pack, so the pack's own
+	# contents are what is printed -- one source of what a pack is worth.
+	wcol.add_child(_fair_goods(paid_pack if is_paid else Deals.fair_reward(deal),
+		28.0, UI.F_CAPTION))
+
+	var pts := Lagoon.title("%d  PTS" % int(deal["pts"]), UI.F_TINY, Lagoon.SAND, Lagoon.ABYSS)
+	pts.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pts.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	wcol.add_child(pts)
+
+	var spacer := Control.new()
+	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(spacer)
+
+	if took:
+		var stamp := Lagoon.stamp("TAKEN", Lagoon.KELP_HI, UI.F_TINY)
+		stamp.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		stamp.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		col.add_child(stamp)
+		return
+
+	var btn := Button.new()
+	btn.custom_minimum_size = Vector2(0, UI.TAP)
+	btn.add_theme_font_size_override("font_size", UI.F_CAPTION)
+	# And the same outline on the button's own word, for the same reason: a
+	# candy face is a gradient, so its lightest band is what white type is
+	# actually measured against. FREE came in at 3.94 without this.
+	btn.add_theme_color_override("font_outline_color", Lagoon.ABYSS)
+	btn.add_theme_constant_override("outline_size", 10)
+	if is_paid:
+		# Brass with sand ink, which is the recipe every other buy button in the
+		# game uses -- white on the coral face _candy_button picked for
+		# BRASS_MID measured 4.29 against a 4.5 line.
+		btn.text = IAP.price_for(paid_pack)
+		Lagoon.button(btn, "brass")
+		Lagoon.button_gloss(btn, 22)
+	elif open_now:
+		btn.text = "FREE"
+		# STRUCK ON KELP_LO RATHER THAN KELP, which is the one deviation from
+		# the house button on this screen and it is a measured one: white on
+		# the standard kelp face reads 3.95 against a 4.5 line at 26px -- the
+		# palette's own note on KELP says the same thing about its brighter
+		# ancestor. The deep face also sits better on a dark slab than the
+		# page-level green does, and KELP_HI is still the highlight, so it is
+		# recognisably the same button.
+		Lagoon.button_custom(btn, Lagoon.KELP_LO, Lagoon.KELP_LO.darkened(0.35), Color.WHITE)
+		Lagoon.button_gloss(btn, 22)
+		FX.pulse_forever(btn, 1.04, 1.0)
+	else:
+		# A LOCK, NOT A DEAD BUTTON, for the reason the ladder's lock plate
+		# gives: a greyed control says "this is broken", a padlock says "this
+		# is coming back". The clock that says when is at the foot of the page.
+		btn.text = "🔒"
+		Lagoon.button(btn, "glass")
+		Lagoon.set_enabled(btn, false)
+		btn.disabled = true
+	FX.press_feedback(btn)
+	btn.pressed.connect(_take_fair.bind(i))
+	col.add_child(btn)
 
 # The 1+2's door, wherever events are looked at -- AND ITS CLOCK WHEN THERE IS
 # NO OFFER. This row is what the shop rows' retirement owed the power-up:
@@ -9835,7 +10418,13 @@ func _powerup_door_row(vbox: VBoxContainer, with_clock := false) -> void:
 func _open_deal() -> void:
 	var chain := _active_deal()
 	if chain.is_empty():
-		_open_event_teaser()
+		# The spark disc is one door onto whatever the calendar has running.
+		# The chain and the fair alternate by construction (see FAIR_GAP), so
+		# this is a sequence and never a choice.
+		if not _active_fair().is_empty():
+			_open_fair()
+		else:
+			_open_event_teaser()
 		return
 	var hue: Color = chain["hue"]
 	var vbox := _open_popup(String(chain["name"]), 648.0, true)
@@ -11701,6 +12290,7 @@ func _on_purchase_ok(product_id: String) -> void:
 	# stay where it was.
 	_deal_credit_purchase(short)
 	_powerup_credit_purchase(short)
+	_fair_credit_purchase(short)
 	# Every paid pack counts, wherever it was bought. See _loyalty_add.
 	_loyalty_add()
 	IAP.finish(product_id)
@@ -21530,6 +22120,13 @@ func _save_dict() -> Dictionary:
 		"deal_finale": deal_finale,
 		"deal_done": deal_done,
 		"deal_last_taken": deal_last_taken,
+		"fair_id": fair_id,
+		"fair_until": fair_until,
+		"fair_next": fair_next,
+		"fair_restock": fair_restock,
+		"fair_taken": fair_taken,
+		"fair_pts": fair_pts,
+		"fair_miles": fair_miles,
 		"chest_fill": chest_fill,
 		"chest_round": chest_round,
 		"beach_gift_next": beach_gift_next,
@@ -21896,6 +22493,26 @@ func _load_game() -> void:
 	# cleared ladder as an empty one.
 	deal_last_taken = clampi(_i(data.get("deal_last_taken",
 		Deals.STEPS if deal_done else 0)), 0, Deals.STEPS)
+	fair_id = _s(data.get("fair_id", ""))
+	fair_until = _f(data.get("fair_until", 0.0))
+	fair_next = _f(data.get("fair_next", 0.0))
+	fair_restock = _f(data.get("fair_restock", 0.0))
+	fair_pts = maxi(0, _i(data.get("fair_pts", 0)))
+	# Coerced key by key. Both of these decide whether something pays out, so a
+	# save that could smuggle a stray type in here is a save that could reopen
+	# a stall it has already been paid for.
+	fair_taken = {}
+	var ft = data.get("fair_taken", {})
+	if typeof(ft) == TYPE_DICTIONARY:
+		for k in ft:
+			if _b(ft[k]):
+				fair_taken[String(k)] = true
+	fair_miles = {}
+	var fm = data.get("fair_miles", {})
+	if typeof(fm) == TYPE_DICTIONARY:
+		for k in fm:
+			if _b(fm[k]):
+				fair_miles[String(k)] = true
 	# Clamped into the meter's own range: a hand-edited overshoot would pay a
 	# chest on every spin for as long as the excess lasted. The rotation
 	# counters wrap for the same reason -- posmod, not clamp, because every

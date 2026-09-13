@@ -314,3 +314,184 @@ static func powerup_verify() -> Array:
 			if (b as Dictionary).is_empty():
 				problems.append("%s: a free column pays nothing" % id)
 	return problems
+
+# =============================================================================
+#  THE FAIR — nine one-off deals, taken in any order, on a points board
+# =============================================================================
+#
+# Guy, 2026-09-13, pointing back at the reference shots he sent on the 7th:
+# "I did not see you add any new promo deals." The one deals screen in that set
+# with no counterpart here is the celebration event — nine rewards in a grid
+# under a bar reading "Rewards Collected 0/9", with four prizes strung along it
+# and a grand prize on the end.
+#
+# WHY IT IS NOT JUST A LONGER CHAIN, which is the trap this design had to get
+# past. The chain is a QUEUE: one rung is live, the next is locked, and the
+# whole of its pull is that the thing you want is visible and not yet yours.
+# Nine of those would be the same feeling held for longer, and the game would
+# have two events that feel identical with different bunting.
+#
+# So the fair is a MARKET. Every stall is open, nothing is locked behind the
+# stall next to it, and the player chooses which to spend their turn on. What
+# paces it is not an order, it is a RESTOCK: take a free deal and the free half
+# of the fair shuts for two hours. That is a different loop on purpose — the
+# chain wants one long sitting, the fair wants six short visits — and it is the
+# one shape that turns a day-long event into a reason to open the game at
+# lunch. The paid stalls never shut, because a queue in front of a till is a
+# sale the store did not make.
+#
+# THE POINTS BOARD IS WHAT MAKES A GRID AN EVENT. Nine unrelated deals is a
+# shop shelf. The same nine, each worth points toward four prizes and a grand
+# one, is a board the player is trying to finish — and it is the half that
+# gives the paid stalls a reason to exist that is not "spend money": a purchase
+# is worth several free stalls of points, so it moves the board, and the board
+# is reachable without it.
+#
+# THAT LAST CLAUSE IS THE RULE, and `fair_verify()` enforces it: THE GRAND
+# PRIZE'S THRESHOLD MUST BE REACHABLE ON THE FREE STALLS ALONE. A board whose
+# top prize needs a purchase is a paywall with bunting on it, which is the same
+# thing `verify()` refuses to let a chain become by ending one on a paid rung.
+
+const FAIR_HOURS := 24.0
+const FAIR_DURATION := FAIR_HOURS * 3600.0
+# How long the free half of the fair shuts for after a free stall is taken.
+# Two hours, so a player who opens the game morning, lunch and evening walks
+# away with three of them and the whole board is a day's worth of visits rather
+# than a single sitting's worth of tapping.
+const FAIR_RESTOCK := 2.0 * 3600.0
+const FAIR_SLOTS := 9
+
+# The fairs. Nine stalls each: six free, three sold.
+#
+# The reward scale is deliberately UNDER the chain's. The fair runs inside the
+# chain's own dark window (see the calendar in main.gd), so the two of them
+# together roughly double how much of the week has an event running on it —
+# and every free spin in this game is measured somewhere else, most sharply by
+# the tournament margin qa_full checks. A second event is worth having because
+# it gives the calendar a second rhythm, not because the game needed to pay out
+# more.
+const FAIRS := [
+	{
+		"id": "harbour_fair",
+		"name": "Harbour Fair",
+		"blurb": "Nine stalls — take them in any order",
+		"glyph": "crown",
+		"hue": Color(0.925, 0.278, 0.400),
+		"deals": [
+			{"spins": 20, "pts": 40},
+			{"coins": 25000, "pts": 40},
+			{"pack": "to_squall", "pts": 150},
+			{"spins": 30, "pts": 55},
+			{"coins": 35000, "pts": 55},
+			{"pack": "bundle_s", "pts": 200},
+			{"spins": 40, "shields": 1, "pts": 70},
+			{"coins": 40000, "cards": 1, "pts": 70},
+			{"pack": "to_tide", "pts": 260},
+		],
+		"miles": [
+			{"at": 80,  "spins": 25},
+			{"at": 170, "coins": 30000},
+			{"at": 260, "spins": 40, "cards": 1},
+			{"at": 330, "spins": 90, "coins": 70000, "cards": 1},
+		],
+	},
+	{
+		"id": "lantern_fair",
+		"name": "Lantern Market",
+		"blurb": "Nine stalls — take them in any order",
+		"glyph": "sun",
+		"hue": Color(0.949, 0.588, 0.180),
+		"deals": [
+			{"coins": 22000, "pts": 40},
+			{"spins": 22, "pts": 40},
+			{"pack": "spins_m", "pts": 150},
+			{"coins": 32000, "pts": 55},
+			{"spins": 32, "pts": 55},
+			{"pack": "to_moon", "pts": 220},
+			{"coins": 38000, "shields": 1, "pts": 70},
+			{"spins": 45, "cards": 1, "pts": 70},
+			{"pack": "bundle_m", "pts": 260},
+		],
+		"miles": [
+			{"at": 80,  "coins": 28000},
+			{"at": 170, "spins": 35},
+			{"at": 260, "coins": 55000, "cards": 1},
+			{"at": 330, "spins": 85, "coins": 75000, "cards": 1},
+		],
+	},
+]
+
+static func fair_by_id(id: String) -> Dictionary:
+	for f in FAIRS:
+		if String(f["id"]) == id:
+			return f
+	return {}
+
+# A stall's goods. Paid stalls pay through _grant_pack like every other
+# purchase, so this answers empty for them -- the pack is the single source of
+# what a pack is worth, bought from a shelf or from a stall.
+static func fair_reward(deal: Dictionary) -> Dictionary:
+	var out := {}
+	for key in ["spins", "coins", "cards", "shields", "tier"]:
+		if deal.has(key):
+			out[key] = deal[key]
+	return out
+
+static func fair_pack(deal: Dictionary) -> Dictionary:
+	var pid := String(deal.get("pack", ""))
+	if pid == "":
+		return {}
+	return CV.pack_by_id(pid)
+
+static func fair_free_points(fair: Dictionary) -> int:
+	var total := 0
+	for d in fair["deals"]:
+		if String((d as Dictionary).get("pack", "")) == "":
+			total += int((d as Dictionary)["pts"])
+	return total
+
+static func fair_verify() -> Array:
+	var problems := []
+	var seen := {}
+	for fair in FAIRS:
+		var id := String(fair["id"])
+		if seen.has(id):
+			problems.append("duplicate fair id: %s" % id)
+		seen[id] = true
+		var deals: Array = fair["deals"]
+		if deals.size() != FAIR_SLOTS:
+			problems.append("%s: %d stalls, wants %d" % [id, deals.size(), FAIR_SLOTS])
+		var free_n := 0
+		for d in deals:
+			var deal: Dictionary = d
+			if int(deal.get("pts", 0)) <= 0:
+				problems.append("%s: a stall is worth no points" % id)
+			var pid := String(deal.get("pack", ""))
+			if pid == "":
+				free_n += 1
+				if fair_reward(deal).is_empty():
+					problems.append("%s: a free stall pays nothing" % id)
+				continue
+			# The same rule every price in this game obeys: it has to name a
+			# product Apple and Google already sell. See verify().
+			var pack := CV.pack_by_id(pid)
+			if pack.is_empty():
+				problems.append("%s: no such pack '%s'" % [id, pid])
+			elif not IAP.all_product_ids().has(IAP.product_id(pack)):
+				problems.append("%s: '%s' is not a sold product" % [id, pid])
+		if free_n < 5:
+			problems.append("%s: only %d free stalls" % [id, free_n])
+		var miles: Array = fair["miles"]
+		if miles.size() < 2:
+			problems.append("%s: needs a board with prizes on it" % id)
+		var last := 0
+		for m in miles:
+			var at := int((m as Dictionary)["at"])
+			if at <= last:
+				problems.append("%s: milestone %d does not climb" % [id, at])
+			last = at
+		# THE RULE. The grand prize has to be reachable without paying for it.
+		if last > fair_free_points(fair):
+			problems.append("%s: grand prize at %d needs more than the %d free points"
+				% [id, last, fair_free_points(fair)])
+	return problems

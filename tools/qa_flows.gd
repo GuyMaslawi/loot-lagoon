@@ -20,6 +20,7 @@ func _ready() -> void:
 	await _t_season_rollover()
 	await _t_offline_raids()
 	await _t_deal_chain()
+	await _t_fair()
 	await _t_powerup()
 	await _t_milestones()
 	print("QA-FLOWS: %s" % ("ALL PASS" if fails == 0 else "%d FAILURES" % fails))
@@ -433,6 +434,142 @@ func _t_deal_chain() -> void:
 # for the middle column and the two free ones never arrive. It has three ways of
 # happening -- the intent is not recorded, the receipt does not match, or the
 # grant runs twice -- and all three look identical from the outside.
+# --- the fair ----------------------------------------------------------------
+#
+# Nine stalls, any order, on a points board. What has to hold: a stall pays
+# once, the free half honours its restock clock, a paid stall is marked by the
+# RECEIPT and never by the tap, the board pays every rung it has crossed, and
+# the whole state survives the round trip through JSON -- which for a dict of
+# string keys is the one thing that has bitten this codebase before.
+func _t_fair() -> void:
+	print("the fair")
+	_chk("every fair is well-formed", Deals.fair_verify().is_empty(),
+		", ".join(PackedStringArray(Deals.fair_verify())))
+
+	for fair in Deals.FAIRS:
+		m._close_popup(true)
+		m.deal_id = ""
+		m.deal_until = 0.0
+		m.fair_id = String(fair["id"])
+		m.fair_until = m._now() + Deals.FAIR_DURATION
+		m.fair_taken = {}
+		m.fair_miles = {}
+		m.fair_pts = 0
+		m.fair_restock = 0.0
+		m._open_fair()
+		await get_tree().process_frame
+
+		var deals: Array = fair["deals"]
+		var free_spins := 0
+		var free_taken := 0
+		for i in deals.size():
+			var deal: Dictionary = deals[i]
+			if String(deal.get("pack", "")) != "":
+				# Money never marks a stall on the tap. _take_deal's own test
+				# makes the same assertion about a rung and for the same
+				# reason: the sheet can be cancelled, and a stall marked on the
+				# tap would be a reward the player paid nothing for.
+				m._take_fair(i)
+				await get_tree().process_frame
+				_chk("%s stall %d is not taken by the tap" % [fair["id"], i],
+					not m._fair_took(i))
+				m._close_popup(true)
+				# The receipt, which is the only thing that may mark it.
+				m._fair_credit_purchase(String(deal["pack"]))
+				_chk("%s stall %d is taken by the receipt" % [fair["id"], i],
+					m._fair_took(i))
+				m._open_fair()
+				await get_tree().process_frame
+				continue
+			# A free stall, with the stall open.
+			m.fair_restock = 0.0
+			var before: int = m.spins
+			m._take_fair(i)
+			await get_tree().process_frame
+			m._close_popup(true)
+			free_taken += 1
+			free_spins += int(deal.get("spins", 0))
+			_chk("%s stall %d pays and is spent" % [fair["id"], i], m._fair_took(i))
+			# And the clock it just started actually shuts the free half.
+			_chk("%s stall %d shuts the stalls behind it" % [fair["id"], i],
+				not m._fair_stall_open())
+			var pre_pts: int = m.fair_pts
+			m._take_fair(mini(i + 1, deals.size() - 1))
+			_chk("%s a shut stall pays nothing" % fair["id"],
+				m.fair_pts == pre_pts or String(
+					(deals[mini(i + 1, deals.size() - 1)] as Dictionary).get("pack", "")) != "")
+			m._open_fair()
+			await get_tree().process_frame
+			if int(deal.get("spins", 0)) > 0:
+				_chk("%s stall %d handed over its spins" % [fair["id"], i],
+					m.spins >= before + int(deal["spins"]),
+					"+%d" % (m.spins - before))
+
+		_chk("%s: every stall is spent once" % fair["id"],
+			m.fair_taken.size() == Deals.FAIR_SLOTS, str(m.fair_taken.size()))
+		# A second take of an already-spent stall must pay nothing at all.
+		var pts_before: int = m.fair_pts
+		for i in deals.size():
+			m._take_fair(i)
+		_chk("%s: a spent stall cannot be taken again" % fair["id"],
+			m.fair_pts == pts_before, "%d -> %d" % [pts_before, m.fair_pts])
+		# The board: every rung crossed has been paid, and the grand prize with
+		# it, since a full sweep is more points than the top rung asks for.
+		var miles: Array = fair["miles"]
+		var owed := 0
+		for i in miles.size():
+			if m.fair_pts >= int((miles[i] as Dictionary)["at"]) \
+					and not bool(m.fair_miles.get(str(i), false)):
+				owed += 1
+		_chk("%s: the board paid every rung it crossed" % fair["id"], owed == 0, str(owed))
+		_chk("%s: the grand prize landed" % fair["id"],
+			bool(m.fair_miles.get(str(miles.size() - 1), false)))
+
+		# THE JSON ROUND TRIP. Both of these are dicts with string keys for
+		# exactly this reason -- an int array comes back as floats and
+		# Array.has(3) answers false for the 3.0 in it.
+		var packed = JSON.parse_string(JSON.stringify(m._save_dict()))
+		var back_taken: Dictionary = packed["fair_taken"]
+		var back_miles: Dictionary = packed["fair_miles"]
+		var all_back := back_taken.size() == Deals.FAIR_SLOTS
+		for i in Deals.FAIR_SLOTS:
+			# str(i), not i. This is the assertion: through JSON the key is the
+			# STRING "3" and an int lookup finds nothing.
+			if not bool(back_taken.get(str(i), false)):
+				all_back = false
+		_chk("%s: the board survives a save round trip" % fair["id"],
+			all_back and bool(back_miles.get(str(miles.size() - 1), false)),
+			"%d stalls" % back_taken.size())
+		m._close_popup(true)
+
+	# The calendar: the fair opens in the chain's dark window and the two are
+	# never live at once.
+	m.fair_id = ""
+	m.fair_until = 0.0
+	m.fair_next = 0.0
+	m.deal_id = String(Deals.CHAINS[0]["id"])
+	m.deal_until = m._now() + 60.0
+	m._fair_tick()
+	_chk("no fair opens while a chain is running", m.fair_id == "")
+	m.deal_id = ""
+	m.deal_until = 0.0
+	m._fair_tick()
+	_chk("the fair opens once the chain is out", m.fair_id != "")
+	_chk("and the spark disc opens the fair, not the teaser",
+		not m._active_fair().is_empty())
+	m.fair_id = ""
+	m.fair_until = 0.0
+	m.fair_next = m._now() + Deals.FAIR_DURATION
+	m._close_popup(true)
+	# THE REGEN CLOCK IS PART OF THE FIXTURE. Spins refill on a timer, and the
+	# next test measures a purchase as an exact delta on m.spins -- so a refill
+	# landing mid-measurement reads as the pack paying one spin too many. It
+	# did: "pays all three columns +1051, wanted 1050", which is a harness bug
+	# wearing a game bug's clothes. Wound back to zero here so the tick after
+	# this one starts a fresh interval.
+	m._regen_accum = 0.0
+	await get_tree().create_timer(0.5).timeout
+
 func _t_powerup() -> void:
 	print("power up")
 	_chk("every power-up is well-formed", Deals.powerup_verify().is_empty(),
@@ -462,6 +599,24 @@ func _t_powerup() -> void:
 			owed_spins += int((b as Dictionary).get("spins", 0))
 			owed_cards += int((b as Dictionary).get("cards", 0))
 
+		# SPINS AT THE CAP BEFORE EITHER MEASUREMENT, because the meter refills
+		# on a clock and both checks below are exact deltas. A refill landing
+		# between `before` and the assertion reads as the pack paying one spin
+		# too many -- it did, as "+1051, wanted 1050", the moment a new test was
+		# inserted ahead of this one and moved the tick's phase. At the cap the
+		# regen grants nothing, and a grant is free to take the meter past it,
+		# so the delta is still exact. See [[loot-lagoon-qa-harness-traps]].
+		m.spins = m.SPIN_CAP
+		m._regen_accum = 0.0
+		# AND ROOM FOR THE SHIELDS, which is the other half of the same trap and
+		# the half that was actually biting. A bonus column carrying a shield
+		# pays it through _grant_shields, and a shield that does not fit is
+		# REFUNDED AS A SPIN rather than eaten -- correct behaviour, and it
+		# turns an exact spin delta into "+1051, wanted 1050" the moment
+		# anything earlier in the run has filled the shield slots. Only
+		# pu_quartermaster failed, because only its bonus carries a shield.
+		m.shields = 0
+
 		# Bought from the SHELF rather than the takeover: the bonus columns must
 		# not be handed over. Nothing recorded the intent, so nothing is owed.
 		m.powerup_pending = ""
@@ -479,6 +634,9 @@ func _t_powerup() -> void:
 		m.powerup_id = String(pu["id"])
 		m.powerup_until = m._now() + Deals.POWERUP_DURATION
 		m.powerup_pending = String(pu["id"])
+		m.spins = maxi(m.spins, m.SPIN_CAP)
+		m._regen_accum = 0.0
+		m.shields = 0
 		before = m.spins
 		m.loyalty_buys = 0
 		m._on_purchase_ok(IAP.PREFIX + String(pu["pack"]))
