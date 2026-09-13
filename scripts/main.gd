@@ -603,6 +603,11 @@ var _last_bet := 1
 # See _save_dict.
 var _stake_pending := 0
 var purchased_ids := []
+# EVERY MONEY PACK THIS PLAYER HAS EVER BOUGHT, by short id. Separate from
+# `purchased_ids`, which records only the `once` packs and exists to stop the
+# starter being sold twice -- this one exists to pay the FIRST PURCHASE bonus,
+# and it has to remember packs that are on sale forever.
+var bought_ids := []
 var shop_free_last := 0.0
 # Coins banked behind the piggy's glass. Filled by playing, spent only by
 # buying it back -- nothing else in the game reads or drains this.
@@ -7857,6 +7862,21 @@ func _shop_section(vb: VBoxContainer, key: String, title: String) -> void:
 func _section_line() -> Panel:
 	return Lagoon.divider()
 
+# THE FLASH ON A PACK THE PLAYER HAS NEVER BOUGHT.
+#
+# Violet on purpose: POPULAR and 5-STAR GUARANTEED are claims about the pack,
+# and this is a claim about the PRICE, so it cannot share their colour or it
+# reads as a third opinion about the same thing. Returns null when the pack has
+# already been bought, so every call site is one `if` rather than a state test
+# repeated five times.
+func _first_buy_chip(pack: Dictionary) -> PanelContainer:
+	if not _first_buy_ready(pack):
+		return null
+	var chip := _tag_chip("FIRST  BUY  ×%d" % FIRST_BUY_MULT, Lagoon.URCHIN, UI.F_TINY)
+	chip.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	FX.pulse_forever(chip, 1.05, 1.3)
+	return chip
+
 func _tag_chip(text: String, color: Color, font_size := UI.F_TINY) -> PanelContainer:
 	return Lagoon.chip(text, color, font_size)
 
@@ -8451,6 +8471,10 @@ func _offer_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	# it -- and they were set at caption size under the name, which made the
 	# most valuable line on the card the third-quietest thing on it. See
 	# _reward_tray. Light ink: the card underneath is deep water.
+	var ofb := _first_buy_chip(pack)
+	if ofb != null:
+		ofb.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+		text.add_child(ofb)
 	text.add_child(_reward_tray(pack, Color(0.94, 0.97, 0.98)))
 	var struck := _struck_price_row(pack, Color(0.78, 0.87, 0.90))
 	if struck != null:
@@ -8766,6 +8790,13 @@ func _bundle_card(vb: VBoxContainer, pack: Dictionary) -> void:
 		# above gives way instead, which is the right thing to spend.
 		head.add_child(_tag_chip(pack["tag"], pack["tag_color"], UI.F_TINY))
 
+	var bfb := _first_buy_chip(pack)
+	if bfb != null:
+		# Its own row rather than beside the name: the head row already gives
+		# the name everything left over after a tag, and a second chip in there
+		# is what took "Quartermaster's Haul" off the card the last time.
+		bfb.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+		col.add_child(bfb)
 	col.add_child(_reward_row(pack))
 	# In the text column, not beside the button. The pay column's minimum width
 	# is the button's; hanging "$29.36  SAVE 76%" off it instead made this the
@@ -9005,6 +9036,19 @@ func _chest_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	tag_row.alignment = BoxContainer.ALIGNMENT_BEGIN
 	info.add_child(tag_row)
 	tag_row.add_child(_tag_chip(pack["tag"], pack["tag_color"], UI.F_CAPTION))
+	# ITS OWN ROW, not beside the chest's tag. Side by side, "BEST VALUE" and
+	# "FIRST BUY ×2" set the info column's minimum width to the sum of both
+	# chips -- and a VBoxContainer hands its widest child's minimum to the
+	# whole card, which took the shop 22px off the right edge of a 720 screen.
+	# qa_layout caught it; the same trap already has a comment on the bundle
+	# card two hundred lines up.
+	var cfb := _first_buy_chip(pack)
+	if cfb != null:
+		var cfb_row := HBoxContainer.new()
+		cfb_row.alignment = BoxContainer.ALIGNMENT_BEGIN
+		info.add_child(cfb_row)
+		cfb.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+		cfb_row.add_child(cfb)
 
 	var nm := Lagoon.label(pack["name"], UI.F_TITLE, Lagoon.INK, true)
 	info.add_child(nm)
@@ -9174,6 +9218,22 @@ func _shop_tile(grid: GridContainer, pack: Dictionary, _accent: Color, amount_te
 	var nm := Lagoon.label(pack["name"], UI.F_TINY, Lagoon.SAND)
 	nm.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(nm)
+
+	# THE FIRST-BUY FLASH SITS HERE, NOT AT THE TOP OF THE TILE, and it gets a
+	# reserved slot for the same reason the struck price below it does.
+	#
+	# At the top it collided with the POPULAR ribbon, which is drawn diagonally
+	# across that exact corner -- the two were printed over each other on the
+	# one tile that carries both. And an un-reserved slot would make a bought
+	# pack's tile shorter than an unbought one's, which in a two-column grid is
+	# a row with its own contents at two different heights. Directly above the
+	# price is also where a claim about the price belongs.
+	var fb_slot := CenterContainer.new()
+	fb_slot.custom_minimum_size = Vector2(0, 36)
+	col.add_child(fb_slot)
+	var fb := _first_buy_chip(pack)
+	if fb != null:
+		fb_slot.add_child(fb)
 
 	# The struck-price slot is reserved on every rung, discount or no discount.
 	#
@@ -11140,7 +11200,11 @@ func _loyalty_track(vbox: VBoxContainer) -> void:
 	tag.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(tag)
 
-	var bar := Lagoon.progress(Lagoon.URCHIN)
+	# URCHIN_LO under the figure that rides on it. The bar's own value label is
+	# white at 26px on the fill, and on the bright violet it measures exactly
+	# the 4.5 line -- which is a pass that becomes a fail on any rounding. The
+	# darker violet buys it a margin and the bar still reads as the premium hue.
+	var bar := Lagoon.progress(Lagoon.URCHIN_LO)
 	bar.custom_minimum_size = Vector2(0, 38)
 	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	bar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -11664,7 +11728,62 @@ func _on_products_loaded() -> void:
 	if pages.has("shop"):
 		_fill_page("shop")
 
-func _grant_pack(pack: Dictionary) -> void:
+# THE FIRST PURCHASE OF EACH PACK PAYS DOUBLE.
+#
+# Guy, 2026-09-13: *"why aren't you looking at the pictures I sent you?"* --
+# the one thing on the reference store screen the game had no version of at
+# all. Every spin rung in that shot carries a FIRST PURCHASE flash, and it is
+# the most prominent mark on the page for a reason: the hardest sale in this
+# genre is not the tenth, it is the first, and the number a player has to get
+# past is not the price -- it is not knowing what the price buys. A doubled
+# first purchase answers that in the only way the player will believe, which
+# is by handing it over.
+#
+# ONCE PER PACK, not once per player. That is the reference's shape and it is
+# the better one: the bonus is an invitation to try a rung the player has not
+# tried, so the ladder keeps a reason to move up it rather than paying out
+# once and going quiet forever.
+#
+# WHAT IS EXCLUDED, and each for a reason that is not tidiness:
+#   * `once` packs -- the starter is already a first-purchase offer; doubling
+#     it would pay the bonus twice for the same idea and misprice a bundle
+#     whose whole pitch is its printed contents.
+#   * `coins_exact` -- the build-blocked top-up, which sells exactly the
+#     shortfall it measured. Doubling it would hand over coins for a hut that
+#     costs what it costs, and the screen that sold it says the figure.
+#   * anything with no price, which is everything bought with stars.
+#
+# The badge on the tile is not decoration: a bonus the player discovers only
+# in the receipt converted nobody, because they had already decided by then.
+const FIRST_BUY_MULT := 2
+
+func _first_buy_ready(pack: Dictionary) -> bool:
+	if pack.is_empty() or pack.get("once", false) or pack.has("coins_exact"):
+		return false
+	if String(pack.get("price", "")) == "":
+		return false
+	return not bought_ids.has(String(pack.get("id", "")))
+
+# The pack as it will actually be paid out -- doubled on a first purchase, the
+# catalogue entry itself otherwise. Everything downstream of the grant reads
+# THIS, including the receipt screen, so the figures the player is shown are
+# the figures that moved.
+func _pack_as_paid(pack: Dictionary) -> Dictionary:
+	if not _first_buy_ready(pack):
+		return pack
+	var give := pack.duplicate(true)
+	for key in ["spins", "coins", "cards", "shields"]:
+		if int(pack.get(key, 0)) > 0:
+			give[key] = int(pack[key]) * FIRST_BUY_MULT
+	give["first_buy"] = true
+	return give
+
+func _grant_pack(catalogue: Dictionary) -> void:
+	# Resolved BEFORE `bought_ids` is written, or the doubler never fires.
+	var pack := _pack_as_paid(catalogue)
+	var pid := String(catalogue.get("id", ""))
+	if pid != "" and not bought_ids.has(pid) and String(catalogue.get("price", "")) != "":
+		bought_ids.append(pid)
 	if pack.get("once", false):
 		purchased_ids.append(pack["id"])
 	# Buying the live offer ends it. Leaving the countdown ticking over a pack
@@ -11868,7 +11987,9 @@ func _show_pack_result(pack: Dictionary) -> void:
 		_chest_seq = null
 	if _payout_seq != null and is_instance_valid(_payout_seq):
 		_payout_seq.skip()
-	var seq := PayoutShow.play(self, "Purchase complete!", rows)
+	var seq := PayoutShow.play(self,
+		"First purchase — DOUBLED!" if pack.get("first_buy", false) else "Purchase complete!",
+		rows)
 	_payout_seq = seq
 	seq.finished.connect(func() -> void:
 		if _payout_seq == seq:
@@ -13725,7 +13846,11 @@ func _collection_item_card(emoji: String, iname: String, owned: bool, rarity := 
 		var overlay := Control.new()
 		overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		p.add_child(overlay)
-		var tag := Lagoon.chip("+%d" % spare, Lagoon.URCHIN, UI.F_TINY)
+		# URCHIN_LO, for the reason spelled out on the SPARE chip in
+		# _fill_collection_detail: white at 22px on the bright violet measures
+		# 4.02 against a 4.5 line even after Lagoon.chip's own darkening. The
+		# two chips count the same pile and now wear the same violet.
+		var tag := Lagoon.chip("+%d" % spare, Lagoon.URCHIN_LO, UI.F_TINY)
 		tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		overlay.add_child(tag)
 		# Pinned by its corner, not by a width. A chip asked to be narrower than
@@ -14603,7 +14728,12 @@ func _fill_collection_detail(vb: VBoxContainer, c: Dictionary) -> void:
 		# the "+N" on each card below. Three screens used to say "+8", "8 SPARE"
 		# and "x4" about one pile, and the last of those was counting something
 		# else entirely -- copies held, not spares -- so nothing added up.
-		meta.add_child(Lagoon.chip("+%d  SPARE" % spare_n, Lagoon.URCHIN, UI.F_TINY))
+		# URCHIN_LO, not URCHIN. White at 22px on the bright violet measures
+		# 4.02 against a 4.5 line -- Lagoon.chip already takes every fill 58%
+		# toward deep water and this hue still does not clear it. The darker
+		# violet is the same colour's own shadow, so the chip still reads as
+		# the spares' violet. qa_contrast had this one on its list.
+		meta.add_child(Lagoon.chip("+%d  SPARE" % spare_n, Lagoon.URCHIN_LO, UI.F_TINY))
 
 	var pb := _styled_progress(Lagoon.KELP if owned_n == items.size() else Lagoon.LAGOON)
 	pb.max_value = items.size()
@@ -21727,6 +21857,18 @@ func _load_game() -> void:
 		for id in lp:
 			if typeof(id) == TYPE_STRING:
 				purchased_ids.append(id)
+	# The same coercion for the same reason: this list decides whether a
+	# purchase pays double, so a save that could smuggle a non-string in here
+	# would be a save that could turn the bonus back on for a pack it has
+	# already had. A save missing the key entirely is a player from before the
+	# bonus existed -- they get it on their next buy of each pack, which is the
+	# generous reading and the only one that does not punish an early buyer.
+	var lb = data.get("bought", [])
+	if typeof(lb) == TYPE_ARRAY:
+		bought_ids = []
+		for id in lb:
+			if typeof(id) == TYPE_STRING:
+				bought_ids.append(id)
 	# Coerced field by field rather than assigned whole: this is read back
 	# straight into a purchase-delivery path, and a malformed save must not be
 	# able to name an arbitrary product or an arbitrary number of coins.

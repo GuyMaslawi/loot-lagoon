@@ -1187,27 +1187,57 @@ func _t_purchases() -> void:
 	# A pack containing cards can also pay a small coin refund for any duplicate
 	# it draws, so the coin figure is exact only for the packs carrying no
 	# cards. For the rest the rule is that it is never LESS than the tile says.
+	# Every pack is bought TWICE here, because since the first-purchase bonus
+	# there are two right answers: the first buy of a pack pays double and every
+	# one after it pays the tile. A harness that only ever bought once would
+	# pass whichever of those two the constant happened to be set to.
 	var bad := ""
 	for pack in all:
-		_fresh_cards()
-		m.coins = 0
-		m.spins = 0
-		m.shields = 0
-		m.purchased_ids = []
-		var want_coins: int = m._scaled(int(pack.get("coins", 0)))
-		var want_spins := int(pack.get("spins", 0))
-		var has_cards := int(pack.get("cards", 0)) > 0
-		m._grant_pack(pack)
-		await get_tree().process_frame
-		if has_cards:
-			if m.coins < want_coins:
-				bad += "%s coins %d UNDER %d; " % [pack["id"], m.coins, want_coins]
-		elif m.coins != want_coins:
-			bad += "%s coins %d want %d; " % [pack["id"], m.coins, want_coins]
-		if m.spins != want_spins:
-			bad += "%s spins %d want %d; " % [pack["id"], m.spins, want_spins]
-		m._close_popup(true)
-	_chk("every pack grants at least what its tile says", bad == "", bad)
+		for round_i in 2:
+			_fresh_cards()
+			m.coins = 0
+			m.spins = 0
+			m.shields = 0
+			m.purchased_ids = []
+			# Round 0 is a pack never bought; round 1 is the same pack again,
+			# which _grant_pack has recorded in bought_ids by then.
+			if round_i == 0:
+				m.bought_ids = []
+			var mult: int = int(m.FIRST_BUY_MULT) if round_i == 0 and m._first_buy_ready(pack) else 1
+			# SCALED AFTER the doubling, not before: the bonus doubles the
+			# catalogue figure and the island scale is applied to the result.
+			# Scaling first and doubling after rounds differently and is off by
+			# a few thousand coins on the big rungs -- which is not a rounding
+			# nit here, it is the harness asserting a formula the game does not
+			# use.
+			var want_coins: int = m._scaled(int(pack.get("coins", 0)) * mult)
+			var want_spins: int = int(pack.get("spins", 0)) * mult
+			var has_cards := int(pack.get("cards", 0)) > 0
+			m._grant_pack(pack)
+			await get_tree().process_frame
+			if has_cards:
+				if m.coins < want_coins:
+					bad += "%s/%d coins %d UNDER %d; " % [pack["id"], round_i, m.coins, want_coins]
+			elif m.coins != want_coins:
+				bad += "%s/%d coins %d want %d; " % [pack["id"], round_i, m.coins, want_coins]
+			if m.spins != want_spins:
+				bad += "%s/%d spins %d want %d; " % [pack["id"], round_i, m.spins, want_spins]
+			m._close_popup(true)
+	_chk("every pack grants at least what its tile says, doubled on a first buy",
+		bad == "", bad)
+
+	# The two exclusions, each of which would be a real bug the other way.
+	#
+	# The starter is itself a first-purchase offer sold once; doubling it would
+	# pay the same idea twice and misprice a bundle whose pitch is its printed
+	# contents. The top-up sells exactly the shortfall it measured, and the
+	# screen that sold it names the figure.
+	m.bought_ids = []
+	_chk("the starter pack is never doubled", not m._first_buy_ready(CV.STARTER_PACK))
+	_chk("a build top-up is never doubled",
+		not m._first_buy_ready({"id": "coins_m", "price": "$4.99", "coins_exact": 4321000}))
+	_chk("a star-priced box is never doubled — it costs no money",
+		not m._first_buy_ready({"id": "box_s", "stars": 40}))
 
 	# The starter is a once-only, and the store has to remember that.
 	m.purchased_ids = []
