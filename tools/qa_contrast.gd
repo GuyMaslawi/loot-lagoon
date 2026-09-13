@@ -147,8 +147,21 @@ func _ready() -> void:
 	m.fair_pts = 80
 	m.fair_miles = {"0": true}
 
+	# The voyage, mid-week with one goal cleared: the brass bar card, the day
+	# ribbons, a claimable row and a spent one, all on screen at once.
+	m.voy_next = 0.0
+	m.voy_start = m._now() - 3.0 * Deals.VOYAGE_DAY - 60.0
+	m.voy_prog = {}
+	m.voy_claimed = {}
+	m.voy_miles = {}
+	m.voy_stamps = 108
+	var vday := Deals.voyage_day_goals(3)
+	m.voy_prog[m._voyage_key(3, String((vday[0] as Dictionary)["id"]))] = \
+		int((vday[0] as Dictionary)["target"])
+	m.voy_claimed[m._voyage_key(3, String((vday[1] as Dictionary)["id"]))] = true
+
 	for opener in ["_open_tourney", "_open_world_ranks", "_open_daily",
-			"_open_deal", "_open_powerup", "_open_fair"]:
+			"_open_deal", "_open_powerup", "_open_fair", "_open_voyage"]:
 		await _goto("slot")
 		m.call(opener)
 		await get_tree().create_timer(2.0).timeout

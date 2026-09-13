@@ -21,6 +21,7 @@ func _ready() -> void:
 	await _t_offline_raids()
 	await _t_deal_chain()
 	await _t_fair()
+	await _t_voyage()
 	await _t_powerup()
 	await _t_milestones()
 	print("QA-FLOWS: %s" % ("ALL PASS" if fails == 0 else "%d FAILURES" % fails))
@@ -567,6 +568,105 @@ func _t_fair() -> void:
 	# did: "pays all three columns +1051, wanted 1050", which is a harness bug
 	# wearing a game bug's clothes. Wound back to zero here so the tick after
 	# this one starts a fresh interval.
+	m._regen_accum = 0.0
+	await get_tree().create_timer(0.5).timeout
+
+# --- the voyage ---------------------------------------------------------------
+#
+# Seven days, three goals a day, one bar. What has to hold: only TODAY's goals
+# count, a goal pays once, the bar pays every rung it crosses, and the whole
+# thing survives JSON -- the keys are "<day>:<goal>" strings for the usual
+# reason.
+func _t_voyage() -> void:
+	print("the voyage")
+	_chk("the voyage is well-formed", Deals.voyage_verify().is_empty(),
+		", ".join(PackedStringArray(Deals.voyage_verify())))
+
+	m._close_popup(true)
+	m.voy_next = 0.0
+	m.voy_start = 0.0
+	m._voyage_tick()
+	_chk("a voyage sets out", m._voyage_live())
+	_chk("and it starts on day one", m._voyage_day() == 0, str(m._voyage_day()))
+
+	# Counting. Only today's goals move, and they stop at the target.
+	var goal: Dictionary = Deals.voyage_day_goals(0)[0]
+	var gid := String(goal["id"])
+	m._voyage_add(gid, int(goal["target"]) * 3)
+	_chk("a goal counts and clamps at its target",
+		int(m.voy_prog[m._voyage_key(0, gid)]) == int(goal["target"]),
+		str(m.voy_prog.get(m._voyage_key(0, gid), 0)))
+	_chk("and reads as done", m._voyage_done(0, goal))
+	_chk("which lights the tab", m._voyage_ready())
+
+	# TOMORROW'S GOALS DO NOT MOVE TODAY. The deadline is the entire difference
+	# between this board and the mission board, and a counter that back-filled
+	# other days would quietly remove it.
+	var later: Dictionary = Deals.voyage_day_goals(3)[0]
+	m._voyage_add(String(later["id"]), 999)
+	_chk("a later day's goal does not move",
+		not m.voy_prog.has(m._voyage_key(3, String(later["id"]))))
+
+	# Claiming: pays once, banks the stamps, and cannot be repeated.
+	var spins_before: int = m.spins
+	var stamps_before: int = m.voy_stamps
+	m._claim_voyage(0, goal)
+	await get_tree().process_frame
+	m._close_popup(true)
+	_chk("claiming banks the stamps",
+		m.voy_stamps == stamps_before + int(goal["stamps"]),
+		"%d -> %d" % [stamps_before, m.voy_stamps])
+	var after_first: int = m.voy_stamps
+	m._claim_voyage(0, goal)
+	_chk("a goal cannot be claimed twice", m.voy_stamps == after_first)
+	if int(goal.get("spins", 0)) > 0:
+		_chk("and it handed over its spins", m.spins > spins_before)
+
+	# The bar. Enough stamps for every rung, paid on the way past.
+	m.voy_stamps = int((Deals.VOYAGE_MILES[Deals.VOYAGE_MILES.size() - 1] as Dictionary)["at"])
+	m._voyage_pay_miles()
+	await get_tree().process_frame
+	m._close_popup(true)
+	var owed := 0
+	for i in Deals.VOYAGE_MILES.size():
+		if not bool(m.voy_miles.get(str(i), false)):
+			owed += 1
+	_chk("the bar pays every rung it crosses", owed == 0, str(owed))
+	var stamps_held: int = m.voy_stamps
+	m._voyage_pay_miles()
+	_chk("and does not pay them twice", m.voy_stamps == stamps_held)
+
+	# The day rolls with the clock, not with the calendar.
+	m.voy_start = m._now() - 3.5 * Deals.VOYAGE_DAY
+	_chk("day four is day four", m._voyage_day() == 3, str(m._voyage_day()))
+	m.voy_start = m._now() - float(Deals.VOYAGE_DAYS) * Deals.VOYAGE_DAY - 10.0
+	_chk("and a voyage past its last day is over", not m._voyage_live())
+	m._voyage_tick()
+	_chk("which clears the board and sets the next one",
+		m.voy_start == 0.0 and m.voy_prog.is_empty() and m.voy_next > m._now())
+
+	# The JSON round trip. "<day>:<goal>" keys, and an int progress value that
+	# has to come back an int.
+	m.voy_start = m._now()
+	m.voy_prog = {}
+	m.voy_claimed = {}
+	m._voyage_add(gid, 3)
+	m.voy_claimed[m._voyage_key(0, gid)] = true
+	var packed = JSON.parse_string(JSON.stringify(m._save_dict()))
+	var back_prog: Dictionary = packed["voy_prog"]
+	var back_claimed: Dictionary = packed["voy_claimed"]
+	_chk("the board survives a save round trip",
+		int(back_prog.get(m._voyage_key(0, gid), 0)) == 3
+		and bool(back_claimed.get(m._voyage_key(0, gid), false)),
+		str(back_prog))
+
+	m.voy_start = 0.0
+	m.voy_next = m._now() + Deals.VOYAGE_COOLDOWN
+	m.voy_prog = {}
+	m.voy_claimed = {}
+	m.voy_miles = {}
+	m.voy_stamps = 0
+	m._close_popup(true)
 	m._regen_accum = 0.0
 	await get_tree().create_timer(0.5).timeout
 

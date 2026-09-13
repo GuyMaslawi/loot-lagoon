@@ -495,3 +495,149 @@ static func fair_verify() -> Array:
 			problems.append("%s: grand prize at %d needs more than the %d free points"
 				% [id, last, fair_free_points(fair)])
 	return problems
+
+# =============================================================================
+#  THE VOYAGE — seven days, three goals a day, one board
+# =============================================================================
+#
+# The last of the reference screens with no counterpart here: a limited board
+# of tasks with a prize bar over it and a row of day ribbons under it, running
+# for one week and then gone.
+#
+# WHAT IT ADDS THAT THE MISSION BOARD DOES NOT, because on paper they are the
+# same object and if they really were this should not exist. Missions REPEAT:
+# the daily board rolls at midnight whatever you did with it, which makes it a
+# routine, and a routine is something a player does while they are already
+# here. The voyage has a DEADLINE and a bar that only fills forwards -- what
+# you miss on Tuesday is gone, and Thursday's prize is further away because of
+# it. That is the difference between "something to do while I am playing" and
+# "a reason to open the game today", and it is the strongest retention shape
+# this genre has after the daily bonus itself.
+#
+# THREE GOALS A DAY, NOT FIVE OR EIGHT. Guy, 2026-09-13: "do not put too much
+# information on it." The mission board already carries eight rows and it is a
+# page you go to; this is a dialog you check, and a dialog with twenty-one
+# things on it is a spreadsheet. Only TODAY's three are ever on screen.
+#
+# THE GOALS ARE WRITTEN IN THE COUNTERS THE MISSIONS ALREADY KEEP -- `spins`,
+# `builds`, `cards` and the rest go through `_mission_add`, so the voyage hooks
+# one function and cannot drift out of step with what the game actually counts.
+# Anything a player does for one board counts for the other, which is also the
+# honest reading: they did the thing.
+
+const VOYAGE_DAYS := 7
+const VOYAGE_DAY := 24.0 * 3600.0
+const VOYAGE_DURATION := float(VOYAGE_DAYS) * VOYAGE_DAY
+# Three days dark. Long enough that a voyage ending is felt, short enough that
+# a player who missed most of one gets another chance inside a week.
+const VOYAGE_COOLDOWN := 3.0 * 24.0 * 3600.0
+
+# Seven days of three. Targets climb, and so do the stamps a goal is worth --
+# day seven has to be worth coming back for after six.
+#
+# Coins are island-1 units like everywhere else. The per-goal rewards are
+# deliberately small: the BAR is the prize, and a board whose rows pay as well
+# as its bar does is one the player can ignore the bar on.
+const VOYAGE_GOALS := [
+	[	{"id": "spins",      "target": 20,    "stamps": 10, "coins": 1200},
+		{"id": "daily_gift", "target": 1,     "stamps": 10, "spins": 8},
+		{"id": "builds",     "target": 1,     "stamps": 10, "coins": 1500}],
+	[	{"id": "spins",      "target": 30,    "stamps": 12, "coins": 1600},
+		{"id": "cards",      "target": 2,     "stamps": 12, "coins": 1800},
+		{"id": "attacks",    "target": 2,     "stamps": 12, "coins": 1700}],
+	[	{"id": "spins",      "target": 40,    "stamps": 14, "coins": 2000},
+		{"id": "builds",     "target": 3,     "stamps": 14, "coins": 2300},
+		{"id": "steals",     "target": 2,     "stamps": 14, "spins": 10}],
+	[	{"id": "spins",      "target": 50,    "stamps": 16, "coins": 2400},
+		{"id": "cards",      "target": 3,     "stamps": 16, "coins": 2700},
+		{"id": "coins_won",  "target": 40000, "stamps": 16, "spins": 12}],
+	[	{"id": "spins",      "target": 60,    "stamps": 18, "coins": 2900},
+		{"id": "builds",     "target": 4,     "stamps": 18, "coins": 3200},
+		{"id": "attacks",    "target": 4,     "stamps": 18, "spins": 14}],
+	[	{"id": "spins",      "target": 70,    "stamps": 20, "coins": 3400},
+		{"id": "cards",      "target": 4,     "stamps": 20, "coins": 3800},
+		{"id": "steals",     "target": 4,     "stamps": 20, "spins": 16}],
+	[	{"id": "spins",      "target": 90,    "stamps": 24, "coins": 4200},
+		{"id": "builds",     "target": 5,     "stamps": 24, "coins": 4600},
+		{"id": "cards",      "target": 5,     "stamps": 24, "spins": 20}],
+]
+
+# What the bar pays. The last one is the voyage, and it is a chest of cards
+# because cards are the one thing in this game that money buys and grinding
+# does not reliably produce -- which is what makes a free one worth a week.
+#
+# 260 OF A POSSIBLE 336, and the gap is the design. Every goal cleared is 336
+# stamps, so the grand prize survives a whole day missed -- a board that
+# punishes one busy Tuesday with "you cannot reach the top any more" is a board
+# nobody opens on Wednesday.
+const VOYAGE_MILES := [
+	{"at": 70,  "spins": 40},
+	{"at": 130, "coins": 60000},
+	{"at": 195, "spins": 60, "cards": 1},
+	{"at": 260, "spins": 150, "coins": 150000, "cards": 3, "tier": 2},
+]
+
+static func voyage_day_goals(day: int) -> Array:
+	if day < 0 or day >= VOYAGE_GOALS.size():
+		return []
+	return VOYAGE_GOALS[day]
+
+static func voyage_total_stamps() -> int:
+	var total := 0
+	for day in VOYAGE_GOALS:
+		for g in day:
+			total += int((g as Dictionary)["stamps"])
+	return total
+
+static func voyage_reward(entry: Dictionary) -> Dictionary:
+	var out := {}
+	for key in ["spins", "coins", "cards", "shields", "tier"]:
+		if entry.has(key):
+			out[key] = entry[key]
+	return out
+
+static func voyage_verify() -> Array:
+	var problems := []
+	if VOYAGE_GOALS.size() != VOYAGE_DAYS:
+		problems.append("the voyage has %d days of goals, wants %d"
+			% [VOYAGE_GOALS.size(), VOYAGE_DAYS])
+	for d in VOYAGE_GOALS.size():
+		var day: Array = VOYAGE_GOALS[d]
+		if day.size() != 3:
+			problems.append("day %d has %d goals, wants 3" % [d + 1, day.size()])
+		var seen := {}
+		for g in day:
+			var goal: Dictionary = g
+			var id := String(goal["id"])
+			# TWO GOALS OF THE SAME KIND ON ONE DAY WOULD SHARE A COUNTER and
+			# so complete together, which reads as the board paying twice for
+			# one action.
+			if seen.has(id):
+				problems.append("day %d counts '%s' twice" % [d + 1, id])
+			seen[id] = true
+			if int(goal.get("target", 0)) <= 0:
+				problems.append("day %d: '%s' has no target" % [d + 1, id])
+			if int(goal.get("stamps", 0)) <= 0:
+				problems.append("day %d: '%s' is worth no stamps" % [d + 1, id])
+			if voyage_reward(goal).is_empty():
+				problems.append("day %d: '%s' pays nothing" % [d + 1, id])
+	var last := 0
+	for m in VOYAGE_MILES:
+		var at := int((m as Dictionary)["at"])
+		if at <= last:
+			problems.append("the bar's %d does not climb" % at)
+		last = at
+		if voyage_reward(m).is_empty():
+			problems.append("the bar's %d pays nothing" % at)
+	# The grand prize has to survive a missed day, or the board dies on the
+	# first one a player has no time for.
+	var worst_day := 0
+	for day in VOYAGE_GOALS:
+		var sum := 0
+		for g in day:
+			sum += int((g as Dictionary)["stamps"])
+		worst_day = maxi(worst_day, sum)
+	if last > voyage_total_stamps() - worst_day:
+		problems.append("the grand prize at %d cannot survive a missed day (%d of %d)"
+			% [last, worst_day, voyage_total_stamps()])
+	return problems

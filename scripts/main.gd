@@ -675,6 +675,22 @@ var fair_miles := {}
 var _fair_last_id := ""
 var _fair_timer_label: Label
 var _fair_restock_label: Label
+# THE VOYAGE -- seven days, three goals a day, one bar. See scripts/deals.gd.
+#
+# `voy_start` is day one's midnight-equivalent: the voyage's own clock, not the
+# calendar's, so a player who installs at 23:50 does not lose day one ten
+# minutes later. Progress and claims are dictionaries keyed "<day>:<goal>" as
+# STRINGS, for the reason every other board in this game uses string keys --
+# JSON has one number type. See [[godot-json-save-number-trap]].
+var voy_start := 0.0
+var voy_next := 0.0
+var voy_prog := {}
+var voy_claimed := {}
+var voy_stamps := 0
+var voy_miles := {}
+var _voy_bar: Range
+var _voy_bar_label: Label
+var _voy_timer_label: Label
 # The live power-up takeover: which one, when it dies, the earliest the next may
 # roll, and whether this one has already been put in front of the player.
 #
@@ -1384,6 +1400,29 @@ func _shot_deal() -> void:
 		powerup_next = _now() + float(OS.get_environment("POWERUP_NEXT")) * 3600.0
 	_open_deal()
 
+func _shot_voyage() -> void:
+	var day := clampi(int(OS.get_environment("DEMO_VOY_DAY")), 0, Deals.VOYAGE_DAYS - 1)
+	voy_next = 0.0
+	voy_start = _now() - float(day) * Deals.VOYAGE_DAY - 60.0
+	voy_prog = {}
+	voy_claimed = {}
+	voy_miles = {}
+	voy_stamps = 0
+	# Every earlier day cleared, which is what a player on day four looks like.
+	for d in day:
+		for g in Deals.voyage_day_goals(d):
+			voy_claimed[_voyage_key(d, String((g as Dictionary)["id"]))] = true
+			voy_stamps += int((g as Dictionary)["stamps"])
+	for i in Deals.VOYAGE_MILES.size():
+		if voy_stamps >= int((Deals.VOYAGE_MILES[i] as Dictionary)["at"]):
+			voy_miles[str(i)] = true
+	var want := clampi(int(OS.get_environment("DEMO_VOY_DONE")), 0, 3)
+	var goals := Deals.voyage_day_goals(day)
+	for i in want:
+		var goal: Dictionary = goals[i]
+		voy_prog[_voyage_key(day, String(goal["id"]))] = int(goal["target"])
+	_open_voyage()
+
 func _shot_fair() -> void:
 	deal_id = ""
 	deal_until = 0.0
@@ -1497,6 +1536,10 @@ func _capture_page(key: String) -> void:
 			# window, a day later. DEMO_FAIR_TAKEN=n takes the first n stalls,
 			# DEMO_FAIR_SHUT=1 shows the restocking state.
 			"fair":    _shot_fair()
+			# The voyage, on whichever day DEMO_VOY_DAY asks for, with
+			# DEMO_VOY_DONE goals of that day already met. Reaching day four
+			# honestly takes four days.
+			"voyage":  _shot_voyage()
 			"powerup": _open_powerup()
 			"intro":   _open_intro()
 			"build":   _intro_build_card()
@@ -2562,6 +2605,10 @@ func _process(delta: float) -> void:
 			else:
 				_deal_next_timer_label.text = _countdown_text(
 					maxi(0, int(_next_event_at() - _now())))
+		_voyage_tick()
+		if _voy_timer_label != null and is_instance_valid(_voy_timer_label) \
+				and _popup != null and _popup.is_ancestor_of(_voy_timer_label):
+			_voy_timer_label.text = "VOYAGE  ENDS  IN  %s" % _voyage_countdown_text()
 		_fair_tick()
 		if _fair_timer_label != null and is_instance_valid(_fair_timer_label):
 			_fair_timer_label.text = "ENDS  IN  %s" % _fair_countdown_text()
@@ -4532,7 +4579,9 @@ func _update_badges() -> void:
 	if _badges.has("daily"):
 		_badges["daily"].visible = _daily_ready()
 	if _badges.has("missions"):
-		var any_claim := false
+		# The voyage's goals live on this tab too, so its claimable rows light
+		# the same dot. One tab, one dot, whatever board it came from.
+		var any_claim := _voyage_ready()
 		for period in MISSION_DEFS:
 			if _period_claimable(period):
 				any_claim = true
@@ -4677,7 +4726,23 @@ func _daily_ready() -> bool:
 	daily_last = _trusted_stamp(daily_last)
 	return _trusted_now() - daily_last >= DAILY_COOLDOWN
 
+# The catalogue entry for a mission id -- its emoji and its sentence. The
+# voyage writes its goals in these ids, so it reads the wording from the same
+# place the mission board does rather than carrying a second copy that can
+# disagree with it. The daily board first because its phrasing is the shortest.
+func _mission_def(id: String) -> Dictionary:
+	for period in ["daily", "weekly", "monthly"]:
+		for m in MISSION_DEFS[period]:
+			if String((m as Dictionary)["id"]) == id:
+				return m
+	return {}
+
 func _mission_add(id: String, amount := 1) -> void:
+	# THE VOYAGE RIDES THE SAME COUNTERS, which is the whole reason its goals
+	# are written in mission ids: one hook, and it cannot drift out of step
+	# with what the game actually counts. Anything done for one board counts
+	# for the other, which is the honest reading -- the player did the thing.
+	_voyage_add(id, amount)
 	_ensure_missions()
 	for period in MISSION_DEFS:
 		for m in MISSION_DEFS[period]:
@@ -9806,6 +9871,494 @@ func _teaser_done_strip(vbox: VBoxContainer, taken: int) -> void:
 		mark.offset_bottom = 17.0
 
 # =============================================================================
+#  THE VOYAGE — seven days, three goals a day, one bar
+# =============================================================================
+#
+# What it is and why it is not the mission board is argued in scripts/deals.gd.
+# What lives here is its clock, its counters and its screen.
+
+func _voyage_live() -> bool:
+	return voy_start > 0.0 and _now() < voy_start + Deals.VOYAGE_DURATION
+
+# Which day the voyage is on, zero-based. Its own clock rather than the
+# calendar's: a player who installs at ten to midnight would otherwise lose day
+# one ten minutes later, which is the single worst first impression a
+# seven-day event could make.
+func _voyage_day() -> int:
+	if not _voyage_live():
+		return -1
+	return clampi(int((_now() - voy_start) / Deals.VOYAGE_DAY), 0, Deals.VOYAGE_DAYS - 1)
+
+func _voyage_key(day: int, id: String) -> String:
+	return "%d:%s" % [day, id]
+
+func _voyage_done(day: int, goal: Dictionary) -> bool:
+	return int(voy_prog.get(_voyage_key(day, String(goal["id"])), 0)) >= int(goal["target"])
+
+func _voyage_claimed(day: int, goal: Dictionary) -> bool:
+	return bool(voy_claimed.get(_voyage_key(day, String(goal["id"])), false))
+
+# A goal cleared and not yet taken. This is what puts the dot on the Quests
+# tab, and like every other badge in this game it means "there is something
+# here that is yours", never "an event exists".
+func _voyage_ready() -> bool:
+	var day := _voyage_day()
+	if day < 0:
+		return false
+	for g in Deals.voyage_day_goals(day):
+		if _voyage_done(day, g) and not _voyage_claimed(day, g):
+			return true
+	return false
+
+func _voyage_tick() -> void:
+	var now := _now()
+	if voy_start > 0.0:
+		if now >= voy_start + Deals.VOYAGE_DURATION:
+			voy_start = 0.0
+			voy_prog = {}
+			voy_claimed = {}
+			voy_miles = {}
+			voy_stamps = 0
+			voy_next = now + Deals.VOYAGE_COOLDOWN
+			_save_game()
+			_update_badges()
+		return
+	if now < voy_next:
+		return
+	voy_start = now
+	voy_prog = {}
+	voy_claimed = {}
+	voy_miles = {}
+	voy_stamps = 0
+	_save_game()
+	_notify("spins", "A new voyage sets out — seven days of prizes!", "⛵")
+	_update_badges()
+
+# Counting. Only TODAY's goals move: a voyage that back-filled yesterday's
+# would have no deadline, and the deadline is the entire difference between
+# this board and the mission board.
+func _voyage_add(id: String, amount := 1) -> void:
+	var day := _voyage_day()
+	if day < 0 or amount <= 0:
+		return
+	for g in Deals.voyage_day_goals(day):
+		var goal: Dictionary = g
+		if String(goal["id"]) != id:
+			continue
+		var key := _voyage_key(day, id)
+		# Clamped at the target. The figure is only ever read against it, and
+		# an uncapped counter makes "18 / 20" read as "118 / 20" the day a goal
+		# is repeated with a smaller target.
+		voy_prog[key] = mini(int(voy_prog.get(key, 0)) + amount, int(goal["target"]))
+		return
+
+func _claim_voyage(day: int, goal: Dictionary) -> void:
+	if day != _voyage_day() or not _voyage_done(day, goal) or _voyage_claimed(day, goal):
+		return
+	voy_claimed[_voyage_key(day, String(goal["id"]))] = true
+	voy_stamps += int(goal["stamps"])
+	Sfx.play("jackpot", -4.0)
+	FX.confetti(self, 22)
+	_deal_pay(Deals.voyage_reward(goal), Vector2(view_size().x * 0.5, view_size().y * 0.45))
+	_voyage_pay_miles()
+	_save_game()
+	_update_badges()
+	# The bar moves where the player can see it move, rather than being
+	# redrawn already full -- the stamps are the whole of what a goal was for.
+	if is_instance_valid(_voy_bar):
+		var tw := create_tween()
+		tw.tween_property(_voy_bar, "value", float(mini(voy_stamps, int(_voy_bar.max_value))), 0.5) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		if is_instance_valid(_voy_bar_label):
+			tw.parallel().tween_callback(func() -> void:
+				if is_instance_valid(_voy_bar_label):
+					_voy_bar_label.text = "%d / %d  STAMPS" % [
+						mini(voy_stamps, int(_voy_bar.max_value)), int(_voy_bar.max_value)])
+	_deal_show_cards("Voyage reward!")
+	if _popup == null or not _popup.has_meta("voyage"):
+		return
+	# The row that was just claimed has to become a spent row, and the cleanest
+	# way to do that with the bar's tween still running is to let the tween
+	# finish and then rebuild.
+	_after(0.55, func() -> void:
+		if _popup != null and _popup.has_meta("voyage"):
+			_open_voyage())
+
+func _voyage_pay_miles() -> void:
+	for i in Deals.VOYAGE_MILES.size():
+		var mile: Dictionary = Deals.VOYAGE_MILES[i]
+		if voy_stamps < int(mile["at"]) or bool(voy_miles.get(str(i), false)):
+			continue
+		voy_miles[str(i)] = true
+		var last := i >= Deals.VOYAGE_MILES.size() - 1
+		Sfx.play("levelup" if last else "jackpot", -3.0)
+		FX.confetti(self, 70 if last else 34)
+		FX.flash(self)
+		_deal_pay(Deals.voyage_reward(mile))
+		_banner("THE VOYAGE IS YOURS!  The whole chest" if last
+			else "VOYAGE PRIZE!  %d stamps" % int(mile["at"]),
+			Lagoon.BRASS_HI if last else Lagoon.KELP_HI, "⛵")
+
+# --- the screen --------------------------------------------------------------
+
+func _open_voyage() -> void:
+	if not _voyage_live():
+		return
+	var day := _voyage_day()
+	var vbox := _open_popup("The Voyage", 648.0, true)
+	if not vbox.is_inside_tree():
+		return
+	_popup.set_meta("voyage", true)
+	_voy_bar = null
+	_voy_bar_label = null
+	_voy_timer_label = null
+
+	# THE PRIZE BAR FIRST, because it is what the board is for. The goals
+	# underneath are the price of it, and a screen that opens on its own price
+	# list has buried the thing it is selling.
+	_voyage_board(vbox)
+	_voyage_ribbons(vbox, day)
+
+	var head := Lagoon.label("TODAY'S  THREE", UI.F_LABEL, Lagoon.INK, true)
+	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vbox.add_child(head)
+
+	var goals := Deals.voyage_day_goals(day)
+	for i in goals.size():
+		_voyage_goal_row(vbox, day, goals[i], i)
+
+	# THE SHORTCUT. Guy, 2026-09-13: "guide the player to buy." This is the
+	# honest way to do it on a board of free goals -- the goals are things the
+	# player is already doing, and spins are what doing them costs, so the one
+	# thing worth saying is where more of those come from. It is a door to a
+	# shelf, not a paywall: nothing here is gated, and the grand prize is
+	# reachable without spending a penny.
+	_voyage_shortcut(vbox, goals)
+
+	var foot := CenterContainer.new()
+	vbox.add_child(foot)
+	var plate := Lagoon.stamp_plate(Lagoon.CORAL_HI)
+	foot.add_child(plate)
+	_voy_timer_label = Lagoon.title("", UI.F_CAPTION, Color.WHITE, Lagoon.ABYSS)
+	_voy_timer_label.text = "VOYAGE  ENDS  IN  %s" % _voyage_countdown_text()
+	plate.add_child(_voy_timer_label)
+
+func _voyage_countdown_text() -> String:
+	var left := maxi(0, int(voy_start + Deals.VOYAGE_DURATION - _now()))
+	var days := left / 86400
+	if days > 0:
+		return "%dd %dh" % [days, (left % 86400) / 3600]
+	return "%d:%02d:%02d" % [left / 3600, (left / 60) % 60, left % 60]
+
+# The bar and its four prizes. Same object the fair's board is, and
+# deliberately so -- two events a week apart that count different things but
+# look like they were made by the same people.
+func _voyage_board(vbox: VBoxContainer) -> void:
+	var top := int((Deals.VOYAGE_MILES[Deals.VOYAGE_MILES.size() - 1] as Dictionary)["at"])
+	var card := _tinted_card(vbox, Lagoon.BRASS, true)
+	card.add_child(_shine_overlay(Lagoon.BRASS_HI))
+	var pad := MarginContainer.new()
+	for m in ["margin_left", "margin_right"]:
+		pad.add_theme_constant_override(m, 14)
+	pad.add_theme_constant_override("margin_top", 10)
+	pad.add_theme_constant_override("margin_bottom", 10)
+	card.add_child(pad)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 6)
+	pad.add_child(col)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 6)
+	col.add_child(row)
+	for i in Deals.VOYAGE_MILES.size():
+		var mile: Dictionary = Deals.VOYAGE_MILES[i]
+		var paid := bool(voy_miles.get(str(i), false))
+		var last := i >= Deals.VOYAGE_MILES.size() - 1
+		var cell := _tinted_card(row, Lagoon.KELP if paid else (
+			Lagoon.BRASS if last else Lagoon.LAGOON_DEEP), last and not paid)
+		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		if paid:
+			cell.modulate = Color(1, 1, 1, 0.72)
+		elif last:
+			# The one the week is for, breathing. Nothing else on this screen
+			# moves on its own, so the eye goes to it.
+			FX.pulse_forever(cell, 1.04, 1.5)
+		var mpad := MarginContainer.new()
+		mpad.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		for m in ["margin_left", "margin_right"]:
+			mpad.add_theme_constant_override(m, 5)
+		for m in ["margin_top", "margin_bottom"]:
+			mpad.add_theme_constant_override(m, 6)
+		cell.add_child(mpad)
+		var stack := VBoxContainer.new()
+		stack.alignment = BoxContainer.ALIGNMENT_CENTER
+		stack.add_theme_constant_override("separation", 2)
+		stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		mpad.add_child(stack)
+		# Ink, not white: these are the game's PALE cards. Same rule the fair's
+		# board follows and for the same measured reason.
+		stack.add_child(_fair_goods(Deals.voyage_reward(mile), 24.0, UI.F_TINY, Lagoon.INK))
+		var at_lbl := Lagoon.label("✓" if paid else str(int(mile["at"])),
+			UI.F_TINY, Lagoon.KELP_LO if paid else Lagoon.INK_SOFT, true)
+		at_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		stack.add_child(at_lbl)
+
+	var bar := Lagoon.progress(Lagoon.BRASS_MID)
+	bar.custom_minimum_size = Vector2(0, 34)
+	bar.max_value = top
+	bar.value = mini(voy_stamps, top)
+	col.add_child(bar)
+	_voy_bar = bar
+	_voy_bar_label = Lagoon.progress_value(bar,
+		"%d / %d  STAMPS" % [mini(voy_stamps, top), top], UI.F_CAPTION)
+
+# The week, as seven ribbons. Days behind you are struck and ticked, today is
+# lit and breathing, the rest are ports you have not reached.
+func _voyage_ribbons(vbox: VBoxContainer, day: int) -> void:
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 5)
+	vbox.add_child(row)
+	for d in Deals.VOYAGE_DAYS:
+		var past := d < day
+		var here := d == day
+		var chip := PanelContainer.new()
+		var sb := StyleBoxFlat.new()
+		# TODAY's fill is BRASS_LO with a BRASS_HI rim, not the mid brass: the
+		# rim is what makes it read as lit, and white on the mid fill measured
+		# 3.57. The ribbon is the same object either way -- deep face, bright
+		# edge -- which is how every lit thing in this game is built.
+		sb.bg_color = (Lagoon.KELP_LO if past else (
+			Lagoon.BRASS_LO if here else Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.30)))
+		sb.set_corner_radius_all(12)
+		sb.set_border_width_all(3 if here else 2)
+		sb.border_color = Lagoon.BRASS_HI if here else (
+			Lagoon.KELP if past else Color(Lagoon.HULL.r, Lagoon.HULL.g, Lagoon.HULL.b, 0.45))
+		if here:
+			sb.shadow_size = 10
+			sb.shadow_color = Color(Lagoon.BRASS_LO.r, Lagoon.BRASS_LO.g, Lagoon.BRASS_LO.b, 0.7)
+		chip.add_theme_stylebox_override("panel", sb)
+		chip.custom_minimum_size = Vector2(76, 58)
+		row.add_child(chip)
+		if here:
+			FX.pulse_forever(chip, 1.06, 1.2)
+		var stack := VBoxContainer.new()
+		stack.alignment = BoxContainer.ALIGNMENT_CENTER
+		stack.add_theme_constant_override("separation", 0)
+		stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		chip.add_child(stack)
+		var n := Lagoon.title(str(d + 1), UI.F_LABEL, Color.WHITE, Lagoon.ABYSS)
+		n.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		stack.add_child(n)
+		# White on every ribbon. Sand on the lit brass of TODAY measured 3.45 --
+		# and sand exists to be quieter than white, which is the opposite of
+		# what the one ribbon that matters wants.
+		var word := Lagoon.title("TODAY" if here else ("✓" if past else "DAY"),
+			UI.F_TINY, Color.WHITE if here else Color(1, 1, 1, 0.75), Lagoon.ABYSS)
+		word.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		stack.add_child(word)
+
+# One goal. An icon, a line, a bar and either a claim or a tick -- four things,
+# because Guy asked for a board that is looked at rather than read.
+func _voyage_goal_row(vbox: VBoxContainer, day: int, goal: Dictionary, idx: int) -> void:
+	var done := _voyage_done(day, goal)
+	var claimed := _voyage_claimed(day, goal)
+	var ready := done and not claimed
+	var target := int(goal["target"])
+	var have := mini(int(voy_prog.get(_voyage_key(day, String(goal["id"])), 0)), target)
+	var def := _mission_def(String(goal["id"]))
+
+	var card := _tinted_card(vbox, Lagoon.KELP if claimed else (
+		Lagoon.BRASS if ready else Lagoon.LAGOON), ready)
+	if claimed:
+		card.modulate = Color(1, 1, 1, 0.7)
+	# Each row arrives a beat after the one above it. Three rows is exactly the
+	# number where a stagger reads as the board dealing itself out rather than
+	# as the dialog being slow.
+	card.modulate.a = 0.0
+	var tw := create_tween()
+	tw.tween_interval(0.06 * float(idx))
+	tw.tween_property(card, "modulate:a", 0.7 if claimed else 1.0, 0.22)
+	var pad := MarginContainer.new()
+	for m in ["margin_left", "margin_right"]:
+		pad.add_theme_constant_override(m, 12)
+	for m in ["margin_top", "margin_bottom"]:
+		pad.add_theme_constant_override(m, 10)
+	card.add_child(pad)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	pad.add_child(row)
+
+	var mark := _emoji_label(String(def.get("emoji", "⚡")), 46)
+	mark.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(mark)
+	if ready:
+		FX.pulse_forever(mark, 1.12, 0.9)
+
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	col.add_theme_constant_override("separation", 4)
+	row.add_child(col)
+	var desc := Lagoon.label(String(def.get("desc", goal["id"])), UI.F_LABEL, Lagoon.INK, true)
+	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(desc)
+	var bar := _styled_progress(Lagoon.KELP if done else Lagoon.LAGOON)
+	bar.max_value = target
+	bar.value = have
+	col.add_child(bar)
+	Lagoon.progress_value(bar, "%s / %s" % [_fmt_compact(have), _fmt_compact(target)], UI.F_TINY)
+
+	var right := VBoxContainer.new()
+	right.alignment = BoxContainer.ALIGNMENT_CENTER
+	right.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	right.add_theme_constant_override("separation", 4)
+	row.add_child(right)
+	# WHAT IT PAYS AND WHAT IT IS WORTH, ON ONE LINE. Stacked, the reward, the
+	# stamp chip and a 96-tall button came to more than the card and the button
+	# hung over its bottom corner. One line also happens to be what Guy asked
+	# this screen for: a board that is looked at rather than read.
+	var meta := HBoxContainer.new()
+	meta.alignment = BoxContainer.ALIGNMENT_CENTER
+	meta.add_theme_constant_override("separation", 8)
+	right.add_child(meta)
+	meta.add_child(_fair_goods(Deals.voyage_reward(goal), 22.0, UI.F_TINY, Lagoon.INK))
+	# BRASS_LO: white on the mid brass measured 4.33 even after the chip's own
+	# darkening, which is the same story as every other chip in this file.
+	var stamps := Lagoon.chip("+%d ⚓" % int(goal["stamps"]), Lagoon.BRASS_LO, UI.F_TINY)
+	stamps.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	meta.add_child(stamps)
+
+	if claimed:
+		# A CHIP, NOT A STAMP. A stamp is bright type in a dark well, which is
+		# right on the event stock and wrong here: this row is a PALE card
+		# dimmed to 70%, and kelp-on-pale measured 3.00. A chip is white type
+		# on a darkened fill and is built for exactly this paper.
+		var tick := Lagoon.chip("TAKEN", Lagoon.KELP_LO, UI.F_TINY)
+		tick.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		right.add_child(tick)
+		return
+	if not ready:
+		return
+	var claim := Button.new()
+	claim.text = "CLAIM"
+	claim.custom_minimum_size = Vector2(124, UI.TAP)
+	claim.add_theme_font_size_override("font_size", UI.F_CAPTION)
+	# KELP_LO, the same measured deviation the fair's FREE button carries:
+	# white on the standard kelp face reads 3.68 at this size.
+	Lagoon.button_custom(claim, Lagoon.KELP_LO, Lagoon.KELP_LO.darkened(0.35), Color.WHITE)
+	Lagoon.button_gloss(claim, 22)
+	FX.press_feedback(claim)
+	FX.pulse_forever(claim, 1.05, 0.85)
+	claim.pressed.connect(_claim_voyage.bind(day, goal))
+	right.add_child(claim)
+
+# The card at the top of the Quests page: which day it is, how far the bar has
+# come, and a dot when something on it is ready to take.
+func _voyage_door(vb: VBoxContainer) -> void:
+	var day := _voyage_day()
+	var top := int((Deals.VOYAGE_MILES[Deals.VOYAGE_MILES.size() - 1] as Dictionary)["at"])
+	var ready := _voyage_ready()
+	var card := _tinted_card(vb, Lagoon.BRASS, true)
+	card.add_child(_shine_overlay(Lagoon.BRASS_HI))
+	var btn := Button.new()
+	btn.flat = true
+	btn.focus_mode = Control.FOCUS_NONE
+	btn.custom_minimum_size = Vector2(0, 118)
+	btn.pressed.connect(_open_voyage)
+	FX.press_feedback(btn)
+	card.add_child(btn)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 14)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	btn.add_child(row)
+	row.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for m in [["offset_left", 16.0], ["offset_right", -16.0],
+			["offset_top", 12.0], ["offset_bottom", -12.0]]:
+		row.set(m[0], m[1])
+	var mark := _emoji_label("⛵", 54)
+	mark.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(mark)
+	FX.float_bob(mark, 5.0, 2.4)
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	col.add_theme_constant_override("separation", 4)
+	row.add_child(col)
+	col.add_child(Lagoon.label("THE  VOYAGE  —  DAY  %d  OF  %d" % [day + 1, Deals.VOYAGE_DAYS],
+		UI.F_LABEL, Lagoon.INK, true))
+	var bar := _styled_progress(Lagoon.BRASS_MID)
+	bar.max_value = top
+	bar.value = mini(voy_stamps, top)
+	col.add_child(bar)
+	Lagoon.progress_value(bar, "%d / %d  STAMPS" % [mini(voy_stamps, top), top], UI.F_TINY)
+	if ready:
+		var chip := Lagoon.chip("CLAIM!", Lagoon.CORAL, UI.F_TINY)
+		chip.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		chip.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(chip)
+		FX.pulse_forever(chip, 1.08, 0.9)
+	else:
+		var go := Lagoon.chip("OPEN", Lagoon.KELP, UI.F_TINY)
+		go.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		go.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(go)
+
+# WHERE MORE SPINS COME FROM, on a board whose goals are spent in spins.
+#
+# One row, one line, one door -- to the shelf that matches what today is
+# actually asking for. It is deliberately not a price: a board of free goals
+# that opens a checkout has changed what it is, and the player can see that.
+func _voyage_shortcut(vbox: VBoxContainer, goals: Array) -> void:
+	var want := "spins"
+	for g in goals:
+		var id := String((g as Dictionary)["id"])
+		if id == "builds" or id == "coins_won":
+			want = "coins"
+			break
+	var card := _tinted_card(vbox, Lagoon.LAGOON_DEEP, false)
+	var btn := Button.new()
+	btn.flat = true
+	btn.focus_mode = Control.FOCUS_NONE
+	# 112, and the copy below is one line. This row is an anchored HBox inside
+	# a fixed-height button -- it cannot grow with its own text -- and at 96
+	# with a two-line subtitle it spilled over the countdown underneath it.
+	# The same trap the 1+2's door row carries a comment about.
+	btn.custom_minimum_size = Vector2(0, 112)
+	btn.pressed.connect(func() -> void:
+		_close_popup()
+		_goto_shop(want))
+	FX.press_feedback(btn)
+	card.add_child(btn)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 14)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	btn.add_child(row)
+	row.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for m in [["offset_left", 16.0], ["offset_right", -16.0],
+			["offset_top", 10.0], ["offset_bottom", -10.0]]:
+		row.set(m[0], m[1])
+	var mark := _prize_art("bolt" if want == "spins" else "coin", 54.0)
+	mark.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(mark)
+	FX.pulse_forever(mark, 1.07, 1.6)
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	col.add_theme_constant_override("separation", 2)
+	row.add_child(col)
+	col.add_child(Lagoon.label("SHORT  ON  %s?" % want.to_upper(), UI.F_LABEL, Lagoon.INK, true))
+	# INK, not INK_SOFT: this card's tint is LAGOON_DEEP, which comes out pale
+	# enough that the soft ink measured 4.15.
+	var sl := Lagoon.label("Top up and clear today.", UI.F_CAPTION, Lagoon.INK)
+	sl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(sl)
+	var go := Lagoon.chip("SHOP", Lagoon.KELP, UI.F_TINY)
+	go.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	go.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(go)
+
+# =============================================================================
 #  THE FAIR — nine stalls, any order, on a points board
 # =============================================================================
 #
@@ -12796,6 +13349,14 @@ func _star_harvest_at(points: Array, rank_gain: int) -> void:
 func _fill_quests(vb: VBoxContainer) -> void:
 	_ensure_missions()
 	_quests_timer_label = null
+
+	# THE VOYAGE'S DOOR, ABOVE THE TABS. It lives on this page rather than on a
+	# disc of its own: the rail already carries seven and an eighth would make
+	# it a toolbar, and a board of goals belongs where the other board of goals
+	# is. Above the tabs because it EXPIRES and they do not -- the same order
+	# the shop puts its countdowns in.
+	if _voyage_live():
+		_voyage_door(vb)
 
 	var tabs := HBoxContainer.new()
 	tabs.add_theme_constant_override("separation", 10)
@@ -22127,6 +22688,12 @@ func _save_dict() -> Dictionary:
 		"fair_taken": fair_taken,
 		"fair_pts": fair_pts,
 		"fair_miles": fair_miles,
+		"voy_start": voy_start,
+		"voy_next": voy_next,
+		"voy_prog": voy_prog,
+		"voy_claimed": voy_claimed,
+		"voy_stamps": voy_stamps,
+		"voy_miles": voy_miles,
 		"chest_fill": chest_fill,
 		"chest_round": chest_round,
 		"beach_gift_next": beach_gift_next,
@@ -22513,6 +23080,26 @@ func _load_game() -> void:
 		for k in fm:
 			if _b(fm[k]):
 				fair_miles[String(k)] = true
+	voy_start = _f(data.get("voy_start", 0.0))
+	voy_next = _f(data.get("voy_next", 0.0))
+	voy_stamps = maxi(0, _i(data.get("voy_stamps", 0)))
+	voy_prog = {}
+	var vp = data.get("voy_prog", {})
+	if typeof(vp) == TYPE_DICTIONARY:
+		for k in vp:
+			voy_prog[String(k)] = maxi(0, _i(vp[k]))
+	voy_claimed = {}
+	var vc = data.get("voy_claimed", {})
+	if typeof(vc) == TYPE_DICTIONARY:
+		for k in vc:
+			if _b(vc[k]):
+				voy_claimed[String(k)] = true
+	voy_miles = {}
+	var vm = data.get("voy_miles", {})
+	if typeof(vm) == TYPE_DICTIONARY:
+		for k in vm:
+			if _b(vm[k]):
+				voy_miles[String(k)] = true
 	# Clamped into the meter's own range: a hand-edited overshoot would pay a
 	# chest on every spin for as long as the excess lasted. The rotation
 	# counters wrap for the same reason -- posmod, not clamp, because every
