@@ -521,6 +521,22 @@ const MISSION_MILESTONES := [
 	{"at": 0.75, "share": 0.55},
 	{"at": 1.00, "share": 1.00},
 ]
+# The track's three bands, named rather than typed four times each. The rungs
+# hang off the BAR's edges (MILE_TOP_EDGE / MILE_BOT_EDGE) rather than off the
+# lane's, so a short rung and a tall one sit the same distance from the line
+# they stand on -- see _milestone_pip.
+const MILE_BOX_MIN  := 140.0
+# 184 IS A MEASUREMENT, NOT A TASTE. The monthly board is seven missions, so
+# its rungs stand at 2, 4, 6 and 7 -- and the last two share the lower band,
+# 0.43 of a 658-unit lane apart. A box centred on the first and a box hung off
+# the card's right edge fit that gap only while 1.5w <= 282. See _mile_box_w.
+const MILE_BOX_MAX  := 184.0
+const MILE_PIN_W    := 62.0
+const MILE_TOP_EDGE := 76.0
+const MILE_BAR_TOP  := 84.0
+const MILE_BAR_BOT  := 110.0
+const MILE_BOT_EDGE := 118.0
+const MILE_LANE_H   := 196.0
 const MISSION_TAB_INFO := {
 	"daily": {"emoji": "☀️", "title": "DAILY", "color": Color(0.3, 0.62, 0.38)},
 	"weekly": {"emoji": "🗓️", "title": "WEEKLY", "color": Color(0.25, 0.5, 0.85)},
@@ -620,6 +636,20 @@ var deal_finale := false
 # because the cooldown is thirty hours and an achievement that survives a
 # restart is the only kind that is one. Cleared when the next chain rolls in.
 var deal_done := false
+# HOW MANY RUNGS THE LAST CHAIN WENT OUT WITH, which is the same argument one
+# step further along. `deal_done` only remembered a PERFECT run, and a perfect
+# run is not what most cooldowns follow: the rungs alternate free and paid, so
+# a player who takes every free thing on offer and buys nothing stops at four
+# of six and has genuinely done well. That player got the bare clock — the
+# exact screen Guy objected to on 2026-09-13 ("when the user finishes, don't
+# show only the time to the next one; show that he took them all, and leave the
+# clock above or below").
+#
+# So the teaser draws the ladder the player actually left behind, whatever
+# shape it was in, and the clock goes underneath it. `deal_taken` cannot do
+# this job: it is reset to zero the instant the chain rolls out, which is the
+# same instant this screen becomes the one on show.
+var deal_last_taken := 0
 # The live power-up takeover: which one, when it dies, the earliest the next may
 # roll, and whether this one has already been put in front of the player.
 #
@@ -666,6 +696,8 @@ var _daily_timer_label: Label
 var _daily_hero_parts := {}
 var _deal_last_id := ""
 var _powerup_timer_label: Label
+# The clock on the "next offer" row, which only exists while no offer does.
+var _powerup_next_timer_label: Label
 var _powerup_last_id := ""
 var col_owned := {}
 # set id -> [count, count, ...], how many spare copies of each card are held.
@@ -1168,11 +1200,18 @@ func _after_boot() -> void:
 	if shot_key != "" and not shot_key.contains("/"):
 		call_deferred("_capture_page", shot_key)
 		return
+	# DEMO_QUESTS / DEMO_CLAN open a page and LEAVE THE GAME RUNNING, which is
+	# the difference between them and SHOT: a screenshot harness quits, and the
+	# only way to look at a page on a real phone (or the simulator, which is
+	# where this project's UI is signed off) is for the app to still be there.
+	# Both go through the same setup the shot does, so the two can never
+	# disagree about what the state they name looks like.
 	if OS.has_environment("DEMO_QUESTS"):
-		var demo_tab := OS.get_environment("DEMO_QUESTS")
-		if MISSION_DEFS.has(demo_tab):
-			quests_tab = demo_tab
+		_shot_quests()
 		call_deferred("_goto", pages["quests"])
+	if OS.has_environment("DEMO_CLAN"):
+		_fake_clan()
+		call_deferred("_goto", pages["clan"])
 
 # Two SHOT setups that need state rather than just a call. Kept beside the
 # harness rather than in the dialogs, so nothing the player reaches can end up
@@ -1215,10 +1254,23 @@ func _fake_clan() -> void:
 	for i in 5:
 		roster.append({"id": "p%d" % i, "name": ["Guy", "Boris", "Mimi", "Kai", "Priya"][i],
 			"emoji": ["\U01F9D1", "\U01F9D4", "\U01F469", "\U01F3C4", "\U01F469"][i],
-			"island_level": 14 - i * 2})
+			"island_level": 14 - i * 2, "rank_stars": 1001 - i * 180})
 	roster[0]["id"] = "me-0000"
 	my_clan = {"id": "c1", "name": "Kraken's Own", "emoji": "\U01F419",
-		"owner": "me-0000", "open": false, "members": roster}
+		"owner": "me-0000", "open": false, "members": roster,
+		"stars": 4310, "rank": 3}
+	# A board with the fake's own clan in the middle of it, so the harness
+	# measures the lit row as well as the plain ones -- and a five-digit score
+	# at the top, which is the widest this row ever gets.
+	_clan_fake_list = [
+		{"id": "c9", "name": "Deepwater Kings", "emoji": "\U01F988",
+			"members": 8, "open": true, "full": false, "stars": 17327, "rank": 1},
+		{"id": "c2", "name": "The Long Reef Company", "emoji": "\U01F41A",
+			"members": 12, "open": false, "full": false, "stars": 9120, "rank": 2},
+		{"id": "c1", "name": "Kraken's Own", "emoji": "\U01F419",
+			"members": 5, "open": false, "full": false, "stars": 4310, "rank": 3},
+		{"id": "c3", "name": "First Wave", "emoji": "\U01F30A",
+			"members": 30, "open": true, "full": true, "stars": 1330, "rank": 4}]
 	gift_budget = {"sent": 1, "give_cap": 5, "got": 2, "receive_cap": 3}
 	# The pending halves, so the harnesses measure the rows that carry the
 	# longest strings this page can hold. `open: false` above is what makes the
@@ -1240,6 +1292,16 @@ func _fake_clan() -> void:
 		for i in arr.size():
 			arr[i] = 2
 
+	# DEMO_CLAN_NONE=1 is the state every player is in BEFORE any of this: no
+	# clan, so the page is the create card and the league table to pick one
+	# off. It is the state the seeded crews exist for, and the fake could not
+	# reach it -- _fake_clan's whole job until now was to put the harness in a
+	# clan. It also leaves the invitation standing, which is the only way to
+	# photograph its JOIN button enabled: that button is disabled for anybody
+	# who already has a clan, which the fake always did.
+	if OS.has_environment("DEMO_CLAN_NONE"):
+		my_clan = {}
+
 	# DEMO_CLAN_SOLO=1 is the state EVERY founder sees first, and the fake
 	# above can never reach it: a clan one second old -- one member, nobody
 	# asking, an open door. It is this page's emptiest legal form, which makes
@@ -1256,6 +1318,57 @@ func _shot_give_card() -> void:
 	var members: Array = my_clan.get("members", [])
 	var who: Dictionary = members[1] if members.size() > 1 else {"id": "x", "name": "Dave"}
 	_open_give_card(who)
+
+# n missions claimed on the board DEMO_QUESTS names, with the first rung of
+# the track already taken, so one shot carries every state a rung has. It
+# writes mission_state directly and pays nothing: the grant path flies coins
+# and opens a takeover, which would photobomb the page it was called to show.
+func _shot_quests() -> void:
+	var tab := OS.get_environment("DEMO_QUESTS")
+	if MISSION_DEFS.has(tab):
+		quests_tab = tab
+	var want := int(OS.get_environment("DEMO_QUESTS_DONE"))
+	if want <= 0:
+		return
+	_ensure_missions()
+	var defs: Array = MISSION_DEFS[quests_tab]
+	var st: Dictionary = mission_state[quests_tab]
+	for i in mini(want, defs.size()):
+		var m: Dictionary = defs[i]
+		st["progress"][m["id"]] = _mission_target(m)
+		st["claimed"][m["id"]] = true
+	st["miles"] = {"0": true}
+
+func _shot_deal() -> void:
+	if not OS.has_environment("DEMO_DEAL_DONE"):
+		_open_deal()
+		return
+	var n := clampi(int(OS.get_environment("DEMO_DEAL_DONE")), 0, Deals.STEPS)
+	deal_id = ""
+	deal_until = 0.0
+	deal_taken = 0
+	deal_finale = false
+	deal_done = n >= Deals.STEPS
+	deal_last_taken = n
+	deal_next = _now() + 9.0 * 3600.0 + 742.0
+	# POWERUP_NEXT=<hours> parks the 1+2 in its dark half, which is the state
+	# the teaser's door row was written for.
+	if OS.has_environment("POWERUP_NEXT"):
+		powerup_id = ""
+		powerup_until = 0.0
+		powerup_next = _now() + float(OS.get_environment("POWERUP_NEXT")) * 3600.0
+	_open_deal()
+
+func _shot_collections() -> void:
+	var ready_n := int(OS.get_environment("DEMO_SET_READY"))
+	var claimed_n := int(OS.get_environment("DEMO_SET_CLAIMED"))
+	for i in mini(ready_n + claimed_n, CV.COLLECTIONS.size()):
+		var c: Dictionary = CV.COLLECTIONS[i]
+		var owned: Array = col_owned[c["id"]]
+		for j in owned.size():
+			owned[j] = true
+		if i >= ready_n:
+			col_claimed[c["id"]] = true
 
 func _shot_streak() -> void:
 	streak_days = 12
@@ -1290,6 +1403,19 @@ func _capture_page(key: String) -> void:
 	# card and nothing this page actually does.
 	if key == "alerts":
 		_shot_alerts()
+	# The reward track has three states standing on it at once -- taken,
+	# claimable, still out of reach -- and a fresh save can only ever show the
+	# third. DEMO_QUESTS_DONE=n claims the first n missions of the open board,
+	# which is the only way to photograph the other two.
+	if key == "quests":
+		_shot_quests()
+	# The shelf's three states -- filling, READY, claimed -- and a harness save
+	# can only ever show the first. DEMO_SET_READY=n finishes the first n sets
+	# and leaves them unclaimed, which is the only way to photograph the face a
+	# finished cover wears (_collection_ready_face). DEMO_SET_CLAIMED=n banks
+	# them instead.
+	if key == "collections":
+		_shot_collections()
 	# SHOT=popup:ranks shoots a dialog rather than a page. Modals are where most
 	# of the game's chrome lives and none of it could be screenshotted without
 	# opening the thing by hand first.
@@ -1316,8 +1442,11 @@ func _capture_page(key: String) -> void:
 			"piggy":   _shot_piggy()
 			# The deal chain. It rolls itself in on the first tick of a fresh
 			# save, and the harness waits five seconds before it opens
-			# anything, so by here there is always one live.
-			"deal":    _open_deal()
+			# anything, so by here there is always one live -- which means the
+			# COOLDOWN screen, the other half of this disc, could not be
+			# photographed at all. DEMO_DEAL_DONE=<n> sends the live chain out
+			# with n rungs taken and shoots the teaser instead.
+			"deal":    _shot_deal()
 			"powerup": _open_powerup()
 			"intro":   _open_intro()
 			"build":   _intro_build_card()
@@ -2385,6 +2514,18 @@ func _process(delta: float) -> void:
 		_powerup_tick()
 		if _powerup_timer_label != null and is_instance_valid(_powerup_timer_label):
 			_powerup_timer_label.text = "ENDS  IN  %s" % _powerup_countdown_text()
+		# The "next offer" clock on the teaser's door row. Same ancestor test as
+		# the chain's, and the same swap at zero: an offer that arms while the
+		# player is watching the countdown replaces the promise with the row
+		# that opens the thing.
+		if _powerup_next_timer_label != null and is_instance_valid(_powerup_next_timer_label) \
+				and _popup != null and _popup.is_ancestor_of(_powerup_next_timer_label):
+			if not _active_powerup().is_empty():
+				if _active_deal().is_empty():
+					_open_event_teaser()
+			else:
+				_powerup_next_timer_label.text = _countdown_text(
+					maxi(0, int(powerup_next - _now())))
 		# The crate coming back with the tide. A bool and a visible flag once a
 		# second; the cooldown maths lives in _update_beach_gift.
 		_update_beach_gift()
@@ -6338,91 +6479,190 @@ func _clan_join_ui(vb: VBoxContainer) -> void:
 	# combination STYLE.md rules out. The banner is the control every other
 	# section head in the game uses.
 	vb.add_child(Lagoon.banner("OR  JOIN  ONE", Lagoon.LAGOON_DEEP))
+	_clan_board_ui(vb, true)
+
+# =============================================================================
+#  The league table
+# =============================================================================
+#
+# A CLAN NOW HAS A SCORE, AND THE SCORE IS THE LIST'S ORDER. Guy, 2026-09-13:
+# every clan shows the stars of all its members together, and that is what
+# ranks them. Before this a clan had nothing to be better than another clan at
+# -- the browse list sorted on roster size, which measures how many people are
+# in a room and nothing about what any of them has done.
+#
+# THE SAME BOARD IS SHOWN TO PEOPLE WHO ALREADY HAVE A CLAN, which is the half
+# that makes the score mean anything. A ranking you can only see while you are
+# looking for somewhere to join is a shop window; a ranking your own clan is
+# standing in, with your row lit up in it, is a table you can climb. So this
+# draws in two modes off one builder rather than two that drift apart.
+#
+# `stars` and `rank` are ABSENT from the answer of a server that has not taken
+# the 20260913 migration yet, and every part of the row that uses them is
+# skipped when they are -- the list keeps working, it just has nothing to rank
+# by, exactly as it did before.
+func _clan_board_ui(vb: VBoxContainer, joinable: bool) -> void:
+	# The answer lands after this function has returned, and an async card
+	# appended to a page arrives at the BOTTOM of it -- under the leave button
+	# on the roster page. So the slot is taken synchronously and filled later;
+	# a childless VBox has no minimum size, so it costs nothing if the answer
+	# is empty or never comes.
+	var slot := VBoxContainer.new()
+	slot.add_theme_constant_override("separation", 10)
+	vb.add_child(slot)
 
 	var build := _clan_build
-	Cloud.clan_list(func(rows: Array) -> void:
+	var deliver := func(rows: Array) -> void:
 		# The page may have been left, or repainted, while the list was in
 		# flight. The token catches the repaint; the page check catches the
 		# player walking away.
-		if build != _clan_build or _current_page != pages.get("clan") \
-				or not is_instance_valid(vb):
+		if build != _clan_build or not is_instance_valid(slot):
 			return
 		if rows.is_empty():
-			var none := _page_note("No clans yet — make the first one.", UI.F_CAPTION)
+			var none := _page_note("No clans yet \u2014 make the first one." if joinable
+				else "The board is empty.", UI.F_CAPTION)
 			none.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-			vb.add_child(none)
+			slot.add_child(none)
 			return
 		for row in rows:
 			if typeof(row) != TYPE_DICTIONARY:
 				continue
-			var here: Dictionary = row
-			var card := _tinted_card(vb, Lagoon.BRASS_MID, false)
-			var btn := Button.new()
-			btn.flat = true
-			btn.custom_minimum_size = Vector2(0, 84)
-			card.add_child(btn)
-			var pad := MarginContainer.new()
-			for m in [["margin_left", 14], ["margin_right", 14], ["margin_top", 10], ["margin_bottom", 10]]:
-				pad.add_theme_constant_override(m[0], m[1])
-			pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			card.add_child(pad)
-			var hb := HBoxContainer.new()
-			hb.add_theme_constant_override("separation", 14)
-			hb.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			pad.add_child(hb)
-			var tok := Lagoon.token(String(here.get("emoji", "\U01F3F4")), 62.0, Lagoon.BRASS)
-			tok.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-			tok.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			hb.add_child(tok)
-			var nm := Lagoon.label(String(here.get("name", "")), UI.F_LABEL, Lagoon.INK, true)
-			nm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			nm.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-			hb.add_child(nm)
-			var n := Lagoon.label("%d" % int(here.get("members", 0)), UI.F_LABEL,
-				Lagoon.INK_SOFT, true)
-			n.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-			hb.add_child(n)
-			# WHICH DOOR THIS IS, SAID BEFORE IT IS PRESSED.
-			#
-			# `open` and `full` are absent from the answer of a server that has
-			# not taken the invites migration yet, and both default to the
-			# behaviour that shipped -- an open clan with room -- so this row
-			# keeps working unchanged against the older schema.
-			var is_open := bool(here.get("open", true))
-			var is_full := bool(here.get("full", false))
-			if is_full:
-				hb.add_child(Lagoon.chip("FULL", Lagoon.INK_SOFT, UI.F_TINY))
-				btn.disabled = true
-			elif not is_open:
-				hb.add_child(Lagoon.chip("ASK", Lagoon.URCHIN, UI.F_TINY))
-			var clan_id := String(here.get("id", ""))
-			btn.pressed.connect(func() -> void:
-				btn.disabled = true
-				if is_open:
-					Cloud.join_clan(clan_id, func(res: Dictionary) -> void:
-						if not bool(res.get("ok", false)):
-							btn.disabled = false
-							_banner(_clan_refusal(res), Lagoon.CORAL_LO)
-							return
-						my_clan = res.get("clan", {})
-						Sfx.play("levelup", -6.0)
-						_banner("Joined %s" % String(my_clan.get("name", "")), Lagoon.KELP_HI)
-						_fill_page("clan")
-					)
-					return
-				Cloud.request_join_clan(clan_id, func(res: Dictionary) -> void:
-					btn.disabled = false
-					if not bool(res.get("ok", false)):
-						_banner(_clan_refusal(res), Lagoon.CORAL_LO)
-						return
-					# No page rebuild: nothing about the list has changed, and
-					# repainting it under the finger that just tapped reads as
-					# the request having failed and reset.
-					_banner("Asked to join %s \u2014 they will get your request."
-						% String(here.get("name", "")), Lagoon.KELP_HI)
-				)
-			)
+			_clan_board_row(slot, row, joinable)
+
+	# The harness has no server behind it, and _current_page is not yet set
+	# while _fill_page is running -- so the fake answers here rather than going
+	# through the guard below, which would discard it.
+	if _clan_fake:
+		deliver.call(_clan_fake_list)
+		return
+	Cloud.clan_list(func(rows: Array) -> void:
+		if _current_page != pages.get("clan"):
+			return
+		deliver.call(rows)
 	)
+
+# ONE CLAN ON THE BOARD.
+#
+# It used to be a crest, a name, and a bare "12" hard against the right edge --
+# which is the same complaint Guy made about the missions track the same day: a
+# figure with nothing beside it saying what it counts. The number of people in
+# a clan is now said in words, and the thing in the position the eye goes to is
+# the clan's actual score, behind the same star the HUD counts in.
+func _clan_board_row(parent: Node, here: Dictionary, joinable: bool) -> Control:
+	var clan_id := String(here.get("id", ""))
+	var mine := clan_id != "" and clan_id == String(my_clan.get("id", ""))
+	var rank := int(here.get("rank", 0))
+	var is_open := bool(here.get("open", true))
+	var is_full := bool(here.get("full", false))
+	var crew := int(here.get("members", 0))
+	# Your own row is kelp and lit, wherever on the board it falls. On a table
+	# of thirty rows it is the only thing you are actually looking for.
+	var card := _tinted_card(parent, Lagoon.KELP if mine else Lagoon.BRASS_MID, mine)
+	var btn: Button = null
+	if joinable and not is_full:
+		btn = Button.new()
+		btn.flat = true
+		btn.custom_minimum_size = Vector2(0, 96)
+		card.add_child(btn)
+	var pad := MarginContainer.new()
+	for m in [["margin_left", 12], ["margin_right", 12], ["margin_top", 10], ["margin_bottom", 10]]:
+		pad.add_theme_constant_override(m[0], m[1])
+	pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	card.add_child(pad)
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 10)
+	hb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pad.add_child(hb)
+
+	# The place, on the stamp the game prints every tinted-stock figure on.
+	# Leader in metal, everybody else in sand -- and SAND rather than a dimmer
+	# ink, because a stamp's plate is a dark well: INK_SOFT is a dark teal and
+	# on that plate it is the one combination STYLE.md rules out. "Quieter" on
+	# dark stock is a lighter colour used more sparingly, never a darker one.
+	if rank > 0:
+		hb.add_child(Lagoon.stamp("#%d" % rank,
+			Lagoon.BRASS_HI if rank == 1 else Lagoon.SAND))
+
+	var tok := Lagoon.token(String(here.get("emoji", "\U01F3F4")), 62.0,
+		Lagoon.KELP if mine else Lagoon.BRASS)
+	tok.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	tok.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hb.add_child(tok)
+
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	col.add_theme_constant_override("separation", 3)
+	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hb.add_child(col)
+	var nm := Lagoon.label(String(here.get("name", "")), UI.F_LABEL, Lagoon.INK, true)
+	nm.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	col.add_child(nm)
+	col.add_child(Lagoon.label("%d %s" % [crew, "clanmate" if crew == 1 else "clanmates"],
+		UI.F_TINY, Lagoon.INK_SOFT, true))
+
+	# The score, and the word under it. `stars` is absent on a project without
+	# the migration, and a clan drawn with a silent 0 beside it would read as a
+	# clan that has done nothing rather than a server that was not asked.
+	if here.has("stars"):
+		var sc := VBoxContainer.new()
+		sc.add_theme_constant_override("separation", 1)
+		sc.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		sc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hb.add_child(sc)
+		# Same figure, same form as the crest -- a clan whose own page says
+		# "148K" and whose row in the table says "148,320" reads as two
+		# different numbers for the same thing.
+		sc.add_child(_reward_chip("star", _fmt_compact(int(here.get("stars", 0))),
+			Lagoon.INK))
+		var cap := Lagoon.label("CLAN  STARS", UI.F_TINY, Lagoon.INK_MUTE, true)
+		cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		sc.add_child(cap)
+
+	# WHICH DOOR THIS IS, SAID BEFORE IT IS PRESSED.
+	#
+	# `open` and `full` are absent from the answer of a server that has not
+	# taken the invites migration yet, and both default to the behaviour that
+	# shipped -- an open clan with room -- so this row keeps working unchanged
+	# against the older schema.
+	if mine:
+		hb.add_child(Lagoon.chip("YOURS", Lagoon.KELP, UI.F_TINY))
+	elif is_full:
+		hb.add_child(Lagoon.chip("FULL", Lagoon.INK_SOFT, UI.F_TINY))
+	elif joinable and not is_open:
+		hb.add_child(Lagoon.chip("ASK", Lagoon.URCHIN, UI.F_TINY))
+	elif joinable:
+		hb.add_child(Lagoon.chip("JOIN", Lagoon.KELP, UI.F_TINY))
+
+	if btn == null:
+		return card
+	btn.pressed.connect(func() -> void:
+		btn.disabled = true
+		if is_open:
+			Cloud.join_clan(clan_id, func(res: Dictionary) -> void:
+				if not bool(res.get("ok", false)):
+					btn.disabled = false
+					_banner(_clan_refusal(res), Lagoon.CORAL_LO)
+					return
+				my_clan = res.get("clan", {})
+				Sfx.play("levelup", -6.0)
+				_banner("Joined %s" % String(my_clan.get("name", "")), Lagoon.KELP_HI)
+				_fill_page("clan")
+			)
+			return
+		Cloud.request_join_clan(clan_id, func(res: Dictionary) -> void:
+			btn.disabled = false
+			if not bool(res.get("ok", false)):
+				_banner(_clan_refusal(res), Lagoon.CORAL_LO)
+				return
+			# No page rebuild: nothing about the list has changed, and
+			# repainting it under the finger that just tapped reads as the
+			# request having failed and reset.
+			_banner("Asked to join %s \u2014 they will get your request."
+				% String(here.get("name", "")), Lagoon.KELP_HI)
+		)
+	)
+	return card
 
 func _clan_refusal(res: Dictionary) -> String:
 	match String(res.get("reason", "")):
@@ -6518,6 +6758,38 @@ func _clan_roster_ui(vb: VBoxContainer) -> void:
 	if is_owner:
 		marks.add_child(Lagoon.stamp("FOUNDER", Lagoon.BRASS_HI))
 
+	# THE CLAN'S SCORE, ON THE CREST, AT HEADLINE SIZE.
+	#
+	# Every member's stars added together, which since 2026-09-13 is the thing
+	# the whole league is ordered on -- so it is the largest number on the page
+	# rather than a figure to go looking for, and the place it buys sits beside
+	# it. Both are absent on a project without the migration; drawing "0" and
+	# "#0" there would say the clan had achieved nothing and come last.
+	if my_clan.has("stars"):
+		crest.add_child(Lagoon.divider())
+		var score := HBoxContainer.new()
+		score.add_theme_constant_override("separation", 10)
+		crest.add_child(score)
+		score.add_child(_prize_art("star", 44.0))
+		# COMPACT, AND THAT IS A MEASUREMENT. At F_HEAD a six-figure total set
+		# in full runs the crest 4px past the right edge of the phone -- caught
+		# by qa_layout, which now measures this row with a 30-strong clan's
+		# score in it. _fmt_compact prints anything under 100,000 in full, so
+		# every clan that exists today reads exactly as it did; the ones that
+		# grow past it read "148K" instead of taking the page with them.
+		var tot := Lagoon.label(_fmt_compact(int(my_clan.get("stars", 0))),
+			UI.F_HEAD, Lagoon.INK, true)
+		tot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		score.add_child(tot)
+		var unit := Lagoon.label("CLAN  STARS", UI.F_TINY, Lagoon.INK_MUTE, true)
+		unit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		unit.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		score.add_child(unit)
+		var place := int(my_clan.get("rank", 0))
+		if place > 0:
+			score.add_child(Lagoon.stamp("LEAGUE  #%d" % place,
+				Lagoon.BRASS_HI if place <= 3 else Lagoon.SAND))
+
 	# -- Today's giving, as two tracks rather than a sentence. ---------------
 	#
 	# It was "Given today  1/5      ·      Received  2/3" in caption ink. Both
@@ -6593,6 +6865,15 @@ func _clan_roster_ui(vb: VBoxContainer) -> void:
 		if typeof(m) != TYPE_DICTIONARY:
 			continue
 		_clan_member_row(vb, m, me_id)
+
+	# -- Where this clan stands. --------------------------------------------
+	#
+	# The same board the clan browser draws, with your own row lit up in it.
+	# Without this the score on the crest is a number with nothing to compare
+	# it to, and the ranking only exists for people who do not have a clan --
+	# which is everybody except the people it is supposed to motivate.
+	vb.add_child(Lagoon.banner("CLAN  LEAGUE", Lagoon.LAGOON_DEEP))
+	_clan_board_ui(vb, false)
 
 	# -- The way out, and it is not shouted. --------------------------------
 	#
@@ -6676,8 +6957,20 @@ func _clan_member_row(parent: Node, who: Dictionary, me_id: String) -> Control:
 	# apart. On a roster of thirty it is the only way to find who to ask.
 	if is_boss and not is_me:
 		line.add_child(Lagoon.stamp("FOUNDER", Lagoon.BRASS_HI))
-	col.add_child(Lagoon.label("Island %d" % int(who.get("island_level", 1)),
-		UI.F_TINY, Lagoon.INK_SOFT, true))
+	# Island AND stars, because the clan's total is the sum of these and a
+	# member row that does not show its own share leaves the crest's headline
+	# figure coming from nowhere.
+	var meta := HBoxContainer.new()
+	meta.add_theme_constant_override("separation", 8)
+	meta.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(meta)
+	var isl := Lagoon.label("Island %d" % int(who.get("island_level", 1)),
+		UI.F_TINY, Lagoon.INK_SOFT, true)
+	isl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	meta.add_child(isl)
+	if who.has("rank_stars"):
+		meta.add_child(_reward_chip("star", UI.fmt(int(who.get("rank_stars", 0))),
+			Lagoon.INK_SOFT))
 	if btn != null:
 		hb.add_child(_glyph_disc("gift", 58.0, Lagoon.CORAL))
 		var target: Dictionary = who
@@ -9177,6 +9470,9 @@ func _deal_tick() -> void:
 			if deal_taken >= Deals.STEPS and not deal_finale:
 				_deal_pay_finale(true)
 			deal_done = deal_taken >= Deals.STEPS
+			# Taken BEFORE the reset below wipes it, because the cooldown
+			# screen is built out of it.
+			deal_last_taken = deal_taken
 			deal_id = ""
 			deal_until = 0.0
 			deal_taken = 0
@@ -9284,19 +9580,28 @@ func _open_event_teaser() -> void:
 		return
 	_deal_timer_label = null
 	_deal_next_timer_label = null
+	_powerup_next_timer_label = null
 
-	_powerup_door_row(vbox)
+	# With the clock, because this screen IS the dark half of the calendar.
+	_powerup_door_row(vbox, true)
 
-	# What stands above the clock depends on how the last chain went out. A
-	# player who cleared it gets their cleared ladder back — Guy, 2026-09-11:
-	# finishing every rung and then finding nothing here but a countdown erased
-	# the finishing. Everyone else gets the spark: for them the cooldown really
-	# is only a promise.
-	if deal_done:
-		_teaser_done_strip(vbox)
+	# What stands above the clock is the ladder the last chain went out with.
+	# Guy, 2026-09-11: finishing every rung and then finding nothing here but a
+	# countdown erased the finishing. Guy again, 2026-09-13, about the same
+	# screen one case wider: a player who took four of six has also finished
+	# something, and the bare clock erased that too. So ANY ladder with a rung
+	# down on it comes back — the taken slabs struck, the ones left behind
+	# locked — and only a player who took nothing at all gets the spark, which
+	# for them is honest: the cooldown really is only a promise.
+	if deal_last_taken > 0:
+		_teaser_done_strip(vbox, deal_last_taken)
+		var all_six := deal_last_taken >= Deals.STEPS
 		# A stamp, not a label: bright green type wants a deep well under it —
 		# on the cream card it is the pale-on-pale problem all over again.
-		var done := Lagoon.stamp("ALL  SIX  REWARDS  TAKEN", Lagoon.KELP_HI, UI.F_CAPTION)
+		var done := Lagoon.stamp(
+			"ALL  SIX  REWARDS  TAKEN" if all_six
+			else "%d  OF  %d  REWARDS  TAKEN" % [deal_last_taken, Deals.STEPS],
+			Lagoon.KELP_HI if all_six else Lagoon.BRASS_HI, UI.F_CAPTION)
 		done.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 		vbox.add_child(done)
 	else:
@@ -9314,66 +9619,100 @@ func _open_event_teaser() -> void:
 	_deal_next_timer_label = Lagoon.label(
 		_countdown_text(maxi(0, int(deal_next - _now()))), UI.F_SUBHEAD, Lagoon.KELP_HI, true)
 	plate2.add_child(_deal_next_timer_label)
-	var sub := _popup_row_label(
-		"The whole ladder, cleared — another six sail in with the next tide."
-		if deal_done else
-		"Six rewards on one ladder — the free ones cost nothing but showing up.", UI.F_CAPTION)
+	var sub_text := "Six rewards on one ladder — the free ones cost nothing but showing up."
+	if deal_done:
+		sub_text = "The whole ladder, cleared — another six sail in with the next tide."
+	elif deal_last_taken > 0:
+		sub_text = "That ladder is behind you — a fresh six sail in with the next tide."
+	var sub := _popup_row_label(sub_text, UI.F_CAPTION)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vbox.add_child(sub)
 
-# The cleared ladder, kept on the wall through the cooldown: six spent slabs
-# walked by the same chevron the full ladder uses, struck in the same stock.
-# Miniatures of the real thing rather than a fresh mark, so the player is
-# looking at what they cleared and not at a new abstraction — and one straight
+# The ladder as the player left it, kept on the wall through the cooldown: six
+# slabs walked by the same chevron the full ladder uses, struck in the same
+# stock. Miniatures of the real thing rather than a fresh mark, so the player
+# is looking at what they took and not at a new abstraction — and one straight
 # row, not the serpentine, because at this size the path has nothing left to
 # lead anywhere.
-func _teaser_done_strip(vbox: VBoxContainer) -> void:
+#
+# `taken` is how far they got. The slabs behind it are spent and ticked; the
+# ones in front are the stock a locked rung is struck on, at the alpha the
+# ladder itself uses for one, so the strip says how far this went rather than
+# only that it happened. The chevron turns with it: green up to the last rung
+# taken, dead after it.
+func _teaser_done_strip(vbox: VBoxContainer, taken: int) -> void:
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 5)
 	vbox.add_child(row)
 	for i in Deals.STEPS:
+		var got := i < taken
 		if i > 0:
 			var head := Glyph.new()
 			head.kind = "chevron"
-			head.tint = Lagoon.KELP_HI
+			head.tint = Lagoon.KELP_HI if got else Lagoon.INK_FAINT
 			head.custom_minimum_size = Vector2(20, 20)
 			head.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 			row.add_child(head)
-		var cube := _event_stock(row, "taken", false)
+		var cube := _event_stock(row, "taken" if got else "free", false)
 		cube.custom_minimum_size = Vector2(62, 58)
-		cube.modulate = Color(1, 1, 1, 0.85)
+		cube.modulate = Color(1, 1, 1, 0.85 if got else 0.45)
 		# The medallion in its own box — a PanelContainer re-fits anchored
 		# children to its whole rect, the same trap the full-size rung hit.
 		var slot := Control.new()
 		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		cube.add_child(slot)
-		var tick := Glyph.new()
-		tick.kind = "tick"
-		tick.modulate = Lagoon.KELP_HI
-		slot.add_child(tick)
-		tick.set_anchors_preset(Control.PRESET_CENTER)
-		tick.offset_left = -17.0
-		tick.offset_right = 17.0
-		tick.offset_top = -17.0
-		tick.offset_bottom = 17.0
+		var mark := Glyph.new()
+		mark.kind = "tick" if got else "lock"
+		mark.modulate = Lagoon.KELP_HI if got else Color(1, 1, 1, 0.62)
+		slot.add_child(mark)
+		mark.set_anchors_preset(Control.PRESET_CENTER)
+		mark.offset_left = -17.0
+		mark.offset_right = 17.0
+		mark.offset_top = -17.0
+		mark.offset_bottom = 17.0
 
-# The 1+2's door, wherever events are looked at. Nothing if no power-up is
-# live. This row is what the shop rows' retirement owed the power-up: without
-# it the once-per-offer takeover was the only sighting, and an offer dismissed
-# in the first two seconds of a launch was gone for twelve hours.
-func _powerup_door_row(vbox: VBoxContainer) -> void:
+# The 1+2's door, wherever events are looked at -- AND ITS CLOCK WHEN THERE IS
+# NO OFFER. This row is what the shop rows' retirement owed the power-up:
+# without it the once-per-offer takeover was the only sighting, and an offer
+# dismissed in the first two seconds of a launch was gone for twelve hours.
+#
+# IT USED TO DRAW NOTHING BETWEEN OFFERS, and that hole is the whole of Guy's
+# report on 2026-09-13: "I still don't see the trio deal -- it looks like only
+# a new player sees it once, at login." He was describing the arithmetic
+# exactly. The takeover fires once per offer at the start of a session; the
+# rail disc stands only while the offer does (_update_badges); this row bailed
+# out the moment the offer ended. Two screens away _update_badges even explains
+# the disc's absence by saying "the next-offer countdown already lives in the
+# spark's teaser" -- it did not, and had not since the row was written. So for
+# most of every cycle the game carried no trace anywhere of a feature it has,
+# and a player whose sessions fell in the dark saw it once, on the day they
+# installed, and never again.
+#
+# The row is permanent now: the offer when there is one, the clock to the next
+# when there is not. A countdown is a screen, an absence is not -- which is the
+# argument the spark disc's own teaser won a chain earlier. `with_clock` is
+# opt-in because the ladder foot wants the live offer only: a "coming soon"
+# card on a screen that is itself a running event is clutter selling nothing.
+func _powerup_door_row(vbox: VBoxContainer, with_clock := false) -> void:
 	var pu := _active_powerup()
-	if pu.is_empty():
+	var live := not pu.is_empty()
+	if not live and not with_clock:
 		return
-	var card := _tinted_card(vbox, Lagoon.BRASS, true)
+	var card := _tinted_card(vbox, Lagoon.BRASS if live else Lagoon.LAGOON_DEEP, live)
 	var btn := Button.new()
 	btn.flat = true
 	btn.focus_mode = Control.FOCUS_NONE
-	btn.custom_minimum_size = Vector2(0, 112)
-	btn.pressed.connect(_open_powerup)
-	FX.press_feedback(btn)
+	# 128, not 112. The row is an anchored HBox inside a FIXED-HEIGHT button --
+	# it cannot grow with its own text -- and at 112 the wrapped subtitle spilled
+	# out of the bottom of the card and over whatever the screen had put under
+	# it. Anything added to this row has to be measured against this number.
+	btn.custom_minimum_size = Vector2(0, 128)
+	btn.disabled = not live
+	if live:
+		btn.pressed.connect(_open_powerup)
+		FX.press_feedback(btn)
 	card.add_child(btn)
 	# The row lives INSIDE the flat button -- the same trick the old shop
 	# rows used: it is the only way to make the whole card pressable
@@ -9386,17 +9725,28 @@ func _powerup_door_row(vbox: VBoxContainer) -> void:
 	for m in [["offset_left", 16.0], ["offset_right", -16.0],
 			["offset_top", 12.0], ["offset_bottom", -12.0]]:
 		row.set(m[0], m[1])
-	var mark := _prize_art("gift", 70.0)
+	var mark := _prize_art("gift", 58.0)
 	mark.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(mark)
-	FX.pulse_forever(mark, 1.07, 1.5)
+	if live:
+		FX.pulse_forever(mark, 1.07, 1.5)
+	else:
+		# Dimmed rather than swapped for a placeholder: the player is looking at
+		# the thing they will get, with the lights off, which is the only way a
+		# waiting screen sells anything.
+		mark.modulate = Color(1, 1, 1, 0.62)
 	var col := VBoxContainer.new()
 	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	col.add_theme_constant_override("separation", 2)
 	row.add_child(col)
-	col.add_child(Lagoon.label(String(pu["name"]), UI.F_BODY, Lagoon.INK, true))
-	var sl := Lagoon.label("1 + 2  —  buy one pack, get two free", UI.F_CAPTION, Lagoon.INK_SOFT)
+	# F_LABEL rather than F_BODY, and the subtitle cut to four words. The
+	# countdown plate owns the right-hand end of this row, so the type has about
+	# 250 units to live in -- at F_BODY the title ran under the plate and the
+	# old subtitle wrapped to three lines.
+	col.add_child(Lagoon.label(
+		String(pu["name"]) if live else "POWER  UP  OFFER", UI.F_LABEL, Lagoon.INK, true))
+	var sl := Lagoon.label("1 + 2  —  one pack, two free", UI.F_CAPTION, Lagoon.INK_SOFT)
 	sl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(sl)
 	var right := VBoxContainer.new()
@@ -9404,11 +9754,21 @@ func _powerup_door_row(vbox: VBoxContainer) -> void:
 	right.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	right.add_theme_constant_override("separation", 6)
 	row.add_child(right)
-	var plate := Lagoon.stamp_plate(Lagoon.CORAL_HI)
+	var plate := Lagoon.stamp_plate(Lagoon.CORAL_HI if live else Lagoon.BRASS_HI)
 	plate.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	right.add_child(plate)
-	plate.add_child(Lagoon.label(_powerup_countdown_text(), UI.F_TINY, Lagoon.CORAL_HI, true))
-	var go := Lagoon.chip("OPEN", Lagoon.KELP, UI.F_TINY)
+	if live:
+		plate.add_child(Lagoon.label(_powerup_countdown_text(), UI.F_TINY, Lagoon.CORAL_HI, true))
+	else:
+		# Held on the once-a-second tick, and it swaps itself for the live row
+		# the moment the offer arms -- see the tick. Without that a player
+		# watching the clock run out would be left looking at 0:00:00.
+		_powerup_next_timer_label = Lagoon.label(
+			_countdown_text(maxi(0, int(powerup_next - _now()))), UI.F_TINY,
+			Lagoon.BRASS_HI, true)
+		plate.add_child(_powerup_next_timer_label)
+	var go := Lagoon.chip("OPEN" if live else "SOON", Lagoon.KELP if live else Lagoon.LAGOON,
+		UI.F_TINY)
 	go.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	right.add_child(go)
 
@@ -9423,6 +9783,7 @@ func _open_deal() -> void:
 		return
 	_deal_timer_label = null
 	_deal_next_timer_label = null
+	_powerup_next_timer_label = null
 	_deal_cell_nodes.clear()
 	_deal_arrow_nodes.clear()
 	_deal_bar = null
@@ -9509,6 +9870,13 @@ func _open_deal() -> void:
 		if _is_randomized(Deals.step_pack(chain["steps"][i])):
 			vbox.add_child(_odds_info_link())
 			break
+
+	# The 1+2's door at the ladder's foot as well as in the teaser. While a
+	# chain is running the spark disc opens THIS screen, so without it a live
+	# offer's only doors are its own rail disc and a takeover that has already
+	# been dismissed -- and the two events run on different clocks, so they
+	# overlap for hours at a time.
+	_powerup_door_row(vbox)
 
 	if beat >= 0:
 		_deal_anim_from = -1
@@ -11908,7 +12276,7 @@ func _quests_bonus_card(vb: VBoxContainer) -> void:
 	# marker parented to it disappears the moment the player passes it -- which
 	# is precisely when it matters most.
 	var lane := Control.new()
-	lane.custom_minimum_size = Vector2(0, 152)
+	lane.custom_minimum_size = Vector2(0, MILE_LANE_H)
 	col.add_child(lane)
 
 	var bar := Lagoon.progress(Color(info["color"]).lightened(0.10))
@@ -11917,16 +12285,37 @@ func _quests_bonus_card(vb: VBoxContainer) -> void:
 	bar.value = done
 	lane.add_child(bar)
 	bar.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	bar.offset_top = 62.0
-	bar.offset_bottom = 88.0
+	bar.offset_top = MILE_BAR_TOP
+	bar.offset_bottom = MILE_BAR_BOT
 
 	for i in MISSION_MILESTONES.size():
-		_milestone_pip(lane, period, i, total)
+		_milestone_pip(lane, period, i, total, done)
 
 	var note := _popup_row_label("Every mission you claim moves the track", UI.F_TINY)
 	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	note.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 	col.add_child(note)
+
+# HOW WIDE A RUNG HAS TO BE, MEASURED OFF THE FONT rather than assumed.
+#
+# A fixed 150 was the first pass and it was wrong in the one place it shows: a
+# PanelContainer whose contents do not fit grows PAST the rect its anchors gave
+# it, always to the right -- so the top rung, which is the one hung off the
+# card's right edge, was the one that hung over it. "26,000" and "+90" is six
+# glyphs and three, and no constant covers both that and "520  +3" without
+# being wrong for one of them.
+#
+# So the two figures are measured in the font they will be set in, and the box
+# is what they need. Clamped at both ends: a floor so four rungs read as one
+# row of objects rather than four different sizes, and a ceiling so two rungs
+# sharing a band on the seven-mission board cannot touch.
+func _mile_box_w(coin_txt: String, spin_txt: String) -> float:
+	var fnt := Lagoon.ui_bold_font()
+	var ink := fnt.get_string_size(coin_txt, HORIZONTAL_ALIGNMENT_LEFT, -1.0, UI.F_TINY).x \
+		+ fnt.get_string_size(spin_txt, HORIZONTAL_ALIGNMENT_LEFT, -1.0, UI.F_TINY).x
+	# two 26-unit faces, the three gaps between the four things, the card's own
+	# 6-a-side padding, and 4 for the rim.
+	return clampf(ink + 52.0 + 9.0 + 12.0 + 4.0, MILE_BOX_MIN, MILE_BOX_MAX)
 
 # One rung, standing on the bar at its own mark.
 #
@@ -11937,14 +12326,38 @@ func _quests_bonus_card(vb: VBoxContainer) -> void:
 # -- had half its width off the edge of the card. Fractional anchors put a thing
 # AT a point; they do not keep it on the page.
 #
-#   0 .. 56    rewards for the even rungs
-#  62 .. 88    the bar, and every rung's mission-count pin
-#  96 .. 152   rewards for the odd rungs
+#    0 .. 76    rewards for the even rungs, hung off the bar's top edge
+#   84 .. 110   the bar, and every rung's mission-count pin
+#  118 .. 194   rewards for the odd rungs
 #
 # Alternating above and below is not decoration either. Four rewards in a row on
 # a 620-unit card is 155 units each including the gaps, and the widest of them
 # reads "26,000 +90"; staggered, each one gets the width of two.
-func _milestone_pip(lane: Control, period: String, i: int, total: int) -> void:
+#
+# WHAT A RUNG PAYS IS TWO PICTURES AND TWO NUMBERS, NOT TWO NUMBERS.
+#
+# Guy, 2026-09-13, off the page itself: "there are only numbers in certain
+# places on the bar, no icons, no colours -- you cannot tell what you get at
+# all". He was right and it was worse than it looked: a rung read "1,430  +8",
+# which is two figures in two different currencies with no unit on either, set
+# in the ONE control in the game that is deliberately colourless -- a disabled
+# candy button. `Lagoon.set_enabled(btn, false)` drains a button to grey stock
+# on purpose, because a control you cannot press must not look pressable; four
+# of them in a row is four grey pills on cream, which is the page's whole
+# reward ladder drawn in the game's "ignore me" material.
+#
+# So a rung is a CARD now, not a dead button, and it carries the coin and the
+# spin token at the same size the rest of the game pays in. The state is in the
+# stock and in the strip under the reward, never in the reward itself:
+#
+#   still out of reach  deep-water card, reward only -- "what it pays", not
+#                       "LOCKED", exactly as before: a rung out of reach is the
+#                       reason to claim the next mission.
+#   claimable           brass card, lit rim, a KELP CLAIM chip, and the whole
+#                       card is the button -- 150 x 76 of hit area, well over
+#                       the tap minimum a 32-unit chip could never carry.
+#   taken               kelp card at 62% with the game's tick-and-word stamp.
+func _milestone_pip(lane: Control, period: String, i: int, total: int, done: int) -> void:
 	var at := _milestone_at(period, i)
 	var reward := _milestone_reward(period, i)
 	var claimed := _milestone_claimed(period, i)
@@ -11952,6 +12365,15 @@ func _milestone_pip(lane: Control, period: String, i: int, total: int) -> void:
 	var top := i % 2 == 0
 	var last := i >= MISSION_MILESTONES.size() - 1
 	var f := float(at) / float(maxi(1, total))
+	# A rung with something to say about itself is taller than one that only
+	# has a price on it, and it is hung off the bar's edge rather than off the
+	# band's -- so the short ones and the tall ones share the line the bar is
+	# on instead of floating at different distances from it.
+	var tall := ready or claimed
+	var h := 76.0 if tall else 46.0
+	var coin_txt := _fmt_compact(_scaled(int(reward["coins"])))
+	var spin_txt := "+%d" % int(reward["spins"])
+	var bw := _mile_box_w(coin_txt, spin_txt)
 
 	# The reward.
 	var box := Control.new()
@@ -11961,52 +12383,85 @@ func _milestone_pip(lane: Control, period: String, i: int, total: int) -> void:
 	box.anchor_left = f
 	box.anchor_right = f
 	# A rung at either end is hung off that end rather than centred on it, which
-	# is the only way a box 132 wide sits inside a card whose edge it is on.
+	# is the only way a box this wide sits inside a card whose edge it is on.
 	if f > 0.97:
-		box.offset_left = -132.0
+		box.offset_left = -bw
 		box.offset_right = 0.0
 	elif f < 0.03:
 		box.offset_left = 0.0
-		box.offset_right = 132.0
+		box.offset_right = bw
 	else:
-		box.offset_left = -66.0
-		box.offset_right = 66.0
-	box.offset_top = 0.0 if top else 96.0
-	box.offset_bottom = 56.0 if top else 152.0
+		box.offset_left = -bw * 0.5
+		box.offset_right = bw * 0.5
+	box.offset_top = MILE_TOP_EDGE - h if top else MILE_BOT_EDGE
+	box.offset_bottom = MILE_TOP_EDGE if top else MILE_BOT_EDGE + h
 
-	var btn := Button.new()
-	btn.focus_mode = Control.FOCUS_NONE
-	btn.add_theme_font_size_override("font_size", UI.F_TINY)
+	var tint := Lagoon.KELP if claimed else (Lagoon.BRASS if ready or last else Lagoon.LAGOON)
+	var card := _tinted_card(box, tint, ready)
+	card.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	if claimed:
-		btn.text = "\u2713  TAKEN"
-		_candy_button(btn, Lagoon.KELP)
-		btn.modulate = Color(1, 1, 1, 0.50)
-		btn.disabled = true
-	elif ready:
-		btn.text = "CLAIM"
-		_candy_button(btn, Color(0.95, 0.65, 0.15) if last else Lagoon.KELP)
-		FX.press_feedback(btn)
-		FX.pulse_forever(btn, 1.07, 0.75)
-		btn.pressed.connect(_claim_milestone.bind(period, i))
-	else:
-		# WHAT IT PAYS, NOT "LOCKED". A rung out of reach is the reason to claim
-		# the next mission, so it spends its whole width on the reward and says
-		# nothing about being unavailable -- the bar under it already does.
-		btn.text = "%s   +%d" % [_fmt_compact(_scaled(int(reward["coins"]))),
-			int(reward["spins"])]
-		_candy_button(btn, Lagoon.BRASS if last else Lagoon.LAGOON_DEEP)
-		Lagoon.set_enabled(btn, false)
-		btn.disabled = true
-	box.add_child(btn)
-	btn.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	btn.offset_left = 4.0
-	btn.offset_right = -4.0
+		card.modulate = Color(1, 1, 1, 0.72)
+
+	# A claimable rung IS its button. The chip inside says which word; the card
+	# around it is what the finger lands on.
+	if ready:
+		var hit := Button.new()
+		hit.flat = true
+		hit.focus_mode = Control.FOCUS_NONE
+		card.add_child(hit)
+		FX.press_feedback(hit)
+		hit.pressed.connect(_claim_milestone.bind(period, i))
+		FX.pulse_forever(card, 1.05, 0.8)
+
+	var pad := MarginContainer.new()
+	pad.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	for mg in ["margin_left", "margin_right"]:
+		pad.add_theme_constant_override(mg, 6)
+	for mg in ["margin_top", "margin_bottom"]:
+		pad.add_theme_constant_override(mg, 5)
+	card.add_child(pad)
+	var stack := VBoxContainer.new()
+	stack.alignment = BoxContainer.ALIGNMENT_CENTER
+	stack.add_theme_constant_override("separation", 3)
+	stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pad.add_child(stack)
+
+	# THE TWO CURRENCIES, EACH BEHIND ITS OWN FACE. `coin` and `bolt` are the
+	# rendered props every other prize row in the game pays in, so a rung reads
+	# as the same money the shop and the chests hand over -- see _prize_art.
+	var face := HBoxContainer.new()
+	face.alignment = BoxContainer.ALIGNMENT_CENTER
+	face.add_theme_constant_override("separation", 3)
+	face.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stack.add_child(face)
+	for pair in [["coin", coin_txt], ["bolt", spin_txt]]:
+		face.add_child(_prize_art(String(pair[0]), 26.0))
+		var amt := Lagoon.label(String(pair[1]), UI.F_TINY, Lagoon.INK, true)
+		amt.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		face.add_child(amt)
+
+	if tall:
+		var strip := HBoxContainer.new()
+		strip.alignment = BoxContainer.ALIGNMENT_CENTER
+		strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		stack.add_child(strip)
+		strip.add_child(Lagoon.chip("CLAIM", Lagoon.KELP, UI.F_TINY) if ready
+			else Lagoon.stamp("\u2713  TAKEN", Lagoon.KELP_HI))
 
 	# The mark on the bar: how many missions this rung stands at. Its own child
 	# of the lane rather than of the box above, so the two can never be asked to
 	# share a rect -- which is exactly how they came to be drawn on top of each
 	# other.
-	var pin := Lagoon.stamp_plate(Lagoon.BRASS_HI if last else Lagoon.SAND)
+	#
+	# AND IT CARRIES THE TICK, because "2" alone is a number on a bar and
+	# nothing on the page said what it counted. The tick is the game's mark for
+	# a claimed mission and it is stamped on the pin that stands for two of
+	# them, so the pin reads as "two claimed" without a word of caption. A pin
+	# the track has already passed goes kelp, which is the same green the ticks
+	# on the missions under it wear.
+	var reached := done >= at
+	var pin_ink := Lagoon.KELP_HI if reached else (Lagoon.BRASS_HI if last else Lagoon.SAND)
+	var pin := Lagoon.stamp_plate(pin_ink)
 	pin.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	lane.add_child(pin)
 	pin.set_anchors_preset(Control.PRESET_TOP_LEFT)
@@ -12016,18 +12471,17 @@ func _milestone_pip(lane: Control, period: String, i: int, total: int) -> void:
 	# always at fraction 1.0 -- it is the whole board -- so a pin centred there
 	# has half its width outside the card, where the rounded corner clips it.
 	if f > 0.97:
-		pin.offset_left = -44.0
+		pin.offset_left = -MILE_PIN_W
 		pin.offset_right = 0.0
 	elif f < 0.03:
 		pin.offset_left = 0.0
-		pin.offset_right = 44.0
+		pin.offset_right = MILE_PIN_W
 	else:
-		pin.offset_left = -22.0
-		pin.offset_right = 22.0
-	pin.offset_top = 58.0
-	pin.offset_bottom = 92.0
-	var pl := Lagoon.label(str(at), UI.F_TINY,
-		Lagoon.BRASS_HI if last else Lagoon.SAND, true)
+		pin.offset_left = -MILE_PIN_W * 0.5
+		pin.offset_right = MILE_PIN_W * 0.5
+	pin.offset_top = MILE_BAR_TOP - 4.0
+	pin.offset_bottom = MILE_BAR_BOT + 4.0
+	var pl := Lagoon.label("\u2713 %d" % at, UI.F_TINY, pin_ink, true)
 	pl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	pl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	pin.add_child(pl)
@@ -12946,6 +13400,10 @@ var _clan_fake := false
 # previous over-wide row got to ship.
 var _clan_fake_invites: Array = []
 var _clan_fake_requests: Array = []
+# And what the league table answers with. Same reason: with no server behind
+# the harness the board is the third thing on this page that can never be
+# rendered by a screenshot or measured by qa_layout.
+var _clan_fake_list: Array = []
 
 # True when this action needs a server that is not there. The pair of questions
 # has to be asked in this order and both have to be asked: `linked()` is about
@@ -13952,11 +14410,12 @@ func _collection_tile(c: Dictionary) -> Control:
 		rivet.offset_top = corner[3] - 5.5
 		rivet.offset_bottom = corner[3] + 5.5
 
-	# One badge in the corner, and only when the tile has news: a reward waiting
-	# to be taken, or a set already banked.
-	if ready or claimed:
-		var flag := Lagoon.chip("CLAIM!" if ready else "\u2713",
-			Lagoon.CORAL if ready else Lagoon.KELP, UI.F_TINY)
+	# One badge in the corner, and only for a set already banked. A READY set
+	# used to put a "CLAIM!" chip here as well; it now carries the whole claim
+	# on its face (see _collection_ready_face), and a chip repeating it in the
+	# corner is the same news twice on one tile.
+	if claimed:
+		var flag := Lagoon.chip("\u2713", Lagoon.KELP, UI.F_TINY)
 		flag.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		tile.add_child(flag)
 		# Cornered and grown, not sized by hand -- a guessed width is going to
@@ -13973,7 +14432,126 @@ func _collection_tile(c: Dictionary) -> Control:
 		flag.grow_vertical = Control.GROW_DIRECTION_END
 	if ready:
 		FX.pulse_forever(tile, 1.03, 1.0)
+		_collection_ready_face(tile, c)
 	return tile
+
+# WHAT A FINISHED SET LOOKS LIKE ON THE SHELF.
+#
+# Guy, 2026-09-13: "change the way the player sees he has finished a set —
+# right now it is not prominent, it is not attractive and it is very pale. I
+# want the finished set's cube to look like it is GLOWING, with a button in the
+# middle, and the prize he gets above the button. Pressing it shows the reward
+# screen we made."
+#
+# He is describing a hole rather than a shade of paint. Finishing a set is the
+# biggest thing that happens on this page — it can be a month of collecting —
+# and the only marks it left were a coral rim, a 1.03 pulse and a "CLAIM!" chip
+# the size of a difficulty ribbon. Worse, the reward was TWO TAPS AWAY behind a
+# tile that looks like every other tile: you had to guess that opening the set
+# was how you got paid. A prize that has to be hunted for is a prize the player
+# does not know they have.
+#
+# So a ready cover stops being a cover and becomes the prize: a pool of light
+# under the art, a scrim to put the glow behind something, what it pays, and
+# the button. THE BUTTON CLAIMS ON THE SPOT — _claim_collection is the same
+# call the detail page makes, so it pays the spins, takes the screen with the
+# payout takeover, and rebuilds this page with the tile settled into its
+# claimed state. The rest of the tile still opens the set: a player who wants
+# to look at the cards they finished with can still get to them.
+func _collection_ready_face(tile: Button, c: Dictionary) -> void:
+	# The scrim first, because the glow has to go ON TOP of it. A pool of light
+	# under a 46%-black veil is a pool of light nobody can see -- the first cut
+	# of this put the glow at the back of the tile and the shelf came back
+	# looking like two dark tiles with buttons on them.
+	#
+	# Inset and rounded to the frame's own radius: a square ColorRect over a
+	# 26px corner is the one thing that would make this read as a bug rather
+	# than as a state.
+	var scrim := Panel.new()
+	var ssb := StyleBoxFlat.new()
+	ssb.bg_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.34)
+	ssb.set_corner_radius_all(20)
+	scrim.add_theme_stylebox_override("panel", ssb)
+	scrim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tile.add_child(scrim)
+	scrim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for m in [["offset_left", 7.0], ["offset_top", 7.0],
+			["offset_right", -7.0], ["offset_bottom", -7.0]]:
+		scrim.set(m[0], m[1])
+
+	# The light. ADD-BLENDED, which is the whole difference between a cover that
+	# is glowing and a cover with a yellow sheet over it: added light cannot
+	# make anything underneath it darker or muddier, it can only raise it. A
+	# slow pool with a wide fan of rays turning through it, both breathing on
+	# the same beat -- the same vocabulary the event rungs are struck in, so a
+	# ready set reads as lit by the game rather than by a new effect.
+	var glow := ColorRect.new()
+	var sh := Lagoon.shader("""
+shader_type canvas_item;
+render_mode blend_add;
+
+uniform vec4 warm : source_color = vec4(1.0, 0.86, 0.45, 1.0);
+
+void fragment() {
+	vec2 d = UV - vec2(0.5, 0.47);
+	float dist = length(d * vec2(1.0, 1.22));
+	float breath = 0.80 + 0.20 * sin(TIME * 1.9);
+
+	// The pool.
+	vec3 col = warm.rgb * smoothstep(0.62, 0.0, dist) * 0.50 * breath;
+
+	// And the rays out of it. Wide and soft: a hard starburst on a tile this
+	// size reads as a scratch rather than as light.
+	float ang = atan(d.y, d.x);
+	float fan = abs(sin(ang * 6.0 + TIME * 0.35));
+	col += warm.rgb * smoothstep(0.55, 1.0, fan)
+		* smoothstep(0.66, 0.03, dist) * 0.30 * breath;
+
+	COLOR = vec4(col, 1.0);
+}
+""")
+	var mat := ShaderMaterial.new()
+	mat.shader = sh
+	glow.material = mat
+	glow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tile.add_child(glow)
+	glow.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for m in [["offset_left", 7.0], ["offset_top", 7.0],
+			["offset_right", -7.0], ["offset_bottom", -7.0]]:
+		glow.set(m[0], m[1])
+
+	# Centred over the whole tile, and transparent to taps everywhere except on
+	# the button itself.
+	var centre := CenterContainer.new()
+	centre.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	tile.add_child(centre)
+	centre.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	centre.offset_bottom = -66.0
+	var col := VBoxContainer.new()
+	col.alignment = BoxContainer.ALIGNMENT_CENTER
+	col.add_theme_constant_override("separation", 10)
+	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	centre.add_child(col)
+
+	var head := Lagoon.stamp("SET  COMPLETE", Lagoon.CORAL_HI, UI.F_TINY)
+	head.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	head.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(head)
+
+	# What it pays, stated above the button it is paid by. A reward chip rather
+	# than a line of type: the bolt is the spin currency everywhere else in the
+	# game and this is no place to introduce a second way of saying it.
+	var prize := _reward_chip("bolt", "+%s  SPINS" % _fmt(int(c["reward_spins"])), Color.WHITE)
+	prize.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(prize)
+
+	var claim := Button.new()
+	claim.text = "CLAIM"
+	claim.custom_minimum_size = Vector2(184, UI.TAP_COMFY)
+	_candy_button(claim, Color(0.45, 0.75, 0.35))
+	FX.press_feedback(claim)
+	claim.pressed.connect(_claim_collection.bind(c))
+	col.add_child(claim)
 
 # =============================================================================
 #  One set
@@ -14369,20 +14947,27 @@ func _claim_collection(c: Dictionary) -> void:
 	col_claimed[id] = true
 	var won := int(c["reward_spins"])
 	spins += won
-	# A finished set is worth stars as well as spins: the spins send you back to
-	# the reels, the stars are what the month of collecting leaves behind. Five
-	# a card, so a long Hard set is worth more than two short Easy ones.
-	var star_bonus := 5 * (c["items"] as Array).size()
+	# THIS USED TO PAY STARS TOO -- five a card, so a Hard set was worth 60 of
+	# them on top of the spins -- and it does not any more. Guy, 2026-09-13:
+	# "you should only get stars when you get the cards or when you build
+	# islands; I think those are the only two ways in the game."
+	#
+	# He is right, and the double-pay was the bug he half-caught. Every card in
+	# this set ALREADY paid its own stars the moment it was first owned
+	# (_grant_chest_card, the gift path, the reel drop) -- that is what a card
+	# is worth. Paying again for the set is paying twice for the same cards,
+	# and because stars are `rank_stars` it was paying twice into the world
+	# rank as well: a lucky box that completed a set moved the player up the
+	# board for cards the board had already counted. The set pays spins, which
+	# is what sends you back to the reels; the stars were the cards' and have
+	# been paid.
 	Sfx.play("jackpot", -2.0)
 	FX.confetti(self, 40)
 	FX.flash(self)
-	_award_stars(star_bonus, Vector2(360, 620))
 	# A MONTH OF COLLECTING ENDED IN A BANNER. The set's payout used to be a
 	# strip at the top of the screen and a handful of bolts flying to the
 	# meter -- the same treatment a refilled spin gets. It takes the screen
-	# now, like every other claim does; the stars keep their own flight
-	# above, because those are what the set leaves behind rather than what
-	# it pays.
+	# now, like every other claim does.
 	_show_currency_payout("%s Complete!" % str(c["name"]), 0, won)
 	_update_badges()
 	_refresh()
@@ -14397,13 +14982,15 @@ func _claim_mega() -> void:
 			return
 	col_mega_claimed = true
 	spins += CV.COLLECTION_MEGA_SPINS
-	_award_stars(250, Vector2(360, 600))
+	# No stars here either, and for the same reason as the set claim above: all
+	# fifteen sets is every card in the season, and every one of those cards
+	# has already paid its own. See _claim_collection.
 	Sfx.play("levelup", -2.0)
 	FX.confetti(self, 80)
 	FX.flash(self)
 	FX.fly_coins(self, Vector2(360, 620), _spin_counter_at(),
 		18, "bolt", "⚡")
-	_banner("GRAND PRIZE!  +%s spins  and  +250 \u2605" % _fmt(CV.COLLECTION_MEGA_SPINS), Color(0.6, 0.9, 1.0), "🏆")
+	_banner("GRAND PRIZE!  +%s spins" % _fmt(CV.COLLECTION_MEGA_SPINS), Color(0.6, 0.9, 1.0), "🏆")
 	_update_badges()
 	_refresh()
 	_save_game()
@@ -20812,6 +21399,7 @@ func _save_dict() -> Dictionary:
 		"deal_taken": deal_taken,
 		"deal_finale": deal_finale,
 		"deal_done": deal_done,
+		"deal_last_taken": deal_last_taken,
 		"chest_fill": chest_fill,
 		"chest_round": chest_round,
 		"beach_gift_next": beach_gift_next,
@@ -21161,6 +21749,11 @@ func _load_game() -> void:
 	deal_taken = _i(data.get("deal_taken", 0))
 	deal_finale = bool(data.get("deal_finale", false))
 	deal_done = bool(data.get("deal_done", false))
+	# A save written before this key existed still knows whether the last chain
+	# was cleared, so the old flag seeds the new counter rather than showing a
+	# cleared ladder as an empty one.
+	deal_last_taken = clampi(_i(data.get("deal_last_taken",
+		Deals.STEPS if deal_done else 0)), 0, Deals.STEPS)
 	# Clamped into the meter's own range: a hand-edited overshoot would pay a
 	# chest on every spin for as long as the excess lasted. The rotation
 	# counters wrap for the same reason -- posmod, not clamp, because every

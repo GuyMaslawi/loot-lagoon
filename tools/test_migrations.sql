@@ -1196,3 +1196,121 @@ begin
     raise notice 'IAP RECEIPT TESTS PASSED';
 end;
 $$;
+
+-- =============================================================================
+--  Clan stars, the league table, and the seeded crews
+-- =============================================================================
+--
+-- The claim being tested is the one the clan page is built on: a clan's score
+-- is the sum of its members' stars, it is computed when it is asked for rather
+-- than stored, and the browse list and a clan's own page can never disagree
+-- about where it stands. Plus the seed itself, which has to be re-runnable
+-- without doubling the world.
+do $$
+declare
+    rows_    jsonb;
+    row_     jsonb;
+    top_     jsonb;
+    view_    jsonb;
+    clan_    uuid;
+    victim   uuid;
+    n        integer;
+    before_  bigint;
+    after_   bigint;
+begin
+    perform pg_temp.ck('the migration left seeded clans behind it',
+        (select count(*) from public.clans where seeded) = 9,
+        (select count(*)::text from public.clans where seeded));
+    perform pg_temp.ck('every seeded clan has members and the denormalised count agrees',
+        not exists (select 1 from public.clans c where c.seeded
+                     and c.members <> (select count(*) from public.clan_members m
+                                        where m.clan_id = c.id)));
+    -- A bot owner can never answer a join request, so a closed seeded clan
+    -- would be a door that opens for nobody. See the migration.
+    perform pg_temp.ck('every seeded clan leaves its door open',
+        not exists (select 1 from public.clans where seeded and not open));
+    perform pg_temp.ck('and every one of them has room for a real player',
+        not exists (select 1 from public.clans
+                     where seeded and members >= public.clan_max_members()));
+    perform pg_temp.ck('nobody was put in two clans',
+        (select count(*) from public.clan_members) =
+        (select count(distinct player_id) from public.clan_members));
+
+    rows_ := public.clan_list(50);
+    perform pg_temp.ck('clan_list answers every seeded clan',
+        jsonb_array_length(rows_) >= 9, rows_::text);
+
+    -- --- the ranking ---------------------------------------------------------
+    top_ := rows_->0;
+    perform pg_temp.ck('the list comes back in rank order, strongest first',
+        (top_->>'rank')::int = 1
+        and (top_->>'stars')::bigint >= (rows_->1->>'stars')::bigint,
+        rows_::text);
+    perform pg_temp.ck('the ranks are 1..n with no gaps and no repeats',
+        (select count(*) = jsonb_array_length(rows_)
+                and min((e->>'rank')::int) = 1
+                and max((e->>'rank')::int) = jsonb_array_length(rows_)
+                and count(distinct (e->>'rank')::int) = jsonb_array_length(rows_)
+           from jsonb_array_elements(rows_) e), rows_::text);
+    -- The bands are contiguous islands, so the strongest clan must be the one
+    -- drawn from the last four. If that stops being true the seed's ladder has
+    -- collapsed and the league table has nothing in it worth reading.
+    perform pg_temp.ck('the deep-island crew tops the table',
+        top_->>'name' = 'Deepwater Kings', rows_::text);
+
+    -- --- the total is really the members' stars ------------------------------
+    clan_ := (top_->>'id')::uuid;
+    perform pg_temp.ck('a clan''s stars are its members'' stars added up',
+        (top_->>'stars')::bigint = (select sum(p.rank_stars)
+                                      from public.clan_members m
+                                      join public.players p on p.id = m.player_id
+                                     where m.clan_id = clan_), top_::text);
+
+    view_ := public.clan_view(clan_);
+    perform pg_temp.ck('clan_view reports the same total as the list',
+        (view_->>'stars')::bigint = (top_->>'stars')::bigint, view_::text);
+    perform pg_temp.ck('and the same rank -- the two readers share one ordering',
+        (view_->>'rank')::int = (top_->>'rank')::int, view_::text);
+
+    -- --- live, not cached ----------------------------------------------------
+    before_ := (view_->>'stars')::bigint;
+    select m.player_id into victim from public.clan_members m where m.clan_id = clan_ limit 1;
+    update public.players set rank_stars = rank_stars + 500 where id = victim;
+    after_ := (public.clan_view(clan_)->>'stars')::bigint;
+    perform pg_temp.ck('a member building something moves their clan''s total at once',
+        after_ = before_ + 500, format('%s -> %s', before_, after_));
+
+    -- A soft-deleted island is gone from public_player, so its stars must be
+    -- gone from the total too -- otherwise a clan keeps scoring for a player
+    -- who left the game. Same hole the departures migration closed for seats.
+    update public.players set deleted_at = now() where id = victim;
+    perform pg_temp.ck('a deleted member stops counting toward the total',
+        (public.clan_view(clan_)->>'stars')::bigint
+            = after_ - (select rank_stars from public.players where id = victim));
+    update public.players set deleted_at = null, rank_stars = rank_stars - 500 where id = victim;
+
+    -- --- re-running the seed -------------------------------------------------
+    select count(*) into n from public.clans;
+    perform public.seed_clans();
+    perform pg_temp.ck('seeding twice refreshes the world rather than doubling it',
+        (select count(*) from public.clans) = n,
+        format('%s -> %s', n, (select count(*) from public.clans)));
+
+    -- The flag is what makes that safe: a player's own clan must survive a
+    -- re-seed even if it is named like one of ours.
+    insert into public.clans (name, emoji, owner, members)
+        values ('First Wave II', '🏴',
+                (select id from public.players where is_bot limit 1), 0);
+    perform public.seed_clans();
+    perform pg_temp.ck('a real clan is out of the seed''s reach',
+        exists (select 1 from public.clans where name = 'First Wave II'));
+    delete from public.clans where name = 'First Wave II';
+
+    perform pg_temp.ck('clan_standings is not callable by a signed-in player',
+        not has_function_privilege('authenticated', 'public.clan_standings()', 'execute'));
+    perform pg_temp.ck('and neither is the seeder',
+        not has_function_privilege('authenticated', 'public.seed_clans()', 'execute'));
+
+    raise notice 'CLAN STAR TESTS PASSED';
+end;
+$$;

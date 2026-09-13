@@ -860,8 +860,9 @@ func _t_collections() -> void:
 
 	# Fill every set by hand, counting what the rules say it is worth.
 	# The cards are placed straight into col_owned rather than drawn, so they
-	# never went through _earn_stars -- only the CLAIM bonuses below should
-	# show up in the rank.
+	# never went through _earn_stars -- and claiming a set pays no stars of its
+	# own, so the rank has to still read zero at the end of all of this. That
+	# zero is the assertion, not an accident of the setup.
 	var expect_rank := 0
 	var expect_spins := 0
 	for c in CV.COLLECTIONS:
@@ -874,12 +875,20 @@ func _t_collections() -> void:
 			all_complete = false
 	_chk("every set reads as complete once filled", all_complete)
 
-	# Claims. Each set pays its spins plus five stars a card.
+	# Claims. Each set pays its SPINS AND NOTHING ELSE. It used to pay five
+	# stars a card on top, and that was paying twice for the same cards: every
+	# card in the set already banked its own stars the first time it was owned,
+	# into the wallet and into the rank. Guy, 2026-09-13: stars come from cards
+	# and from buildings, and from nowhere else. `expect_rank` is deliberately
+	# not moved here -- the check below is that it did not move.
+	var rank_before_claims: int = m.rank_stars
 	for c in CV.COLLECTIONS:
 		expect_spins += int(c["reward_spins"])
-		expect_rank += 5 * (c["items"] as Array).size()
 		m._claim_collection(c)
 		await get_tree().process_frame
+	_chk("claiming a set pays no stars — the cards already did",
+		m.rank_stars == rank_before_claims,
+		"%d -> %d" % [rank_before_claims, m.rank_stars])
 	_chk("claiming every set paid the advertised spins", m.spins == expect_spins,
 		"%d vs %d" % [m.spins, expect_spins])
 	var spins_after: int = m.spins
@@ -888,16 +897,43 @@ func _t_collections() -> void:
 	_chk("a set cannot be claimed twice", m.spins == spins_after,
 		"+%d" % (m.spins - spins_after))
 
+	# THE CLAIM IS ON THE SHELF, not two taps inside the set. Guy, 2026-09-13:
+	# a finished cover has to carry its own button, and pressing it has to pay
+	# there and then. The check is deliberately end-to-end -- the page is built
+	# and the button is found and pressed the way a thumb finds it -- because
+	# the failure this guards against is not arithmetic, it is a button that is
+	# drawn but unreachable: it lives inside the tile's own Button, and a
+	# container that swallows the press would leave a claim nothing can claim.
+	var shelf_set: Dictionary = CV.COLLECTIONS[0]
+	m.col_claimed[shelf_set["id"]] = false
+	m.col_open = ""
+	m._fill_page("collections")
+	await get_tree().process_frame
+	var shelf_claim := _find_button(m.pages["collections"], "CLAIM")
+	_chk("a finished set carries a CLAIM button on the shelf itself",
+		shelf_claim != null)
+	if shelf_claim != null:
+		var before_shelf: int = m.spins
+		shelf_claim.emit_signal("pressed")
+		await get_tree().process_frame
+		_chk("pressing it pays the set's spins",
+			m.spins == before_shelf + int(shelf_set["reward_spins"]),
+			"%d -> %d" % [before_shelf, m.spins])
+		_chk("and marks the set claimed",
+			bool(m.col_claimed.get(shelf_set["id"], false)))
+		# That set was un-claimed to test the button, so it has now paid twice.
+		# The grand-prize arithmetic below counts from the same running total.
+		expect_spins += int(shelf_set["reward_spins"])
+
 	# The grand prize, which needs all of them.
 	m._claim_mega()
 	await get_tree().process_frame
 	expect_spins += CV.COLLECTION_MEGA_SPINS
-	expect_rank += 250
 	_chk("the grand prize pays once every set is claimed",
 		m.spins == expect_spins, "%d vs %d" % [m.spins, expect_spins])
 	m._claim_mega()
 	_chk("and cannot be claimed twice", m.spins == expect_spins)
-	_chk("the rank banked every set bonus and the grand prize",
+	_chk("the rank is what the cards and the buildings paid, and only that",
 		m.rank_stars == expect_rank, "%d vs %d" % [m.rank_stars, expect_rank])
 
 	# Melting. Pays the wallet, never the rank.

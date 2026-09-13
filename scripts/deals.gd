@@ -213,9 +213,20 @@ static func verify() -> Array:
 # everything the pack already pays. A "1+2" whose two free columns were carved
 # out of the pack's own contents would be a lie the player could work out with
 # arithmetic, and the one thing a store cannot survive is being caught at that.
+#
+# HOW OFTEN IT COMES ROUND. Twelve hours live is the offer itself; the dark
+# window is how often a player meets one at all, and forty hours was too long
+# by a wide margin. Twelve in fifty-two is under a quarter of the time, and the
+# takeover only fires at the start of a session -- so a player who opens the
+# game twice a day could honestly go a week without the feature existing for
+# them, which is what Guy reported on 2026-09-13 ("I still don't see the trio
+# deal"). At twenty the offer is live better than a third of the time and every
+# player meets one most days, which is the least this can be and still be a
+# thing the game HAS. It is still a minority of the clock, which is the part
+# that matters: an offer that is always on is a price list.
 const POWERUP_HOURS := 12.0
 const POWERUP_DURATION := POWERUP_HOURS * 3600.0
-const POWERUP_COOLDOWN := 40.0 * 3600.0
+const POWERUP_COOLDOWN := 20.0 * 3600.0
 
 # Coins are island-1 units, like everywhere else.
 const POWERUPS := [

@@ -242,14 +242,25 @@ func _deal(game: Control, spec: String) -> void:
 	# started on that alone opens over a loading bar rather than over the ladder.
 	await get_tree().create_timer(3.0).timeout
 	var parts := spec.split(":")
-	# DEAL=done seeds the cooldown after a CLEARED chain — the teaser with the
-	# six spent miniatures over the countdown, not the ladder.
+	# DEAL=done[:<n>] seeds the cooldown after a chain that went out with n
+	# rungs down — the teaser with the spent miniatures over the countdown, not
+	# the ladder. Bare `done` is the cleared ladder; DEAL=done:4 is the far more
+	# common case, a player who took every free rung and bought nothing.
 	if parts[0] == "done":
+		var last := Deals.STEPS if parts.size() < 2 else clampi(int(parts[1]), 0, Deals.STEPS)
 		game.set("deal_id", "")
 		game.set("deal_until", 0.0)
 		game.set("deal_taken", 0)
-		game.set("deal_done", true)
+		game.set("deal_done", last >= Deals.STEPS)
+		game.set("deal_last_taken", last)
 		game.set("deal_next", game.call("_now") + 7.0 * 3600.0 + 1234.0)
+		# POWERUP_NEXT=<hours> puts the 1+2's own clock on this screen too; the
+		# teaser carries its door row whether or not an offer is live.
+		if OS.has_environment("POWERUP_NEXT"):
+			game.set("powerup_id", "")
+			game.set("powerup_until", 0.0)
+			game.set("powerup_next",
+				game.call("_now") + float(OS.get_environment("POWERUP_NEXT")) * 3600.0)
 		game.call("_open_deal")
 	else:
 		# CHAIN=<id> picks which of the four runs; they differ in hue and in where

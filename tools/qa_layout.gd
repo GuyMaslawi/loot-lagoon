@@ -56,7 +56,19 @@ func _ready() -> void:
 			"emoji": "🧑", "island_level": 30 - i})
 	roster[0]["id"] = "me-0000"
 	m.my_clan = {"id": "c1", "name": "The Kraken's Own", "emoji": "🐙",
-		"owner": "me-0000", "members": roster}
+		"owner": "me-0000", "members": roster, "stars": 148320, "rank": 12}
+	# THE LEAGUE TABLE, AT ITS WIDEST. A row is a rank plate, a crest, a name,
+	# a score and a chip on one line, which makes it the narrowest column on
+	# the page and therefore the first thing to push the card over -- so it is
+	# measured with the longest clan name create_clan will accept (20), a
+	# six-figure total, and the YOURS chip that only the player's own row
+	# carries. Without this the board is never drawn here at all: the real
+	# Cloud.clan_list answers nothing in a harness.
+	m._clan_fake_list = [
+		{"id": "c9", "name": "Twenty Characters Ok", "emoji": "🦈",
+			"members": 30, "open": true, "full": true, "stars": 998877, "rank": 1},
+		{"id": "c1", "name": "The Kraken's Own", "emoji": "🐙",
+			"members": 8, "open": false, "full": false, "stars": 148320, "rank": 12}]
 	m.gift_budget = {"sent": 4, "give_cap": 5, "got": 2, "receive_cap": 3}
 	# The give-card list is as long as the player has spares, so every set gets
 	# one -- and a gold one too, which must NOT appear in the dialog.
@@ -83,6 +95,41 @@ func _ready() -> void:
 		await get_tree().process_frame
 		_check_page(key)
 		page.visible = was
+	# THE REWARD TRACK, ON ALL THREE BOARDS AND WITH ITS RUNGS AWAKE.
+	#
+	# The track hangs four boxes off fractional anchors along one bar, and the
+	# width of each is measured off the figures printed in it -- so the page
+	# above measures exactly one of the twelve arrangements it has, the cheapest
+	# one: the daily board, nothing claimed, the smallest numbers the game
+	# mints. The monthly board at a high island is where the figures are widest,
+	# and a claimed rung is where a box is tallest.
+	#
+	# The rung at fraction 1.0 is the one that matters. It is hung off the right
+	# edge of its card by design, which makes it the one control on this page
+	# that is guaranteed to spill the moment its contents outgrow it.
+	m.island_level = 30
+	for board in ["daily", "weekly", "monthly"]:
+		m.quests_tab = board
+		m._ensure_missions()
+		var defs: Array = m.MISSION_DEFS[board]
+		var st: Dictionary = m.mission_state[board]
+		for i in defs.size():
+			var mission: Dictionary = defs[i]
+			st["progress"][mission["id"]] = m._mission_target(mission)
+			st["claimed"][mission["id"]] = true
+		st["miles"] = {"0": true}
+		var qp: Control = m.pages.get("quests", null)
+		if qp == null:
+			continue
+		var was_q := qp.visible
+		qp.visible = true
+		m._fill_page("quests")
+		await get_tree().process_frame
+		await get_tree().process_frame
+		_check_page("quests " + board, qp)
+		qp.visible = was_q
+	m.island_level = 1
+
 	# The modals, laid out by the same containers and just as able to grow past
 	# the glass they sit in.
 	# A score that lights two of the four rungs and puts a prize chip beside the
