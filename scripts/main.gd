@@ -467,6 +467,15 @@ const INTRO_REEL := ["coin", "", "hammer", "", "bag", "", "steal"]
 var intro_spins := 0
 var intro_greeted := false
 var intro_build_tip := false
+# ...and whether the discs down the sides have ever said what they are.
+#
+# Defaults FALSE on a save that predates it, unlike the two flags above, and
+# that is deliberate. Those two are onboarding: a player twelve islands in has
+# already met the reels and the hut, and welcoming them again would be absurd.
+# This one is not onboarding, it is a legend for chrome that never had one --
+# and the players who have been staring at an unlabelled clan flag for two
+# weeks are exactly the ones owed it. It costs one pass, once, ever.
+var intro_rails_named := false
 
 # =============================================================================
 #  Grudges
@@ -1405,6 +1414,18 @@ func _after_boot() -> void:
 	# it, and the loser waited five seconds, saved a PNG to a nonsense path and
 	# called quit() out from under the frame strip the other one was still
 	# shooting.
+	# DEMO_RAILS=1 replays the side rails' one-time legend and LEAVES IT UP, so
+	# it can be photographed or looked at on a phone. Without this the only way
+	# to see it is a save that has never seen it -- and the act of looking sets
+	# the flag, so the second look is impossible.
+	#
+	# ABOVE the SHOT branch, not below it with DEMO_QUESTS and DEMO_CLAN. That
+	# branch returns, so anything under it is unreachable whenever SHOT is set
+	# -- which is every screenshot of this, the only thing it is for. The two
+	# below it are page-openers and would fight a page SHOT anyway; this one
+	# decorates whatever page the shot is already taking.
+	if OS.has_environment("DEMO_RAILS"):
+		_after(2.4, func() -> void: _name_the_rails(600.0))
 	var shot_key := OS.get_environment("SHOT")
 	if shot_key != "" and not shot_key.contains("/"):
 		call_deferred("_capture_page", shot_key)
@@ -2005,12 +2026,29 @@ func _show_login() -> void:
 			for p in rest:
 				_provider_chip(row, p)
 
-		# What signing in actually buys, said plainly. Nothing here reaches a
-		# server: the island lives in user:// either way and an account is a
-		# name on it. Saying so is not modesty -- an app that demands a login it
-		# does not need is Guideline 5.1.1(v), and "we take your email for
-		# nothing" is the version of this screen that gets rejected.
-		var why := Lagoon.title("Your island is saved on this device either way — signing in just puts your name on it.", UI.F_TINY, Color.WHITE, Lagoon.ABYSS)
+		# What signing in actually buys, said plainly.
+		#
+		# THIS LINE WAS STALE, AND IT WAS THE ONE THING ON THIS SCREEN A PLAYER
+		# ACTS ON. It used to read "saved on this device either way -- signing
+		# in just puts your name on it", which was true and deliberately modest
+		# back when nothing here reached a server: an app demanding a login it
+		# does not need is Guideline 5.1.1(v), and this screen was written to
+		# not be that. Then cloud.gd landed and signing in started being the
+		# only thing standing between a player and losing an island with a
+		# phone -- and this line went on telling them it did not matter.
+		#
+		# PrimeTestLab Nº 6935 (M-01) caught it as a contradiction rather than
+		# as a stale line, because Options says the opposite three taps away:
+		# "Not backed up -- sign in to keep your island if you lose this phone."
+		# Options is the one that is right. The two now say the same thing, and
+		# what it promises is what the backup line in Options reports on --
+		# the one Cloud.sync_state_changed repaints.
+		#
+		# KEPT TO TWO WRAPPED LINES, which is what the line it replaces took.
+		# Measured in the display face at F_TINY against this card's width: the
+		# first attempt at the rewrite came to 1,121px, which is 2.0 box-widths
+		# and therefore three lines once a word has to break. This is 964.
+		var why := Lagoon.title("Signing in backs up your island, so it survives losing this phone. A guest's island lives only on this device.", UI.F_TINY, Color.WHITE, Lagoon.ABYSS)
 		why.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		why.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		box.add_child(why)
@@ -2039,6 +2077,12 @@ func _show_login() -> void:
 		guest.focus_mode = Control.FOCUS_NONE
 	FX.press_feedback(guest)
 	guest.pressed.connect(func() -> void:
+		# Taking the guest door WITH A SIGN-IN STILL IN FLIGHT is the clearest
+		# abandonment signal the game ever gets: they went to the browser, came
+		# back without an account, and chose to play anyway. On Android that is
+		# precisely the journey the deep-link return exists to shorten, and
+		# counting it here is how we will know whether it worked.
+		_login_abandoned()
 		profile = {"name": "Guest", "email": "", "provider": "guest"}
 		_save_profile()
 		_close_login()
@@ -2200,7 +2244,77 @@ func _provider_button(box: VBoxContainer, p: Dictionary) -> void:
 	# is what stops that patch reading as a seam.
 	btn.move_child(mark, 0)
 
+# The sign-in in flight, and when it started. Cleared by whichever of the three
+# endings arrives: _on_login, _on_cloud_sign_in_failed, or the player closing
+# the sheet with _login_abandoned. An empty id means nothing is in flight, so
+# every one of those three is safe to reach with no sign-in running.
+var _login_started_id := ""
+var _login_started_at := 0.0
+
+# Elapsed seconds, as a bucket rather than a number. A raw duration would be a
+# distinct counter per sign-in and the session summary would carry a hundred
+# keys that each counted to one; five buckets answer the only question being
+# asked, which is whether a sign-in took seconds or took a detour.
+func _login_bucket(secs: float) -> String:
+	if secs < 10.0:
+		return "under10"
+	if secs < 30.0:
+		return "10to30"
+	if secs < 60.0:
+		return "30to60"
+	if secs < 180.0:
+		return "60to180"
+	return "over180"
+
+# The third ending, and the one the other two cannot see: the player got as far
+# as the browser and came back without an account. On Android that is the exact
+# shape of the bug this was built to measure -- nothing failed, nothing
+# succeeded, and the old code had no event for it at all.
+# A sign-in that ended badly, with the reason kept.
+#
+# A TIMEOUT IS NOT A FAILURE AND MUST NOT BE COUNTED AS ONE. GoogleAuth's
+# 300-second deadline reports itself through login_failed, because from that
+# object's point of view nothing came back -- but from the player's it is the
+# most ordinary outcome there is: they opened the browser, thought better of
+# it, and closed the tab. Filing that as a fault would put a steady drip of
+# invented errors in the diagnostics and, worse, would hide the real ones in
+# it. So it is routed to the abandon counter instead, which is where it
+# belongs and which is the number this report was about.
+func _login_did_fail(id: String, reason: String) -> void:
+	if reason.to_lower().contains("timed out"):
+		_login_abandoned()
+		return
+	Diag.fault("%s_auth" % id, reason)
+	if _login_started_id != "":
+		Diag.note("login_fail_%s" % _login_started_id)
+		_login_started_id = ""
+
+func _login_abandoned() -> void:
+	if _login_started_id == "":
+		return
+	Diag.note("login_abandon_%s" % _login_started_id)
+	Diag.note("login_secs_%s" % _login_bucket(_now() - _login_started_at))
+	_login_started_id = ""
+
 func _start_login(id: String) -> void:
+	# THE FUNNEL STARTS HERE, and until 2026-09-14 it did not exist.
+	#
+	# The only thing this path ever reported was Diag.milestone("signed_in") on
+	# success. A sign-in that was started and abandoned, and one that failed
+	# outright, both left exactly the same trace as one that was never
+	# attempted: none. So when PrimeTestLab's report 6935 came back with
+	# "Google sign-in -- the sign-in did not complete during our session",
+	# there was no way to tell whether that was one tester on one device or
+	# every tester every time, and no way to tell it apart from nobody having
+	# tapped the button at all.
+	#
+	# note() rather than milestone() on purpose: milestones fire once per
+	# install and this is a thing a player does repeatedly, often twice in a
+	# row after the first one does not take. The pair "started N, finished M"
+	# is the whole measurement, and it only means something if both count.
+	Diag.note("login_start_%s" % id)
+	_login_started_at = _now()
+	_login_started_id = id
 	match id:
 		"google":
 			_login_google()
@@ -2220,6 +2334,15 @@ func _start_login(id: String) -> void:
 # "Islander" for the rest of its life.
 func _on_login(p: Dictionary) -> void:
 	Diag.milestone("signed_in")
+	# The other half of the pair started in _start_login. The elapsed time is
+	# the part that tells the two Android failure shapes apart: a sign-in that
+	# comes back in eight seconds went through the browser cleanly, and one
+	# that takes ninety is a player who got the "close this tab" page and took
+	# a while to work out that they had to switch back by hand.
+	if _login_started_id != "":
+		Diag.note("login_done_%s" % _login_started_id)
+		Diag.note("login_secs_%s" % _login_bucket(_now() - _login_started_at))
+		_login_started_id = ""
 	# An empty name from Apple on a later sign-in is Apple being Apple, not a
 	# player who deleted their name. Keep what is already stored.
 	if str(p.get("name", "")) == "" and str(profile.get("name", "")) != "":
@@ -2382,6 +2505,16 @@ func _on_cloud_signed_out() -> void:
 func _on_cloud_sign_in_failed(reason: String) -> void:
 	# Was silent until now, which meant a sign-in that failed looked exactly
 	# like one that worked and did nothing.
+	#
+	# "Until now" meant on screen. It stayed silent in the telemetry for
+	# another two weeks -- see _start_login. fault() rather than note(),
+	# because unlike an abandoned sign-in this one has a reason attached and
+	# the reason is the whole value: "Sign-in timed out" and "Token exchange
+	# failed (400)" are different bugs with the same symptom.
+	Diag.fault("sign_in", reason)
+	if _login_started_id != "":
+		Diag.note("login_fail_%s" % _login_started_id)
+		_login_started_id = ""
 	_claim_rank = -1
 	_boot_waiting = false
 	_banner("Couldn't sign in: %s" % reason, Color(0.95, 0.4, 0.4))
@@ -2633,17 +2766,21 @@ func _login_apple() -> void:
 		auth.queue_free()
 	)
 	auth.login_failed.connect(func(reason: String) -> void:
+		_login_did_fail("apple", reason)
 		_banner("Login failed: %s" % reason, Color(0.95, 0.4, 0.4))
 		_auth = null
 		auth.queue_free()
 	)
 	# Backing out of the sheet is a decision, not a failure. Nothing on screen,
 	# for the same reason iap.gd keeps purchase_cancelled off the banner.
+	# Counted, though -- a decision is exactly the thing the funnel is for.
 	auth.login_cancelled.connect(func() -> void:
+		_login_abandoned()
 		_auth = null
 		auth.queue_free()
 	)
 	if not auth.start():
+		_login_did_fail("apple", "no provider on this device")
 		_banner("Sign in with Apple is not available here", Color(1.0, 0.8, 0.4))
 		_auth = null
 		auth.queue_free()
@@ -2671,12 +2808,19 @@ func _login_google() -> void:
 		auth.queue_free()
 	)
 	auth.login_failed.connect(func(reason: String) -> void:
+		# "Sign-in timed out" arrives here too, five minutes after a player
+		# walked away from the browser -- which is an abandonment wearing a
+		# failure's clothes, and the one shape this whole funnel was added to
+		# see. _login_did_fail tells them apart on the reason string so the
+		# counts do not blame Google for somebody changing their mind.
+		_login_did_fail("google", reason)
 		_clear_browser_hint()
 		_banner("Login failed: %s" % reason, Color(0.95, 0.4, 0.4))
 		_auth = null
 		auth.queue_free()
 	)
 	if not auth.start():
+		_login_did_fail("google", "could not bind the loopback port")
 		_banner("Could not start Google login", Color(0.95, 0.4, 0.4))
 		_auth = null
 		auth.queue_free()
@@ -2774,6 +2918,10 @@ func _process(delta: float) -> void:
 		# the screen is the player's again. See _offline_raids.
 		if not pending_raids.is_empty():
 			_offline_raids()
+		# Same idea, for the one-time legend down the side rails: it waits for
+		# the machine, an empty screen and a settled game rather than racing
+		# the welcome card or the first offer. See _maybe_name_rails.
+		_maybe_name_rails()
 		if slot != null:
 			# The SHOWN figure, not the truth. This tick runs once a second and
 			# wrote the raw count straight over whatever _refresh had put
@@ -3612,6 +3760,33 @@ var _was_reachable := true
 const STORE_IOS := "itms-apps://apps.apple.com/app/id6803260415"
 const STORE_ANDROID := "market://details?id=com.guymaslawi.lootlagoon"
 
+# =============================================================================
+#  The legal pages, and the one route a guest has to them
+# =============================================================================
+#
+# PrimeTestLab report 6935 (S-01): there was no way to read either document
+# from inside the game. They existed -- gh-pages has carried them since 24
+# August and both URLs are in the App Store and Play listings -- but the only
+# in-app sighting of them was on Google's own consent sheet, which is a screen
+# a player who taps "Play as guest" never sees. So the two documents governing
+# a game that takes real money were reachable by everybody except the people
+# actually playing it.
+#
+# OPTIONS, NOT THE TITLE SCREEN. The title screen is the one screen a player is
+# trying to get past, and it already carries a sign-in, a row of chips, a line
+# of copy and an escape hatch. Options is where a player goes when they have a
+# question about the game rather than about this spin, it is two taps from
+# anywhere via the gear, and it is where the other account-shaped answers
+# already live -- sign out, delete account, what is backed up.
+#
+# Hard-coded rather than read from the remote config, and that is deliberate.
+# The one moment a player most wants the privacy policy is the moment something
+# has gone wrong, and "we could not reach the server" is not an acceptable
+# answer to "what do you do with my data".
+const LEGAL_BASE := "https://guymaslawi.github.io/loot-lagoon"
+const LEGAL_PRIVACY := LEGAL_BASE + "/privacy.html"
+const LEGAL_TERMS := LEGAL_BASE + "/terms.html"
+
 # Latched: the "there is an update" line is worth saying once per launch, not
 # once per resume. The blocking modal has no latch, because a build under the
 # floor is under it every time it is looked at.
@@ -3858,6 +4033,11 @@ func _on_reachable_changed(ok: bool) -> void:
 # -- all of which are meant to cover the chrome and still do.
 var _shell: Control
 var _shell_rails: Array[Control] = []
+# Everything the one-time rail legend puts on screen -- the scrim and the seven
+# plaques. Held so leaving the page can take them with it; see _end_rail_legend.
+var _rail_legend: Array[Node] = []
+# Consecutive quiet once-a-second ticks on the machine. See _maybe_name_rails.
+var _rails_settled := 0
 
 func _build_shell() -> void:
 	_shell = Control.new()
@@ -3880,6 +4060,8 @@ func _build_shell() -> void:
 # that is turned off, not chrome that is thrown across the screen.
 func _update_shell(instant := false) -> void:
 	var want := 1.0 if (_current_page == slot_page or _current_page == village_page) else 0.0
+	if want == 0.0 and not _rail_legend.is_empty():
+		_end_rail_legend()
 	for rail in _shell_rails:
 		if not is_instance_valid(rail):
 			continue
@@ -4497,6 +4679,206 @@ func _add_side_rail(parent: Control, top: float) -> void:
 
 # One lane. The run grows downward from its top, so adding a button lengthens
 # the rail rather than re-centring the ones above it.
+# =============================================================================
+#  The rails introduce themselves, once
+# =============================================================================
+#
+# PrimeTestLab report 6935 (S-04): "the main screen has several unlabeled side
+# icons... a first-time player has to tap each one to learn what it is."
+#
+# WHAT IS NOT BEING UNDONE HERE. _side_button's "No caption" note is still the
+# rule and the captions are still not coming back permanently -- a word under
+# every disc is what forced the old five-disc lane narrow enough to be chrome,
+# and the discs only reach 88 and only sit at the edge because nothing hangs
+# off them. A legend shown once is not a caption; it is the thing a caption
+# would be repeating forever.
+#
+# So: on the first arrival at the machine, each disc says its name on a brass
+# plaque beside it, the lane staggered top to bottom so the eye is walked down
+# it rather than handed seven labels at once, and then they go. Brass plaques
+# rather than plain labels because that is the object the marquee and the
+# trophy's own counter are already made of -- these read as part of the rail
+# rather than as a tutorial overlay pasted on top of it.
+#
+# The plaques are children of _shell, which is where the rails live -- but they
+# do NOT inherit the rails' fade, because the shell fades a rail's modulate and
+# these are siblings of it rather than children. _end_rail_legend is what ties
+# the two lifetimes together; see the note there. They take no input at any
+# point, at any stage.
+const RAIL_NAME_STAGGER := 0.13   # between one disc and the next, down a lane
+const RAIL_NAME_HOLD := 2.4       # how long a plaque stays up once it is there
+const RAIL_NAME_PLATE_H := 44.0
+# A CEILING ON THE PLATE, because the two lanes open towards each other. The
+# left lane's plaques grow right and the right lane's grow left, and rows 0-2
+# have a disc on both sides at the same height -- so a caption long enough to
+# cast a wide plate would meet its opposite number in the middle of the reels.
+# Lagoon.plaque measures the engraved text and adds height * 1.25 of margin, so
+# this is a cap on that measurement rather than a fixed size: every caption the
+# rails currently carry comes in well under it and keeps its own width.
+const RAIL_NAME_MAX_W := 228.0
+# Over the scrim, and over the z-60 band the mascot and the beach chest hold.
+# See _rail_name_scrim.
+const RAIL_NAME_Z := 63
+
+func _maybe_name_rails() -> void:
+	if intro_rails_named:
+		return
+	# Not over a dialog, not mid-raid, not behind the sign-in gate, and not on
+	# a page the rails are hidden on -- a legend for chrome that is currently
+	# faded out is a screen of floating words.
+	if _boot != null or _popup != null or _raiding() or _login_layer != null:
+		return
+	if _current_page != slot_page:
+		return
+	# AND NOT ON THE FIRST QUIET TICK, which is the one that arrives before the
+	# session has finished starting. Everything the game says about the time
+	# the player was away is fired on a timer off the end of boot -- the
+	# welcome-back banners, and _maybe_show_offer's takeover at 2.6s -- so a
+	# legend that goes at the first opportunity gets a full-screen deal dropped
+	# on top of it a second and a half later and is never seen at all.
+	#
+	# Three quiet seconds instead. The takeover then wins the race, the guard
+	# above holds the legend while it is up, and it plays on the first quiet
+	# stretch afterwards -- which is the moment it was for.
+	_rails_settled += 1
+	if _rails_settled < 3:
+		return
+	intro_rails_named = true
+	_save_game()
+	_name_the_rails()
+
+# Split off the gate so SHOT/DEMO can drive it without having to arrive at the
+# state that earns it, the same way _intro_build_card is split from its gate.
+func _name_the_rails(hold := RAIL_NAME_HOLD) -> void:
+	if not is_instance_valid(_shell):
+		return
+	_rail_name_scrim(hold)
+	for rail in _shell_rails:
+		if not is_instance_valid(rail) or not rail.visible:
+			continue
+		var right: bool = rail.has_meta("right") and bool(rail.get_meta("right"))
+		var n := 0
+		for box in rail.get_children():
+			if not (box is Control):
+				continue
+			var btn: Button = null
+			for kid in (box as Control).get_children():
+				if kid is Button:
+					btn = kid
+					break
+			if btn == null or not btn.has_meta("caption"):
+				continue
+			_rail_name_plate(btn, String(btn.get_meta("caption")), right,
+				float(n) * RAIL_NAME_STAGGER, hold)
+			n += 1
+
+# THE PAGE DROPS BACK WHILE THE LEGEND IS UP, and without this the whole thing
+# is unreadable. The plaques are brass and so is the cabinet they land on: the
+# first render put "Tournament" flat across the island's marquee and "Piggy
+# Bank" over the reel window, brass on brass, covering the two things on the
+# page a player is actually looking at.
+#
+# Dimming rather than moving them is the same answer the shell already gives
+# everywhere else -- chrome that is in the way is turned down, not thrown
+# across the screen -- and it inverts the problem into the point being made:
+# for two and a half seconds the machine is not what matters and the seven
+# things round the edge are.
+#
+# Index 0 of _shell, so the rails and the plaques (added after) draw OVER it
+# and stay at full brightness. It is also why this cannot be a child of the
+# page: the discs live on the shell and a scrim under them would have to be
+# on the shell too.
+func _rail_name_scrim(hold: float) -> void:
+	var scrim := ColorRect.new()
+	scrim.color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 1.0)
+	scrim.modulate.a = 0.0
+	scrim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# 62, AND CHILD ORDER IS NOT ENOUGH ON ITS OWN. The shell sits at z 40 and
+	# child order settles anything drawn in the same band -- but the mascot,
+	# his contact shadow and the beach chest are all pinned at z 60 on the page
+	# itself, so at the shell's own depth they punched straight back through a
+	# scrim that had correctly dimmed everything else. It read as three objects
+	# lit for no reason. 62 clears all of them.
+	#
+	# The rails then have to come with it, because they are shell children at
+	# the shell's depth and this scrim is now above that. They are raised for
+	# exactly as long as the scrim lives and put back by the same tween that
+	# frees it, so there is no path that leaves them stranded on top.
+	scrim.z_index = 62
+	_shell.add_child(scrim)
+	_shell.move_child(scrim, 0)
+	_rail_legend.append(scrim)
+	scrim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	for rail in _shell_rails:
+		if is_instance_valid(rail):
+			rail.z_index = RAIL_NAME_Z
+	# Long enough to cover the last plaque's whole life: the deepest lane is
+	# four discs, so the last one starts three staggers late and then needs its
+	# own fade-in before the hold even begins.
+	var lit := 3.0 * RAIL_NAME_STAGGER + 0.26 + hold
+	var tw := scrim.create_tween()
+	tw.tween_property(scrim, "modulate:a", 0.52, 0.25)
+	tw.tween_interval(lit)
+	tw.tween_property(scrim, "modulate:a", 0.0, 0.3)
+	tw.tween_callback(_end_rail_legend)
+
+# Takes the legend down, from either end: the scrim's own tween when it has run
+# its course, or _update_shell the moment the rails leave the page.
+#
+# THE SECOND CALLER IS THE POINT. The plaques and the scrim are children of the
+# shell, not of the page, so a player who taps Shop two seconds into the legend
+# used to take seven brass labels and a dimmed screen with them onto a page
+# with no discs on it at all -- naming buttons that were no longer there. The
+# rails' own fade is the right signal to hang this on: whatever hides them
+# should hide what is explaining them.
+#
+# Safe to call on nothing, and safe to call twice.
+func _end_rail_legend() -> void:
+	for rail in _shell_rails:
+		if is_instance_valid(rail):
+			rail.z_index = 0
+	for n in _rail_legend:
+		if is_instance_valid(n):
+			n.queue_free()
+	_rail_legend.clear()
+
+func _rail_name_plate(btn: Button, caption: String, right: bool, delay: float, hold: float) -> void:
+	var plate := Lagoon.plaque(caption, 0.0, RAIL_NAME_PLATE_H, UI.F_TINY, false)
+	plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	plate.modulate.a = 0.0
+	plate.z_index = RAIL_NAME_Z + 1
+	_shell.add_child(plate)
+	_rail_legend.append(plate)
+	# Positioned off the disc's actual on-screen rect rather than off the rail's
+	# offsets. The rail is a VBoxContainer whose children are laid out a frame
+	# late, and the discs move with rail_top() between phones -- reading the
+	# button back is the only version of this that is right on every device.
+	var w: float = minf(plate.custom_minimum_size.x, RAIL_NAME_MAX_W)
+	plate.custom_minimum_size.x = w
+	plate.size.x = w
+	var gap := 12.0
+	var r := btn.get_global_rect()
+	var local := r.position - _shell.global_position
+	plate.position = Vector2(
+		local.x - gap - w if right else local.x + r.size.x + gap,
+		local.y + (r.size.y - RAIL_NAME_PLATE_H) * 0.5)
+	# It slides the last few units out from under its own disc as it fades in,
+	# so the plaque reads as belonging to the button rather than as a label that
+	# happens to be next to one.
+	var from := plate.position + Vector2(18.0 if right else -18.0, 0.0)
+	var to := plate.position
+	plate.position = from
+	var tw := plate.create_tween()
+	tw.tween_interval(delay)
+	tw.set_parallel(true)
+	tw.tween_property(plate, "modulate:a", 1.0, 0.22)
+	tw.tween_property(plate, "position", to, 0.26) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.set_parallel(false)
+	tw.tween_interval(hold)
+	tw.tween_property(plate, "modulate:a", 0.0, 0.3)
+	tw.tween_callback(plate.queue_free)
+
 func _side_rail_lane(parent: Control, top: float, right: bool, specs: Array) -> Control:
 	var rail := VBoxContainer.new()
 	rail.add_theme_constant_override("separation", int(SIDE_RAIL_GAP))
@@ -4514,6 +4896,10 @@ func _side_rail_lane(parent: Control, top: float, right: bool, specs: Array) -> 
 	rail.offset_top = top
 	rail.offset_bottom = top
 
+	# Which way the captions open when the rails introduce themselves. A plaque
+	# hung off the left lane grows right, over the cabinet; off the right lane it
+	# grows left. The other way round on either side and it goes off the glass.
+	rail.set_meta("right", right)
 	for spec in specs:
 		_side_button(rail, str(spec[0]), str(spec[1]), str(spec[2]), spec[3],
 			spec.size() > 4 and bool(spec[4]))
@@ -4647,6 +5033,11 @@ func _side_button(container: BoxContainer, icon_kind: String, caption: String, b
 	btn.custom_minimum_size = Vector2(SIDE_DISC, SIDE_DISC)
 	btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	btn.tooltip_text = caption
+	# A TOOLTIP IS NOTHING ON A PHONE. It costs one property and it is what
+	# the desktop harnesses read, but no finger has ever hovered. The same
+	# string is kept as metadata so _name_the_rails can say it out loud
+	# once -- see the note over that function.
+	btn.set_meta("caption", caption)
 	btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	btn.focus_mode = Control.FOCUS_NONE
 	# The weight, which is the whole of what the reference games have and this
@@ -5481,6 +5872,63 @@ func _popup_row_label(text: String, size := UI.F_LABEL) -> Label:
 
 # For copy that sits on the page itself rather than inside a card. Ink reads on
 # glass and vanishes on water, so anything floating gets outlined white.
+# The two links, side by side under the account block. Flat text rather than
+# buttons: these are references, not actions, and a pair of candy pills down
+# here would outrank "Delete account & data" directly above them.
+#
+# OS.shell_open leaves the game for the system browser on both platforms. That
+# is the right trade for a document nobody reads twice -- an in-app webview
+# would mean shipping a browser, and on iOS a SFSafariViewController the game
+# has no plugin for. The pages are plain static HTML and they come back on the
+# back gesture.
+func _legal_row(vb: BoxContainer) -> void:
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 10)
+	vb.add_child(row)
+	# THE SEPARATOR IS THE SAME CONTROL AS THE LINKS, with no URL behind it.
+	#
+	# It started as a Label, and a Label's box is not a Button's box: in a row
+	# 88 units tall -- which is what UI.TAP makes these, because they are tap
+	# targets -- the bullet drew near the top and ended up sitting above the two
+	# words it was meant to be between. Three goes at vertical_alignment and
+	# size flags each moved it by nothing, because the difference is in how the
+	# two controls measure a line of text, not in how they align it.
+	#
+	# Building the dot out of the same Button with the same font, the same size
+	# and the same box makes the question go away: three identical controls in
+	# a row cannot disagree about where their baseline is.
+	for spec in [["Privacy Policy", LEGAL_PRIVACY], ["\u2022", ""],
+			["Terms of Service", LEGAL_TERMS]]:
+		var url := String(spec[1])
+		var link := Button.new()
+		link.text = String(spec[0])
+		link.flat = true
+		link.focus_mode = Control.FOCUS_NONE
+		link.custom_minimum_size = Vector2(0, UI.TAP)
+		link.add_theme_font_size_override("font_size", UI.F_CAPTION)
+		# WHITE ON AN OUTLINE, NOT AN INK TOKEN. The first cut used INK_SOFT,
+		# which is the right grey for secondary text and the wrong colour here
+		# for the reason lagoon.gd's ink table spells out: those tokens are
+		# measured against the cream card stock, and this row is the one thing
+		# in Options that is NOT on a card -- it hangs off the page's deep
+		# board beside the version line. On that surface INK_SOFT reads as
+		# disabled. The version line directly under it has always been
+		# _page_note (white, ABYSS outline) for exactly this reason, and the
+		# same treatment is what the title screen's own quiet link uses.
+		link.add_theme_font_override("font", Lagoon.display_font())
+		for c in ["font_color", "font_hover_color", "font_pressed_color"]:
+			link.add_theme_color_override(c, Color.WHITE)
+		link.add_theme_color_override("font_outline_color", Lagoon.ABYSS)
+		link.add_theme_constant_override("outline_size", 8)
+		row.add_child(link)
+		if url == "":
+			link.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			link.modulate.a = 0.7
+			continue
+		FX.press_feedback(link)
+		link.pressed.connect(func() -> void: OS.shell_open(url))
+
 func _page_note(text: String, size := UI.F_CAPTION) -> Label:
 	var l := Lagoon.title(text, size, Color.WHITE, Lagoon.ABYSS)
 	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -15328,6 +15776,7 @@ func _fill_options(vb: VBoxContainer) -> void:
 	wipe.pressed.connect(_confirm_delete_account)
 	acc.add_child(wipe)
 
+	_legal_row(vb)
 	vb.add_child(_page_note("Loot Lagoon  •  %s" % BuildID.label(), UI.F_CAPTION))
 
 # Deleting an account has to actually delete something, and the honest list is
@@ -16459,9 +16908,42 @@ func _album_card(vb: VBoxContainer) -> void:
 
 	if not _col_break():
 		var left := maxf(0.0, col_deadline - _now())
-		var season := _popup_row_label("Ends in %dd %dh \u2014 the album resets"
+		# WHAT "RESETS" MEANS, because the player closest to finishing a set is
+		# the one who most needs to know and the one this word frightens most.
+		#
+		# PrimeTestLab report 6935 (S-03): the countdown said the album resets
+		# and stopped there, so "resets" could equally have meant the shelf is
+		# re-sorted, the prizes come round again, or two weeks of collecting is
+		# deleted. It is the third one -- _ensure_collections() empties
+		# col_owned, col_dupes and col_claimed the moment the season index
+		# moves, cards bought in a pack included, which terms.html has said
+		# since 25 August and no screen in the game ever did.
+		#
+		# Two lines rather than one long one: the countdown is a glance and the
+		# consequence is a read, and they are not the same errand. The
+		# consequence carries CORAL_HI because it is the only warning on this
+		# page and INK_FAINT is the colour of small print nobody reads.
+		# ONE literal, not two joined with "+". "%" binds tighter than "+" in
+		# GDScript, so a split string formats only its second half -- which has
+		# no placeholders in it, and the whole expression raises.
+		var season := _popup_row_label(
+			"Ends in %dd %dh \u2014 the album resets and every card clears.  Claim your sets before then."
 			% [int(left / 86400.0), int(fmod(left, 86400.0) / 3600.0)], UI.F_TINY)
 		season.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		season.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		# ONE LINE IN ONE INK, not a second line in a warning colour.
+		#
+		# The first cut printed the consequence underneath in CORAL_HI, which is
+		# a FILL and not an ink: lagoon.gd's table is explicit that the ladder is
+		# three inks and that a fourth, paler or warmer, cannot be made to clear
+		# AA on the tinted stock the cards in this game are actually printed on.
+		# On this album's pale wash it rendered as a smudge along the bottom rule
+		# -- which is a worse answer to "what happens to my cards" than saying
+		# nothing, because it looks like something that was not meant to be read.
+		#
+		# So the fact joins the sentence that was already there. It is the same
+		# errand -- when the season ends and what that costs -- and one wrapped
+		# line at the same weight is how the rest of this card talks.
 		season.add_theme_color_override("font_color", Lagoon.INK_FAINT)
 		col.add_child(season)
 
@@ -23850,6 +24332,7 @@ func _save_dict() -> Dictionary:
 		"intro_spins": intro_spins,
 		"intro_greeted": intro_greeted,
 		"intro_build_tip": intro_build_tip,
+		"intro_rails_named": intro_rails_named,
 		"muted": muted,
 		"missions3": mission_state,
 		"col_owned": col_owned,
@@ -24190,6 +24673,8 @@ func _load_game() -> void:
 	intro_spins = maxi(0, _i(data.get("intro_spins", INTRO_REEL.size())))
 	intro_greeted = _b(data.get("intro_greeted", true))
 	intro_build_tip = _b(data.get("intro_build_tip", true))
+	# FALSE on an old save, not true -- see the declaration.
+	intro_rails_named = _b(data.get("intro_rails_named", false))
 	muted = _b(data.get("muted", false))
 	var lo = data.get("col_owned", {})
 	if typeof(lo) == TYPE_DICTIONARY:

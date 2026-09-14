@@ -132,6 +132,48 @@ else
 	exit 1
 fi
 
+# --- 1c. the lootlagoon:// URL scheme -------------------------------------
+#
+# The way back into the game after a GOOGLE sign-in, which on iOS leaves for
+# Safari exactly as it does for Chrome on Android. google_auth.gd serves a page
+# with a "Back to Loot Lagoon" button on it; this is what makes that button
+# resolve to us. Without it the button is a dead link and the player is back to
+# working out for themselves that they have to switch apps -- which is what
+# PrimeTestLab report 6935 recorded as "the sign-in did not complete during our
+# session" on the Android side.
+#
+# HERE AND NOT IN export_presets.cfg, for the same reason the entitlement above
+# is here. The preset has an `application/additional_plist_content` field that
+# would do this in one line, and the preset is gitignored: a fresh clone, or a
+# preset rebuilt in the editor, would silently lose it and every build after
+# that would ship a sign-in nobody can get back from. The entitlements block
+# above is the precedent and it exists because of the same trap.
+#
+# Idempotent, and checked rather than assumed: if a future Godot starts writing
+# CFBundleURLTypes itself, the Add fails, the guard notices the key is already
+# there, and the build carries on.
+INFO="$OUT/LootLagoon/LootLagoon-Info.plist"
+if [ -f "$INFO" ]; then
+	if ! /usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes" "$INFO" >/dev/null 2>&1; then
+		/usr/libexec/PlistBuddy \
+			-c "Add :CFBundleURLTypes array" \
+			-c "Add :CFBundleURLTypes:0 dict" \
+			-c "Add :CFBundleURLTypes:0:CFBundleTypeRole string Editor" \
+			-c "Add :CFBundleURLTypes:0:CFBundleURLName string $BUNDLE" \
+			-c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" \
+			-c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string lootlagoon" "$INFO"
+	fi
+	SCHEME=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleURLTypes:0:CFBundleURLSchemes:0' "$INFO" 2>/dev/null || echo MISSING)
+	echo "==> url scheme: $SCHEME"
+	[ "$SCHEME" = "lootlagoon" ] || {
+		echo "!! CFBundleURLTypes did not take -- the sign-in return link will be dead" >&2
+		exit 1
+	}
+else
+	echo "!! no Info.plist at $INFO -- cannot register the sign-in return scheme" >&2
+	exit 1
+fi
+
 # --- 2. archive ---
 echo "==> archiving (creates the certificate and profile on first run)"
 xcodebuild -project "$PROJ" -scheme LootLagoon -sdk iphoneos \

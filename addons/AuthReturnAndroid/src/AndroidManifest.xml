@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.guymaslawi.lootlagoon.authreturn">
+
+    <uses-sdk android:minSdkVersion="24" />
+
+    <!-- No permissions. Starting your own launcher activity needs none, and
+         this plugin does nothing else. -->
+
+    <application>
+        <!-- NO org.godotengine.plugin.v2 meta-data, and that is not an
+             oversight. That entry is what registers a Java class as a GDScript
+             singleton, and nothing here is ever called from GDScript: the whole
+             plugin is one intent-filter and the activity behind it. What makes
+             it work is manifest merging, which happens for any .aar the export
+             adds to the gradle build. See export_plugin.gd. -->
+        <activity
+            android:name="com.guymaslawi.lootlagoon.authreturn.AuthReturnActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:exported="true">
+            <!-- exported="true" is REQUIRED and is not a hole. A browser is a
+                 different app, so the component it is asked to open has to be
+                 reachable from outside or Android refuses to resolve it at
+                 all. The activity is safe to expose because it carries
+                 nothing: it reads no extras, no query and no data, and the
+                 only thing it can be made to do is open the game, which any
+                 app can already do by launching us.
+
+                 (Note for anyone editing this file in the house style: XML
+                 forbids a double hyphen inside a comment, and the Android
+                 manifest merger rejects the whole build over it rather than
+                 warning. Use a colon or a semicolon where the rest of this
+                 codebase would use a dash.) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="lootlagoon" android:host="auth" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

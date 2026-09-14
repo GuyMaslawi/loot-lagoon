@@ -184,6 +184,51 @@ func _serve() -> void:
 				return
 		OS.delay_msec(80)
 
+# =============================================================================
+#  The way back into the game, on Android
+# =============================================================================
+#
+# `lootlagoon://auth` is answered by addons/AuthReturnAndroid, whose only job is
+# to bring the game's task to the front. Nothing is carried on that URL: the
+# authorization code came over the loopback socket and is already in memory by
+# the time this page is written, and an exported activity that accepted a code
+# would be one any app on the phone could feed.
+#
+# BOTH A LINK AND A SCRIPT, and the link is the one that matters.
+#
+# Chrome will not always follow a redirect to an external scheme. The rule it
+# applies is about user gestures, and by this point the navigation has been
+# through Google's consent screen and two redirects, so whether the original tap
+# still counts is not something to bet a sign-in on. A tap on this page is an
+# unambiguous gesture and always works -- so the button is the mechanism and the
+# location.replace is an optimisation that saves a tap when the browser allows
+# it. Building it the other way round is how you get a flow that works on your
+# phone and not on a tester's.
+#
+# PHONES ONLY, and on both of them. Android resolves the scheme through
+# addons/AuthReturnAndroid; iOS through the CFBundleURLTypes entry ship.sh adds
+# to the exported Info.plist. Safari suspends the app exactly as Chrome does, so
+# the problem and the cure are the same on both.
+#
+# NOT ON DESKTOP. Nothing registers this scheme there, so the button would be a
+# dead end dressed as the way out -- and there is nothing to fix, because a
+# desktop game never lost the foreground in the first place.
+const RETURN_URL := "lootlagoon://auth"
+
+func _return_body() -> String:
+	if not OS.get_name() in ["Android", "iOS"]:
+		return "Close this tab and go back to Loot Lagoon to keep playing."
+	# A real tap target, not a text link: this is the last thing between a
+	# player and the game, and it is being read one-handed on a phone.
+	return "<p>Tap to go back and keep playing.</p>" \
+		+ "<p><a href='" + RETURN_URL + "' style='display:inline-block;" \
+		+ "padding:18px 34px;border-radius:14px;background:#2f9e44;color:#fff;" \
+		+ "font-size:20px;font-weight:700;text-decoration:none'>" \
+		+ "Back to Loot Lagoon</a></p>" \
+		+ "<p style='color:#666;font-size:14px'>If nothing happens, just switch " \
+		+ "back to the app &mdash; you are already signed in.</p>" \
+		+ "<script>setTimeout(function(){location.replace('" + RETURN_URL + "')},400)</script>"
+
 # One connection. True when it was the callback we are waiting for.
 #
 # The listener answers anything that can open a socket to localhost -- another
@@ -208,12 +253,21 @@ func _handle(conn: StreamPeerTCP) -> bool:
 	# Constant-time is not the concern here; being the right sign-in is. An
 	# empty stored state would match an absent one, so require both.
 	var mine := _state != "" and String(params.get("state", "")) == _state
-	# This page is the ONLY thing that tells an Android player the game is done
-	# with the browser and wants them back, so it says so in as many words.
-	var body := "<h2>You're signed in!</h2>Close this tab and go back to Loot Lagoon to keep playing."
+	# This page used to be the ONLY thing that told an Android player the game
+	# was done with the browser and wanted them back -- it said so in as many
+	# words, and that was the whole of the mechanism. PrimeTestLab report 6935
+	# recorded what that is worth in practice: "the sign-in did not complete
+	# during our session". Nothing was broken; the account was signed in before
+	# the page rendered. The player simply had no way back that did not involve
+	# working out, unprompted, that they should switch apps.
+	#
+	# So on Android the page now carries the door as well as the instruction.
+	# See _return_link and addons/AuthReturnAndroid.
+	var body := "<h2>You're signed in!</h2>" + _return_body()
 	if not mine:
 		body = "<h2>Not expecting this</h2>This request did not come from a sign-in Loot Lagoon started."
-	var html := "<html><body style='font-family:sans-serif;text-align:center;padding-top:80px'>" + body + "</body></html>"
+	var html := "<html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head>" \
+		+ "<body style='font-family:sans-serif;text-align:center;padding-top:80px'>" + body + "</body></html>"
 	conn.put_data(("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\n\r\n" + html).to_utf8_buffer())
 	conn.poll()
 	OS.delay_msec(120)

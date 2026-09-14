@@ -796,7 +796,22 @@ func set_meter(held: int, cap: int, secs_to_refill: float, refill: int, tide := 
 	# the BET button -- the raw number ran under the timer text and then off the
 	# end of the machine. 12.5K says the same thing and always fits.
 	_meter_label.text = ("%d / %d" % [held, cap]) if held <= cap else UI.fmt_compact(held)
-	if held >= cap:
+	if held > cap:
+		# ABOVE THE CAP IT IS NOT "FULL", IT IS FULL PLUS CHANGE.
+		#
+		# PrimeTestLab Nº 6935 (M-02): the meter read 58 with "Spins full"
+		# under it and an alert above it saying "(50/50)". Every one of those
+		# three numbers is correct -- the cap governs the free refill and
+		# nothing else, so a daily bonus or a spin pack stacks on top of it --
+		# but "full" is the word for a thing that cannot hold more, and the
+		# player is looking at proof that it can.
+		#
+		# So say where the extra came from instead. 50 + 8 = 58 is arithmetic
+		# a player can do in their head, and once it adds up the number stops
+		# looking like a bug. The refill genuinely is asleep up here, which is
+		# the other half of what this label is for.
+		_timer_label.text = "Full  +%s extra" % UI.fmt_compact(held - cap)
+	elif held == cap:
 		_timer_label.text = "Spins full"
 	else:
 		var s := maxi(0, int(ceil(secs_to_refill)))
