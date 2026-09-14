@@ -454,7 +454,7 @@ func _build_meter() -> Control:
 	# say WHICH resource the number counts, which is the whole reason it was
 	# added, and that only works next to the digits.
 	_meter = Lagoon.progress(Lagoon.KELP)
-	_meter.custom_minimum_size = Vector2(0, 34)
+	_meter.custom_minimum_size = Vector2(0, 40)
 	stack.add_child(_meter)
 
 	var on_bar := CenterContainer.new()
@@ -473,13 +473,15 @@ func _build_meter() -> Control:
 	# different pictures. The bolt is the currency, the wheel is the action --
 	# and the wheel is six inches below this on the SPIN button, where it means
 	# the verb.
-	var spin_mark := _spin_mark(26.0)
+	var spin_mark := _spin_mark(30.0)
 	pair.add_child(spin_mark)
 	# White over a deep well and a kelp fill alike, which is what the shared
 	# track style is built for -- sand was picked when this number sat on the
 	# cabinet's brass instead. RIM_INK, not HULL: over the filled end this
 	# number sits on kelp, where a HULL rim tops out at 3.9.
-	_meter_label = Lagoon.title("0 / 50", UI.F_CAPTION, Color.WHITE, Lagoon.RIM_INK)
+	# F_LABEL, up from F_CAPTION: this is the number the player checks before
+	# every press, and it was set at the size of a caption under an icon.
+	_meter_label = Lagoon.title("0 / 50", UI.F_LABEL, Color.WHITE, Lagoon.RIM_INK)
 	_meter_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_meter_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	pair.add_child(_meter_label)
@@ -547,11 +549,14 @@ func _build_card() -> void:
 	_card_name.clip_text = true
 	text.add_child(_card_name)
 
-	# DEEP BRASS, NOT SAND. The figure was near-white with a dark outline
-	# because it sat on a brass pot; the card itself is pale sea glass, so the
-	# same colour on it would be white on near-white. Deep brass keeps the
-	# "this is gold" reading and is a real contrast against the glass.
-	_card_coins = Lagoon.label("0", UI.F_SUBHEAD, Lagoon.BRASS_LO, true)
+	# TREASURE NUMERALS, NOT BODY TEXT. This number is the pot -- the single
+	# most motivating figure on the page -- and it was set in the UI face in a
+	# muted brass, which is a ledger's way of saying it. It is coin gold in the
+	# display face now, inside the deep rim that lets gold survive pale glass
+	# (the gold_value construction; deep brass alone was the previous fix and
+	# it read as brown). One size up, because the pot outranks the name above
+	# it and was drawn smaller.
+	_card_coins = Lagoon.amount("0", "coins", UI.F_TITLE)
 	_card_coins.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	text.add_child(_card_coins)
 

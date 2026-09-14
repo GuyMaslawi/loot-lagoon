@@ -106,6 +106,23 @@ const SILVER      := Color(0.141, 0.165, 0.184)  # coin packs: graphite
 const SILVER_MID  := Color(0.192, 0.224, 0.247)
 const SILVER_HI   := Color(0.847, 0.886, 0.914)  # the chromed edge
 
+# --- treasure numerals -------------------------------------------------------
+# A quantity WEARS ITS OWN CURRENCY. Measured off the reference games during the
+# 2026-09-14 polish pass: what makes their commercial cards legible from across
+# the room is not the size of the number, it is that every number is inked in
+# the hue of the thing it counts -- spins in the spin currency's cyan, coins in
+# coin gold, cards in card violet -- so a shelf can be read without reading it.
+# Our tiles set every amount in the same sand, which is why two adjacent
+# shelves needed their unit labels to tell apart.
+#
+# These are NUMERAL inks, not plate metals: COIN_GOLD is deliberately more
+# saturated than BRASS_HI, because a digit is a stroke and needs more chroma
+# than a plate to read as gold at all. All three sit on the same deep rim
+# (amount() below), which is what lets a light hue survive on light stock --
+# the gold_value rule, generalised.
+const COIN_GOLD   := Color(1.000, 0.835, 0.353)
+const CARD_VIOLET := Color(0.851, 0.749, 1.000)
+
 # --- the podium --------------------------------------------------------------
 # Gold, silver and bronze, and they are one list because they were three copies
 # of the same literal in three places -- the tournament board, the world board
@@ -243,6 +260,13 @@ static func title(text: String, size := 54, ink := Color.WHITE, outline := ABYSS
 	l.add_theme_color_override("font_color", ink)
 	l.add_theme_color_override("font_outline_color", outline)
 	l.add_theme_constant_override("outline_size", maxi(6, int(size * 0.22)))
+	# The soft drop under every piece of display type. The outline separates the
+	# letterform; the shadow is what LIFTS it, and its absence is most of why a
+	# headline here read as printed on the page while the reference games' read
+	# as standing on it. Kept soft and short so it never doubles the outline.
+	l.add_theme_constant_override("shadow_offset_x", 0)
+	l.add_theme_constant_override("shadow_offset_y", maxi(2, int(size * 0.07)))
+	l.add_theme_color_override("font_shadow_color", Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.30))
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return l
@@ -296,6 +320,47 @@ static func gold_value(text: String, size := UI.F_LABEL, fill := BRASS_HI) -> La
 	l.add_theme_constant_override("outline_size", maxi(5, int(size * 0.20)))
 	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	return l
+
+# A quantity in its own currency's ink -- see "treasure numerals" above.
+# The one place the mapping lives; a call site says what it is counting and the
+# palette decides what that looks like. Same construction as gold_value: a
+# bright fill inside a deep rim, so the hue survives any stock it lands on.
+#   "coins"  gold      "spins"  the spin currency's lit cyan
+#   "cards"  violet    "plain"  sand (for mixed or unitless counts)
+static func amount(text: String, kind := "coins", size := UI.F_HEAD) -> Label:
+	var fill := COIN_GOLD
+	match kind:
+		"spins": fill = STEEL_HI
+		"cards": fill = CARD_VIOLET
+		"plain": fill = SAND
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_override("font", display_font())
+	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_color_override("font_color", fill)
+	# RIM_INK, not HULL: these numerals land on every stock in the game -- steel
+	# tiles, cream sheets, kelp deal cards -- and the mid-value fills among those
+	# are exactly the surfaces HULL tops out at ~3.9 against. The deepest rim in
+	# the palette is the one that carries a light numeral everywhere.
+	l.add_theme_color_override("font_outline_color", RIM_INK)
+	l.add_theme_constant_override("outline_size", maxi(5, int(size * 0.20)))
+	l.add_theme_constant_override("shadow_offset_x", 0)
+	l.add_theme_constant_override("shadow_offset_y", maxi(2, int(size * 0.07)))
+	l.add_theme_color_override("font_shadow_color", Color(ABYSS.r, ABYSS.g, ABYSS.b, 0.35))
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	return l
+
+# The ink for a figure standing next to a prize's artwork, by the artwork's
+# kind. One mapping for every reward surface in the game -- deal rungs, fair
+# stalls, the daily ladder, the solo heap -- so a coin count is gold wherever
+# it appears and a spin count is always the spin currency's cyan.
+static func amount_ink(kind: String) -> Color:
+	match kind:
+		"coin", "coins": return COIN_GOLD
+		"bolt", "spins": return STEEL_HI
+		"cards", "card": return CARD_VIOLET
+	return Color.WHITE
 
 static func label(text: String, size := UI.F_LABEL, ink := INK, bold := false) -> Label:
 	var l := Label.new()

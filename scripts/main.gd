@@ -4516,8 +4516,14 @@ func _add_slot_stage(page: Control) -> void:
 shader_type canvas_item;
 
 uniform vec3 haze = vec3(0.72, 0.92, 0.96);
-uniform float haze_amt = 0.52;
-uniform float lift = 1.10;
+// 0.32, down from 0.52, and a saturation lift below -- measured against the
+// reference games on 2026-09-14: at 0.52 the whole frame sat in the middle
+// third of the value range (the ART_BIBLE muddiness test, failed by the most
+// looked-at screen in the game). The room still reads as air behind glass;
+// it just stops reading as fog.
+uniform float haze_amt = 0.32;
+uniform float lift = 1.06;
+uniform float sat = 1.22;
 uniform float blur_px = 3.2;
 
 void fragment() {
@@ -4535,9 +4541,15 @@ void fragment() {
 	// darkened arcade -- and the blur still keeps the cabinet the sharpest
 	// thing on screen.
 	vec3 rgb = mix(c.rgb * lift, haze, haze_amt);
+	// The saturation the haze mix takes out, put back on what remains -- the
+	// island's own colour comes through the air instead of being averaged into
+	// it. Post-mix on purpose: saturating first and then hazing is just fog
+	// over brighter fog.
+	float luma = dot(rgb, vec3(0.299, 0.587, 0.114));
+	rgb = clamp(mix(vec3(luma), rgb, sat), 0.0, 1.0);
 	// distance haze: clearest around the cabinet, mistiest at the edges
 	vec2 v = (UV - vec2(0.5, 0.42)) * vec2(1.15, 1.0);
-	rgb = mix(rgb, haze, smoothstep(0.22, 0.98, length(v)) * 0.45);
+	rgb = mix(rgb, haze, smoothstep(0.22, 0.98, length(v)) * 0.30);
 	COLOR = vec4(rgb, 1.0);
 }
 """)
@@ -5706,8 +5718,12 @@ func _open_popup(title: String, width := 580.0, scroll := false) -> VBoxContaine
 	# Deep water rather than black: the page behind stays readable as a place
 	# you're still standing in, which is the difference between a dialog and a
 	# modal that swallows the game.
+	# 0.68, up from 0.55 (2026-09-14 polish pass): at 0.55 the HUD behind a
+	# takeover was still loud enough to read as part of the dialog -- the deal
+	# ladder's nameplate looked jammed against the settings gear. A takeover
+	# owns its stage; the page behind stays visible, it just stops competing.
 	var dim := ColorRect.new()
-	dim.color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.55)
+	dim.color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.68)
 	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_popup.add_child(dim)
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -6364,7 +6380,12 @@ func _prize_column(kind: String, px: float, text: String, ink: Color,
 		art.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	else:
 		col.add_child(art)
-	var l := Lagoon.title(text, size, ink, Lagoon.ABYSS)
+	# RIM_INK, not ABYSS. A prize figure lands on every stock in the game, and
+	# on the free rung's mid-teal card NEITHER side of an ABYSS-rimmed cyan
+	# cleared 3.0 -- fill 2.53, ABYSS rim 2.37. Same rule as display type on a
+	# saturated mid fill (STYLE.md): the rim goes a step deeper than the
+	# keyline, and RIM_INK measures 3.8 on that same card.
+	var l := Lagoon.title(text, size, ink, Lagoon.RIM_INK)
 	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(l)
 	col.set_meta("art", art)
@@ -9112,7 +9133,13 @@ func _reward_row(pack: Dictionary, ink := Lagoon.INK, size := UI.F_BODY) -> Cont
 		var icon := _prize_art(String(entry[0]), 36.0)
 		icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		item.add_child(icon)
-		var num := Lagoon.label(_fmt_compact(n), size, ink, true)
+		# The figure wears its currency -- display face inside the deep rim, so
+		# gold and cyan survive cream stock and dark hold alike. The caller's
+		# `ink` still decides mixed/unitless counts via the fall-through white,
+		# but a coin count is gold on every card in the game now.
+		var kind_ink := Lagoon.amount_ink(String(entry[0]))
+		var num := Lagoon.title(_fmt_compact(n), size,
+			kind_ink if kind_ink != Color.WHITE else ink, Lagoon.RIM_INK)
 		num.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		item.add_child(num)
 	return row
@@ -9175,8 +9202,13 @@ func _reward_tray(pack: Dictionary, ink := Lagoon.SHELL) -> Control:
 		var icon := _prize_art(String(entry[0]), 68.0)
 		icon.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 		col.add_child(icon)
-		var num := Lagoon.title(_fmt_compact(n), UI.F_SUBHEAD, ink,
-			Lagoon.RIM_INK)
+		# Semantic before stylistic: the tray's whole job is "these three kinds
+		# of prize, shown properly", and three white figures made the kinds
+		# something the reader had to work out from the icons. `ink` remains the
+		# fall-through for goods without a currency of their own.
+		var kind_ink := Lagoon.amount_ink(String(entry[0]))
+		var num := Lagoon.title(_fmt_compact(n), UI.F_SUBHEAD,
+			kind_ink if kind_ink != Color.WHITE else ink, Lagoon.RIM_INK)
 		num.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		col.add_child(num)
 	return tray
@@ -9379,7 +9411,10 @@ func _offer_card(vb: VBoxContainer, pack: Dictionary) -> void:
 	text.alignment = BoxContainer.ALIGNMENT_CENTER
 	text.add_theme_constant_override("separation", 4)
 	row.add_child(text)
-	text.add_child(Lagoon.title(pack["name"], UI.F_BODY, Color.WHITE, Lagoon.BRASS_LO.darkened(0.4)))
+	# F_SUBHEAD, up from F_BODY: this is the best-dressed card on the page and
+	# its own name was smaller than the shelf headings below it. Not F_TITLE --
+	# the text column is ~326 wide and a long pack name would run off it.
+	text.add_child(Lagoon.title(pack["name"], UI.F_SUBHEAD, Color.WHITE, Lagoon.BRASS_LO.darkened(0.4)))
 	# THE TRAY, not the caption strip. This is the one card on the shop that is
 	# a limited-time offer, so its contents are the entire argument for buying
 	# it -- and they were set at caption size under the name, which made the
@@ -9444,9 +9479,11 @@ func _open_piggy() -> void:
 	vbox.add_child(stage)
 
 	# A pool of warm light for it to stand in, so the pig is lit rather than
-	# pasted onto the paper.
+	# pasted onto the paper. 520, up from 400: at 400 the pool ended inside the
+	# pig's own silhouette and read as a sticker halo; the reference games run
+	# the hero's glow to the card edges so the object owns its whole stage.
 	stage.add_child(_radial_glow(
-		Color(1.0, 0.84, 0.45) if full else PiggyArt.PINK, 400))
+		Color(1.0, 0.84, 0.45) if full else PiggyArt.PINK, 520))
 
 	var pig := PiggyArt.new()
 	pig.custom_minimum_size = Vector2(380, 340)
@@ -9497,7 +9534,11 @@ func _open_piggy() -> void:
 		for i in 5:
 			_piggy_spark(stage, float(i) * 0.42)
 
-	var amount := Lagoon.gold_value("%s coins inside" % _fmt_compact(piggy_coins), UI.F_HEAD)
+	# COIN_GOLD, not the plate metal: BRASS_HI is a surface tone and read as a
+	# pale caption here; the treasure-numeral ink is what makes the figure the
+	# headline of its own screen.
+	var amount := Lagoon.gold_value("%s coins inside" % _fmt_compact(piggy_coins),
+		UI.F_HEAD, Lagoon.COIN_GOLD)
 	amount.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(amount)
 
@@ -10113,8 +10154,15 @@ func _shop_tile(grid: GridContainer, pack: Dictionary, _accent: Color, amount_te
 	# The quantity, split so the number carries the weight and the unit only
 	# labels it. "3,400 SPINS" set as one string at one size spends half its
 	# width on the word.
+	#
+	# AND IT WEARS ITS CURRENCY. Both shelves used to strike the number in the
+	# same sand, so 200 spins and 200M coins were the same word in the same ink
+	# and only the unit label under it knew the difference. The number is now
+	# the currency's own hue -- the treasure-numeral rule in lagoon.gd -- which
+	# is what lets the two shelves be told apart from across the room, and it
+	# is one more size up because the amount IS the offer.
 	var parts := amount_text.split("  ", false)
-	var amount := Lagoon.wordmark(String(parts[0]), 52)
+	var amount := Lagoon.amount(String(parts[0]), "spins" if spins else "coins", 56)
 	amount.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(amount)
 	if parts.size() > 1:
@@ -10172,7 +10220,11 @@ func _shop_tile(grid: GridContainer, pack: Dictionary, _accent: Color, amount_te
 	var buy := Button.new()
 	buy.text = IAP.price_for(pack)
 	buy.custom_minimum_size = Vector2(0, UI.TAP)
-	buy.add_theme_font_size_override("font_size", UI.F_LABEL)
+	# F_BODY on a full-width tile button: the price is the second-loudest thing
+	# on a commercial card after the amount, and at F_LABEL it was quieter than
+	# the pack's own caption. Only where the button spans the tile -- the fixed
+	# 118/128-wide buttons elsewhere would grow past their measured rows.
+	buy.add_theme_font_size_override("font_size", UI.F_BODY)
 	# Green all the way up the ladder said nothing about where you were on it.
 	# The last two rungs are brass, which is the material this game already uses
 	# to mean "worth more" -- on the frames, the plaques and the icon set.
@@ -10505,7 +10557,14 @@ const DEAL_SERPENTINE := [0, 1, 3, 2, 4, 5]
 #
 #            bottom of the stock       the light it lifts to     rim                   the light over the goods
 const EVENT_STOCK := {
-	"free":  [Color(0.020, 0.216, 0.137), Color(0.078, 0.529, 0.325), Lagoon.KELP_HI,          Color(0.60, 1.00, 0.78)],
+	# LAGOON TEAL, NOT KELP GREEN, and the FREE button is why. A free rung
+	# carries the one kelp CLAIM button on the ladder, and on a kelp-green slab
+	# the only pressable thing on the screen was green-on-green -- the exact
+	# same-hue mush the keyline system exists to prevent, one layer up. The
+	# free stock is the sea's own colour now (lift = LAGOON_DEEP exactly), so
+	# "free" still reads as the house's colour and the button pops against it.
+	# Violet stays violet; the paid/free distinction is untouched.
+	"free":  [Color(0.024, 0.204, 0.263), Color(0.055, 0.431, 0.525), Lagoon.STEEL_HI,         Color(0.62, 0.95, 1.00)],
 	# THE VIOLET IS MEASURED, NOT PICKED. White figures on the lit half of this
 	# stock came out at 4.49 : 1 against the 4.5 the harness wants -- a pass
 	# that was only ever a pass because the figures used to be set at a size
@@ -12229,8 +12288,11 @@ func _deal_cell(idx: int, hue: Color) -> Control:
 		if n <= 0 or shown >= 3 or taken:
 			continue
 		shown += 1
-		goods.add_child(_prize_column(String(entry[0]), 58.0,
-			_fmt_compact(n), Color.WHITE, 1.0, UI.F_CAPTION,
+		# The figure wears its currency (Lagoon.amount_ink) and steps up to
+		# F_LABEL: on a rung the amount IS the offer, and at caption size in
+		# plain white it was the quietest thing on its own card.
+		goods.add_child(_prize_column(String(entry[0]), 62.0,
+			_fmt_compact(n), Lagoon.amount_ink(String(entry[0])), 1.0, UI.F_LABEL,
 			Color(1.0, 0.88, 0.52, 0.50) if live else Color(1.0, 0.94, 0.72, 0.20)))
 
 	if taken:
@@ -12864,7 +12926,7 @@ func _deal_pay_finale(quiet: bool) -> void:
 		if n <= 0:
 			continue
 		goods.add_child(_prize_column(String(entry[0]), 96.0, _fmt_compact(n),
-			Lagoon.INK, 1.0, UI.F_TITLE, Color(1.0, 0.85, 0.4, 0.55)))
+			Lagoon.amount_ink(String(entry[0])), 1.0, UI.F_TITLE, Color(1.0, 0.85, 0.4, 0.55)))
 	var ok := Button.new()
 	ok.text = "COLLECT"
 	ok.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
@@ -13208,7 +13270,7 @@ func _powerup_column(col: Dictionary, pack: Dictionary) -> Control:
 		# dark stock. The old note here warned that 90 pushed the sheet past the
 		# 720x1280 ceiling; that measurement was taken with the plate still on.
 		body.add_child(_prize_column(String(entry[0]), 92.0, _fmt_compact(n),
-			Color.WHITE, 1.0, UI.F_LABEL,
+			Lagoon.amount_ink(String(entry[0])), 1.0, UI.F_LABEL,
 			Color(1.0, 0.88, 0.52, 0.50) if paid else Color(1.0, 0.94, 0.72, 0.20)))
 
 	var pad := Control.new()
@@ -13825,7 +13887,7 @@ func _open_solo() -> void:
 			continue
 		shown += 1
 		goods.add_child(_prize_column(String(entry[0]), 128.0, _fmt_compact(n),
-			Color.WHITE, 1.0, UI.F_TITLE, Color(1.0, 0.88, 0.52, 0.55)))
+			Lagoon.amount_ink(String(entry[0])), 1.0, UI.F_TITLE, Color(1.0, 0.88, 0.52, 0.55)))
 
 	# The one promise on this screen that is not a quantity. A 5-star guarantee
 	# is the single strongest line the card economy has -- it is what a paying
@@ -14956,9 +15018,9 @@ func _fill_quests(vb: VBoxContainer) -> void:
 	var hrow := HBoxContainer.new()
 	hrow.add_theme_constant_override("separation", 14)
 	head.add_child(hrow)
-	var hicon := _emoji_label(str(info["emoji"]), 42)
-	hrow.add_child(hicon)
-	FX.pulse_forever(hicon, 1.09, 1.6)
+	# No pulsing sun/calendar/crown here any more -- chrome is never emoji, and
+	# the band above this row already names the cycle. The countdown is the
+	# content; it does not need a mascot.
 	var hcol := VBoxContainer.new()
 	hcol.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hcol.add_theme_constant_override("separation", 3)
@@ -15013,25 +15075,25 @@ func _quests_tab_button(period: String) -> Button:
 	else:
 		Lagoon.button(b, "glass")
 		Lagoon.button_gloss(b, 22)
-	# emoji won't render inside Button text on iOS — compose the face manually
+	# TEXT-ONLY, NO EMOJI. The sun/calendar/crown were chrome-emoji -- the one
+	# thing STYLE.md bans outright -- and three different design systems' icons
+	# in a row is exactly the "not made for one game" read the rule exists to
+	# prevent. The word IS the tab; it takes the emoji's space and one size up,
+	# which is also what the reference games' pill tabs do.
 	var face := CenterContainer.new()
 	face.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	b.add_child(face)
 	face.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	var frow := HBoxContainer.new()
-	frow.add_theme_constant_override("separation", 8)
-	face.add_child(frow)
-	frow.add_child(_emoji_label(str(info["emoji"]), UI.F_LABEL))
 	# The selected tab is white on its own saturated fill, which is the one
 	# combination in this palette that will not reach 4.5 without turning the
 	# hue into something nobody wants a tab to be. It gets the outline every
 	# other piece of display type on a colour gets, so it is read off its rim
 	# -- RIM_INK, because against the daily tab's kelp HULL itself only
 	# measures 3.9 and the rim has to be the side that clears.
-	var ft := Lagoon.title(str(info["title"]), UI.F_CAPTION,
+	var ft := Lagoon.title(str(info["title"]), UI.F_LABEL,
 		Color.WHITE, Lagoon.RIM_INK) if period == quests_tab \
-		else Lagoon.label(str(info["title"]), UI.F_CAPTION, Lagoon.INK_SOFT, true)
-	frow.add_child(ft)
+		else Lagoon.label(str(info["title"]), UI.F_LABEL, Lagoon.INK_SOFT, true)
+	face.add_child(ft)
 	FX.press_feedback(b)
 	b.pressed.connect(func() -> void:
 		if quests_tab == period:
@@ -15441,7 +15503,10 @@ func _quest_card(vb: VBoxContainer, m: Dictionary, index: int) -> void:
 	else:
 		right.add_child(_reward_chip("coin", "+%s" % _fmt_compact(_mission_coins(m)), Lagoon.BRASS_LO))
 	if claimed:
-		var donel := _emoji_label("✅", 30)
+		# The daily ladder's own text check, not the ✅ emoji -- chrome is never
+		# emoji, and the green box was the one system icon on a page of drawn
+		# rows. Kelp says "banked" in the game's own colour for it.
+		var donel := Lagoon.label("✓", UI.F_TITLE, Lagoon.KELP, true)
 		donel.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		right.add_child(donel)
 	else:
@@ -15476,7 +15541,14 @@ func _fill_options(vb: VBoxContainer) -> void:
 	var nhead := HBoxContainer.new()
 	nhead.add_theme_constant_override("separation", 8)
 	ncard.add_child(nhead)
-	nhead.add_child(_emoji_label("🔔", UI.F_BODY))
+	# The drawn bell, not the emoji one -- chrome is never emoji (STYLE.md),
+	# and this header sat an inch above a page of correctly-drawn chrome
+	# wearing a system icon. Same glyph the alerts disc already uses.
+	var bell := Glyph.new()
+	bell.kind = "bell"
+	bell.custom_minimum_size = Vector2(UI.ICON_MD, UI.ICON_MD)
+	bell.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	nhead.add_child(bell)
 	var ntitle := _popup_row_label("Notifications", UI.F_BODY)
 	ntitle.add_theme_color_override("font_color", Lagoon.INK)
 	nhead.add_child(ntitle)

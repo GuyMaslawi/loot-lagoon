@@ -46,6 +46,14 @@ Rules that fall out of it, all measured:
 - **Disabled is a shape, not a colour.** The same lozenge lying flat in cool
   glass with dark ink. A grey slab reads as a broken app.
 - **Unaffordable is a red price, not a dead button.**
+- **Never strike a control's own hue into the card it stands on.** The kelp
+  FREE button on the kelp free-rung stock was the same-hue mush the keyline
+  exists to prevent, one layer up — the free stock is lagoon teal now so the
+  one pressable thing on the ladder pops. When a surface and its primary
+  action share a hue family, one of them moves.
+- **A takeover dims the world to 0.68** (ABYSS), up from 0.55: below that the
+  HUD behind the dialog still competed with the nameplate. The page stays
+  readable as a place; it stops reading as part of the dialog.
 - **`Lagoon.kind_for` reads a HUE BAND — the palette constants are not safe
   inputs.** `kind_for(Lagoon.BRASS)` returns `"primary"` (coral!), because
   BRASS's hue sits in the primary band. Name a colour inside the band you
@@ -53,6 +61,19 @@ Rules that fall out of it, all measured:
 
 ## Icons and currency
 
+- **A quantity wears its own currency.** Coin counts are struck in
+  `COIN_GOLD`, spin counts in `STEEL_HI` cyan, card counts in `CARD_VIOLET` —
+  everywhere: shop tiles, deal rungs, reward rows and trays, the machine's
+  pot. `Lagoon.amount()` / `Lagoon.amount_ink()` are the only source of the
+  mapping. Learned off the reference games on 2026-09-14: it is what lets a
+  shelf be read from across the room, and it is why every one of these
+  numerals sits in a deep rim (`RIM_INK`) — a light hue survives light stock
+  only inside one. The daily ladder keeps its own measured inks (same
+  hues, tuned per surface).
+- **Display type carries a soft drop shadow** (`title()` does it for you:
+  ~7% of the em, ABYSS at 0.30). The outline separates the letterform; the
+  shadow lifts it off the page. Never stack a heavy shadow on top of the
+  outline — it doubles the rim and reads as smear.
 - **The bolt is the spins you HAVE. The wheel is the act of spinning.** The
   reel's painted bolt appears everywhere a spin count is shown; the drawn
   ship's wheel appears in exactly two places, both verbs: the nav SPIN button

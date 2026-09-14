@@ -109,8 +109,15 @@ func apply_palette(p: Dictionary) -> void:
 	# The bezel is the same metal as the cabinet trim, so the hero button reads
 	# as part of the machine rather than a sticker sitting on top of it.
 	_mat.set_shader_parameter("bezel_col", _v3(Lagoon.BRASS))
-	_label.add_theme_color_override("font_color", Lagoon.SAND)
+	# Pure white, not sand. On the coral dome sand reads as a peach wash from
+	# arm's length; the most-pressed word in the game gets the full step, and
+	# the soft drop every other piece of display type now carries.
+	_label.add_theme_color_override("font_color", Color.WHITE)
 	_label.add_theme_color_override("font_outline_color", Lagoon.CORAL_LO.darkened(0.35))
+	_label.add_theme_constant_override("shadow_offset_x", 0)
+	_label.add_theme_constant_override("shadow_offset_y", 4)
+	_label.add_theme_color_override("font_shadow_color",
+		Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.30))
 
 static func _v3(c: Color) -> Vector3:
 	return Vector3(c.r, c.g, c.b)
