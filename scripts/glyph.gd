@@ -76,6 +76,7 @@ func _draw() -> void:
 		"medal":   _medal()
 		"tick":    _tick()
 		"spark":   _spark()
+		"tag":     _tag()
 		"crown":   _crown()
 		"sun":     _sun()
 		"moon":    _moon()
@@ -550,6 +551,37 @@ func _spark() -> void:
 	var c := _hue(Lagoon.BRASS_HI)
 	_shape(_star_pts(Vector2(50, 48), 44, 12, 4), c, 5.0, Lagoon.BRASS_MID)
 	_shape(_star_pts(Vector2(80, 78), 17, 5, 4), c, 3.0, Lagoon.BRASS_MID)
+
+# The deals door, and it replaced the spark on that disc for one reason: a big
+# four-pointed star with a little one beside it is, in 2026, the mark every
+# product on the phone puts on its AI button. Guy, 2026-09-14: the icon should
+# say what is behind it "and not just an artificial-intelligence symbol".
+#
+# A price tag does say it. It is the one object that means "an offer" without a
+# word on it, it is nothing else in this set (the crate is the offer's own
+# goods, the gift is the daily), and it is drawn in CORAL because coral is what
+# this game means by ACT NOW everywhere else -- the solo deal's ribbon, the buy
+# buttons, the SPIN key.
+#
+# Turned on its corner rather than drawn as an upright label: at 48px on a disc
+# a rectangle with a hole in one end reads as a luggage label, and the diamond
+# keeps a recognisable silhouette all the way down to the shop chip's 28.
+func _tag() -> void:
+	# The string first, so the tag laps over the end of it and the two read as
+	# threaded rather than as a stick touching a shape.
+	_bar(Vector2(17, 15), Vector2(48, 31), 8.0, Lagoon.BRASS, 4.0)
+	_disc(Vector2(17, 15), 8.0, Lagoon.BRASS_HI, 4.0, Lagoon.BRASS_LO)
+	_shape(_round_rect(Vector2(54, 54), Vector2(64, 64), 14.0, PI * 0.25),
+		_hue(Lagoon.CORAL), 6.0, Lagoon.CORAL_LO)
+	# The eye: a punched hole, not a dot -- dark inside with a brass eyelet, the
+	# same way the machine's rivets are drawn. It sits up in the corner the
+	# string comes out of, which is the half of the silhouette that says TAG.
+	_disc(Vector2(48, 31), 10.0, Lagoon.ABYSS, 5.0, Lagoon.BRASS)
+	# ...and the game's own mark for "yours", centred on what is left of the
+	# face. Low and wide of centre it fouled the tag's own outline at 48px --
+	# the two sat a couple of units apart and read as one ragged edge.
+	_shape(_star_pts(Vector2(58, 61), 17, 7.5), Lagoon.SAND, 4.0, Lagoon.BRASS_MID)
+	_spec(Vector2(54, 54), 27, 0.5)
 
 # The mallet on the piggy bank's button. A price with a verb next to it is a
 # choice; a price with the tool that does the deed next to it is an invitation,

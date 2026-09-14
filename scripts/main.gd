@@ -817,10 +817,22 @@ var _voy_timer_label: Label
 # The live power-up takeover: which one, when it dies, the earliest the next may
 # roll, and whether this one has already been put in front of the player.
 #
-# `powerup_shown` is why the takeover is not a nuisance. An offer that opens
-# itself every time the game is launched is an ad; one that opens itself once
-# per offer and then waits to be found in the shop is a shop window. The flag
-# is cleared when the offer rolls over, not when the app does.
+# `powerup_shown` IS NOW "SHOWN THIS SESSION", NOT "SHOWN THIS OFFER".
+#
+# It was the second of those for a long time, on the argument that an offer
+# which opens itself at every launch is an ad and one that opens itself once
+# and then waits to be found in the shop is a shop window. What that argument
+# missed is how little of the clock a player is actually in front of: a trio
+# runs 12 hours, most of which the phone is in a pocket, so "once per offer"
+# usually meant once -- on whichever arrival happened to land inside the
+# window -- and if that arrival was a busy one (a raid running, a popup up, an
+# auto spin) the guards below dropped it and there was no second chance.
+#
+# Guy, 2026-09-14: the trio "or any other deal has to show every time the user
+# connects". So the flag is cleared at the start of every session -- boot, and
+# any return from more than SESSION_AWAY in the background -- and cleared as
+# before when the offer itself rolls over. One deal per arrival, never two, and
+# never mid-session: see _maybe_show_offer and _arm_session_deals.
 var powerup_id := ""
 var powerup_until := 0.0
 var powerup_next := 0.0
@@ -841,6 +853,19 @@ var solo_until := 0.0
 var solo_next := 0.0
 var solo_shown := false
 var solo_pending := ""
+# The chain and the fair get the same one-per-session showing, and their flag
+# is NOT saved. The premium two keep theirs on disk because a receipt can come
+# back into a process that was killed inside Apple's sheet; an event ladder has
+# nothing to lose that way, and a flag that only ever means "this session" is
+# clearer as a field that cannot outlive one.
+var _event_shown := false
+# How long in the background counts as a new session. Anything under it is
+# somebody flicking to the messages app and back, and a deal opening itself on
+# a four-second glance is the interruption the whole of _maybe_show_offer's
+# guard list exists to prevent. Three minutes rather than the sixty seconds the
+# offline banner uses: that one reports on time that passed, this one takes the
+# screen.
+const SESSION_AWAY := 180.0
 # The loyalty card: paid purchases since the last chest it paid out.
 var loyalty_buys := 0
 # Where each shelf starts, by key. Node references, rebuilt with the page every
@@ -1212,6 +1237,10 @@ func _after_boot() -> void:
 	_powerup_tick()
 	_solo_tick()
 	_update_badges()
+	# A launch is an arrival, so whatever the calendar has running is owed a
+	# showing. AFTER the two ticks above, which are what put a fresh save's
+	# first offer on the books in the first place.
+	_arm_session_deals()
 	# ...unless a SHOT is being taken. The takeover's 2.2s delay lands inside
 	# the harness's settle window, so a fresh save photographed "the spin
 	# page" and got the power-up door instead. A harness that WANTS the
@@ -2703,6 +2732,13 @@ func _close_login() -> void:
 		_after(1.5, func() -> void:
 			if _popup == null and not _raiding():
 				_open_intro())
+	# ...and the deal the gate was standing in front of. Coming through sign-in
+	# is an arrival like any other, and it is the one the 2.2-second one-shot on
+	# the boot path always lost: that timer fires while the gate is still up,
+	# _maybe_show_offer sees _login_layer and declines, and nothing asked again.
+	# Behind the intro on purpose -- a first run gets the welcome, and its offer
+	# on the next arrival.
+	_after(2.6, _maybe_show_offer)
 
 func _process(delta: float) -> void:
 	# The pages are built a step at a time behind the title screen, so until it
@@ -2947,6 +2983,14 @@ func _resume_from_away() -> void:
 	# arrival as far as the player is concerned, and only one of them goes
 	# through boot. Last, after the offline credits have landed, so the takeover
 	# never opens on top of a "while you were away" banner.
+	#
+	# THE THRESHOLD IS WHAT KEEPS THIS FROM BECOMING THE THING IT REPLACED. A
+	# deal is owed one showing per arrival, and an arrival is a return from
+	# SESSION_AWAY or longer; anything shorter is the same session continuing --
+	# a tap on a notification, a look at the clock, a copied code pasted back in
+	# -- and the flags stay as they were, so nothing opens.
+	if elapsed >= SESSION_AWAY:
+		_arm_session_deals()
 	_maybe_show_offer()
 
 # =============================================================================
@@ -4442,7 +4486,14 @@ func _add_side_rail(parent: Control, top: float) -> void:
 			# event rows -- with those gone this disc is the only door the two
 			# events have, so it is permanent now and the cooldown opens the
 			# next-event teaser instead. See _open_deal.
-			["spark",  "Event",      "deal",   _open_deal]]))
+			#
+			# A TAG, NOT A SPARK, and no alert dot on it. Guy, 2026-09-14, off
+			# his own phone: the icon "should change to something more relevant
+			# and not just an artificial-intelligence symbol", and the red badge
+			# beside it "is not relevant". Both notes are about the same thing --
+			# this is the door to the deals, and it was wearing the two marks
+			# that say least about them. See Glyph._tag and _update_badges.
+			["tag",    "Deals",      "deal",   _open_deal]]))
 
 # One lane. The run grows downward from its top, so adding a button lengthens
 # the rail rather than re-centring the ones above it.
@@ -4843,8 +4894,22 @@ func _update_badges() -> void:
 	if _badges.has("piggy"):
 		_badges["piggy"].visible = _piggy_full()
 	if _badges.has("deal"):
-		# The dot means "a free rung is waiting", never "an event exists".
-		_badges["deal"].visible = _deal_free_ready()
+		# NO DOT ON THE DEALS DISC, and this is the shop-dot argument arriving
+		# at the disc the shop dot was moved off.
+		#
+		# It meant "a free rung is waiting", never "an event exists", which was
+		# the honest version of the rule -- and it still stood almost all the
+		# time. A chain runs 24 hours in every 54 and its rungs alternate free
+		# and paid, so the dot was lit for most of a live chain and for every
+		# open stall at the fair: a red alert badge that is on more often than
+		# it is off is wallpaper by the second hour, exactly as it was when the
+		# Shop tab wore one for a live offer of any age. Guy, 2026-09-14: it
+		# "is not relevant".
+		#
+		# What is left saying it is the disc itself, which is now drawn as a
+		# price tag, and the deal that opens itself at every arrival (see
+		# _maybe_show_offer). Neither of those needs an exclamation mark.
+		_badges["deal"].visible = false
 	# The takeover's disc on the left rail exists exactly as long as the offer
 	# does -- unlike the spark disc there is nothing to open in the dark (the
 	# next-offer countdown already lives in the spark's teaser), and a disc
@@ -9906,20 +9971,6 @@ func _deal_countdown_text() -> String:
 	var left := maxi(0, int(deal_until - _now()))
 	return "%d:%02d:%02d" % [left / 3600, (left / 60) % 60, left % 60]
 
-# True when the rung the player is standing in front of costs nothing. This is
-# what lights the rail disc, and it is deliberately NOT "a chain is running":
-# a badge that means "there is something here you could buy" is an advert, and
-# the game already has a shop tab for that. A badge that means "there is
-# something here that is free and yours" is information, and it is the only
-# claim this dot makes.
-func _deal_free_ready() -> bool:
-	var step := _deal_step()
-	if not step.is_empty() and not Deals.is_paid(step):
-		return true
-	# The fair makes the same claim through the same disc: a free stall, open
-	# and untaken, is "something here that is free and yours".
-	return _fair_free_ready()
-
 # Rolls a chain in, and rolls a dead one out. Called once a second off the same
 # tick that drives the timed offer.
 func _deal_tick() -> void:
@@ -10678,19 +10729,6 @@ func _fair_took(i: int) -> bool:
 # in front of a till is a sale the store did not make.
 func _fair_stall_open() -> bool:
 	return _now() >= fair_restock
-
-# What lights the rail disc while a fair is running: a stall that is free, open
-# and not yet taken. Same claim the chain's badge makes -- "there is something
-# here that is free and yours" -- and never "an event exists".
-func _fair_free_ready() -> bool:
-	var fair := _active_fair()
-	if fair.is_empty() or not _fair_stall_open():
-		return false
-	var deals: Array = fair["deals"]
-	for i in deals.size():
-		if not _fair_took(i) and String((deals[i] as Dictionary).get("pack", "")) == "":
-			return true
-	return false
 
 func _fair_tick() -> void:
 	var now := _now()
@@ -12454,7 +12492,7 @@ func _powerup_tick() -> void:
 	if _current_page == pages.get("shop"):
 		_fill_page("shop")
 
-# ONCE PER OFFER, AT THE START OF A SESSION, AND ONLY WHERE THERE IS NOTHING TO
+# ONE DEAL AT THE START OF EVERY SESSION, AND ONLY WHERE THERE IS NOTHING TO
 # INTERRUPT.
 #
 # It was on the once-a-second tick first and that was wrong twice over. The
@@ -12466,25 +12504,67 @@ func _powerup_tick() -> void:
 # player has to dismiss it to get back to what they were doing is exactly what
 # makes people uninstall this kind of game.
 #
-# So it fires at the two moments that honestly are "a session is starting" --
-# boot, and coming back from the background -- and the offer is otherwise found
-# where offers belong, on the shop page. Once per offer, not once per launch:
-# the flag clears when the offer rolls over, not when the app does.
+# So it fires at the three moments that honestly are "a session is starting" --
+# boot, coming through the sign-in gate, and coming back from more than
+# SESSION_AWAY in the background -- and never in between.
+#
+# WHAT CHANGED ON 2026-09-14 is how often, not when. It was once per OFFER, on
+# the argument that a screen which opens itself at every launch is an ad. That
+# is true of a game somebody plays for an hour; this one is opened for four
+# minutes at a time, so "once per offer" landed on one arrival in five and
+# silently lost that one whenever the arrival was busy. Guy had by then asked
+# twice for a trio he had never once seen. It is once per ARRIVAL now, capped
+# at one deal each -- see _arm_session_deals.
 #
 # The guards below are the second half of the same argument. A takeover over a
 # raid, a chest result or the sign-in gate lands on top of something the player
 # asked for, so it waits for the machine or the island with nothing else up.
-func _maybe_show_offer() -> void:
-	# Whichever of the two the calendar has running, and never both -- they
-	# cannot overlap (see SOLO_GAP), so this is a sequence and not a choice.
-	# The solo is asked first only because it is the shorter window: a solo that
-	# somehow found itself sharing an hour with a trio is the one with less time
-	# left to be seen.
+func _maybe_show_offer(forced := false) -> void:
+	# THE ORDER IS THE WHOLE OF THE POLICY, and it is a sequence at every step
+	# rather than a choice: the solo and the trio share one calendar slot (see
+	# SOLO_GAP) and the chain and the fair share the other (FAIR_GAP), so at any
+	# instant there is at most one premium offer and at most one event running.
+	#
+	# Premium first. It is the one with a price on it and the one on the shorter
+	# clock; an event ladder is still there this evening and a 12-hour offer is
+	# not. The solo goes before the trio only because its window is shorter
+	# again.
+	#
+	# The event is the "or any other deal" half of Guy's note. Before it, a
+	# player arriving during the 20 hours between offers was shown nothing at
+	# all even with a chain running -- the game had an event on and did not
+	# mention it, which is the same hole the dark teaser was built to close and
+	# in the place it matters most, the moment the app opens.
+	#
+	# NOT WHILE A HARNESS IS DRIVING. Twenty tools under tools/ instantiate this
+	# script and then call its methods for anything up to several minutes, and a
+	# dialog that opens itself part-way through changes what is on screen under
+	# a hundred timed awaits -- qa_full's island-cost check came back "spent
+	# 43500, expected 84000" on one run in three when the takeover was the only
+	# thing that could do this, and each harness had to buy its own quiet by
+	# pushing the offer calendar out by a month. The event half has no such
+	# lever: a chain rolls itself in on a fresh save's first tick, so every one
+	# of those tools would have needed a new fixture line. One question here
+	# instead, asked of the scene that is actually running.
+	#
+	# `forced` is how a harness asks for the arrival on purpose: preview's
+	# ARRIVE=1 drives this exact function rather than a hand-rolled copy of it,
+	# so what gets looked at is what a player gets.
+	if _harness_driven() and not forced:
+		return
 	var solo_due := not _active_solo().is_empty() and not solo_shown
 	var pu_due := not _active_powerup().is_empty() and not powerup_shown
-	if not solo_due and not pu_due:
+	var event_due := not _event_shown and (not _active_deal().is_empty() \
+			or not _active_fair().is_empty())
+	if not solo_due and not pu_due and not event_due:
 		return
 	if _popup != null or _boot != null or _journey_layer != null:
+		return
+	# The sign-in screen is not a popup -- it is its own layer at z 200 -- so
+	# nothing above this line saw one, and a takeover fired at 2.2 seconds on a
+	# launch that ended at the gate opened UNDERNEATH it, marked itself shown
+	# and was never seen. _close_login asks again once the player is through.
+	if _login_layer != null:
 		return
 	if _current_page != slot_page and _current_page != village_page:
 		return
@@ -12501,14 +12581,46 @@ func _maybe_show_offer() -> void:
 	# would have noticed one.
 	if auto_spin or _raiding():
 		return
-	if solo_due:
-		solo_shown = true
-		_save_game()
-		_open_solo()
-		return
+	# ONE DEAL PER ARRIVAL. All three flags are set by whichever one opens, so
+	# the player who was shown the trio is not handed the chain ladder the
+	# moment they close it, and a flick away and back inside the same session
+	# opens nothing. The next arrival starts the list again from the top.
+	solo_shown = true
 	powerup_shown = true
+	_event_shown = true
 	_save_game()
-	_open_powerup()
+	if solo_due:
+		_open_solo()
+	elif pu_due:
+		_open_powerup()
+	else:
+		# Routes chain -> fair by itself, and cannot fall through to the dark
+		# teaser: event_due is exactly "one of those two is live".
+		_open_deal()
+
+# A session is starting, so every deal the calendar has running is owed one
+# showing again. Boot calls this, and so does a return from long enough in the
+# background to count as an arrival rather than an app switch.
+#
+# It does NOT save. The flags are written by the showing itself, and a save here
+# would be one more write on the boot path for a field whose false value is the
+# safe one to lose: the worst a dropped reset can do is show a deal one arrival
+# later.
+func _arm_session_deals() -> void:
+	powerup_shown = false
+	solo_shown = false
+	_event_shown = false
+
+# True when this instance was built by something under tools/ rather than by
+# main.tscn. tools/ is excluded from the export preset, so on a real build no
+# scene can answer yes.
+#
+# The harnesses that WANT a deal screen open it by name -- store_shot's
+# _shot_powerup, preview's POWERUP=/SOLO=/DEAL= -- which is the difference
+# between a screen a test asked for and one that arrived on its own.
+func _harness_driven() -> bool:
+	var cs := get_tree().current_scene
+	return cs != null and cs.scene_file_path.begins_with("res://tools/")
 
 func _open_powerup() -> void:
 	var pu := _active_powerup()

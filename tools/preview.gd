@@ -99,6 +99,13 @@ func _ready() -> void:
 			# entrance -- the burst and the chest both play one.
 			if OS.has_environment("SOLO"):
 				_solo.call_deferred(game, OS.get_environment("SOLO"))
+			# ARRIVE=1 plays a session start: whatever deal the calendar has
+			# running opens itself the way it does when a player connects.
+			# main.gd declines this automatically under tools/ (see
+			# _harness_driven), so the only way to look at the thing a player
+			# actually meets on launch is to ask for it by name.
+			if OS.has_environment("ARRIVE"):
+				_arrive.call_deferred(game)
 			# GOTO=<page> plays the page change itself, which is the only way
 			# to see what main.gd's shell is for: the bar and the side discs
 			# have to hold still while the page under them slides. A still of
@@ -136,7 +143,7 @@ func _ready() -> void:
 			and not OS.has_environment("SCORE") and not OS.has_environment("CLAIM") \
 			and not OS.has_environment("GOTO") and not OS.has_environment("TIP") \
 			and not OS.has_environment("DEAL") and not OS.has_environment("POWERUP") \
-			and not OS.has_environment("SOLO") \
+			and not OS.has_environment("SOLO") and not OS.has_environment("ARRIVE") \
 			and not OS.has_environment("CLAN") and not OS.has_environment("CAMEO"):
 		_shoot.call_deferred()
 
@@ -366,6 +373,18 @@ func _solo(game: Control, id: String) -> void:
 	game.set("solo_next", 0.0)
 	game.set("solo_pending", "")
 	game.call("_open_solo")
+	if OS.has_environment("SHOT"):
+		await _reel(OS.get_environment("SHOT"),
+			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 1,
+			float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.5)
+
+func _arrive(game: Control) -> void:
+	while game.get("_boot") != null:
+		await get_tree().process_frame
+	# The same beat the boot path leaves: everything the game says about the
+	# time away lands first, and the deal comes in over a settled screen.
+	await get_tree().create_timer(2.2).timeout
+	game.call("_maybe_show_offer", true)
 	if OS.has_environment("SHOT"):
 		await _reel(OS.get_environment("SHOT"),
 			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 1,
@@ -657,7 +676,7 @@ func _open_page(game: Control, key: String) -> void:
 func _glyph_sheet() -> void:
 	var kinds := ["coin", "spin", "wheel", "shield", "island", "shop", "cards", "quests",
 		"gift", "bell", "trophy", "gear", "star", "plus", "close", "rivet", "anchor",
-		"piggy", "box", "medal", "tick", "spark", "crown", "sun", "moon",
+		"piggy", "box", "medal", "tick", "spark", "tag", "crown", "sun", "moon",
 		"calendar", "warn", "clan"]
 	if OS.has_environment("GLYPHS"):
 		kinds = Array(OS.get_environment("GLYPHS").split(","))
