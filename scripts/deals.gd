@@ -316,6 +316,198 @@ static func powerup_verify() -> Array:
 	return problems
 
 # =============================================================================
+#  THE SOLO DEAL — one offer, one screen, one button
+# =============================================================================
+#
+# Guy, 2026-09-13: the deals wanted to be SEVERAL SHAPES, and the third is "a
+# big deal on its own, where the icons are big and prominent and there is one
+# big buy button".
+#
+# It is worth saying why that is a third mechanic rather than a smaller version
+# of the other two, because on a spreadsheet all three are "a pack with extra
+# in it" and only one of them would then deserve to exist.
+#
+#   THE CHAIN IS A QUEUE.  One rung is live, the next is locked, and its whole
+#   pull is that the thing you want is visible and not yet yours. It asks for a
+#   sitting.
+#
+#   THE 1+2 IS A COMPARISON.  Three columns, a price under one of them and FREE
+#   under the other two. Its pull is that there is nothing to price it against.
+#   It asks for a look.
+#
+#   THE SOLO IS A CLAIM.  One heap of goods, one number saying what it is worth,
+#   one button. Nothing to choose, nothing to read, nothing locked. It asks for
+#   ten seconds, which is the only budget most sessions have -- and it is the
+#   shape the reference stores put in front of a player who has just run out of
+#   spins, because at that moment a ladder is an obstacle and a grid is work.
+#
+# WHAT MAKES IT HONEST IS THE MULTIPLE, AND THE MULTIPLE IS MEASURED. The badge
+# on the burst does not say "MEGA" and hope; it says how many times the shop's
+# own entry rung would charge for the same goods, computed by `worth_usd` from
+# the three price ladders that are actually on the shelf. It is rounded DOWN and
+# `solo_verify` refuses a deal that cannot reach x3, so the number on the screen
+# is a floor rather than a boast. A store that is caught rounding its own
+# discount up is a store that does not get a second purchase.
+#
+# THE CONTENTS UNDERCUT THE SHELF ON PURPOSE, and the calendar is what keeps
+# that from eating the shop: the solo runs for SOLO_HOURS inside the 1+2's dark
+# window (see SOLO_GAP in main.gd), which is about eight hours in thirty-six.
+# A deal that is always available is a price list, and a price list that
+# undercuts the shelf by half is just a cheaper shelf.
+
+# The entry rung of the chest ladder: two cards for $0.99. The spin and coin
+# ladders keep their own base rates in CV, and this is the third -- a mixed heap
+# cannot be valued without one, and picking a number by feel is exactly what the
+# rest of this file refuses to do with prices.
+const CARD_BASE_RATE := 2.0 / 0.99
+
+# What a heap of goods would cost, in dollars, bought at the cheapest rung of
+# each of the shop's own ladders.
+#
+# SHIELDS COUNT AS NOTHING, because no product in the store sells one and a
+# price invented here would be a price nobody can check. That makes every
+# multiple computed from this an UNDERSTATEMENT, which is the safe direction for
+# a number printed next to a price.
+static func worth_usd(reward: Dictionary) -> float:
+	var usd := 0.0
+	if int(reward.get("spins", 0)) > 0:
+		usd += float(reward["spins"]) / CV.SPIN_BASE_RATE
+	if int(reward.get("coins", 0)) > 0:
+		usd += float(reward["coins"]) / CV.COIN_BASE_RATE
+	if int(reward.get("cards", 0)) > 0:
+		usd += float(reward["cards"]) / CARD_BASE_RATE
+	return usd
+
+# Eight hours, which is shorter than either of the other two events and is meant
+# to be: the solo has nothing to come back for. A chain rewards a second visit
+# because there is another rung; the fair rewards one because the stalls
+# restock. This is one button, so the only thing its clock can do is say how
+# long the player has to press it, and a clock that says "tomorrow" says
+# "later".
+const SOLO_HOURS := 8.0
+const SOLO_DURATION := SOLO_HOURS * 3600.0
+
+# The deals. One pack each, plus a bonus paid on top of everything the pack
+# already pays -- never carved out of it, for the same reason the 1+2's two free
+# columns are real: a discount the player can disprove with arithmetic is worse
+# than no discount.
+#
+# Three price points, and the multiple CLIMBS with the price (x5, x6, x7) for
+# the same reason the shop's ladders do: the small rung exists to be compared
+# against, and the revenue lives above it.
+const SOLOS := [
+	{
+		"id": "so_squall",
+		"name": "Squall Hoard",
+		"tag": "SPECIAL  DEAL",
+		"blurb": "Everything in the Squall Bundle, and the same again free",
+		"pack": "to_squall",
+		"chest": "chest_t0",
+		"hue": Color(0.325, 0.596, 0.902),
+		"bonus": {"spins": 90, "coins": 90000, "cards": 1},
+	},
+	{
+		"id": "so_moon",
+		"name": "Moonlit Hoard",
+		"tag": "MEGA  DEAL",
+		"blurb": "One press, and the whole hoard is yours",
+		"pack": "to_moon",
+		"chest": "chest_t1",
+		"hue": Color(0.949, 0.588, 0.180),
+		# NO SHIELD, AND THAT IS A RULE ABOUT THE SCREEN RATHER THAN ABOUT THE
+		# VALUE. The solo draws three kinds of goods at 128 units each and a
+		# fourth will not fit at a size worth drawing -- so a shield in here is
+		# something the player pays for and never sees advertised, which is
+		# value thrown away. Anything that cannot go on the stage does not go in
+		# the box.
+		"bonus": {"spins": 200, "coins": 280000, "cards": 1},
+	},
+	{
+		"id": "so_kraken",
+		"name": "Kraken's Hoard",
+		"tag": "BIGGEST  DEAL",
+		"blurb": "The largest haul the lagoon has ever floated",
+		"pack": "to_kraken",
+		"chest": "chest_t2",
+		"hue": Color(0.549, 0.353, 0.855),
+		"bonus": {"spins": 320, "coins": 500000, "cards": 3},
+	},
+]
+
+static func solo_by_id(id: String) -> Dictionary:
+	for s in SOLOS:
+		if String(s["id"]) == id:
+			return s
+	return {}
+
+static func solo_pack(solo: Dictionary) -> Dictionary:
+	return CV.pack_by_id(String(solo.get("pack", "")))
+
+# The bonus alone -- what the pack does NOT already pay. This is what
+# _solo_credit_purchase hands over once the pack itself has been granted, so it
+# is the one place that decides what "on top" means.
+static func solo_bonus(solo: Dictionary) -> Dictionary:
+	return solo.get("bonus", {})
+
+# Everything the button buys, pack and bonus in one record. This is what the
+# screen draws, and it is built rather than written down so the two halves can
+# never disagree about what is in the box.
+static func solo_total(solo: Dictionary) -> Dictionary:
+	var pack := solo_pack(solo)
+	var bonus: Dictionary = solo_bonus(solo)
+	var out := {}
+	for key in ["spins", "coins", "cards", "shields"]:
+		var n := int(pack.get(key, 0)) + int(bonus.get(key, 0))
+		if n > 0:
+			out[key] = n
+	# The cards come out of the PACK's chest, at the pack's tier and with the
+	# pack's guarantee -- the bonus cards are drawn the same way (see
+	# _solo_credit_purchase), so one tier describes the whole heap.
+	out["tier"] = int(pack.get("tier", 1))
+	out["guarantee5"] = bool(pack.get("guarantee5", false))
+	return out
+
+# How many times over the shop's entry rungs would charge for the same goods.
+# Rounded DOWN, and never printed below 2 -- see the note on worth_usd.
+static func solo_multiple(solo: Dictionary) -> int:
+	var usd := CV.price_usd(solo_pack(solo))
+	if usd <= 0.0:
+		return 0
+	return int(floor(worth_usd(solo_total(solo)) / usd))
+
+static func solo_verify() -> Array:
+	var problems := []
+	var seen := {}
+	for solo in SOLOS:
+		var id := String(solo["id"])
+		if seen.has(id):
+			problems.append("duplicate solo id: %s" % id)
+		seen[id] = true
+		var pack := solo_pack(solo)
+		# The same rule every price in this game obeys: it has to name a product
+		# Apple and Google already sell. See verify().
+		if pack.is_empty():
+			problems.append("%s: no such pack '%s'" % [id, solo.get("pack", "")])
+			continue
+		if not IAP.all_product_ids().has(IAP.product_id(pack)):
+			problems.append("%s: '%s' is not a sold product" % [id, solo["pack"]])
+		if (solo_bonus(solo) as Dictionary).is_empty():
+			problems.append("%s: nothing is paid on top of the pack" % id)
+		# THE NUMBER ON THE BURST IS THE WHOLE PITCH, and a solo that cannot
+		# reach x3 is selling the shelf rate with bunting on it -- the top of
+		# the standing shop already runs about x4 on its own.
+		var mult := solo_multiple(solo)
+		if mult < 3:
+			problems.append("%s: worth only x%d -- the shelf already beats that"
+				% [id, mult])
+		# A solo whose cards are randomized needs the pack to say what tier they
+		# are drawn at, or the odds door on the screen opens onto the wrong
+		# table.
+		if int(solo_total(solo).get("cards", 0)) > 0 and not pack.has("tier"):
+			problems.append("%s: pays cards but its pack names no chest tier" % id)
+	return problems
+
+# =============================================================================
 #  THE FAIR — nine one-off deals, taken in any order, on a points board
 # =============================================================================
 #

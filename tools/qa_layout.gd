@@ -127,6 +127,7 @@ func _ready() -> void:
 		await get_tree().process_frame
 		await get_tree().process_frame
 		_check_page("quests " + board, qp)
+		await _check_rung_taps(qp, board)
 		qp.visible = was_q
 	m.island_level = 1
 
@@ -149,6 +150,51 @@ func _ready() -> void:
 		_check_fixed_height("popup " + opener, m._popup)
 		m._close_popup(true)
 		await get_tree().process_frame
+	# THE THREE DEAL SCREENS, which were not in this sweep and are the three
+	# that most needed to be: they are the widest dialogs in the game, they are
+	# the only ones built out of drawn goods rather than type, and all three
+	# have overflowed. The ladder runs past the bottom of a 720x1280 sheet by
+	# construction; the 1+2 put its countdown under the fold; the solo deal
+	# stood floor-to-ceiling around 735 units of content because a deferred
+	# measurement was taken before its shader rects had settled.
+	#
+	# The state comes from the SCREENSHOT harness's own seeding rather than
+	# being set up again here, so the two can never disagree about what "a live
+	# offer" looks like -- the same argument _shot_quests settles for the
+	# mission board.
+	m.deal_id = ""
+	m.deal_until = 0.0
+	m.deal_next = 0.0
+	m.deal_taken = 0
+	m._deal_tick()
+	for deal_opener in ["_open_deal", "_shot_powerup", "_shot_solo"]:
+		m.call(deal_opener)
+		await get_tree().process_frame
+		await get_tree().process_frame
+		_check_page("popup " + deal_opener, m._popup)
+		_check_fixed_height("popup " + deal_opener, m._popup)
+		m._close_popup(true)
+		await get_tree().process_frame
+	# ...and the ladder again, parked mid-climb, which is the only state that
+	# draws all three kinds of rung at once -- spent, live and locked -- and the
+	# only one where a TAKEN medallion is on the page to be measured.
+	m.deal_taken = 2
+	m.call("_open_deal")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check_page("popup _open_deal mid-climb", m._popup)
+	_check_fixed_height("popup _open_deal mid-climb", m._popup)
+	m._close_popup(true)
+	await get_tree().process_frame
+	m.deal_id = ""
+	m.deal_until = 0.0
+	m.deal_taken = 0
+	m.solo_id = ""
+	m.solo_until = 0.0
+	m.solo_next = 0.0
+	m.powerup_id = ""
+	m.powerup_until = 0.0
+
 	# EVERY RUNG'S CHIP, ON THE CARD.
 	#
 	# The bubble a tapped rung puts up is anchored to the rung, and the rungs
@@ -232,6 +278,84 @@ func _ready() -> void:
 			page.visible = was
 	print("QA-LAYOUT: %s" % ("ALL PASS" if fails == 0 else "%d FAILURES" % fails))
 	get_tree().quit(1 if fails > 0 else 0)
+
+# THE WORD "CLAIM" HAS TO BE THE BUTTON, and this is here because it was not.
+#
+# Guy, 2026-09-13, off his phone: "the button there is broken -- I press it with
+# my finger and it does not collect." It was not the tap target and it was not
+# the handler. A rung's Button sits UNDERNEATH the face that is printed on it,
+# so every node in that face has to be deaf to the finger -- and Lagoon.chip is
+# a PanelContainer, which defaults to MOUSE_FILTER_STOP. The chip that says
+# CLAIM was therefore the one dead spot on a card whose every other pixel
+# worked: the game drew a target and then covered it with the label naming it.
+#
+# Reading the source cannot catch that -- the filter lives in Lagoon, three
+# files away from the rung -- so this asks the viewport the same question a
+# finger does: point at the word, and see which control answers.
+#
+# The card is scrolled up the page first. The lower band of the track sits at
+# y ~1150 on an unscrolled quests page, which is behind the nav shell's tab
+# bar, and a probe there answers "the Island button" quite correctly. That is
+# the harness standing in the wrong place, not a bug in the page.
+func _check_rung_taps(qp: Control, board: String) -> void:
+	var rungs := []
+	for b in qp.find_children("*", "Button", true, false):
+		if b.has_meta("mile_pip"):
+			rungs.append(b)
+	if rungs.is_empty():
+		print("  [skip] %s reward track has no claimable rung to press" % board)
+		return
+	var sc: ScrollContainer = null
+	for c in qp.find_children("*", "ScrollContainer", true, false):
+		sc = c
+		break
+	if sc != null:
+		# The TOPMOST rung, not the first one found. The track's two bands are
+		# 340 units apart and find_children returns them in build order, which
+		# starts on the lower one -- scrolling to that put the upper band above
+		# the scroller's own rect, where it is clipped, and a probe there reads
+		# straight through the page to the shell behind it.
+		var top: float = (rungs[0] as Control).global_position.y
+		for b in rungs:
+			top = minf(top, (b as Control).global_position.y)
+		sc.scroll_vertical = maxi(0, sc.scroll_vertical + int(top) - 320)
+		await get_tree().process_frame
+		await get_tree().process_frame
+	for b in rungs:
+		var hit: Button = b
+		# The word a finger aims at, rather than the middle of the card -- the
+		# middle was never the broken part.
+		var word: Control = null
+		for l in hit.get_parent().find_children("*", "Label", true, false):
+			if (l as Label).text == "CLAIM":
+				word = l
+		if word == null:
+			continue
+		var at: Vector2 = word.global_position + word.size * 0.5
+		# A rung the harness could not bring into view is a rung this cannot
+		# say anything about. Reported as a skip rather than passed quietly --
+		# a check that silently measures nothing is worse than no check.
+		if sc != null and not sc.get_global_rect().has_point(at):
+			print("  [skip] %s rung %d is not on screen to be pressed" % [
+				board, int(hit.get_meta("mile_pip"))])
+			continue
+		var mm := InputEventMouseMotion.new()
+		mm.position = at
+		mm.global_position = at
+		# in_local_coords, because the window is 540 wide and the canvas is 720:
+		# an event pushed in screen units lands 0.75 of the way to where it was
+		# aimed, which on this page is the tab bar.
+		get_viewport().push_input(mm, true)
+		await get_tree().process_frame
+		var hov := get_viewport().gui_get_hovered_control()
+		var ok := hov == hit
+		if not ok:
+			fails += 1
+		print("  [%s] %s rung %d: the word CLAIM answers to its own button%s" % [
+			"ok" if ok else "FAIL", board, int(hit.get_meta("mile_pip")),
+			"" if ok else " -- %s (%s) swallows the press" % [
+				hov.name if hov else "<nothing>",
+				hov.get_class() if hov else "-"]])
 
 # The width of the phone the game draws for. project.godot's viewport is
 # 720x1280 and every page is laid out in those units, so this is the edge that

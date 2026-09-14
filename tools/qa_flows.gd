@@ -674,6 +674,10 @@ func _t_powerup() -> void:
 	print("power up")
 	_chk("every power-up is well-formed", Deals.powerup_verify().is_empty(),
 		", ".join(PackedStringArray(Deals.powerup_verify())))
+	# The solo deals: every pack a product the stores sell, a bonus that is
+	# genuinely on top, and a printed multiple the shelf does not already beat.
+	_chk("every solo deal is well-formed", Deals.solo_verify().is_empty(),
+		", ".join(PackedStringArray(Deals.solo_verify())))
 
 	# THE LOYALTY CARD IS HELD OFF FOR THE WHOLE OF THIS TEST, and finding out
 	# why cost the first run of it: every purchase below is measured in spins,
@@ -769,6 +773,91 @@ func _t_powerup() -> void:
 	_chk("the loyalty card pays every %d and resets" % Deals.LOYALTY_TARGET,
 		chests == 2 and m.loyalty_buys == 0, "%d chests, at %d" % [chests, m.loyalty_buys])
 
+	# --- the solo deal, the other half of the same calendar slot ---
+	#
+	# The same three claims the trio is held to: the shelf pays the pack alone,
+	# the deal's own screen pays the pack AND the bonus, and a replayed receipt
+	# -- an interrupted transaction re-delivered at boot -- pays the bonus once.
+	for solo in Deals.SOLOS:
+		var sid := String(solo["id"])
+		var spack: Dictionary = Deals.solo_pack(solo)
+		var sbonus: Dictionary = Deals.solo_bonus(solo)
+		var bonus_spins := int(sbonus.get("spins", 0))
+
+		# Off the shelf: nothing recorded the intent, so nothing is owed.
+		m._close_popup(true)
+		m.solo_id = ""
+		m.solo_pending = ""
+		m.loyalty_buys = 0
+		# The meter at the cap and the shield slots empty, for the two reasons
+		# the trio's own block above spells out: a refill landing mid-delta
+		# reads as one spin too many, and a shield that does not fit is refunded
+		# as a spin. See [[loot-lagoon-qa-harness-traps]].
+		m.spins = m.SPIN_CAP
+		m._regen_accum = 0.0
+		m.shields = 0
+		var sbefore: int = m.spins
+		m._on_purchase_ok(IAP.PREFIX + String(solo["pack"]))
+		m._close_popup(true)
+		await get_tree().process_frame
+		_chk("%s off the shelf pays the pack only" % sid,
+			m.spins == sbefore + int(spack.get("spins", 0)),
+			"+%d, pack is %d" % [m.spins - sbefore, int(spack.get("spins", 0))])
+
+		# From the deal's own screen, where the bonus is owed.
+		m.solo_id = sid
+		m.solo_until = m._now() + Deals.SOLO_DURATION
+		m.solo_pending = sid
+		m.spins = maxi(m.spins, m.SPIN_CAP)
+		m._regen_accum = 0.0
+		m.shields = 0
+		sbefore = m.spins
+		m.loyalty_buys = 0
+		m._on_purchase_ok(IAP.PREFIX + String(solo["pack"]))
+		m._close_popup(true)
+		await get_tree().process_frame
+		_chk("%s from its own screen pays the pack and the bonus" % sid,
+			m.spins == sbefore + int(spack.get("spins", 0)) + bonus_spins,
+			"+%d, wanted %d" % [m.spins - sbefore,
+				int(spack.get("spins", 0)) + bonus_spins])
+		_chk("%s is spent once it is bought" % sid, m.solo_id == "")
+
+		# The replay.
+		sbefore = m.spins
+		m.loyalty_buys = 0
+		m._on_purchase_ok(IAP.PREFIX + String(solo["pack"]))
+		m._close_popup(true)
+		await get_tree().process_frame
+		_chk("%s does not pay its bonus twice" % sid,
+			m.spins == sbefore + int(spack.get("spins", 0)),
+			"+%d" % (m.spins - sbefore))
+
+	# THE TWO OFFERS NEVER RUN AT ONCE. It is the invariant the OFFER disc rests
+	# on -- _open_offer picks by sequence, not by choice -- and the thing that
+	# enforces it is a `solo_next` of zero meaning "not scheduled". A solo that
+	# could arm on a fresh save would put a paid takeover in front of a player
+	# on the day they installed.
+	m.solo_id = ""
+	m.solo_until = 0.0
+	m.solo_next = 0.0
+	m.powerup_id = "pu_squall"
+	m.powerup_until = m._now() + Deals.POWERUP_DURATION
+	m._solo_tick()
+	_chk("an unscheduled solo never arms", m.solo_id == "", m.solo_id)
+	m.solo_next = m._now() - 1.0
+	m._solo_tick()
+	_chk("a solo never arms over a live trio", m.solo_id == "", m.solo_id)
+	m.powerup_id = ""
+	m.powerup_until = 0.0
+	m._solo_tick()
+	_chk("a scheduled solo arms once the trio is gone", m.solo_id != "")
+	_chk("...and disarms itself so only one lands per cycle", m.solo_next == 0.0,
+		str(m.solo_next))
+
+	m.solo_id = ""
+	m.solo_until = 0.0
+	m.solo_next = 0.0
+	m.solo_pending = ""
 	m.powerup_id = ""
 	m.powerup_next = 0.0
 	m.powerup_pending = ""

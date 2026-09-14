@@ -93,6 +93,12 @@ func _ready() -> void:
 			# only way to look at it twice in a row.
 			if OS.has_environment("POWERUP"):
 				_powerup.call_deferred(game, OS.get_environment("POWERUP"))
+			# SOLO=<id> opens the single big deal, the other half of the same
+			# calendar slot. Same argument as POWERUP: one showing per offer at
+			# the start of a session, so this is the only way to look at its
+			# entrance -- the burst and the chest both play one.
+			if OS.has_environment("SOLO"):
+				_solo.call_deferred(game, OS.get_environment("SOLO"))
 			# GOTO=<page> plays the page change itself, which is the only way
 			# to see what main.gd's shell is for: the bar and the side discs
 			# have to hold still while the page under them slides. A still of
@@ -130,6 +136,7 @@ func _ready() -> void:
 			and not OS.has_environment("SCORE") and not OS.has_environment("CLAIM") \
 			and not OS.has_environment("GOTO") and not OS.has_environment("TIP") \
 			and not OS.has_environment("DEAL") and not OS.has_environment("POWERUP") \
+			and not OS.has_environment("SOLO") \
 			and not OS.has_environment("CLAN") and not OS.has_environment("CAMEO"):
 		_shoot.call_deferred()
 
@@ -210,6 +217,20 @@ func _claim(game: Control, what: String) -> void:
 		game.set("streak_days", maxi(0, day - 1))
 		game.set("daily_last", 0.0 if day <= 1 else game.call("_trusted_now") - game.DAILY_COOLDOWN)
 		game.call("_open_daily")
+	# CLAIM=mission presses a finished MISSION on the quests page, which pays
+	# where it stands rather than taking the screen -- so the only thing that
+	# tells the player what arrived is about a second and a half of motion at
+	# the row they pressed. A still of either end of that shows an unchanged
+	# page; SHOTS/SHOT_GAP over it is the only way to judge it at all.
+	if what == "mission":
+		game.set("quests_tab", "daily")
+		game.call("_ensure_missions")
+		var st: Dictionary = (game.get("mission_state") as Dictionary)["daily"]
+		var defs: Array = game.MISSION_DEFS["daily"]
+		for i in mini(3, defs.size()):
+			var d: Dictionary = defs[i]
+			st["progress"][d["id"]] = game.call("_mission_target", d)
+		game.call("_goto", (game.get("pages") as Dictionary)["quests"])
 	await get_tree().create_timer(0.5).timeout
 	# HOLD=1 stops before the press, which is the only way to look at the dialog
 	# itself now that the claim is the gift rather than a button under it.
@@ -221,9 +242,12 @@ func _claim(game: Control, what: String) -> void:
 		return
 	# The daily's claim is a flat hit box over the gift now, not a labelled
 	# button, so it is found by its meta.
-	var btn := _find_meta_button(game.get("_popup"), "claim")
+	# The mission's button is on the page, not in a dialog -- there is no dialog
+	# any more, which is the whole point of the change this shoots.
+	var root: Node = game if what == "mission" else game.get("_popup")
+	var btn := _find_meta_button(root, "claim")
 	if btn == null:
-		btn = _find_button(game.get("_popup"), "CLAIM")
+		btn = _find_button(root, "CLAIM")
 	if btn == null:
 		print("  claim: no button found")
 		get_tree().quit()
@@ -321,6 +345,27 @@ func _powerup(game: Control, id: String) -> void:
 	game.set("powerup_until", game.call("_now") + Deals.POWERUP_DURATION)
 	game.set("powerup_pending", "")
 	game.call("_open_powerup")
+	if OS.has_environment("SHOT"):
+		await _reel(OS.get_environment("SHOT"),
+			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 1,
+			float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.5)
+
+func _solo(game: Control, id: String) -> void:
+	while game.get("_boot") != null:
+		await get_tree().process_frame
+	await get_tree().create_timer(3.0).timeout
+	# The trio is pushed out of the way first. The two share one calendar slot
+	# and _solo_tick refuses to arm over a live 1+2, so on a fresh save -- where
+	# a trio rolls in on the first tick -- setting the fields by hand without
+	# this would produce a solo the next tick immediately takes back.
+	game.set("powerup_id", "")
+	game.set("powerup_until", 0.0)
+	game.set("powerup_next", game.call("_now") + Deals.POWERUP_COOLDOWN)
+	game.set("solo_id", id if id != "1" else "so_kraken")
+	game.set("solo_until", game.call("_now") + Deals.SOLO_DURATION)
+	game.set("solo_next", 0.0)
+	game.set("solo_pending", "")
+	game.call("_open_solo")
 	if OS.has_environment("SHOT"):
 		await _reel(OS.get_environment("SHOT"),
 			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 1,
