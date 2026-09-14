@@ -91,13 +91,11 @@ func _ready() -> void:
 	# with the hardest type on it -- an unowned card is a "???" and a name in
 	# pale ink on a dark socket, which is a combination that has to be argued
 	# for every time either half moves. It was being argued on paper.
-	# ONE KNOWN FALSE POSITIVE ON THIS PAGE, so it is not chased twice. The
-	# boxes dock is a button that FLOATS over the bottom-right of the scroll,
-	# and this harness reads each text node's colours out of the framebuffer at
-	# that node's own rect. A spare tag on the last card of a row is behind the
-	# dock, so what comes back is the dock's purple and a ratio that has nothing
-	# to do with the tag. It reports as "+N" against #8e69d3. Everything else
-	# measured here is real.
+	# The old known false positive here -- the floating boxes dock covering a
+	# spare tag, measured as "+N" against the dock's own purple -- is gone for
+	# real, not waived: the dock hides while a set is open (2026-09-14), so
+	# every node on this page now measures against its own stock. A "+N"
+	# failure on this page is a real failure again.
 	m.col_open = "beach"
 	await _goto("collections")
 	await _measure("collection set", m)

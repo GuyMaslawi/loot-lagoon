@@ -725,6 +725,7 @@ var _slot_decor: Array = []
 var _page_backdrops: Array = []
 var _page_boards: Array[ShaderMaterial] = []
 var _boxes_dock_badge: Control = null
+var _boxes_dock: Control = null
 
 var pages := {}
 var _page_bodies := {}
@@ -8493,6 +8494,7 @@ func _build_boxes_dock(page: Control) -> void:
 	dock.offset_right = -16.0
 	dock.offset_top = -(NAV_ROOT_H + 104.0 + safe_bottom())
 	dock.offset_bottom = -(NAV_ROOT_H + 8.0 + safe_bottom())
+	_boxes_dock = dock
 
 	var btn := Button.new()
 	btn.focus_mode = Control.FOCUS_NONE
@@ -15133,7 +15135,13 @@ func _reward_chip(kind: String, text: String, col: Color) -> HBoxContainer:
 	var art := _prize_art(kind, 30.0)
 	art.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	hb.add_child(art)
-	var l := Lagoon.label(text, UI.F_CAPTION, col, true)
+	# A treasure numeral, not body text: the figure beside a prize icon wears
+	# the icon's own currency (amount_ink), in the display face inside the
+	# deep rim. Kinds without a currency of their own -- stars, shields --
+	# keep the caller's ink, which is measured per surface.
+	var kind_ink := Lagoon.amount_ink(kind)
+	var l := Lagoon.title(text, UI.F_CAPTION,
+		kind_ink if kind_ink != Color.WHITE else col, Lagoon.RIM_INK)
 	l.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	hb.add_child(l)
 	return hb
@@ -16695,11 +16703,15 @@ func _collection_item_card(emoji: String, iname: String, owned: bool, rarity := 
 		var overlay := Control.new()
 		overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		p.add_child(overlay)
-		# URCHIN_LO, for the reason spelled out on the SPARE chip in
-		# _fill_collection_detail: white at 22px on the bright violet measures
-		# 4.02 against a 4.5 line even after Lagoon.chip's own darkening. The
-		# two chips count the same pile and now wear the same violet.
-		var tag := Lagoon.chip("+%d" % spare, Lagoon.URCHIN_LO, UI.F_TINY)
+		# A STAMP, NOT A CHIP. The chip already wore URCHIN_LO and still failed:
+		# pinned on the card's corner it lands over the 4-star's bright violet
+		# rim and gloss, where white at 22px medians 4.02 whatever the chip's
+		# own fill does. This is the textbook "value printed on unknown stock"
+		# case, and the stamp is the tool the system already has for it -- a
+		# deep plate that carries its own contrast, with the count in the
+		# spares' own CARD_VIOLET (the treasure-numeral ink). Found by
+		# qa_contrast's collection-set walk; pre-existing, confirmed via stash.
+		var tag := Lagoon.stamp("+%d" % spare, Lagoon.CARD_VIOLET, UI.F_TINY)
 		tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		overlay.add_child(tag)
 		# Pinned by its corner, not by a width. A chip asked to be narrower than
@@ -16775,6 +16787,15 @@ func _fill_collections(vb: VBoxContainer) -> void:
 	var open_set := _collection_by_id(col_open)
 	if open_set.is_empty():
 		col_open = ""
+	# The boxes dock belongs to the SHELF. Inside an open set it floats over
+	# the card grid -- qa_contrast caught it sitting on the ninth card's spare
+	# stamp, measuring the disc's violet as the stamp's background -- and the
+	# errand it carries ("spares -> boxes") is a shelf errand anyway: you pass
+	# the shelf on the way in and on the way out. Guy's call to keep it a
+	# floating disc was about the shelf covering a tile, which the reserved
+	# clearance solves; a drilled-in set was never part of that story.
+	if _boxes_dock != null and is_instance_valid(_boxes_dock):
+		_boxes_dock.visible = col_open.is_empty()
 	if col_open.is_empty():
 		_fill_collection_shelf(vb)
 	else:
@@ -17258,20 +17279,27 @@ func _collection_tile(c: Dictionary) -> Control:
 	tile.custom_minimum_size = Vector2(0, 430)
 	tile.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
-	# The board. Deep and opaque -- a cover is a thing, not a window.
+	# CREAM, NOT BOARD. The dark cover was "a cover is a thing, not a window",
+	# and it obeyed the wrong half of the law: a cover is GOODS, and goods are
+	# the bright thing on the deep board -- fifteen patches of near-board on
+	# the board was why the shelf read heavy next to the games this one is
+	# measured against (Guy, 2026-09-14: reach their level, prior shapes not
+	# sacred). The thing-ness comes from the brass frame, the rivets and the
+	# medallion, not from the dark.
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.043, 0.169, 0.220, 1.0)
+	sb.bg_color = Lagoon.SHELL.lerp(Lagoon.SAND, 0.55)
 	sb.set_corner_radius_all(26)
 	sb.set_border_width_all(5)
 	sb.border_color = Lagoon.CORAL if ready else (
 		Lagoon.KELP_HI if claimed else Lagoon.BRASS)
 	sb.shadow_size = 16
-	sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.52)
+	sb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.45)
 	sb.shadow_offset = Vector2(0, 6)
 	for state in ["normal", "hover", "focus"]:
 		tile.add_theme_stylebox_override(state, sb)
 	var down := sb.duplicate()
-	down.bg_color = down.bg_color.lightened(0.06)
+	# Darkened, not lightened: a pressed cream face has nowhere brighter to go.
+	down.bg_color = down.bg_color.darkened(0.05)
 	tile.add_theme_stylebox_override("pressed", down)
 	FX.press_feedback(tile)
 	tile.pressed.connect(func() -> void:
@@ -17281,13 +17309,15 @@ func _collection_tile(c: Dictionary) -> Control:
 	)
 
 	# The hairline inside the brass, which is what turns one band into a frame.
+	# BRASS at 0.38, not BRASS_HI: the highlight tone vanished on the cream it
+	# now sits over -- the hairline has to be darker than its ground.
 	var inner := Panel.new()
 	var isb := StyleBoxFlat.new()
 	isb.bg_color = Color(0, 0, 0, 0)
 	isb.set_corner_radius_all(19)
 	isb.set_border_width_all(2)
-	isb.border_color = Color(Lagoon.BRASS_HI.r, Lagoon.BRASS_HI.g,
-		Lagoon.BRASS_HI.b, 0.40)
+	isb.border_color = Color(Lagoon.BRASS.r, Lagoon.BRASS.g,
+		Lagoon.BRASS.b, 0.38)
 	inner.add_theme_stylebox_override("panel", isb)
 	inner.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	tile.add_child(inner)
@@ -17309,31 +17339,41 @@ func _collection_tile(c: Dictionary) -> Control:
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	pad.add_child(col)
 
-	# --- the cover art -------------------------------------------------------
+	# --- the cover art: a PORTHOLE MEDALLION ---------------------------------
 	#
-	# The emblem sits in a well of the set's own difficulty colour, at full
-	# strength rather than as a wash: fifteen tiles in three barely different
-	# pastels was the other half of "pale", and a difficulty you have to read
-	# a word to learn is a difficulty nobody reads.
-	var well := PanelContainer.new()
-	var wsb := StyleBoxFlat.new()
-	wsb.bg_color = Color(diff.r * 0.30, diff.g * 0.34, diff.b * 0.38, 1.0)
-	wsb.set_corner_radius_all(16)
-	wsb.set_border_width_all(3)
-	wsb.border_color = Color(diff.r, diff.g, diff.b, 0.78)
-	well.add_theme_stylebox_override("panel", wsb)
-	well.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	well.custom_minimum_size = Vector2(0, 236)
-	well.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	col.add_child(well)
-	# The lacquer. A flat field of colour is a box; the same field with a
-	# highlight raked across its top is a varnished surface, which is most of
-	# what separates "a tile" from "a cover" for one ColorRect.
-	Lagoon.add_gloss(well, 16, diff)
-
+	# The dark difficulty well is gone. The emblem now hangs in a round shell
+	# disc behind a brass ring -- the machine's own porthole, scaled up -- with
+	# the difficulty colour as a soft pool of light INSIDE the glass instead of
+	# as the room the art stood in. Same information, inverted value: the
+	# colour lights the goods rather than darkening them. This is the shape
+	# the reference games hang every album on (a ringed medallion over a
+	# bright page), spoken in brass and shell.
 	var art := Control.new()
 	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	well.add_child(art)
+	art.custom_minimum_size = Vector2(0, 232)
+	art.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	col.add_child(art)
+
+	var port := Panel.new()
+	var psb := StyleBoxFlat.new()
+	psb.bg_color = Lagoon.SHELL
+	psb.set_corner_radius_all(110)
+	psb.set_border_width_all(6)
+	psb.border_color = Lagoon.BRASS.lerp(Lagoon.HULL, 0.40)
+	psb.shadow_size = 12
+	psb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.30)
+	psb.shadow_offset = Vector2(0, 5)
+	port.add_theme_stylebox_override("panel", psb)
+	port.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	art.add_child(port)
+	port.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	port.offset_left = -110.0
+	port.offset_right = 110.0
+	port.offset_top = -110.0
+	port.offset_bottom = 110.0
+	# The pool of the set's own colour, inside the glass. Fades to nothing by
+	# its own edge, so the square rect never shows against the round rim.
+	port.add_child(_radial_glow(Color(diff.r, diff.g, diff.b, 0.42), 214.0))
 
 	# The set's own rendered emblem, large. A set with no emblem file yet falls
 	# back to its icon glyph, the way every card face does.
@@ -17344,44 +17384,88 @@ func _collection_tile(c: Dictionary) -> Control:
 		em.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 		em.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		em.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		art.add_child(em)
-		em.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		em.offset_bottom = -54.0
-		em.offset_top = -6.0
+		port.add_child(em)
+		em.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+		# The art box kisses the ring's inner edge rather than crossing it: at
+		# ±86 the box corners sat 22px proud of the glass and every tall
+		# emblem's tips crossed the brass, which read as pasted-on rather than
+		# framed. A frond or a mast may still break the line by a few px --
+		# that is the fan's own "spilling out" read and it is welcome; a whole
+		# corner is not.
+		em.offset_left = -78.0
+		em.offset_right = 78.0
+		em.offset_top = -84.0
+		em.offset_bottom = 72.0
 	else:
 		var fallback := _emoji_label(str(c.get("icon", "\U01F0CF")), 92)
 		fallback.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		art.add_child(fallback)
+		port.add_child(fallback)
 		fallback.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		fallback.offset_bottom = -54.0
+		fallback.offset_bottom = -34.0
 
-	# The real cards, across the emblem's foot. 1.55 is the whole point of the
-	# second column: the same fan the three-column shelf ran at 1.0.
+	# The real cards, across the medallion's foot -- in front of the ring, so
+	# the fan reads as spilling out of the porthole.
 	var fan_slot := Control.new()
 	fan_slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	art.add_child(fan_slot)
 	fan_slot.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
-	fan_slot.offset_top = -128.0
-	fan_slot.offset_bottom = 4.0
+	fan_slot.offset_top = -118.0
+	fan_slot.offset_bottom = 8.0
 	fan_slot.add_child(_collection_fan(c, 1.55))
 
 	# A set you have finished stops being a shelf item and becomes a trophy.
 	if claimed:
 		art.modulate = Color(1, 1, 1, 0.72)
 
-	# --- the spine label -----------------------------------------------------
-	var plate := Lagoon.plaque(str(c["name"]).to_upper(), 0.0, 54.0, UI.F_CAPTION)
-	plate.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	plate.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	col.add_child(plate)
+	# --- the name ribbon -----------------------------------------------------
+	#
+	# The spine plaque said every set's name in the same brass, which wasted
+	# the one line that could say WHICH set this is. The name rides a ribbon in
+	# the set's own difficulty colour now -- white display type read off its
+	# deep rim -- so the word and the colour are one statement, the way the
+	# reference games band every cover.
+	var ribbon_band := PanelContainer.new()
+	var rsb := StyleBoxFlat.new()
+	rsb.bg_color = diff
+	rsb.set_corner_radius_all(13)
+	rsb.set_border_width_all(3)
+	rsb.border_color = diff.lerp(Lagoon.HULL, 0.55)
+	rsb.shadow_size = 6
+	rsb.shadow_color = Color(Lagoon.ABYSS.r, Lagoon.ABYSS.g, Lagoon.ABYSS.b, 0.30)
+	rsb.shadow_offset = Vector2(0, 3)
+	rsb.content_margin_left = 18.0
+	rsb.content_margin_right = 18.0
+	rsb.content_margin_top = 2.0
+	rsb.content_margin_bottom = 4.0
+	ribbon_band.add_theme_stylebox_override("panel", rsb)
+	ribbon_band.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ribbon_band.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	col.add_child(ribbon_band)
+	# RIM_INK: every difficulty hue is a saturated mid fill, exactly the case
+	# the deeper rim exists for.
+	ribbon_band.add_child(Lagoon.title(str(c["name"]).to_upper(), UI.F_LABEL,
+		Color.WHITE, Lagoon.RIM_INK))
 
-	# --- the gauge -----------------------------------------------------------
+	# --- the gauge, with what finishing pays --------------------------------
+	#
+	# The shelf never said what a set is FOR. The reward rides the gauge row
+	# now -- the bolt and a treasure numeral -- so "nine cards from 800 spins"
+	# is readable on the shelf instead of only inside the set.
+	var gauge_row := HBoxContainer.new()
+	gauge_row.add_theme_constant_override("separation", 10)
+	gauge_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(gauge_row)
 	var pb := _styled_progress(diff)
 	pb.max_value = items.size()
 	pb.value = owned_n
 	pb.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	col.add_child(pb)
+	pb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	gauge_row.add_child(pb)
 	Lagoon.progress_value(pb, "%d / %d" % [owned_n, items.size()], UI.F_CAPTION)
+	var pay := _reward_chip("bolt", _fmt_compact(int(c["reward_spins"])), Lagoon.INK)
+	pay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	gauge_row.add_child(pay)
 
 	# --- the ribbon ----------------------------------------------------------
 	#

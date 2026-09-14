@@ -105,7 +105,13 @@ func _ready() -> void:
 
 		# Building names sit on painted island art, which is the busiest surface
 		# in the game -- a thin outline is not enough to separate them from it.
-		var bname := Lagoon.art_label(b["name"], UI.F_CAPTION)
+		# 28, NOT F_CAPTION (26), and it is a contrast fix as much as a size one:
+		# on a mid-green patch NEITHER side of a 26px letterform can clear the
+		# 4.5 body line -- white measures 4.49 and even RIM_INK only 4.41; the
+		# maths tops out under the bar for any ink. At 28 the type is "large",
+		# the line is 3.0, and both sides clear it with margin on every island.
+		# qa_contrast caught it at 4.49 on Green Meadows' Well.
+		var bname := Lagoon.art_label(b["name"], 28)
 		root.add_child(bname)
 		bname.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
 		bname.offset_top = -4.0
