@@ -40,6 +40,13 @@ func _ready() -> void:
 		for resume_first in [true, false]:
 			await _buy("chest_g", away, resume_first)
 
+	# The last purchase's takeover is still standing, and its tweens and queued
+	# closures hold references back to main -- which is a leak report at exit,
+	# not a leak in the game. Cleared like a finger would.
+	m._clear_reward_screens()
+	for _i in 30:
+		await get_tree().process_frame
+
 	print("")
 	print("QA-BUY: %s" % ("ALL PASS" if fails == 0 else "%d FAILURES" % fails))
 	get_tree().quit(1 if fails > 0 else 0)
@@ -48,6 +55,12 @@ func _buy(short: String, away: float, resume_first: bool) -> void:
 	print("")
 	print("== %s, %ds on the payment sheet, %s" % [short, int(away),
 		"resume before the receipt" if resume_first else "receipt before the resume"])
+	# NOTHING TAPS IN A HEADLESS RUN, and a reward screen waits for a tap. Left
+	# standing, the first purchase's takeover owns the screen for the rest of
+	# the run and every later one queues up behind it unseen -- so this check
+	# would report the FIRST pack's receipt twelve times over and pass. Cleared
+	# between purchases, which is what a finger would have done.
+	m._clear_reward_screens()
 	m._close_popup(true)
 	m._goto(m.pages["shop"])
 	for _i in 6:

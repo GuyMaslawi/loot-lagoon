@@ -181,6 +181,99 @@ var _payout_seq: PayoutShow = null
 # The league's prize stage, which waits for a tap now rather than a timer.
 var _prize_stage: Control = null
 var _prize_stage_done := Callable()
+
+# =============================================================================
+#  ONE REWARD SCREEN AT A TIME, AND NONE OF THEM SKIPPED
+# =============================================================================
+#
+# Every takeover in this game used to open by DEMOLISHING whatever was already
+# on screen -- `_chest_seq.skip(false)`, `_payout_seq.skip()`, the prize stage
+# closed -- on the grounds that two stacked is one nobody can dismiss. That is
+# still true and the rule has not moved; what was wrong is the remedy.
+#
+# One purchase can owe more than one screen. The 1+2 is the clearest case: the
+# receipt grants the pack the player paid for AND the two free packs that came
+# with it, so `_grant_pack` opened a chest and `_powerup_credit_purchase`
+# bulldozed it a beat later with the free one. Guy, 2026-09-14, off the build:
+# *"you see the first and then it disappears very fast and the second appears.
+# What should happen is the first appears and only when the user taps does it
+# go and the next comes, until they are done."*
+#
+# So a reward that arrives while a reward screen is up JOINS A QUEUE instead of
+# taking the screen. Each screen still waits for a tap, and dismissing one is
+# what opens the next. There is still never more than one on screen.
+#
+# WHAT GOES IN THE QUEUE IS THE DISPLAY, NEVER THE GRANT. Every caller has
+# already banked its goods and written the save before it gets here -- it has
+# to, because IAP.finish() records the transaction as delivered the moment the
+# receipt handler returns. A queue entry that was dropped on the floor would
+# cost the player an animation, never a pack. The held counters go with it:
+# each caller takes its `_hud_hold` BEFORE queueing, so the HUD does not tick
+# up behind a screen that has not been shown yet, and the queued call is passed
+# `held = true` so it cannot hold the same figure twice.
+var _reward_queue: Array[Callable] = []
+# True in the gap between one screen leaving and the next arriving. Without it
+# `_reward_busy` reads false for that beat and a third reward jumps the queue.
+var _reward_draining := false
+
+# THE WAY OUT FOR ANYTHING THAT IS NOT A FINGER.
+#
+# Every reward screen waits for a tap, and trap one in the QA notes is what
+# that costs when nothing is tapping: the first one owns the screen for ever
+# and everything behind it queues up unseen. This tears the lot down -- the
+# screen that is up and the queue behind it -- and settles the held counters on
+# the way out, so the HUD and the save still agree afterwards. The goods are
+# never at risk: what is queued is the display, and the grant happened before
+# the entry was ever made.
+func _clear_reward_screens() -> void:
+	_reward_queue.clear()
+	_reward_draining = false
+	if _chest_seq != null and is_instance_valid(_chest_seq):
+		_chest_seq.skip(false)
+		_chest_seq = null
+	if _payout_seq != null and is_instance_valid(_payout_seq):
+		_payout_seq.skip()
+		_payout_seq = null
+	if _prize_stage != null:
+		_close_prize_stage()
+	_settle_hud("coins")
+	_settle_hud("spins")
+	_settle_hud("stars")
+
+# A reward screen owns the screen right now -- or is about to.
+func _reward_busy() -> bool:
+	if _reward_draining:
+		return true
+	if _chest_seq != null and is_instance_valid(_chest_seq):
+		return true
+	if _payout_seq != null and is_instance_valid(_payout_seq):
+		return true
+	return _prize_stage != null
+
+# The next screen, a beat after the last one went. Called from every place a
+# reward screen ends -- both takeovers' `finished` and `_close_prize_stage` --
+# so a screen torn down by `skip()` hands over exactly like one a finger
+# dismissed. The pause is there so two boxes in a row do not read as one box
+# glitching.
+func _reward_next() -> void:
+	if _reward_queue.is_empty() or _reward_draining:
+		return
+	_reward_draining = true
+	_after(0.22, func() -> void:
+		_reward_draining = false
+		if _reward_queue.is_empty():
+			return
+		var what: Callable = _reward_queue.pop_front()
+		if what.is_valid():
+			what.call()
+		# NOT EVERY ENTRY IS A SCREEN. The deal ladder queues its own beats --
+		# the rung being stamped, the track climbing, the next card unlocking --
+		# because those play on the popup standing behind the takeover and
+		# would otherwise run where nobody can see them. An entry that did not
+		# take the screen must not stall the queue behind it, so the drain
+		# carries straight on to the next one.
+		if not _reward_busy():
+			_reward_next())
 var village_page: Control
 var slot: SlotView
 var village: VillageView
@@ -6283,8 +6376,10 @@ func _claim_mission_bonus(period: String) -> void:
 # play; the daily bonus already has its own staging, where the flights leave
 # the actual prize columns of the sheet being dismissed, and that is better
 # than a generic screen rather than worse.
+# `held` is set only by the queue below: the hold happens on the first call,
+# and the deferred one must not take it a second time. See _reward_queue.
 func _show_currency_payout(title: String, coin_amt: int, spin_amt: int,
-		shield_amt := 0) -> void:
+		shield_amt := 0, held := false) -> void:
 	var rows := []
 	if spin_amt > 0:
 		rows.append(["spin", spin_amt, "SPINS", Color(0.42, 0.78, 1.0),
@@ -6301,18 +6396,17 @@ func _show_currency_payout(title: String, coin_amt: int, spin_amt: int,
 	# Held BEFORE the screen, released when it is dismissed -- the held-counter
 	# rule. The callers below have already banked these figures, so the flights
 	# on the way out are the flight-only halves and neither banks again.
-	_hud_hold("coins", coin_amt)
-	_hud_hold("spins", spin_amt)
+	if not held:
+		_hud_hold("coins", coin_amt)
+		_hud_hold("spins", spin_amt)
 	_refresh()
 
-	# One takeover at a time; two stacked is one nobody can dismiss.
-	if _chest_seq != null and is_instance_valid(_chest_seq):
-		_chest_seq.skip(false)
-		_chest_seq = null
-	if _payout_seq != null and is_instance_valid(_payout_seq):
-		_payout_seq.skip()
-	if _prize_stage != null:
-		_close_prize_stage()
+	# One takeover at a time; two stacked is one nobody can dismiss. It waits
+	# its turn rather than shouldering the other one off -- see _reward_queue.
+	if _reward_busy():
+		_reward_queue.append(func() -> void:
+			_show_currency_payout(title, coin_amt, spin_amt, shield_amt, true))
+		return
 	var seq := PayoutShow.play(self, title, rows)
 	_payout_seq = seq
 	seq.finished.connect(func() -> void:
@@ -6321,7 +6415,8 @@ func _show_currency_payout(title: String, coin_amt: int, spin_amt: int,
 		var at := Vector2(view_size().x * 0.5, view_size().y * 0.52)
 		_coin_flight(coin_amt, at)
 		_spin_flight(spin_amt, at)
-		_update_badges())
+		_update_badges()
+		_reward_next())
 
 
 # `in_place` is where the reward was claimed from, and setting it means "pay it
@@ -10657,7 +10752,10 @@ func _take_fair(i: int) -> void:
 		# Money goes down the same road as every other purchase in the game.
 		# The stall is marked by the RECEIPT, never by the tap --
 		# _fair_credit_purchase.
-		_close_popup()
+		#
+		# The board stays up behind the payment sheet, for the reason the
+		# ladder's does: a cancel comes back to the thing the player was
+		# looking at, and the stall can be stamped on the screen it is on.
 		_start_purchase(Deals.fair_pack(deal))
 		return
 	if not _fair_stall_open():
@@ -10681,10 +10779,12 @@ func _take_fair(i: int) -> void:
 
 # The receipt for a paid stall. Called from _on_purchase_ok, so a transaction
 # that arrives on a later launch still marks the stall it was bought from.
-func _fair_credit_purchase(pack_id: String) -> void:
+# True when the stall was stamped -- see _deal_credit_purchase for what the
+# caller does with that.
+func _fair_credit_purchase(pack_id: String) -> bool:
 	var fair := _active_fair()
 	if fair.is_empty():
-		return
+		return false
 	var deals: Array = fair["deals"]
 	for i in deals.size():
 		var deal: Dictionary = deals[i]
@@ -10697,7 +10797,13 @@ func _fair_credit_purchase(pack_id: String) -> void:
 		_fair_pay_miles()
 		_save_game()
 		_update_badges()
-		return
+		# The board is repainted on the screen it is on, if it is still up --
+		# the popup is no longer closed on the tap, so a paid stall gets its
+		# stamp in front of the player rather than on their next visit.
+		if _popup != null and is_instance_valid(_fair_timer_label):
+			_open_fair()
+		return true
+	return false
 
 # THE BOARD PAYS ITSELF. A milestone is not a second thing to go and claim --
 # it is what the stall the player just took added up to, so it lands on the
@@ -12025,7 +12131,13 @@ func _take_deal(idx: int) -> void:
 		# Money goes down the same road as every other purchase in the game --
 		# _start_purchase, IAP, _on_purchase_ok, _grant_pack. The rung is
 		# advanced by the receipt, never by the tap; see _deal_credit_purchase.
-		_close_popup()
+		#
+		# The ladder stays up behind the payment sheet. `_after_deal_step` has
+		# always had a branch for "the ladder is on screen" -- it walks the
+		# track, unlocks the next rung and plays the beats -- and closing the
+		# popup here was what made that branch unreachable for the one rung
+		# that costs money: a paid rung fell through to the no-screen path and
+		# the unlock the player just paid for was owed to their next visit.
 		_start_purchase(Deals.step_pack(step))
 		return
 	# Read BEFORE the cell is thrown away by the patch below, and as a point
@@ -12045,19 +12157,32 @@ func _take_deal(idx: int) -> void:
 # The receipt for a paid rung. Called from _on_purchase_ok, so a transaction
 # that arrives on a later launch -- an interrupted purchase replayed at boot --
 # still advances the ladder it was bought from.
-func _deal_credit_purchase(pack_id: String) -> void:
+# TRUE MEANS "THE SCREEN THIS CAME FROM OWNS THE RECEIPT". _on_purchase_ok
+# closes the popup only when nothing claims it, so a ladder that is still open
+# behind the payment sheet gets to walk its own track instead of being torn
+# down and owing the unlock to the player's next visit.
+func _deal_credit_purchase(pack_id: String) -> bool:
 	var chain := _active_deal()
 	if chain.is_empty() or deal_taken >= Deals.STEPS:
-		return
+		return false
 	var step: Dictionary = chain["steps"][deal_taken]
 	if not Deals.is_paid(step) or String(step["pack"]) != pack_id:
-		return
+		return false
 	# The goods themselves were already handed over by _grant_pack. All this
 	# owes is the rung.
 	_deal_anim_from = deal_taken
 	deal_taken += 1
 	_save_game()
-	_after_deal_step()
+	# BEHIND THE BOX, NEVER UNDER IT. `_grant_pack` has already opened the
+	# takeover for what the rung cost, and the ladder's beats play on the popup
+	# at z 120 underneath it -- so run straight from here they would be a rung
+	# stamping itself where the player cannot see it. Queued, they play on the
+	# screen the player comes back to. See _reward_queue.
+	if _reward_busy():
+		_reward_queue.append(_after_deal_step)
+	else:
+		_after_deal_step()
+	return true
 
 # What the free rungs actually hand over. Paid rungs never come through here --
 # _grant_pack pays those, so the pack is the single source of what a pack is
@@ -12569,7 +12694,18 @@ func _powerup_column(col: Dictionary, pack: Dictionary) -> Control:
 		# charge was for.
 		powerup_pending = powerup_id
 		_flush_save()
-		_close_popup()
+		# THE OFFER STAYS ON SCREEN BEHIND THE PAYMENT SHEET.
+		#
+		# It used to be torn down on the tap, and Guy caught what that costs on
+		# 2026-09-14: *"I press buy and first of all the offer screen
+		# disappears, and that is not good -- it should stay behind."* Two
+		# separate failures came out of one line. A player who backs out of
+		# Apple's sheet landed on the page behind with the offer gone and its
+		# disc the only way back, so a cancel read as the offer being spent;
+		# and a player who paid watched the screen that had just promised them
+		# two free packs vanish before either pack turned up. The receipt
+		# closes it -- see _on_purchase_ok, which is the point at which the
+		# offer really has been spent.
 		_start_purchase(pack)
 	)
 	body.add_child(btn)
@@ -12688,12 +12824,18 @@ func _loyalty_add() -> void:
 
 # The two free columns. Called from _on_purchase_ok once the pack itself has
 # been handed over, and only when the purchase came from the takeover.
-func _powerup_credit_purchase(pack_id: String) -> void:
+func _powerup_credit_purchase(pack_id: String) -> bool:
 	if powerup_pending == "":
-		return
+		return false
 	var pu := Deals.powerup_by_id(powerup_pending)
 	if pu.is_empty() or String(pu["pack"]) != pack_id:
-		return
+		return false
+	# THE OFFER SCREEN GOES NOW, not on the tap that opened the payment sheet.
+	# It stayed up behind Apple's sheet so a cancel could come back to it; this
+	# is the point at which it really is spent, and a 1+2 left standing with a
+	# dead countdown and a live price button would sell the same pack again
+	# without the two free columns attached to it.
+	_close_popup()
 	# Cleared before the grant, never after: the grant writes the save, and a
 	# record left standing through it would survive a crash mid-grant and pay
 	# the bonus columns a second time on the next launch.
@@ -12714,25 +12856,58 @@ func _powerup_credit_purchase(pack_id: String) -> void:
 		# The rail disc goes down with the offer it opened.
 		_update_badges()
 	var from := Vector2(view_size().x * 0.5, view_size().y * 0.42)
+	# THE TWO FREE COLUMNS ARE ONE REWARD, NOT TWO HALVES THAT PAY SEPARATELY.
+	#
+	# They used to hand their spins and coins over the instant the receipt
+	# landed -- `_grant_spins` and `_grant_coins` bank AND fly in one call --
+	# which meant both flights took off at z 101 while the chest the PAID pack
+	# had just opened was standing in front of them at z 126. The counters
+	# moved where nobody could see them, and then a box the player never asked
+	# about turned up a beat later carrying only the cards. Guy read the whole
+	# thing as the free packs never arriving.
+	#
+	# So the figures are banked here (they must be: IAP.finish() settles the
+	# transaction the moment this returns) and HELD, the box is queued behind
+	# the paid one, and the flights leave when the player dismisses it -- the
+	# held-counter rule, with the screen that owes the counters finally being
+	# the screen the player is looking at.
+	var spins_n := 0
+	var coins_n := 0
 	var cards := []
 	for bonus in pu["bonus"]:
 		var b: Dictionary = bonus
-		var sp := int(b.get("spins", 0))
-		var co := _scaled(int(b.get("coins", 0)))
-		if sp > 0:
-			_grant_spins(sp, from)
-		if co > 0:
-			_grant_coins(co, from)
+		spins_n += int(b.get("spins", 0))
+		coins_n += _scaled(int(b.get("coins", 0)))
+		# Shields stay where they are, for the reason _show_pack_result spells
+		# out: `_grant_shields` banks and animates in one call, and deferring it
+		# would leave the `_flush_save` below writing a save with the shields
+		# missing -- paid content lost to a crash.
 		_grant_shields(int(b.get("shields", 0)), from)
 		for i in int(b.get("cards", 0)):
 			cards.append(_grant_chest_card(int(b.get("tier", 1)), 0))
+	spins += spins_n
+	coins += coins_n
+	_hud_hold("spins", spins_n)
+	_hud_hold("coins", coins_n)
 	_flush_save()
 	_refresh()
-	_after(1.4, func() -> void:
-		if not cards.is_empty():
-			_show_chest_result(cards, "Your 2 Free Packs!")
-		else:
-			_banner("Both free packs delivered!", Lagoon.KELP, "🎁"))
+	# What the cards cannot say. The box shows the handful; this line under it
+	# is the rest of what the two free packs were worth, printed the way the
+	# HUD prints it.
+	var note := ""
+	if spins_n > 0:
+		note = "+%s spins" % _fmt_compact(spins_n)
+	if coins_n > 0:
+		note += ("   \u00b7   " if note != "" else "") + "+%s coins" % _fmt_compact(coins_n)
+	var pay_free := func() -> void:
+		var at := Vector2(view_size().x * 0.5, view_size().y * 0.52)
+		_spin_release(spins_n, at)
+		_coin_release(coins_n, at)
+	if not cards.is_empty():
+		_show_chest_result(cards, "Your 2 Free Packs!", note, [], false, -1, pay_free)
+	else:
+		_show_currency_payout("Your 2 Free Packs!", coins_n, spins_n, 0, true)
+	return true
 
 # =============================================================================
 #  The solo deal — one heap, one number, one button
@@ -13142,7 +13317,8 @@ func _open_solo() -> void:
 		# pack and lose the bonus the charge was for. Same argument as the 1+2's.
 		solo_pending = solo_id
 		_flush_save()
-		_close_popup()
+		# Stays up behind the payment sheet, and a cancel comes back to it.
+		# Same argument as the 1+2's button above.
 		_start_purchase(pack)
 	)
 	vbox.add_child(btn)
@@ -13169,12 +13345,14 @@ func _open_solo() -> void:
 
 # The bonus. Called from _on_purchase_ok once the pack itself has been handed
 # over, and only when the purchase came from this screen.
-func _solo_credit_purchase(pack_id: String) -> void:
+func _solo_credit_purchase(pack_id: String) -> bool:
 	if solo_pending == "":
-		return
+		return false
 	var solo := Deals.solo_by_id(solo_pending)
 	if solo.is_empty() or String(solo["pack"]) != pack_id:
-		return
+		return false
+	# Spent, so the screen goes -- same argument as the 1+2's above.
+	_close_popup()
 	# Cleared before the grant, never after: the grant writes the save, and a
 	# record left standing through it would survive a crash mid-grant and pay
 	# the bonus a second time on the next launch.
@@ -13189,12 +13367,17 @@ func _solo_credit_purchase(pack_id: String) -> void:
 		_solo_timer_label = null
 		_update_badges()
 	var from := Vector2(view_size().x * 0.5, view_size().y * 0.42)
+	# Banked and HELD rather than banked and flown, for the reason spelled out
+	# on the 1+2's receipt: the pack the player paid for has a takeover up at
+	# z 126 by the time this runs, and a flight at z 101 behind it is a counter
+	# moving where nobody can see it. The flights leave when the bonus screen
+	# is dismissed.
 	var sp := int(bonus.get("spins", 0))
 	var co := _scaled(int(bonus.get("coins", 0)))
-	if sp > 0:
-		_grant_spins(sp, from)
-	if co > 0:
-		_grant_coins(co, from)
+	spins += sp
+	coins += co
+	_hud_hold("spins", sp)
+	_hud_hold("coins", co)
 	_grant_shields(int(bonus.get("shields", 0)), from)
 	var cards := []
 	# The bonus cards are drawn at the PACK's tier, which is what lets the
@@ -13204,15 +13387,25 @@ func _solo_credit_purchase(pack_id: String) -> void:
 		cards.append(_grant_chest_card(tier, 0))
 	_flush_save()
 	_refresh()
-	# QUEUED BEHIND WHATEVER THE PURCHASE ITSELF PUT UP. _grant_pack opens the
-	# pack result the moment it returns, and _open_popup closes whatever is
-	# already there -- so a chest opened here would replace the thing the player
-	# just paid for with a thing they did not.
-	_after(1.4, func() -> void:
-		if not cards.is_empty():
-			_show_chest_result(cards, "Your Bonus Cards!")
-		else:
-			_banner("Your bonus is delivered!", Lagoon.KELP, "🎁"))
+	var note := ""
+	if sp > 0:
+		note = "+%s spins" % _fmt_compact(sp)
+	if co > 0:
+		note += ("   \u00b7   " if note != "" else "") + "+%s coins" % _fmt_compact(co)
+	var pay_bonus := func() -> void:
+		var at := Vector2(view_size().x * 0.5, view_size().y * 0.52)
+		_spin_release(sp, at)
+		_coin_release(co, at)
+	# BEHIND WHATEVER THE PURCHASE ITSELF PUT UP, not on top of it. _grant_pack
+	# opens the pack result the moment it returns; this one joins the queue and
+	# opens when the player dismisses that -- see _reward_queue. It used to be
+	# a 1.4s timer, which is how a bonus screen came to replace the thing the
+	# player had actually paid for before they had finished reading it.
+	if not cards.is_empty():
+		_show_chest_result(cards, "Your Bonus Cards!", note, [], false, -1, pay_bonus)
+	else:
+		_show_currency_payout("Your Bonus!", co, sp, 0, true)
+	return true
 
 # --- the one door both premium offers share ----------------------------------
 
@@ -13608,14 +13801,15 @@ func _start_purchase(pack: Dictionary) -> void:
 func _on_purchase_ok(product_id: String) -> void:
 	Diag.note("purchase")
 	Diag.milestone("first_purchase")
-	_close_popup()
 	var short := product_id.trim_prefix(IAP.PREFIX)
 	if short == String(CV.PIGGY_PACK["id"]):
+		_close_popup()
 		_break_piggy()
 		IAP.finish(product_id)
 		return
 	var pack := CV.pack_by_id(short)
 	if pack.is_empty():
+		_close_popup()
 		# An id the build does not know -- a pack pulled from the store while a
 		# purchase was in flight, most likely. Say so rather than failing mute.
 		#
@@ -13643,25 +13837,42 @@ func _on_purchase_ok(product_id: String) -> void:
 	# a rung credited after it would be lost for good if the app died in between
 	# -- the player would have paid, received the goods, and watched the ladder
 	# stay where it was.
-	_deal_credit_purchase(short)
-	_powerup_credit_purchase(short)
-	_solo_credit_purchase(short)
-	_fair_credit_purchase(short)
+	#
+	# EACH ONE ANSWERS WHETHER THE SCREEN BEHIND THE PAYMENT SHEET WAS ITS OWN.
+	# The popup is no longer torn down on the tap that opens Apple's sheet, so
+	# a cancel comes back to the offer the player was reading -- which leaves
+	# this function owing the close. An event that claims the receipt does its
+	# own: the ladder and the fair KEEP their screen and stamp it in front of
+	# the player, the two premium offers close theirs because the offer is
+	# spent. Anything else -- the shop, a contextual offer, a top-up -- is
+	# closed here, behind the takeover `_grant_pack` has already raised, so
+	# nothing of it is ever seen going.
+	var claimed := _deal_credit_purchase(short)
+	claimed = _powerup_credit_purchase(short) or claimed
+	claimed = _solo_credit_purchase(short) or claimed
+	claimed = _fair_credit_purchase(short) or claimed
+	if not claimed:
+		_close_popup()
 	# Every paid pack counts, wherever it was bought. See _loyalty_add.
 	_loyalty_add()
 	IAP.finish(product_id)
 
-# Backing out of Apple's sheet is a decision, not a fault. Take the spinner
-# down and say nothing -- the player knows what they just did.
+# Backing out of Apple's sheet is a decision, not a fault: say nothing, the
+# player knows what they just did.
+#
+# AND TAKE NOTHING DOWN. The screen the button was pressed on is still standing
+# -- it is not torn down on the tap any more, see the 1+2's button -- so a
+# cancel lands the player exactly where they left, on the offer, with its price
+# still on it. Closing it here turned backing out into the offer being spent.
 func _on_purchase_cancel(_product_id: String) -> void:
 	topup_pending = {}
-	_close_popup()
 
 # This is now only reached by genuine failures, so it may be as loud as it
 # looks: something the player asked for did not happen.
 func _on_purchase_fail(_product_id: String, message: String) -> void:
 	topup_pending = {}
-	_close_popup()
+	# Left standing, same as a cancel: the banner says what went wrong and the
+	# screen behind it still has the button that can try again.
 	Sfx.play("error", -6.0)
 	_banner(message, Color(0.9, 0.4, 0.4))
 
@@ -13882,7 +14093,9 @@ func _grant_chest_card(tier: int, forced_star := 0) -> Dictionary:
 # Same dialog furniture as the chest, deliberately: one tile per resource, the
 # same stagger, the same dismiss. What differs is that these tiles show a
 # quantity rather than a card, because that is what was bought.
-func _show_pack_result(pack: Dictionary) -> void:
+# `held` is set only by the queue: the hold happens on the first call and the
+# deferred one must not take it a second time. See _reward_queue.
+func _show_pack_result(pack: Dictionary, held := false) -> void:
 	var rows := []
 	var spins_n := int(pack.get("spins", 0))
 	if spins_n > 0:
@@ -13922,17 +14135,16 @@ func _show_pack_result(pack: Dictionary) -> void:
 	# showing the new purse and the new meter behind a takeover whose entire
 	# subject is those numbers arriving. The player would watch an animation of
 	# something that had visibly already happened.
-	_hud_hold("coins", coins_n)
-	_hud_hold("spins", spins_n)
+	if not held:
+		_hud_hold("coins", coins_n)
+		_hud_hold("spins", spins_n)
 	_refresh()
 
-	# Anything already holding the screen loses it -- two takeovers stacked is
-	# one takeover nobody can dismiss. See ChestOpen.skip and QA trap one.
-	if _chest_seq != null and is_instance_valid(_chest_seq):
-		_chest_seq.skip(false)
-		_chest_seq = null
-	if _payout_seq != null and is_instance_valid(_payout_seq):
-		_payout_seq.skip()
+	# Anything already holding the screen KEEPS it, and this one waits behind
+	# it -- one purchase can owe two screens. See _reward_queue.
+	if _reward_busy():
+		_reward_queue.append(func() -> void: _show_pack_result(pack, true))
+		return
 	var seq := PayoutShow.play(self,
 		"First purchase — DOUBLED!" if pack.get("first_buy", false) else "Purchase complete!",
 		rows)
@@ -13952,7 +14164,8 @@ func _show_pack_result(pack: Dictionary) -> void:
 		# one call and deferring it would leave `_flush_save` writing a save
 		# with the shields missing -- paid content lost to a crash. Their row
 		# above is the disclosure; their flight happened behind the takeover.
-		_update_badges())
+		_update_badges()
+		_reward_next())
 
 
 # `held` says the caller has already put this handful's stars on hold. It is set
@@ -13973,7 +14186,11 @@ func _show_pack_result(pack: Dictionary) -> void:
 # pill at the top would sit there showing the new total for the entire length of
 # the opening and give the reveal away. The panel is then called with held=true
 # so it does not hold a second time.
-func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := "", completed_sets: Array = [], held := false, tier := -1) -> void:
+# `on_done` runs when the player dismisses the box. It is for a caller whose
+# reward is not only cards -- the 1+2's two free packs carry spins and coins as
+# well -- because a flight fired while the takeover is up happens at z 101
+# behind a screen at z 126, which is a counter moving where nobody can see it.
+func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := "", completed_sets: Array = [], held := false, tier := -1, on_done := Callable()) -> void:
 	var gain := 0
 	for c in cards:
 		if not c.get("dup", false):
@@ -13992,19 +14209,17 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 			best = maxi(best, int(c.get("stars", 1)))
 		t = 2 if best >= 5 else (1 if best >= 4 else 0)
 
+	# A screen already up keeps the screen, and this box opens when that one is
+	# dismissed -- one purchase can owe two of them. See _reward_queue. The
+	# tier is resolved above rather than re-derived on the way out, so a queued
+	# box cannot come back as a different box.
+	if _reward_busy():
+		_reward_queue.append(func() -> void:
+			_show_chest_result(cards, title, bonus_text, completed_sets, true, t, on_done))
+		return
 	# Held on the instance so anything that needs the screen back can take it --
 	# see ChestOpen.skip and trap one in the QA notes. A celebration nobody can
 	# cancel is a modal that owns the game.
-	if _chest_seq != null and is_instance_valid(_chest_seq):
-		_chest_seq.skip(false)
-	if _payout_seq != null and is_instance_valid(_payout_seq):
-		_payout_seq.skip()
-		_payout_seq = null
-	# The league's haul waits for a tap now, so it can still be standing when
-	# something else wants the screen. Closing it here settles its held
-	# counters, which is the half that matters.
-	if _prize_stage != null:
-		_close_prize_stage()
 	var seq := ChestOpen.play(self, t, title)
 	_chest_seq = seq
 
@@ -14054,7 +14269,10 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 	seq.finished.connect(func() -> void:
 		if _chest_seq == seq:
 			_chest_seq = null
-		_star_harvest_at(earned, gain))
+		_star_harvest_at(earned, gain)
+		if on_done.is_valid():
+			on_done.call()
+		_reward_next())
 		# NO DIALOG AFTER THIS. It used to open whenever there was a cost line
 		# or a completed set to report -- which is every box opening -- so the
 		# box threw its cards, the screen cleared, and then a popup listed the
@@ -18207,6 +18425,9 @@ func _close_prize_stage() -> void:
 	_settle_hud("coins")
 	if done.is_valid():
 		done.call()
+	# The stage is a reward screen like the other two, so anything that queued
+	# up behind it opens now. See _reward_queue.
+	_reward_next()
 
 
 # `on_done` runs when the player dismisses the stage -- NOT on a timer. The
@@ -22390,6 +22611,15 @@ func _spin_flight(n: int, from: Vector2, z := 101) -> void:
 	if n <= 0:
 		return
 	_hud_hold("spins", n)
+	_spin_release(n, from, z)
+
+# The second half of a hold that has already happened, split out for the same
+# reason the coins have `_coin_release`: a caller that must park the meter the
+# moment the spins are banked but cannot fly them until the takeover standing
+# in front of the HUD is gone. The 1+2's two free packs are that caller.
+func _spin_release(n: int, from: Vector2, z := 101) -> void:
+	if n <= 0:
+		return
 	var flights := clampi(n, 1, 10)
 	var per := n / flights
 	var extra := n % flights
@@ -22444,6 +22674,11 @@ const COIN_FLIGHTS_MAX := 3
 var _coin_flights_up := 0
 
 func _coin_release(n: int, from: Vector2, z := 101) -> void:
+	# Nothing to deliver. Without this a zero from a caller that splits hold
+	# from flight (see _powerup_credit_purchase) still books a flight slot and
+	# throws five empty coins across the screen.
+	if n <= 0:
+		return
 	if _coin_flights_up >= COIN_FLIGHTS_MAX:
 		_hud_land("coins", n, Color(1.0, 0.85, 0.35, 0.0))
 		return
