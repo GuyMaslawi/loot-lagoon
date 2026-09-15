@@ -780,7 +780,15 @@ static func season_ends(i: int) -> float:
 # so paying coins for a month of collecting handed the player the output and
 # skipped the machine; spins hand back the thing that makes everything else
 # happen -- raids, cards, buildings -- and send them straight to the reels.
-const COLLECTION_MEGA_SPINS := 3000
+#
+# TWENTY THOUSAND, up from 3,000, and the figure is now the headline of the
+# whole Cards page rather than a chip beside a bar (see _grand_prize_bar).
+# 3,000 was about a day and a half of spinning for a month of collecting every
+# set in the season -- a number small enough that reading it was a reason to
+# stop. This is a windfall, which is what the end of a season is supposed to
+# be, and it is only ever paid once per season to a player who finished all
+# fifteen sets -- the rarest state in the game.
+const COLLECTION_MEGA_SPINS := 20000
 const CARD_DROP_CHANCE := 0.25
 
 # Relative chance a spin-dropped card has a given star rating (index star-1).

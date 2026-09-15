@@ -66,10 +66,52 @@ func _ready() -> void:
 	# Cloud.clan_list answers nothing in a harness.
 	m._clan_fake_list = [
 		{"id": "c9", "name": "Twenty Characters Ok", "emoji": "🦈",
-			"members": 30, "open": true, "full": true, "stars": 998877, "rank": 1},
+			"members": 30, "open": true, "full": true, "stars": 998877, "rank": 1,
+			"min_stars": 998877, "max": 30},
 		{"id": "c1", "name": "The Kraken's Own", "emoji": "🐙",
-			"members": 8, "open": false, "full": false, "stars": 148320, "rank": 12}]
+			"members": 8, "open": false, "full": false, "stars": 148320, "rank": 12,
+			"min_stars": 2000, "max": 30}]
 	m.gift_budget = {"sent": 4, "give_cap": 5, "got": 2, "receive_cap": 3}
+	# THE CHAT, AT ITS WIDEST -- and until this was here it was the one half of
+	# the clan page that could never be measured at all: Cloud.clan_chat answers
+	# nothing in a harness, so the scroll came out empty and the composer
+	# measured with no rows under it.
+	#
+	# The widest line a message can be is a 140-character one (say_clan's own
+	# ceiling) against a 20-character name; the widest an ASK can be is a card
+	# request, which carries a crest, a card name, a star chip, a spare chip, a
+	# bar and a button on one row.
+	var chat_now := Time.get_unix_time_from_system()
+	m.clan_chat_rows = [
+		{"id": "m1", "kind": "say", "body": "x".repeat(140), "at": chat_now - 4000.0,
+			"mine": false, "filled": 0, "cap": 10, "gave": false, "closed": false,
+			"by": roster[1]},
+		{"id": "m2", "kind": "say", "body": "Short one from me.", "at": chat_now - 3000.0,
+			"mine": true, "filled": 0, "cap": 10, "gave": false, "closed": false,
+			"by": roster[0]},
+		{"id": "m3", "kind": "spins", "at": chat_now - 2000.0, "mine": false,
+			"filled": 7, "cap": 10, "gave": false, "closed": false, "by": roster[2]},
+		{"id": "m4", "kind": "cards", "set": String(CV.COLLECTIONS[0]["id"]), "idx": 0,
+			"stars": int((CV.COLLECTIONS[0]["items"] as Array)[0][2]),
+			"at": chat_now - 1000.0, "mine": false, "filled": 9, "cap": 10,
+			"gave": false, "closed": false, "by": roster[3]},
+		{"id": "m5", "kind": "spins", "at": chat_now - 60.0, "mine": true,
+			"filled": 10, "cap": 10, "gave": false, "closed": true, "by": roster[0]},
+	]
+	m._clan_fake_chat = m.clan_chat_rows
+	# THE COMPOSER IS BEHIND THE GUIDELINE-1.2 GATE UNTIL THE RULES ARE
+	# ACCEPTED, and the gate is one short card -- so a harness on a fresh save
+	# measures that instead of the field, the SEND and the two ask buttons,
+	# which are the widest row the page has. Both states are measured: the page
+	# with the composer here, and the gate itself in the modal sweep below.
+	m.chat_rules_ok = true
+	m._clan_fake_roster = roster
+	# A five-digit wait, which is the longest string the ask buttons ever wear.
+	m.clan_ask = {"spins_wait": 17999, "cards_wait": 0, "give": 3, "seats": 10}
+	# The bar on the door, so the crest's chip and the board row's chip are both
+	# drawn. Six figures, because that is the widest a star count gets.
+	m.my_clan["min_stars"] = 998877
+	m.my_clan["max"] = 30
 	# The give-card list is as long as the player has spares, so every set gets
 	# one -- and a gold one too, which must NOT appear in the dialog.
 	for c in CV.COLLECTIONS:
@@ -141,8 +183,16 @@ func _ready() -> void:
 	# that a container gets to decide: three rows of picture-plus-wrapped-text,
 	# where the text column is the thing asked to shrink. That is the shop deal
 	# row's bug exactly, and this is the harness that caught that one.
+	# The three dialogs the 2026-09-14 clan pass added. All three are lists of
+	# rows inside a scroll, which is the shape that grows sideways when one row
+	# wins the width argument -- the give-card dialog's own bug class.
+	# Kept so the clan can be put back after _open_clan_card is measured with
+	# the page in its no-clan state.
+	var mine_again: Dictionary = m.my_clan
 	for opener in ["_open_tourney", "_open_world_ranks", "_open_daily", "_open_intro",
-			"_open_pick_target", "_intro_build_card", "_shot_give_card"]:
+			"_open_pick_target", "_intro_build_card", "_shot_give_card",
+			"_open_clan_details", "_open_create_clan", "_open_ask_card",
+			"_open_chat_rules"]:
 		m.call(opener)
 		await get_tree().process_frame
 		await get_tree().process_frame
@@ -150,6 +200,31 @@ func _ready() -> void:
 		_check_fixed_height("popup " + opener, m._popup)
 		m._close_popup(true)
 		await get_tree().process_frame
+	# The browse dialog takes a row rather than nothing, so it cannot ride the
+	# loop above. Measured against the widest row on the fake board: a
+	# twenty-character name, a six-figure score and a six-figure bar.
+	m.my_clan = {}
+	m.call("_open_clan_card", m._clan_fake_list[0])
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check_page("popup _open_clan_card", m._popup)
+	_check_fixed_height("popup _open_clan_card", m._popup)
+	m._close_popup(true)
+	await get_tree().process_frame
+	# And the page in its OTHER state -- no clan, so the search bar and the
+	# league table rather than the crest and the chat. It is a different page
+	# built by different code and it was never measured.
+	var clan_page: Control = m.pages.get("clan", null)
+	if clan_page != null:
+		var was_clan := clan_page.visible
+		clan_page.visible = true
+		m._fill_page("clan")
+		await get_tree().process_frame
+		await get_tree().process_frame
+		_check_page("clan (no clan yet)", clan_page)
+		clan_page.visible = was_clan
+	m.my_clan = mine_again
+
 	# THE THREE DEAL SCREENS, which were not in this sweep and are the three
 	# that most needed to be: they are the widest dialogs in the game, they are
 	# the only ones built out of drawn goods rather than type, and all three

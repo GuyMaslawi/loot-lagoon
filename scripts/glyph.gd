@@ -85,6 +85,7 @@ func _draw() -> void:
 		"hammer":  _hammer()
 		"lock":    _lock()
 		"clan":    _clan()
+		"search":  _search()
 		"chevron": _chevron()
 
 # --- drawing primitives ------------------------------------------------------
@@ -682,6 +683,19 @@ func _clan() -> void:
 	_shape(PackedVector2Array([
 		Vector2(24, 62), Vector2(88, 57), Vector2(88, 64), Vector2(24, 70),
 	]), Lagoon.CORAL_LO, 0.0)
+
+# A lens on a brass handle. Drawn rather than typed for the same reason
+# everything else here is: the magnifier character renders in three different
+# ways across the fonts this game ships and in none of them as an object with
+# the game's own light on it.
+func _search() -> void:
+	_bar(Vector2(58, 58), Vector2(88, 88), 14.0, Lagoon.BRASS, 5.0)
+	# Sea glass inside a brass ring: the ring is the shape people read, and the
+	# pale fill is what stops it reading as a hole in the button.
+	_disc(Vector2(44, 44), 30.0, Lagoon.BRASS, 0.0)
+	_disc(Vector2(44, 44), 23.0, _hue(Lagoon.SKY_LO), 0.0)
+	# The highlight, lit from above like every other glyph in the set.
+	_disc(Vector2(36, 36), 8.0, Color(1, 1, 1, 0.55), 0.0)
 
 func _warn() -> void:
 	var c := _hue(Lagoon.REEF)

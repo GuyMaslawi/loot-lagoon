@@ -51,8 +51,16 @@ func _ready() -> void:
 	m.piggy_coins = 105000
 	m.tourney_points = 1500
 
+	# THE CLAN PAGE IS IN THE DEFAULT SWEEP NOW, and it needed a session before
+	# it could be. _fill_clan asks Cloud.linked() first, which is false in a
+	# harness, so without the fake this page is one centred paragraph -- eight
+	# words measured, and a clean result that means nothing. With it, it is the
+	# largest surface in the game: a crest, a league table and a chat full of
+	# tinted cards, each one a different stock for ink to land on.
+	m._fake_clan()
 	var want := OS.get_environment("CONTRAST_PAGES")
-	var keys := ["slot", "island", "shop", "quests", "collections", "boxes", "options", "alerts"]
+	var keys := ["slot", "island", "shop", "quests", "collections", "boxes",
+		"clan", "options", "alerts"]
 	if want != "":
 		keys = Array(want.split(","))
 
@@ -263,12 +271,31 @@ func _measure(page: String, root: Node) -> void:
 			"ink": eff.to_html(false), "bg": bg.to_html(false),
 			"at": "%d,%d" % [int(r.position.x), int(r.position.y)]})
 
+# PARTLY CLIPPED IS CLIPPED, and the centre point was not enough to say so.
+#
+# This tested whether the MIDDLE of a label was inside its scroll container,
+# which passes a row the scroll has cut exactly in half -- and half of that
+# label's rect is then the page's deep backdrop rather than the card it is
+# printed on. The median of the sample comes out dark, the ink is dark, and the
+# harness reports 2.9 on a figure that a player sees as near-black on cream.
+#
+# It is not a rare case either: where the cut falls is decided by the total
+# height of everything above it, so ANY layout change anywhere on a page can
+# move a label onto the boundary. The clan page's league table did exactly that
+# on 2026-09-14 and produced the only failure in a 295-node run.
+#
+# So: a label has to be FULLY inside every clipping ancestor to be measured.
+# Two pixels of slack, because a rect that lines up exactly with the container's
+# own edge is drawn in full.
 func _clipped(n: Control, r: Rect2) -> bool:
 	var p := n.get_parent()
 	while p != null:
 		if p is ScrollContainer or (p is Control and (p as Control).clip_contents):
 			var pr: Rect2 = (p as Control).get_global_rect()
-			if not pr.has_point(r.position + r.size * 0.5):
+			if r.position.y < pr.position.y - 2.0 \
+					or r.end.y > pr.end.y + 2.0 \
+					or r.position.x < pr.position.x - 2.0 \
+					or r.end.x > pr.end.x + 2.0:
 				return true
 		p = p.get_parent()
 	return false

@@ -53,6 +53,12 @@ signal save_rejected(stored_rank: int, remote_save: Dictionary)
 # the server records that a raid happened and never touches the victim's save.
 signal raids_arrived(raids: Array)
 signal gifts_arrived(gifts: Array)
+# Spins a clanmate dropped into an ask while this phone was off. Its own signal
+# rather than a second kind of row inside gifts_arrived: a card gift and a spin
+# gift are applied by completely different code (one touches the collection,
+# one touches a counter) and a handler that had to branch on the shape of the
+# row would be one bad row away from the _on_cloud_gifts crash.
+signal spin_gifts_arrived(gifts: Array)
 
 # "off" | "syncing" | "synced" | "error" -- for a single small icon, nothing
 # more. A player who is not signed in sees "off" and no error, ever, because
@@ -405,6 +411,7 @@ func claim(local: Dictionary, name: String, emoji: String,
 				remote if typeof(remote) == TYPE_DICTIONARY else {})
 		fetch_raids()
 		fetch_gifts()
+		fetch_spin_gifts()
 		# Before the game has had a chance to hand out a daily bonus against a
 		# clock nobody has checked.
 		refresh_time()
@@ -845,6 +852,158 @@ func find_players(query: String, then: Callable) -> void:
 		func(code: int, body) -> void:
 			_note_extra_code(code)
 			then.call(body if code == 200 and typeof(body) == TYPE_ARRAY else [])
+	)
+
+# One clan, whoever it belongs to. clan_view is SECURITY DEFINER and granted to
+# every signed-in player, so this reads a stranger's roster as well as your own
+# -- which is what the browse dialog is: you look inside a clan before you knock
+# on it. `my_clan` is the same call with the id filled in server-side.
+func clan_view(clan_id: String, then: Callable) -> void:
+	if not linked() or clan_id == "":
+		then.call({})
+		return
+	_rpc("clan_view", {"p_clan": clan_id}, func(code: int, body) -> void:
+		_note_clan_code(code)
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+# Prefix search over clan names. Two characters rather than find_players'
+# three -- a clan name starts at three and "Kr" is a reasonable thing to type.
+# The server escapes the LIKE metacharacters; this sends the query as typed.
+func find_clans(query: String, then: Callable) -> void:
+	if not linked() or query.strip_edges().length() < 2:
+		then.call([])
+		return
+	_rpc("find_clans", {"p_query": query.strip_edges(), "p_limit": 20},
+		func(code: int, body) -> void:
+			_note_chat_code(code)
+			then.call(body if code == 200 and typeof(body) == TYPE_ARRAY else [])
+	)
+
+# The bar on the clan's door, in stars. Owner only, and the server says so.
+func set_clan_min_stars(stars: int, then: Callable) -> void:
+	if not linked():
+		then.call({})
+		return
+	_rpc("set_clan_min_stars", {"p_stars": maxi(0, stars)},
+		func(code: int, body) -> void:
+			_note_chat_code(code)
+			then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+# =============================================================================
+#  The clan chat, and the two things you can ask it for
+# =============================================================================
+#
+# A THIRD AVAILABILITY FLAG, FOR THE THIRD TIME AND THE SAME REASON. `_clans_ok`
+# means clans exist, `_extras_ok` means this project also has invites and
+# requests, and `_chat_ok` means it has the 20260914 migration as well. Routing
+# a 404 from `clan_chat` into either of the others would turn a working clan
+# page off because one function of the twelve is missing -- which is exactly
+# the failure the second flag was invented to stop.
+#
+# The consequence when it is off is visible and small: the chat, the two ask
+# buttons and the star threshold are simply not drawn, and the roster, the
+# league table, recruiting and card giving all carry on.
+var _chat_ok := true
+
+func clan_chat_ready() -> bool:
+	return _clans_ok and _chat_ok
+
+func _note_chat_code(code: int) -> void:
+	if code == 404:
+		_chat_ok = false
+	elif code == 200:
+		_chat_ok = true
+
+# The scroll, oldest last. Polled while the clan page is open and nowhere else
+# -- see the note on the poll in main.gd for why this one gets a timer when
+# clan_news deliberately does not.
+func clan_chat(then: Callable, limit := 60) -> void:
+	if not linked():
+		then.call([])
+		return
+	_rpc("clan_chat", {"p_limit": limit}, func(code: int, body) -> void:
+		_note_chat_code(code)
+		then.call(body if code == 200 and typeof(body) == TYPE_ARRAY else [])
+	)
+
+# When this player may next ask for each of the two things, so the composer's
+# buttons can say "in 3h 40m" rather than being pressed and refused.
+func clan_ask_state(then: Callable) -> void:
+	if not linked():
+		then.call({})
+		return
+	_rpc("clan_ask_state", {}, func(code: int, body) -> void:
+		_note_chat_code(code)
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+# Every rule about a message -- length, the word list, the rate limit -- is on
+# the server, for the same reason every rule about a display name is. This asks;
+# it does not decide.
+func say_clan(body_text: String, then: Callable) -> void:
+	if not linked():
+		then.call({})
+		return
+	_rpc("say_clan", {"p_body": body_text}, func(code: int, body) -> void:
+		_note_chat_code(code)
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+# `kind` is "spins" or "cards". The card arguments are ignored by the server for
+# a spin ask, so they are sent as nulls rather than as a second function.
+func ask_clan_help(kind: String, set_id := "", idx := -1, stars := 0,
+		then := Callable()) -> void:
+	if not linked():
+		if then.is_valid():
+			then.call({})
+		return
+	var args := {"p_kind": kind}
+	if kind == "cards":
+		args["p_set"] = set_id
+		args["p_idx"] = idx
+		args["p_stars"] = stars
+	_rpc("ask_clan_help", args, func(code: int, body) -> void:
+		_note_chat_code(code)
+		if then.is_valid():
+			then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+# Filling one seat on somebody's ask. One call for both kinds, because the donor
+# row and the thing donated have to land in the same transaction -- see the
+# migration.
+func donate_clan_help(message_id: String, then: Callable) -> void:
+	if not linked() or message_id == "":
+		then.call({})
+		return
+	_rpc("donate_clan_help", {"p_message": message_id}, func(code: int, body) -> void:
+		_note_chat_code(code)
+		then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+# Spins given while the phone was off. Same contract as fetch_gifts: the server
+# keeps handing them over until the client says they landed.
+func fetch_spin_gifts() -> void:
+	if not linked():
+		return
+	_rpc("unseen_spin_gifts", {}, func(code: int, body) -> void:
+		_note_chat_code(code)
+		if code == 200 and typeof(body) == TYPE_ARRAY and not (body as Array).is_empty():
+			spin_gifts_arrived.emit(body)
+	)
+
+# The same backed-off retry the other two acks have, for the same reason: an ack
+# that does not land means the spins arrive again on the next launch. main.gd
+# dedupes on the id as well, which is the half that holds if this never does.
+func ack_spin_gifts(ids: Array, attempt: int = 0) -> void:
+	if not linked() or ids.is_empty():
+		return
+	_rpc("ack_spin_gifts", {"p_ids": ids}, func(code: int, _b) -> void:
+		if code == 200 or attempt >= ACK_RETRIES:
+			return
+		var t := get_tree().create_timer(2.0 * float(attempt + 1))
+		t.timeout.connect(func() -> void: ack_spin_gifts(ids, attempt + 1))
 	)
 
 # What is left of today's giving and receiving, so a button can be greyed out

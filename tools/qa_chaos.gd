@@ -461,7 +461,20 @@ func _t_double_fire() -> void:
 	var s0: int = int(m.spins)
 	m._last_bet = 1
 	m.spins -= 1
-	var roll: Array = m._roll()
+	# A CHOSEN ROLL, NOT m._roll(), AND THAT IS THE POINT OF THE CASE.
+	#
+	# This used to fuzz with a real roll, and it passed for weeks by luck: the
+	# RNG had never handed it a bolt triple at this point in the run. A bolt
+	# triple pays 12 x bet SPINS, so resolving it twice legitimately puts 24 on
+	# the meter -- and the assertion below says the meter never goes UP, which
+	# is a claim about the stake being refunded and nothing to do with what the
+	# reels paid. So the case was failing the game for a roll it had no opinion
+	# about. It surfaced the day one save field was added, because the field
+	# sweep above shuffles the RNG stream by thirteen cases.
+	#
+	# Two of three, nothing paying, so the only thing that can move the meter
+	# here is the bug this case is actually hunting.
+	var roll: Array = ["coin", "coin", "gem"]
 	m._on_spin_finished(roll)
 	m._on_spin_finished(roll)
 	await get_tree().process_frame

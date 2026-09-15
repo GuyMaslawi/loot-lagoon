@@ -78,6 +78,16 @@ clan_join_requests:
 answer_clan_request:p_id,p_accept
 set_clan_open:p_open
 find_players:p_query,p_limit
+clan_view:p_clan
+find_clans:p_query,p_limit
+set_clan_min_stars:p_stars
+clan_chat:p_limit
+clan_ask_state:
+say_clan:p_body
+ask_clan_help:p_kind,p_set,p_idx,p_stars
+donate_clan_help:p_message
+unseen_spin_gifts:
+ack_spin_gifts:p_ids
 RPC
 echo
 [ "$fails" -eq 0 ] && echo "every RPC the client calls still resolves" || echo "$fails MISMATCH(ES)"

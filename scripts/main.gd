@@ -1477,6 +1477,26 @@ func _shot_give() -> void:
 	_fake_clan()
 	_shot_give_card()
 
+func _shot_clan_details() -> void:
+	_fake_clan()
+	_open_clan_details()
+
+func _shot_chat_rules() -> void:
+	_fake_clan()
+	_open_chat_rules()
+
+# The browse dialog, which is a view of somebody ELSE'S clan -- so the fake is
+# taken out of its own clan first, or the dialog opens with its JOIN button
+# reading "ALREADY IN A CLAN" and none of the door states are photographable.
+func _shot_clan_card() -> void:
+	_fake_clan()
+	my_clan = {}
+	_open_clan_card(_clan_fake_list[0])
+
+func _shot_ask_card() -> void:
+	_fake_clan()
+	_open_ask_card()
+
 func _fake_clan() -> void:
 	_clan_fake = true
 	Cloud._access = "harness"
@@ -1495,14 +1515,52 @@ func _fake_clan() -> void:
 	# at the top, which is the widest this row ever gets.
 	_clan_fake_list = [
 		{"id": "c9", "name": "Deepwater Kings", "emoji": "\U01F988",
-			"members": 8, "open": true, "full": false, "stars": 17327, "rank": 1},
+			"members": 8, "open": true, "full": false, "stars": 17327, "rank": 1,
+			"min_stars": 12000, "max": CLAN_MAX_MEMBERS},
 		{"id": "c2", "name": "The Long Reef Company", "emoji": "\U01F41A",
-			"members": 12, "open": false, "full": false, "stars": 9120, "rank": 2},
+			"members": 12, "open": false, "full": false, "stars": 9120, "rank": 2,
+			"min_stars": 0, "max": CLAN_MAX_MEMBERS},
 		{"id": "c1", "name": "Kraken's Own", "emoji": "\U01F419",
-			"members": 5, "open": false, "full": false, "stars": 4310, "rank": 3},
+			"members": 5, "open": false, "full": false, "stars": 4310, "rank": 3,
+			"min_stars": 2000, "max": CLAN_MAX_MEMBERS},
 		{"id": "c3", "name": "First Wave", "emoji": "\U01F30A",
-			"members": 30, "open": true, "full": true, "stars": 1330, "rank": 4}]
+			"members": 30, "open": true, "full": true, "stars": 1330, "rank": 4,
+			"min_stars": 0, "max": CLAN_MAX_MEMBERS}]
 	gift_budget = {"sent": 1, "give_cap": 5, "got": 2, "receive_cap": 3}
+	# THE CHAT, AND THE TWO CLOCKS THE COMPOSER DRAWS ITS BUTTONS FROM.
+	#
+	# Without these the chat is the fourth thing on this page that no screenshot
+	# and no qa_layout run can ever reach -- which is exactly how the roster's
+	# previous over-wide row got to ship. One of every row the scroll can hold,
+	# each in the state that makes it widest: a long message, somebody else's
+	# ask part-filled, one of mine (no button), a card ask naming a real card,
+	# and one that has gone full.
+	var chat_now := Time.get_unix_time_from_system()
+	_clan_fake_chat = [
+		{"id": "m1", "kind": "say", "body": "Morning all \u2014 anybody got a spare Cutlass? I am one off the set.",
+			"at": chat_now - 5400.0, "mine": false, "filled": 0, "cap": 10,
+			"gave": false, "closed": false, "by": roster[1]},
+		{"id": "m2", "kind": "spins", "at": chat_now - 3000.0, "mine": false,
+			"filled": 4, "cap": 10, "gave": false, "closed": false, "by": roster[2]},
+		{"id": "m3", "kind": "say", "body": "Sent you one.", "at": chat_now - 2400.0,
+			"mine": true, "filled": 0, "cap": 10, "gave": false, "closed": false,
+			"by": roster[0]},
+		{"id": "m4", "kind": "cards", "set": String(CV.COLLECTIONS[0]["id"]), "idx": 1,
+			"stars": int((CV.COLLECTIONS[0]["items"] as Array)[1][2]),
+			"at": chat_now - 900.0, "mine": false, "filled": 1, "cap": 10,
+			"gave": false, "closed": false, "by": roster[3]},
+		{"id": "m5", "kind": "spins", "at": chat_now - 300.0, "mine": true,
+			"filled": 10, "cap": 10, "gave": false, "closed": true, "by": roster[0]},
+	]
+	clan_chat_rows = _clan_fake_chat
+	clan_ask = {"spins_wait": 13380, "cards_wait": 0, "give": 3, "seats": 10}
+	# The composer, not the guideline-1.2 gate. DEMO_CLAN_RULES=1 leaves the
+	# gate up instead, which is the state every player meets first and the one
+	# a reviewer is looking for.
+	chat_rules_ok = not OS.has_environment("DEMO_CLAN_RULES")
+	_clan_fake_roster = roster
+	my_clan["min_stars"] = 2000
+	my_clan["max"] = CLAN_MAX_MEMBERS
 	# The pending halves, so the harnesses measure the rows that carry the
 	# longest strings this page can hold. `open: false` above is what makes the
 	# owner's request queue exist at all -- an open clan never has one, so a
@@ -1533,6 +1591,16 @@ func _fake_clan() -> void:
 	if OS.has_environment("DEMO_CLAN_NONE"):
 		my_clan = {}
 
+	# DEMO_CLAN_CHAT=1 clears both pending lists so the CHAT is what is on
+	# screen when the page opens. It is not a rarer state than the others --
+	# no invitation and nobody knocking is the ordinary day -- it is simply the
+	# one the fake could not reach, because the fake's whole job was to have
+	# every card on the page at once and the chat is below all four of them.
+	if OS.has_environment("DEMO_CLAN_CHAT"):
+		clan_news = {"invites": 0, "requests": 0}
+		_clan_fake_invites = []
+		_clan_fake_requests = []
+
 	# DEMO_CLAN_SOLO=1 is the state EVERY founder sees first, and the fake
 	# above can never reach it: a clan one second old -- one member, nobody
 	# asking, an open door. It is this page's emptiest legal form, which makes
@@ -1544,6 +1612,12 @@ func _fake_clan() -> void:
 		clan_news = {"invites": 0, "requests": 0}
 		_clan_fake_invites = []
 		_clan_fake_requests = []
+		# A clan one second old has said nothing, which is the emptiest legal
+		# form of the chat and the one worth looking at.
+		_clan_fake_chat = []
+		clan_chat_rows = []
+		clan_ask = {"spins_wait": 0, "cards_wait": 0, "give": 3, "seats": 10}
+		my_clan["min_stars"] = 0
 
 func _shot_give_card() -> void:
 	var members: Array = my_clan.get("members", [])
@@ -1802,6 +1876,12 @@ func _capture_page(key: String) -> void:
 			# harness does not have. Same fake Cloud state qa_layout uses.
 			"clan":    _shot_clan()
 			"give":    _shot_give()
+			# The three dialogs the 2026-09-14 clan pass added. All of them
+			# need the faked session for the same reason the roster does.
+			"details": _shot_clan_details()
+			"rules":   _shot_chat_rules()
+			"card":    _shot_clan_card()
+			"askcard": _shot_ask_card()
 		# DEMO_VIEW_TRACK is gone with the arrows it drove. A harness that wants
 		# a later track sets `tourney_lap` before opening the board, which is
 		# also the only state the board can now be in.
@@ -2442,6 +2522,7 @@ func _wire_cloud() -> void:
 	Cloud.save_rejected.connect(_on_cloud_save_rejected)
 	Cloud.raids_arrived.connect(_on_cloud_raids)
 	Cloud.gifts_arrived.connect(_on_cloud_gifts)
+	Cloud.spin_gifts_arrived.connect(_on_cloud_spin_gifts)
 	Cloud.link_result.connect(_on_cloud_link_result)
 	Cloud.sign_in_failed.connect(_on_cloud_sign_in_failed)
 	Cloud.signed_out.connect(_on_cloud_signed_out)
@@ -3278,6 +3359,9 @@ func _goto(target: Control) -> void:
 				_enter_clan_page()
 			_fill_page(key)
 			_scroll_top(key)
+	# A chat that keeps asking for itself from the island page is a radio woken
+	# every eight seconds for a screen nobody is looking at.
+	_clan_chat_poll(target == pages.get("clan"))
 	_transitioning = true
 	Sfx.play("pop", -10.0)
 	var from := _current_page
@@ -3343,6 +3427,12 @@ func _enter_clan_page() -> void:
 	_refresh_clan()
 	_refresh_gift_budget()
 	_refresh_clan_news()
+	# The scroll, and the spins somebody dropped into an ask while this phone
+	# was elsewhere -- both of which are only interesting on this page, which is
+	# why neither rides on the launch path alone.
+	_refresh_clan_chat()
+	Cloud.fetch_spin_gifts()
+	_clan_chat_poll(true)
 
 func _goto_shop(anchor := "") -> void:
 	# Already on the page, so there is no transition to hide the movement --
@@ -7357,28 +7447,146 @@ func _clan_invite_row(inv: Dictionary) -> Control:
 		FX.pulse_forever(yes, 1.04, 0.9)
 	return wrap
 
-# No clan yet: make one, or take one off the list.
+# No clan yet: find one, make one, or take one off the league table.
+#
+# THE TOP OF THIS PAGE IS A SEARCH FIELD WITH CREATE BESIDE IT. Guy, 2026-09-14.
+# What was here was a whole card about FOUNDING a clan -- a heading, a sentence
+# about card giving, a name field and a full-width CREATE -- standing above the
+# list of clans that already exist. That is the wrong way round for almost
+# everybody who opens this page: the list is what they came for, and founding is
+# the rarer of the two things to do here. One row does both jobs and hands the
+# rest of the screen to the table.
+#
+# THE NAME FIELD MOVED INTO A DIALOG rather than being deleted. Founding still
+# needs a name typed, and a second text field on the page beside the search one
+# is two boxes that look identical and do completely different things.
 func _clan_join_ui(vb: VBoxContainer) -> void:
-	# -- Make one. ----------------------------------------------------------
-	#
-	# A header card, not a bare slab: this is a named thing to do, and the band
-	# is what tells you so before you have read a word of it. Brass, because
-	# founding a clan is the structural half of this page and the browse list
-	# below is the casual half.
-	var intro := _page_card(vb, "START  A  CLAN", Lagoon.LAGOON_DEEP)
+	var bar := _page_card(vb)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	bar.add_child(row)
+
+	var field := Lagoon.field(LineEdit.new(), "Find a clan")
+	field.max_length = 20
+	field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	field.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	row.add_child(field)
+
+	# The magnifier is a SQUARE button, not the word SEARCH: this row already
+	# carries a field and a CREATE, and three words across a 720-wide phone is
+	# what pushes the field down to nothing. Return in the field runs it too.
+	var find := Button.new()
+	find.custom_minimum_size = Vector2(UI.TAP, UI.TAP)
+	find.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	Lagoon.button(find, "glass")
+	FX.press_feedback(find)
+	row.add_child(find)
+	var mag := Glyph.new()
+	mag.kind = "search"
+	find.add_child(mag)
+	mag.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	mag.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	var make := Button.new()
+	make.text = "CREATE"
+	make.custom_minimum_size = Vector2(0, UI.TAP)
+	make.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	Lagoon.button(make, "primary")
+	Lagoon.button_gloss(make, 22)
+	FX.press_feedback(make)
+	make.pressed.connect(_open_create_clan)
+	row.add_child(make)
+
+	# Everything below the bar is one container so a search can replace the
+	# league table and the CLEAR button can put it back, without the page
+	# being rebuilt around the field somebody is typing in.
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 10)
+	vb.add_child(body)
+	_clan_browse_league(body)
+
+	var run := func() -> void:
+		var q := field.text.strip_edges()
+		for c in body.get_children():
+			body.remove_child(c)
+			c.queue_free()
+		if q.length() < 2:
+			var short := _page_note("Type at least two letters of a clan's name.",
+				UI.F_CAPTION)
+			short.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			body.add_child(short)
+			_clan_browse_league(body)
+			return
+		if not Cloud.clan_chat_ready() and not _clan_fake:
+			# find_clans arrived with the 20260914 migration. On a project
+			# without it, saying so beats a search box that answers nothing.
+			var soon := _page_note("Searching by name opens with the next update. The table below is every clan there is.",
+				UI.F_CAPTION)
+			soon.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			body.add_child(soon)
+			_clan_browse_league(body)
+			return
+		find.disabled = true
+		var build := _clan_build
+		Cloud.find_clans(q, func(rows: Array) -> void:
+			if is_instance_valid(find):
+				find.disabled = false
+			if build != _clan_build or not is_instance_valid(body):
+				return
+			body.add_child(Lagoon.banner("SEARCH  RESULTS", Lagoon.LAGOON_DEEP))
+			if rows.is_empty():
+				var none := _page_note("No clan starts with \"%s\". Try fewer letters, or make one." % q,
+					UI.F_CAPTION)
+				none.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+				body.add_child(none)
+			for r in rows:
+				if typeof(r) == TYPE_DICTIONARY:
+					_clan_board_row(body, r, true)
+			var back := Button.new()
+			back.text = "Back to the league"
+			back.custom_minimum_size = Vector2(0, UI.TAP)
+			Lagoon.button(back, "glass")
+			FX.press_feedback(back)
+			back.pressed.connect(func() -> void:
+				field.text = ""
+				for c in body.get_children():
+					body.remove_child(c)
+					c.queue_free()
+				_clan_browse_league(body)
+				_let_drags_through(body)
+			)
+			body.add_child(back)
+			_let_drags_through(body)
+		)
+	find.pressed.connect(run)
+	field.text_submitted.connect(func(_t: String) -> void: run.call())
+
+# The default half of the browser: a ribbon and the table. Its own function
+# because the search puts it back.
+func _clan_browse_league(body: VBoxContainer) -> void:
+	body.add_child(Lagoon.banner("TOP  CLANS", Lagoon.LAGOON_DEEP))
+	_clan_board_ui(body, true)
+
+# FOUNDING, IN A DIALOG OF ITS OWN.
+#
+# It is the same three things it always was -- what a clan is for, a name, and
+# a button -- taken off the page so the browse list owns it. The sentence stays:
+# it is the only place in the game that says what joining a clan actually gets
+# you, and a CREATE with no explanation beside it is a button people press once
+# and abandon.
+func _open_create_clan() -> void:
+	var vbox := _open_popup("Start A Clan")
 	var sub := _popup_row_label(
-		"Clanmates can give each other spare cards — up to %d a day each way. Gold cards are never sendable."
+		"Clanmates can give each other spare cards — up to %d a day each way — and ask the crew for spins. Gold cards are never sendable."
 			% int(gift_budget.get("receive_cap", 3)), UI.F_CAPTION)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	sub.add_theme_color_override("font_color", Lagoon.INK_SOFT)
-	intro.add_child(sub)
+	vbox.add_child(sub)
 
-	# The one moment on this page where the player is asked to contribute
-	# something, and it shipped as Godot's default grey box. See Lagoon.field.
 	var name_row := Lagoon.field(LineEdit.new(), "New clan name")
 	name_row.max_length = 20
-	intro.add_child(name_row)
+	vbox.add_child(name_row)
 
 	var make := Button.new()
 	make.text = "CREATE"
@@ -7405,22 +7613,13 @@ func _clan_join_ui(vb: VBoxContainer) -> void:
 				_banner(_clan_refusal(res), Lagoon.CORAL_LO)
 				return
 			my_clan = res.get("clan", {})
+			_close_popup()
 			Sfx.play("levelup", -6.0)
 			_banner("Clan created — %s" % String(my_clan.get("name", "")), Lagoon.KELP_HI)
 			_fill_page("clan")
 		)
 	)
-	intro.add_child(make)
-
-	# -- Or take one off the list. ------------------------------------------
-	#
-	# A RIBBON, NOT FAINT INK ON WATER. "OR JOIN ONE" and "No clans yet" were
-	# INK_FAINT labels sitting on the page background rather than on a board --
-	# tertiary ink is tuned to read on glass, and on open water it is the one
-	# combination STYLE.md rules out. The banner is the control every other
-	# section head in the game uses.
-	vb.add_child(Lagoon.banner("OR  JOIN  ONE", Lagoon.LAGOON_DEEP))
-	_clan_board_ui(vb, true)
+	vbox.add_child(make)
 
 # =============================================================================
 #  The league table
@@ -7539,8 +7738,27 @@ func _clan_board_row(parent: Node, here: Dictionary, joinable: bool) -> Control:
 	var nm := Lagoon.label(String(here.get("name", "")), UI.F_LABEL, Lagoon.INK, true)
 	nm.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	col.add_child(nm)
-	col.add_child(Lagoon.label("%d %s" % [crew, "clanmate" if crew == 1 else "clanmates"],
-		UI.F_TINY, Lagoon.INK_SOFT, true))
+	# "8 / 30", NOT "8 clanmates". Guy, 2026-09-14: how many players there are
+	# out of how many there can be. A bare count says how busy a clan is; the
+	# pair says whether there is room in it, which is the question somebody
+	# reading this table is actually asking.
+	var seats := HBoxContainer.new()
+	seats.add_theme_constant_override("separation", 6)
+	seats.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(seats)
+	# NO "CLANMATES" AFTER IT, and that is a measurement rather than a
+	# preference: this row is a rank plate, a crest, a name, a score and a chip
+	# already, and the word takes it to 748px against a 720-wide phone with a
+	# twenty-character clan name in it -- caught by qa_layout. The pair of
+	# figures over a crest reads as seats without being told, and the clan's own
+	# card spells it out for anybody it does not.
+	seats.add_child(Lagoon.label("%d / %d" % [crew, int(here.get("max", CLAN_MAX_MEMBERS))],
+		UI.F_CAPTION, Lagoon.INK_SOFT, true))
+	# The bar on the door, said out here rather than only inside the dialog --
+	# a clan you cannot get into should not cost a tap to find that out.
+	var bar := int(here.get("min_stars", 0))
+	if bar > 0:
+		seats.add_child(_reward_chip("star", "%s+" % _fmt_compact(bar), Lagoon.INK_MUTE))
 
 	# The score, and the word under it. `stars` is absent on a project without
 	# the migration, and a clan drawn with a silent 0 beside it would read as a
@@ -7577,32 +7795,208 @@ func _clan_board_row(parent: Node, here: Dictionary, joinable: bool) -> Control:
 
 	if btn == null:
 		return card
-	btn.pressed.connect(func() -> void:
-		btn.disabled = true
+	# A TAP OPENS THE CLAN, IT NO LONGER JOINS IT. Guy, 2026-09-14: "if he picks
+	# a clan from the list he presses the row and a small dialog opens, he sees
+	# some details about the clan and underneath a scrolling list of who is in
+	# it." Which is the right way round anyway -- the old row committed you to a
+	# clan on one tap, off a name, a crest and a number, with the roster and the
+	# star requirement both invisible until you were already in.
+	var here_now: Dictionary = here
+	btn.pressed.connect(func() -> void: _open_clan_card(here_now))
+	return card
+
+# =============================================================================
+#  One clan, looked at from outside
+# =============================================================================
+#
+# What the board row cannot hold: who is actually in there, and what it takes to
+# get in. The roster is a second round trip -- clan_view against somebody else's
+# id, which is granted to every signed-in player -- so the dialog opens
+# immediately with what the row already knew and fills the list underneath when
+# the answer lands.
+func _open_clan_card(here: Dictionary) -> void:
+	var clan_id := String(here.get("id", ""))
+	var name := String(here.get("name", ""))
+	var seats := int(here.get("max", CLAN_MAX_MEMBERS))
+	var crew := int(here.get("members", 0))
+	var is_open := bool(here.get("open", true))
+	var is_full := bool(here.get("full", crew >= seats))
+	var bar := int(here.get("min_stars", 0))
+	var vbox := _open_popup(name if name != "" else "Clan", 580.0, true)
+
+	# -- the crest line -----------------------------------------------------
+	var top := HBoxContainer.new()
+	top.add_theme_constant_override("separation", 14)
+	vbox.add_child(top)
+	top.add_child(Lagoon.token(String(here.get("emoji", "\U01F3F4")), 76.0, Lagoon.BRASS))
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	col.add_theme_constant_override("separation", 6)
+	top.add_child(col)
+	var marks := HBoxContainer.new()
+	marks.add_theme_constant_override("separation", 8)
+	col.add_child(marks)
+	var place := int(here.get("rank", 0))
+	if place > 0:
+		marks.add_child(Lagoon.stamp("LEAGUE  #%d" % place,
+			Lagoon.BRASS_HI if place <= 3 else Lagoon.SAND))
+	marks.add_child(Lagoon.chip("OPEN" if is_open else "BY  APPROVAL",
+		Lagoon.KELP if is_open else Lagoon.BRASS_MID, UI.F_TINY))
+	var seat_row := HBoxContainer.new()
+	seat_row.add_theme_constant_override("separation", 8)
+	col.add_child(seat_row)
+	seat_row.add_child(Lagoon.label("%d / %d" % [crew, seats], UI.F_LABEL, Lagoon.INK, true))
+	seat_row.add_child(Lagoon.label("CLANMATES", UI.F_TINY, Lagoon.INK_MUTE, true))
+	if here.has("stars"):
+		var gap := Control.new()
+		gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		seat_row.add_child(gap)
+		seat_row.add_child(_reward_chip("star", _fmt_compact(int(here.get("stars", 0))),
+			Lagoon.INK))
+
+	# -- WHAT IT TAKES TO GET IN, said before it is tried -------------------
+	#
+	# Guy asked for this by name: "he will also see in this window whether there
+	# is a star requirement and how much." It is the one fact a clan has that
+	# can refuse somebody, and it was previously only discoverable by pressing
+	# JOIN and being told no.
+	var mine_stars := rank_stars
+	if bar > 0:
+		var gate := _tinted_body(vbox, Lagoon.BRASS if mine_stars >= bar else Lagoon.CORAL,
+			false, 12)
+		var gr := HBoxContainer.new()
+		gr.add_theme_constant_override("separation", 10)
+		gate.add_child(gr)
+		gr.add_child(_prize_art("star", 34.0))
+		var gl := Lagoon.label(
+			"Needs %s stars to join. You have %s." % [_fmt_compact(bar), _fmt_compact(mine_stars)],
+			UI.F_CAPTION, Lagoon.INK, true)
+		gl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		gl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		gl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		gr.add_child(gl)
+
+	# -- the roster, which is the whole reason this dialog exists -----------
+	vbox.add_child(Lagoon.banner("WHO  IS  IN  IT", Lagoon.LAGOON_DEEP))
+	var slot := VBoxContainer.new()
+	slot.add_theme_constant_override("separation", 8)
+	vbox.add_child(slot)
+	var wait := _popup_row_label("Looking\u2026", UI.F_CAPTION)
+	wait.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	wait.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+	slot.add_child(wait)
+	var fill_roster := func(view: Dictionary) -> void:
+		if not is_instance_valid(slot):
+			return
+		for c in slot.get_children():
+			slot.remove_child(c)
+			c.queue_free()
+		var members: Array = view.get("members", []) if typeof(view.get("members", [])) == TYPE_ARRAY else []
+		if members.is_empty():
+			var none := _popup_row_label("Nobody could be listed just now.", UI.F_CAPTION)
+			none.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			none.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+			slot.add_child(none)
+			return
+		var boss := String(view.get("owner", ""))
+		for m in members:
+			if typeof(m) != TYPE_DICTIONARY:
+				continue
+			_clan_face_row(slot, m, boss)
+	if _clan_fake:
+		fill_roster.call({"members": _clan_fake_roster, "owner": String(_clan_fake_roster[0].get("id", "")) if not _clan_fake_roster.is_empty() else ""})
+	else:
+		Cloud.clan_view(clan_id, fill_roster)
+
+	# -- the door ------------------------------------------------------------
+	var act := Button.new()
+	act.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	var why := ""
+	if not my_clan.is_empty():
+		act.text = "ALREADY  IN  A  CLAN"
+		why = "Leave your clan before joining another."
+	elif is_full:
+		act.text = "FULL"
+		why = "Every seat is taken. Try another clan, or check back later."
+	elif bar > 0 and mine_stars < bar:
+		act.text = "NOT  ENOUGH  STARS"
+		why = "You need %s more stars." % _fmt_compact(bar - mine_stars)
+	else:
+		act.text = "JOIN" if is_open else "ASK  TO  JOIN"
+	Lagoon.button(act, "primary" if why == "" else "glass")
+	if why == "":
+		Lagoon.button_gloss(act, 22)
+	else:
+		act.disabled = true
+	FX.press_feedback(act)
+	vbox.add_child(act)
+	if why != "":
+		var note := _popup_row_label(why, UI.F_TINY)
+		note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		note.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+		vbox.add_child(note)
+		return
+	act.pressed.connect(func() -> void:
+		act.disabled = true
 		if is_open:
 			Cloud.join_clan(clan_id, func(res: Dictionary) -> void:
 				if not bool(res.get("ok", false)):
-					btn.disabled = false
+					if is_instance_valid(act):
+						act.disabled = false
 					_banner(_clan_refusal(res), Lagoon.CORAL_LO)
 					return
 				my_clan = res.get("clan", {})
+				_close_popup()
 				Sfx.play("levelup", -6.0)
 				_banner("Joined %s" % String(my_clan.get("name", "")), Lagoon.KELP_HI)
+				_enter_clan_page()
 				_fill_page("clan")
 			)
 			return
 		Cloud.request_join_clan(clan_id, func(res: Dictionary) -> void:
-			btn.disabled = false
+			if is_instance_valid(act):
+				act.disabled = false
 			if not bool(res.get("ok", false)):
 				_banner(_clan_refusal(res), Lagoon.CORAL_LO)
 				return
-			# No page rebuild: nothing about the list has changed, and
-			# repainting it under the finger that just tapped reads as the
-			# request having failed and reset.
-			_banner("Asked to join %s \u2014 they will get your request."
-				% String(here.get("name", "")), Lagoon.KELP_HI)
+			_close_popup()
+			_banner("Asked to join %s \u2014 they will get your request." % name,
+				Lagoon.KELP_HI)
 		)
 	)
+
+# ONE FACE IN A LIST: avatar, name, island, stars. The read-only half of
+# _clan_member_row, for every list that is not your own clan's roster -- the
+# browse dialog and the details dialog both draw people this way.
+func _clan_face_row(parent: Node, who: Dictionary, owner_id := "") -> Control:
+	var card := _tinted_card(parent, Lagoon.BRASS_MID)
+	var pad := MarginContainer.new()
+	for m in [["margin_left", 12], ["margin_right", 12], ["margin_top", 8], ["margin_bottom", 8]]:
+		pad.add_theme_constant_override(m[0], m[1])
+	card.add_child(pad)
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 12)
+	pad.add_child(hb)
+	hb.add_child(Lagoon.token(String(who.get("emoji", "\U01F642")), 56.0, Lagoon.BRASS))
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	col.add_theme_constant_override("separation", 2)
+	hb.add_child(col)
+	var line := HBoxContainer.new()
+	line.add_theme_constant_override("separation", 8)
+	col.add_child(line)
+	line.add_child(Lagoon.label(String(who.get("name", "")), UI.F_LABEL, Lagoon.INK, true))
+	if owner_id != "" and String(who.get("id", "")) == owner_id:
+		line.add_child(Lagoon.stamp("FOUNDER", Lagoon.BRASS_HI))
+	col.add_child(Lagoon.label("Island %d" % int(who.get("island_level", 1)),
+		UI.F_TINY, Lagoon.INK_SOFT, true))
+	if who.has("rank_stars"):
+		hb.add_child(_reward_chip("star", _fmt_compact(int(who.get("rank_stars", 0))),
+			Lagoon.INK_SOFT))
 	return card
 
 func _clan_refusal(res: Dictionary) -> String:
@@ -7619,6 +8013,27 @@ func _clan_refusal(res: Dictionary) -> String:
 		"no_clan":         return "You are not in a clan."
 		"too_many":        return "This clan has too many invitations out already."
 		"self":            return "You cannot invite yourself."
+		# -- the chat and the two asks ------------------------------------
+		# ONE REASON, TWO MEANINGS, and the payload is what separates them:
+		# join_clan sends `need` with it (the clan's bar), ask_clan_help does
+		# not (a card outside 1-3 stars). Same word from the server because it
+		# is the same rule -- a star count that is not good enough.
+		"stars":
+			if res.has("need"):
+				return "That clan needs %s stars to join." % _fmt_compact(int(res.get("need", 0)))
+			return "Only one, two and three star cards can be asked for."
+		"language":        return "That message can\u2019t be sent. Keep it friendly."
+		"too_fast":        return "One message at a time \u2014 wait a moment."
+		"too_many":        return "You have sent a lot just now. Try again shortly."
+		"empty":           return "Type something first."
+		"long":            return "That message is too long."
+		"too_soon":        return "You can ask again in %s." \
+			% _clan_wait_text(int(res.get("wait", 0)))
+		"filled":          return "That ask is already full."
+		"already":         return "You have already answered that one."
+		"expired":         return "That ask has run out \u2014 they will have to ask again."
+		"kind":            return "That cannot be answered."
+		"card":            return "That card cannot be asked for."
 		_:                 return "Could not do that. Try again in a moment."
 
 # =============================================================================
@@ -7647,23 +8062,30 @@ func _clan_roster_ui(vb: VBoxContainer) -> void:
 	var members: Array = my_clan.get("members", [])
 	var me_id := String(Cloud.player().get("id", ""))
 	var is_owner: bool = String(my_clan.get("owner", "")) == me_id and me_id != ""
-	# A CLAN OF ONE IS THE STATE EVERY CLAN STARTS IN, and the two lines that
-	# only mean something in company are held back until there is company. The
-	# founder is told what to do next instead. The roster still draws their own
-	# row, because a clan that does not show you in it reads as one you failed
-	# to join.
 	var alone := members.size() <= 1
-	# Whether this build can recruit at all -- see the migration gate below. A
-	# solo line that says "invite a player by name" on a project without the
-	# INVITE button is the same broken promise one sentence smaller.
 	var can_recruit := _clan_fake or Cloud.clan_extras_ready()
+	var seats := int(my_clan.get("max", CLAN_MAX_MEMBERS))
 
 	# -- The crest. The clan owns the top of its own page. ------------------
-	var crest := _tinted_body(vb, Lagoon.BRASS, true, 18)
+	#
+	# THE 2026-09-14 PASS. Guy: "make sure that at the start he sees the name
+	# nicely, and under it how many players out of how many there are, and
+	# beside that how many clan stars in total; at the top right of this window
+	# there will be a DETAILS button."
+	#
+	# So the card lost everything that was not identity. The roster, the invite
+	# search, the door, the giving budget, the league table and the way out all
+	# moved into the dialog behind that button -- see _open_clan_details. What
+	# is left is a crest and one row of facts, because everything under it now
+	# is the chat, and a chat that starts below the fold is a chat nobody uses.
+	# PADDING 14 AND A 66px TOKEN, both trimmed from the standing crest. The
+	# page under this is a chat with a composer that has to clear the nav bar,
+	# and every pixel the crest keeps is a pixel the conversation does not get.
+	var crest := _tinted_body(vb, Lagoon.BRASS, true, 14)
 	var top := HBoxContainer.new()
 	top.add_theme_constant_override("separation", 16)
 	crest.add_child(top)
-	top.add_child(Lagoon.token(String(my_clan.get("emoji", "\U01F3F4")), 92.0, Lagoon.BRASS))
+	top.add_child(Lagoon.token(String(my_clan.get("emoji", "\U01F3F4")), 66.0, Lagoon.BRASS))
 	var idc := VBoxContainer.new()
 	idc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	idc.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -7672,76 +8094,164 @@ func _clan_roster_ui(vb: VBoxContainer) -> void:
 	# F_TITLE and not F_HEAD, wrapped. A clan name is up to twenty characters
 	# and the token takes 108 of the column's 652 -- at head size the longest
 	# legal name runs off the card, which is the exact class of failure
-	# qa_layout exists to catch. Wrapping costs a second line in the rare case
-	# and keeps every name inside the crest.
+	# qa_layout exists to catch.
 	var nm := Lagoon.label(String(my_clan.get("name", "")), UI.F_TITLE, Lagoon.INK, true)
 	nm.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	idc.add_child(nm)
 	var marks := HBoxContainer.new()
 	marks.add_theme_constant_override("separation", 8)
 	idc.add_child(marks)
-	# The roster count as a stamp: a value printed on stock whose tint varies
-	# carries its own contrast (STYLE.md), and this card is washed with brass.
-	marks.add_child(Lagoon.stamp("%d / %d" % [members.size(), CLAN_MAX_MEMBERS],
-		Lagoon.BRASS_HI))
-	# WHICH DOOR THIS CLAN KEEPS, said on the crest rather than only in the
-	# owner's switch below -- a member who is not the founder could not find out
-	# their own clan's joining rule anywhere on the page.
+	# WHICH DOOR THIS CLAN KEEPS, on the crest rather than only in the owner's
+	# switch -- a member who is not the founder could not find out their own
+	# clan's joining rule anywhere on the page.
 	if bool(my_clan.get("open", true)):
 		marks.add_child(Lagoon.chip("OPEN", Lagoon.KELP, UI.F_TINY))
 	else:
 		marks.add_child(Lagoon.chip("BY  APPROVAL", Lagoon.BRASS_MID, UI.F_TINY))
 	# THE FOUNDER MARK IS A WORD, NOT A CROWN. A brass crown on a brass-washed
-	# card is a smudge, and sinking it into a deep disc only made a dark button:
-	# the glyph gets ~20px of drawable area at this size and a crown is three
-	# points and three gems, all of which are gone by then. The stamp beside it
-	# already carries a bright mark onto stock of any tint -- so use that.
+	# card is a smudge, and the glyph gets ~20px of drawable area at this size.
 	if is_owner:
 		marks.add_child(Lagoon.stamp("FOUNDER", Lagoon.BRASS_HI))
+	var bar_now := int(my_clan.get("min_stars", 0))
+	if bar_now > 0:
+		marks.add_child(_reward_chip("star", "%s+" % _fmt_compact(bar_now), Lagoon.INK_MUTE))
 
-	# THE CLAN'S SCORE, ON THE CREST, AT HEADLINE SIZE.
-	#
-	# Every member's stars added together, which since 2026-09-13 is the thing
-	# the whole league is ordered on -- so it is the largest number on the page
-	# rather than a figure to go looking for, and the place it buys sits beside
-	# it. Both are absent on a project without the migration; drawing "0" and
-	# "#0" there would say the clan had achieved nothing and come last.
-	if my_clan.has("stars"):
-		crest.add_child(Lagoon.divider())
-		var score := HBoxContainer.new()
-		score.add_theme_constant_override("separation", 10)
-		crest.add_child(score)
-		score.add_child(_prize_art("star", 44.0))
-		# COMPACT, AND THAT IS A MEASUREMENT. At F_HEAD a six-figure total set
-		# in full runs the crest 4px past the right edge of the phone -- caught
-		# by qa_layout, which now measures this row with a 30-strong clan's
-		# score in it. _fmt_compact prints anything under 100,000 in full, so
-		# every clan that exists today reads exactly as it did; the ones that
-		# grow past it read "148K" instead of taking the page with them.
-		var tot := Lagoon.label(_fmt_compact(int(my_clan.get("stars", 0))),
-			UI.F_HEAD, Lagoon.INK, true)
-		tot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		score.add_child(tot)
-		var unit := Lagoon.label("CLAN  STARS", UI.F_TINY, Lagoon.INK_MUTE, true)
-		unit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		unit.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		score.add_child(unit)
-		var place := int(my_clan.get("rank", 0))
-		if place > 0:
-			score.add_child(Lagoon.stamp("LEAGUE  #%d" % place,
-				Lagoon.BRASS_HI if place <= 3 else Lagoon.SAND))
+	# DETAILS, TOP RIGHT OF THE CREST, where Guy put it. A square glyph button:
+	# spelling the word out beside a twenty-character clan name is what carries
+	# this row off the right edge of a small phone.
+	var more := Button.new()
+	more.custom_minimum_size = Vector2(UI.TAP, UI.TAP)
+	more.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	more.tooltip_text = "Clan details"
+	Lagoon.button(more, "glass")
+	FX.press_feedback(more)
+	more.pressed.connect(_open_clan_details)
+	top.add_child(more)
+	var more_g := Glyph.new()
+	# A CHEVRON, NOT THE CLAN FLAG. The flag is the page's own mark and on this
+	# button it read as "clan" -- which is where you already are. The chevron is
+	# what every other drill-in control in the game wears.
+	more_g.kind = "chevron"
+	more.add_child(more_g)
+	more_g.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	more_g.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
-	# -- Today's giving, as two tracks rather than a sentence. ---------------
+	# -- THE TWO FIGURES, SIDE BY SIDE. -------------------------------------
 	#
-	# It was "Given today  1/5      ·      Received  2/3" in caption ink. Both
-	# numbers are budgets that refill, and a budget is the one thing in this
-	# game that already has a control: every other track in the game carries its
-	# count written across it, and these two were the exception.
-	if not alone:
-		crest.add_child(Lagoon.divider())
+	# "how many players out of how many, and beside that how many clan stars in
+	# total." They were a stamp on one line and a headline row two lines below
+	# it before, which made them two separate facts rather than the pair they
+	# are: a clan is this many people and that much score.
+	crest.add_child(Lagoon.divider())
+	var facts := HBoxContainer.new()
+	facts.add_theme_constant_override("separation", 10)
+	crest.add_child(facts)
+	# STACKED, NOT IN A LINE, AND THAT IS A MEASUREMENT. The first pass set each
+	# figure beside its own caption on one row -- "8 / 30  CLANMATES  148K  CLAN
+	# STARS  LEAGUE #12" -- which qa_layout measured at 737px against a 720-wide
+	# phone with a thirty-strong clan and a six-figure score in it. A caption
+	# under its value costs a line and nothing else, and it is what every other
+	# pair of figures in this game already does.
+	for spec in [
+			["%d / %d" % [members.size(), seats], "CLANMATES", ""],
+			[_fmt_compact(int(my_clan.get("stars", 0))), "CLAN  STARS", "star"]]:
+		if String(spec[2]) == "star" and not my_clan.has("stars"):
+			continue
+		var cell := VBoxContainer.new()
+		cell.add_theme_constant_override("separation", 2)
+		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		facts.add_child(cell)
+		var line := HBoxContainer.new()
+		line.add_theme_constant_override("separation", 6)
+		line.alignment = BoxContainer.ALIGNMENT_CENTER
+		cell.add_child(line)
+		if String(spec[2]) != "":
+			line.add_child(_prize_art(String(spec[2]), 32.0))
+		var val := Lagoon.label(String(spec[0]), UI.F_HEAD, Lagoon.INK, true)
+		val.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		line.add_child(val)
+		var cap := Lagoon.label(String(spec[1]), UI.F_TINY, Lagoon.INK_MUTE, true)
+		cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		cell.add_child(cap)
+	var place := int(my_clan.get("rank", 0))
+	if place > 0:
+		var pc := VBoxContainer.new()
+		pc.add_theme_constant_override("separation", 2)
+		pc.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		facts.add_child(pc)
+		var st := CenterContainer.new()
+		pc.add_child(st)
+		st.add_child(Lagoon.stamp("#%d" % place,
+			Lagoon.BRASS_HI if place <= 3 else Lagoon.SAND))
+		var pl := Lagoon.label("LEAGUE", UI.F_TINY, Lagoon.INK_MUTE, true)
+		pl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		pc.add_child(pl)
+
+	# -- An empty clan's one job is to stop being empty. ---------------------
+	if alone:
+		var ask := Button.new()
+		ask.text = "INVITE  A  PLAYER"
+		ask.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+		Lagoon.button(ask, "primary")
+		Lagoon.button_gloss(ask, 22)
+		FX.press_feedback(ask)
+		ask.disabled = not can_recruit
+		ask.pressed.connect(_open_clan_invite)
+		vb.add_child(ask)
+		if can_recruit:
+			FX.pulse_forever(ask, 1.03, 1.0)
+		var solo_line := "Nobody else is here yet. Invite a player by name, or leave the door open and let people find you in the clan list." \
+			if can_recruit else \
+			"Nobody else is here yet. Players browsing the clan list can find you and join."
+		var sub := _page_note(solo_line, UI.F_CAPTION)
+		sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		vb.add_child(sub)
+
+	# -- Somebody is waiting on the owner. ----------------------------------
+	if can_recruit and is_owner:
+		_clan_requests_ui(vb)
+
+	# -- And then the clan is a room, not a list. ---------------------------
+	_clan_chat_ui(vb)
+
+	# -- Where this clan stands. --------------------------------------------
+	#
+	# The same board the browser draws, with your own row lit up in it. Without
+	# it the score on the crest is a number with nothing to compare against, and
+	# the ranking would only exist for people who do NOT have a clan -- which is
+	# everybody except the people it is supposed to motivate.
+	vb.add_child(Lagoon.banner("CLAN  LEAGUE", Lagoon.LAGOON_DEEP))
+	_clan_board_ui(vb, false)
+
+# =============================================================================
+#  Clan details: the roster, recruiting, the settings, the league, the way out
+# =============================================================================
+#
+# EVERYTHING THE CREST USED TO CARRY, behind one button. Guy, 2026-09-14: "it
+# will open a dialog, and in it we can see all the players who are with us in
+# the clan with their details like before, and a search button with a field,
+# and next to that a leave-clan button in red."
+#
+# The league table came in here too, and that is a judgement rather than an
+# instruction: the score on the crest needs something to be compared against,
+# and the only other place for thirty rows of table was under a chat that has
+# to own the bottom of the page.
+func _open_clan_details() -> void:
+	var members: Array = my_clan.get("members", [])
+	var me_id := String(Cloud.player().get("id", ""))
+	var is_owner: bool = String(my_clan.get("owner", "")) == me_id and me_id != ""
+	var can_recruit := _clan_fake or Cloud.clan_extras_ready()
+	var vbox := _open_popup("Clan Details", 600.0, true)
+
+	# -- Today's giving, as two tracks. -------------------------------------
+	#
+	# It lived on the crest, and on a page whose body is now a chat it is the
+	# wrong kind of fact to put at the top: a budget is something you check
+	# before you give, and giving happens from in here and from the chat.
+	if members.size() > 1:
 		var gave := HBoxContainer.new()
 		gave.add_theme_constant_override("separation", 12)
-		crest.add_child(gave)
+		vbox.add_child(gave)
 		for spec in [
 				["GIVEN", int(gift_budget.get("sent", 0)), int(gift_budget.get("give_cap", 5)), Lagoon.KELP],
 				["GOT",   int(gift_budget.get("got", 0)),  int(gift_budget.get("receive_cap", 3)), Lagoon.LAGOON]]:
@@ -7758,89 +8268,182 @@ func _clan_roster_ui(vb: VBoxContainer) -> void:
 			cell.add_child(bar)
 			Lagoon.progress_value(bar, "%d / %d" % [int(spec[1]), int(spec[2])])
 
-	# -- The one action that grows a clan. ----------------------------------
-	#
-	# EVERYTHING BELOW NEEDS THE SECOND MIGRATION, so it is drawn only on a
-	# project that has it. Clans shipped in one migration and recruiting in
-	# another, and the two reach a project on different days -- a CREATE button
-	# that refuses is the exact failure the "Clans open soon" card exists to
-	# avoid, and an INVITE button that refuses is the same thing one screen in.
-	# The roster, the browse list and card giving all work regardless.
-	if can_recruit:
-		# Any member may recruit -- see the migration for why the owner is not
-		# made a bottleneck on the only thing that grows a clan.
-		var ask := Button.new()
-		ask.text = "INVITE  A  PLAYER"
-		ask.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
-		ask.disabled = members.size() >= CLAN_MAX_MEMBERS
-		# CORAL, not kelp. One hue on this page means "tap this", and this is
-		# the thing to tap -- the green it used to wear is the same green the
-		# door switch wore, which is how the two became interchangeable.
-		Lagoon.button(ask, "primary")
-		Lagoon.button_gloss(ask, 22)
-		FX.press_feedback(ask)
-		ask.pressed.connect(_open_clan_invite)
-		vb.add_child(ask)
-		# An empty clan's one job is to stop being empty, so the button that
-		# does it asks to be pressed. Not while there is company -- a pulsing
-		# control on a working page is noise.
-		if alone and not ask.disabled:
-			FX.pulse_forever(ask, 1.03, 1.0)
-
-	var solo_line := "Nobody else is here yet. Invite a player by name, or leave the door open and let people find you in the clan list." \
-		if can_recruit else \
-		"Nobody else is here yet. Players browsing the clan list can find you and join."
-	if alone:
-		var sub := _page_note(solo_line, UI.F_CAPTION)
-		sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		vb.add_child(sub)
-
-	if can_recruit and is_owner:
-		_clan_door_switch(vb)
-		_clan_requests_ui(vb)
-
-	# -- The roster. --------------------------------------------------------
-	if not alone:
-		vb.add_child(Lagoon.banner("CLANMATES", Lagoon.LAGOON_DEEP))
+	# -- The roster, and every row of it is still a give control. -----------
+	vbox.add_child(Lagoon.banner("CLANMATES", Lagoon.LAGOON_DEEP))
 	for m in members:
 		if typeof(m) != TYPE_DICTIONARY:
 			continue
-		_clan_member_row(vb, m, me_id)
+		_clan_member_row(vbox, m, me_id)
+	if members.size() > 1:
+		var hint := _popup_row_label("Tap a clanmate to give them one of your spare cards.",
+			UI.F_TINY)
+		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		hint.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+		vbox.add_child(hint)
 
-	# -- Where this clan stands. --------------------------------------------
-	#
-	# The same board the clan browser draws, with your own row lit up in it.
-	# Without this the score on the crest is a number with nothing to compare
-	# it to, and the ranking only exists for people who do not have a clan --
-	# which is everybody except the people it is supposed to motivate.
-	vb.add_child(Lagoon.banner("CLAN  LEAGUE", Lagoon.LAGOON_DEEP))
-	_clan_board_ui(vb, false)
+	# -- Recruiting: the field and the button, where Guy asked for them. ----
+	if can_recruit:
+		vbox.add_child(Lagoon.banner("BRING  SOMEBODY  IN", Lagoon.LAGOON_DEEP))
+		var find_row := HBoxContainer.new()
+		find_row.add_theme_constant_override("separation", 10)
+		vbox.add_child(find_row)
+		var field := Lagoon.field(LineEdit.new(), "Player name")
+		field.max_length = 20
+		field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		field.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		find_row.add_child(field)
+		var go := Button.new()
+		go.text = "SEARCH"
+		go.custom_minimum_size = Vector2(0, UI.TAP)
+		go.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		Lagoon.button(go, "primary")
+		Lagoon.button_gloss(go, 22)
+		FX.press_feedback(go)
+		find_row.add_child(go)
 
-	# -- The way out, and it is not shouted. --------------------------------
+		var results := VBoxContainer.new()
+		results.add_theme_constant_override("separation", 8)
+		vbox.add_child(results)
+		var note := _popup_row_label("At least three letters.", UI.F_TINY)
+		note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		note.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+		results.add_child(note)
+
+		# A BUTTON, NOT A KEYSTROKE HANDLER. Searching per character is a
+		# request per character over a mobile radio, and this query is a table
+		# scan behind a function -- see the load-test note in 20260831120000.
+		var run := func() -> void:
+			for child in results.get_children():
+				results.remove_child(child)
+				child.queue_free()
+			var q := field.text.strip_edges()
+			if q.length() < 3:
+				var short := _popup_row_label("At least three letters.", UI.F_TINY)
+				short.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+				short.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+				results.add_child(short)
+				return
+			if members.size() >= int(my_clan.get("max", CLAN_MAX_MEMBERS)):
+				var full := _popup_row_label("This clan is full.", UI.F_CAPTION)
+				full.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+				full.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+				results.add_child(full)
+				return
+			go.disabled = true
+			Cloud.find_players(q, func(rows: Array) -> void:
+				go.disabled = false
+				if not is_instance_valid(results):
+					return
+				if rows.is_empty():
+					var none := _popup_row_label(
+						"Nobody by that name who is free to join a clan.", UI.F_CAPTION)
+					none.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+					none.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+					none.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+					results.add_child(none)
+					return
+				for row in rows:
+					if typeof(row) == TYPE_DICTIONARY:
+						results.add_child(_clan_invite_result(row))
+			)
+		go.pressed.connect(run)
+		field.text_submitted.connect(func(_t: String) -> void: run.call())
+
+	# -- The owner's two settings. ------------------------------------------
+	if can_recruit and is_owner:
+		vbox.add_child(Lagoon.banner("WHO  GETS  IN", Lagoon.LAGOON_DEEP))
+		_clan_door_switch(vbox)
+		_clan_min_stars_ui(vbox)
+
+	# THE LEAGUE TABLE IS NOT IN HERE, AND THAT IS A MEASUREMENT.
 	#
-	# It was a full-width urchin slab, the same size as INVITE. Leaving is a
-	# thing that must be findable and must never be the most attractive control
-	# on the page; glass at tap height is both.
-	# Narrow and centred, not full width. Glass at the column's full width is
-	# still a big pale slab sitting under the roster with more presence than
-	# leaving should ever have -- findable is the whole requirement.
+	# It was, for one draft. A board row is the widest thing this page draws --
+	# a rank plate, a crest, a twenty-character name, a six-figure score and a
+	# chip on one line -- and a dialog is NARROWER than the page it opens over.
+	# qa_layout measured the dialog at 810px against a 720-wide phone. So the
+	# league stays on the page, under the chat, where it has the full width and
+	# the chat's fixed-height well means it is still a short scroll away.
+
+	# -- The way out. --------------------------------------------------------
+	#
+	# RED, WHICH GUY ASKED FOR AND WHICH THIS GAME HAS A COLOUR FOR: reef is
+	# alert/danger, and it is the only hue in the palette that means "this is
+	# not an ordinary button". It is findable and it is at the bottom, which is
+	# the whole requirement -- it is no longer competing with anything, because
+	# nothing else is down here.
+	vbox.add_child(Lagoon.divider())
 	var leave := Button.new()
-	leave.text = "Leave clan"
-	leave.custom_minimum_size = Vector2(280, UI.TAP)
-	Lagoon.button(leave, "glass")
+	leave.text = "LEAVE  CLAN"
+	leave.custom_minimum_size = Vector2(0, UI.TAP)
+	Lagoon.button(leave, "danger")
 	FX.press_feedback(leave)
 	leave.pressed.connect(func() -> void:
 		leave.disabled = true
 		Cloud.leave_clan(func(_res: Dictionary) -> void:
 			my_clan = {}
+			clan_chat_rows = []
+			_clan_chat_sig = ""
+			_close_popup()
 			_banner("You left the clan.", Lagoon.INK_SOFT)
 			_fill_page("clan")
 		)
 	)
-	var leave_row := HBoxContainer.new()
-	leave_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	vb.add_child(leave_row)
-	leave_row.add_child(leave)
+	vbox.add_child(leave)
+
+# THE BAR ON THE DOOR, IN STARS.
+#
+# Guy asked for a clan to be able to say "this many stars to get in", and for it
+# to be visible from outside before anybody knocks. This is the owner's end of
+# it. Presets rather than a number field: a text box asking for a star count is
+# a box somebody types 1000000 into by accident, and the four rungs are the only
+# answers that mean anything against the spread real clans have.
+func _clan_min_stars_ui(vb: VBoxContainer) -> void:
+	var now := int(my_clan.get("min_stars", 0))
+	var body := _tinted_body(vb, Lagoon.LAGOON, false, 14)
+	var state := Lagoon.label(
+		"Anyone may join, whatever they have." if now <= 0
+		else "Joining needs %s stars." % _fmt_compact(now),
+		UI.F_CAPTION, Lagoon.INK_SOFT, true)
+	state.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(state)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	body.add_child(row)
+	for want in CLAN_STAR_STEPS:
+		var b := Button.new()
+		b.text = "OFF" if want == 0 else _fmt_compact(want)
+		b.custom_minimum_size = Vector2(0, UI.TAP)
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.add_theme_font_size_override("font_size", UI.F_CAPTION)
+		Lagoon.button(b, "kelp" if want == now else "glass")
+		FX.press_feedback(b)
+		if want == now:
+			b.disabled = true
+		else:
+			b.pressed.connect(func() -> void:
+				b.disabled = true
+				Cloud.set_clan_min_stars(want, func(res: Dictionary) -> void:
+					if not bool(res.get("ok", false)):
+						if is_instance_valid(b):
+							b.disabled = false
+						_banner(_clan_refusal(res), Lagoon.CORAL_LO)
+						return
+					my_clan = res.get("clan", my_clan)
+					_banner("Anyone may join now." if want == 0
+						else "Joining now needs %s stars." % _fmt_compact(want),
+						Lagoon.KELP_HI)
+					_close_popup()
+					_fill_page("clan")
+				)
+			)
+		row.add_child(b)
+
+# The rungs the bar may be set to. Not a free number: see _clan_min_stars_ui.
+# They are spaced roughly an island band apart against the measured pace in
+# loot-lagoon-island-progression, so each one is a real filter rather than a
+# rounder version of the one below it.
+const CLAN_STAR_STEPS := [0, 500, 2000, 10000, 50000]
 
 # ONE CLANMATE.
 #
@@ -7917,6 +8520,810 @@ func _clan_member_row(parent: Node, who: Dictionary, me_id: String) -> Control:
 		var target: Dictionary = who
 		btn.pressed.connect(func() -> void: _open_give_card(target))
 	return card
+
+# =============================================================================
+#  The clan chat
+# =============================================================================
+#
+# GUY ASKED FOR THIS ON 2026-09-14, AND IT IS THE ONE FEATURE ON THIS PAGE THAT
+# CHANGES WHAT THE APP IS TO A STORE REVIEWER. 20260904170000 declined to build
+# it and wrote down why: free-text player-to-player messaging is user-generated
+# content, and App Store guideline 1.2 asks for four things around it --
+# filtering, a way to report, a way to block, and an EULA. Three of the four are
+# now here:
+#
+#   * FILTERING is server-side, in say_clan, against the same banned_words list
+#     display names go through. It refuses the message rather than starring it
+#     out: a masked word is the message being delivered with a costume on.
+#   * REPORTING is the flag on every line somebody else wrote, which goes
+#     through the same report_player the leaderboard's does -- and reporting
+#     blocks, so the person who was upset stops meeting them immediately.
+#   * BLOCKING is applied inside clan_chat, in both directions.
+#   * THE EULA IS THE ONE THAT IS STILL MISSING and no amount of client work
+#     supplies it: the terms page has to carry the no-objectionable-content
+#     rule and Apple's standard licence terms. THAT IS A LAUNCH BLOCKER FOR THIS
+#     FEATURE, not a nicety -- see the note handed to Guy when this shipped.
+#
+# THE SCROLL IS ITS OWN WELL WITH A FIXED HEIGHT, inside the page's scroll. A
+# chat that simply grows the page means the composer walks off the bottom of the
+# screen as the conversation gets longer, which is the one thing a composer may
+# never do.
+
+# How tall the well is, and it is MEASURED rather than chosen.
+#
+# How tall the well is, and it is MEASURED AFTER LAYOUT rather than guessed.
+#
+# Two drafts of this were a constant, and both were wrong on the only screen
+# that matters: a message box you have to go and find is a message box nobody
+# uses, and at 520 (and then at 560) the composer sat underneath the nav bar.
+# The heights above it are not knowable in advance either -- the crest is taller
+# with a wrapped twenty-character clan name than without one, and taller again
+# with a star bar on it.
+#
+# So: build the well at a provisional height, then once the frame has laid
+# everything out, take the well's own top edge and the composer's real minimum
+# and give the well what is actually left between them. The well's TOP does not
+# move when its height changes, so this converges in one pass.
+const CLAN_CHAT_WELL_MIN := 250.0
+const CLAN_CHAT_WELL_MAX := 560.0
+
+# How often the scroll is asked for, WHILE THE PAGE IS OPEN AND NOWHERE ELSE.
+#
+# This is the exception to the rule _refresh_clan_news states at length -- that
+# nothing on this page polls, because a timer that wakes the radio for a number
+# which is almost always zero costs every phone in the game battery. A chat is
+# the one thing here that is worthless stale: somebody asking for spins wants
+# them in the next few minutes, not on the asker's next launch. So it polls, and
+# it stops the moment the page is left.
+const CLAN_CHAT_POLL := 8.0
+
+# The scroll as the server last answered it, the two ask clocks, and the handles
+# the poll repaints through. `_clan_chat_sig` is what stops an unchanged answer
+# from rebuilding the list under a reading finger every eight seconds.
+var clan_chat_rows: Array = []
+var clan_ask := {}
+# UNTYPED ON PURPOSE. A typed assignment against a freed instance RAISES before
+# any is_instance_valid() under it can run -- the trap FX.deliver's flight list
+# was caught by -- and both of these point at nodes _fill_page frees on every
+# repaint of the page. Read untyped, check, then cast.
+var _clan_chat_col = null
+var _clan_chat_scroll = null
+var _clan_chat_timer: Timer = null
+var _clan_chat_sig := ""
+var _clan_ask_btns := {}
+
+func _clan_chat_ui(vb: VBoxContainer) -> void:
+	# The chat came with the 20260914 migration, and a build reaches the stores
+	# by a different hand than the SQL does. On a project without it the rest of
+	# the page works exactly as it did -- same reasoning as `clan_extras_ready`.
+	if not _clan_fake and not Cloud.clan_chat_ready():
+		return
+	vb.add_child(Lagoon.banner("CLAN  CHAT", Lagoon.LAGOON_DEEP))
+
+	var well := PanelContainer.new()
+	well.add_theme_stylebox_override("panel", Lagoon.glass_well(Lagoon.R_CARD))
+	vb.add_child(well)
+	var pad := MarginContainer.new()
+	for m in [["margin_left", 10], ["margin_right", 10], ["margin_top", 10], ["margin_bottom", 10]]:
+		pad.add_theme_constant_override(m[0], m[1])
+	well.add_child(pad)
+	var sc := ScrollContainer.new()
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	sc.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	sc.custom_minimum_size = Vector2(0, CLAN_CHAT_WELL_MIN)
+	pad.add_child(sc)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 8)
+	# A ScrollContainer does not stretch its child across its own width -- the
+	# child has to ask -- and without this every message comes out at its
+	# minimum and huddles against the left edge.
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sc.add_child(col)
+	_clan_chat_scroll = sc
+	_clan_chat_col = col
+	_clan_chat_fill(col)
+
+	# The composer goes in its own box so the fit below has one node to measure
+	# rather than three siblings and the separations between them.
+	var comp := VBoxContainer.new()
+	comp.add_theme_constant_override("separation", 10)
+	vb.add_child(comp)
+	# NOBODY POSTS BEFORE THEY HAVE AGREED TO THE RULES, and that is guideline
+	# 1.2 rather than manners: an app with user-generated content has to have
+	# the player's agreement to terms forbidding objectionable content BEFORE
+	# the feature is used. The scroll stays readable meanwhile -- the rule is
+	# about what you may put into it, and hiding the conversation as well would
+	# make the gate read as a paywall.
+	if chat_rules_ok:
+		_clan_composer(comp)
+	else:
+		_clan_rules_gate(comp)
+
+	var fit := func() -> void:
+		if not is_instance_valid(sc) or not is_instance_valid(comp):
+			return
+		# The page's own scroll is at the top on arrival (_scroll_top), so the
+		# well's global y is where it really sits on the screen.
+		var room := content_bottom() - sc.global_position.y \
+			- comp.get_combined_minimum_size().y - 34.0
+		sc.custom_minimum_size.y = clampf(room, CLAN_CHAT_WELL_MIN, CLAN_CHAT_WELL_MAX)
+		_clan_chat_to_bottom()
+	fit.call_deferred()
+
+# The list itself. Called both when the page is built and by the poll, which is
+# why it takes the column rather than finding it.
+func _clan_chat_fill(col: VBoxContainer) -> void:
+	if clan_chat_rows.is_empty():
+		var none := _popup_row_label(
+			"Nothing said yet. Say hello, or ask the crew for spins.", UI.F_CAPTION)
+		none.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		none.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		none.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+		col.add_child(none)
+		return
+	for row in clan_chat_rows:
+		if typeof(row) != TYPE_DICTIONARY:
+			continue
+		var m: Dictionary = row
+		if String(m.get("kind", "say")) == "say":
+			_clan_say_row(col, m)
+		else:
+			_clan_ask_row(col, m)
+
+# ONE LINE SOMEBODY TYPED.
+#
+# `by` is built from public_player, which answers NULL for a soft-deleted
+# island -- and `.get(key, default)` hands back the default only when the key is
+# ABSENT, not when it is present and null. That is the bug that made the gift
+# handler re-award stars on every launch for a week. The guard is the same one.
+func _clan_say_row(parent: Node, m: Dictionary) -> Control:
+	var mine := bool(m.get("mine", false))
+	var by: Dictionary = m.get("by") if typeof(m.get("by")) == TYPE_DICTIONARY else {}
+	var card := _tinted_card(parent, Lagoon.KELP if mine else Lagoon.BRASS_MID, mine)
+	var pad := MarginContainer.new()
+	for mm in [["margin_left", 12], ["margin_right", 12], ["margin_top", 8], ["margin_bottom", 8]]:
+		pad.add_theme_constant_override(mm[0], mm[1])
+	card.add_child(pad)
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 10)
+	pad.add_child(hb)
+	var tok := Lagoon.token(String(by.get("emoji", "\U01F642")), 50.0,
+		Lagoon.KELP if mine else Lagoon.BRASS)
+	tok.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	hb.add_child(tok)
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_theme_constant_override("separation", 2)
+	hb.add_child(col)
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 8)
+	col.add_child(head)
+	head.add_child(Lagoon.label("You" if mine else String(by.get("name", "")),
+		UI.F_CAPTION, Lagoon.INK, true))
+	head.add_child(Lagoon.label(_clan_chat_when(m), UI.F_TINY, Lagoon.INK_MUTE, true))
+	var body := Lagoon.label(String(m.get("body", "")), UI.F_BODY, Lagoon.INK)
+	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.add_child(body)
+
+	# GUIDELINE 1.2, ON EVERY LINE SOMEBODY ELSE WROTE. The same flag the
+	# leaderboard carries, going through the same report_player -- which blocks
+	# as well, so the person who was upset stops meeting them straight away.
+	var who := String(by.get("id", ""))
+	if not mine and who != "":
+		var flag := Button.new()
+		flag.text = "⚑"
+		flag.flat = true
+		flag.tooltip_text = "Report this message"
+		flag.custom_minimum_size = Vector2(40, 40)
+		flag.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+		flag.add_theme_font_size_override("font_size", UI.F_CAPTION)
+		FX.press_feedback(flag)
+		flag.pressed.connect(func() -> void:
+			_confirm_report(who, String(by.get("name", "this player")), "message"))
+		hb.add_child(flag)
+	return card
+
+# AN ASK, WITH ITS BAR ON IT.
+#
+# Guy: "there will be a sort of bar in the chat next to the name of whoever is
+# asking, and of course you can donate to others." The bar is the message -- an
+# ask is a line in the same scroll, not a separate object with its own list, so
+# it scrolls away with the conversation the way a request in a real chat does.
+func _clan_ask_row(parent: Node, m: Dictionary) -> Control:
+	var kind := String(m.get("kind", "spins"))
+	var mine := bool(m.get("mine", false))
+	var gave := bool(m.get("gave", false))
+	var closed := bool(m.get("closed", false))
+	var by: Dictionary = m.get("by") if typeof(m.get("by")) == TYPE_DICTIONARY else {}
+	var who := String(by.get("name", "A clanmate"))
+	var filled := int(m.get("filled", 0))
+	var cap := maxi(1, int(m.get("cap", 10)))
+	# CORAL for spins, LAGOON for cards, and NEITHER of them is urchin -- urchin
+	# means "rare / premium" everywhere else in the game (STYLE.md), and a
+	# clanmate asking for a one-star card is the least premium thing on the
+	# page. Both are distinct from the brass a plain message wears, which is the
+	# whole job: an ask has to be findable in a scroll of chat.
+	var tint := Lagoon.CORAL if kind == "spins" else Lagoon.LAGOON
+	var card := _tinted_card(parent, Lagoon.KELP if mine else tint, true)
+	var pad := MarginContainer.new()
+	for mm in [["margin_left", 12], ["margin_right", 12], ["margin_top", 10], ["margin_bottom", 10]]:
+		pad.add_theme_constant_override(mm[0], mm[1])
+	card.add_child(pad)
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 8)
+	pad.add_child(body)
+
+	var head := HBoxContainer.new()
+	head.add_theme_constant_override("separation", 10)
+	body.add_child(head)
+	var tok := Lagoon.token(String(by.get("emoji", "\U01F642")), 50.0,
+		Lagoon.KELP if mine else Lagoon.BRASS)
+	tok.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	head.add_child(tok)
+	var col := VBoxContainer.new()
+	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	col.add_theme_constant_override("separation", 2)
+	head.add_child(col)
+	# What is being asked for, and the two voices are written out rather than
+	# assembled from a name and a verb -- "%s needs spins" with "You" in it is
+	# how "You needs spins" got onto a screenshot.
+	var thing := "spins" if kind == "spins" else "a card"
+	col.add_child(Lagoon.label(
+		("You asked for %s" % thing) if mine else ("%s needs %s" % [who, thing]),
+		UI.F_LABEL, Lagoon.INK, true))
+	col.add_child(Lagoon.label(_clan_chat_when(m), UI.F_TINY, Lagoon.INK_MUTE, true))
+
+	# THE CARD BEING ASKED FOR, DRAWN. A set id and an index mean nothing to
+	# anybody, and a clanmate deciding whether to answer has to know what it is
+	# and whether they are holding a spare of it.
+	var spares := 0
+	if kind == "cards":
+		var set_id := str(m.get("set")) if m.get("set") != null else ""
+		var idx := int(m.get("idx", -1)) if typeof(m.get("idx")) in [TYPE_INT, TYPE_FLOAT] else -1
+		var c := _collection_by_id(set_id)
+		if not c.is_empty() and idx >= 0 and idx < (c["items"] as Array).size():
+			var item: Array = (c["items"] as Array)[idx]
+			spares = _dupe_count(set_id, idx)
+			var chip := HBoxContainer.new()
+			chip.add_theme_constant_override("separation", 6)
+			body.add_child(chip)
+			chip.add_child(Lagoon.token(String(item[0]), 44.0,
+				CV.STAR_COLORS[clampi(int(item[2]) - 1, 0, CV.MAX_STAR - 1)]))
+			var nm := Lagoon.label(String(item[1]), UI.F_CAPTION, Lagoon.INK, true)
+			nm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			nm.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			chip.add_child(nm)
+			chip.add_child(Lagoon.chip("%d★" % int(item[2]),
+				CV.STAR_COLORS[clampi(int(item[2]) - 1, 0, CV.MAX_STAR - 1)], UI.F_TINY))
+			chip.add_child(Lagoon.chip("%d SPARE" % spares if spares > 0 else "NO  SPARE",
+				Lagoon.KELP if spares > 0 else Lagoon.INK_SOFT, UI.F_TINY))
+
+	# The bar, and the button that fills a seat on it.
+	var foot := HBoxContainer.new()
+	foot.add_theme_constant_override("separation", 10)
+	body.add_child(foot)
+	var bar := Lagoon.progress(Lagoon.KELP if filled >= cap else tint)
+	bar.max_value = cap
+	bar.value = filled
+	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	foot.add_child(bar)
+	Lagoon.progress_value(bar, "%d / %d" % [filled, cap])
+
+	var give := Button.new()
+	give.custom_minimum_size = Vector2(150, UI.TAP)
+	give.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	give.add_theme_font_size_override("font_size", UI.F_CAPTION)
+	var live := false
+	if mine:
+		give.text = "YOUR  ASK"
+	elif gave:
+		# Permanently spent, so it goes properly inactive rather than staying a
+		# live-looking lozenge -- see Lagoon.set_enabled.
+		give.text = "SENT"
+	elif filled >= cap:
+		give.text = "FULL"
+	elif closed:
+		give.text = "CLOSED"
+	elif kind == "cards" and spares <= 0:
+		give.text = "NO  SPARE"
+	else:
+		live = true
+		# Bracketed. `"a" % x if c else "b"` parses the way this wants it to, and
+		# that is exactly the kind of thing that stops being true when somebody
+		# edits the line.
+		give.text = ("+%d" % int(clan_ask.get("give", 3))) if kind == "spins" else "GIVE"
+	Lagoon.button(give, "kelp" if live else "glass")
+	FX.press_feedback(give)
+	if not live:
+		Lagoon.set_enabled(give, false)
+	else:
+		var msg_id := String(m.get("id", ""))
+		give.pressed.connect(func() -> void:
+			give.disabled = true
+			_clan_donate(msg_id, kind, m))
+	foot.add_child(give)
+	return card
+
+# FILLING ONE SEAT.
+#
+# Spins cost the giver nothing -- that is the model Guy described and the one
+# every game of this shape uses: the favour is free to do, which is what makes
+# it worth doing. A CARD costs the giver the card, and the spare comes off only
+# after the server says yes, which is the same ordering _send_card follows and
+# for the same reason: taking it first destroys a card on every cap hit, clan
+# change or dropped radio.
+func _clan_donate(msg_id: String, kind: String, m: Dictionary) -> void:
+	var why := []
+	if _needs_network(why):
+		_banner(str(why[0]), Lagoon.CORAL_LO)
+		_refresh_clan_chat()
+		return
+	Cloud.donate_clan_help(msg_id, func(res: Dictionary) -> void:
+		if not bool(res.get("ok", false)):
+			_banner(_clan_refusal(res), Lagoon.CORAL_LO)
+			_refresh_clan_chat()
+			return
+		if kind == "cards":
+			# Now, and only now.
+			var set_id := str(m.get("set")) if m.get("set") != null else ""
+			var idx := int(m.get("idx", -1)) if typeof(m.get("idx")) in [TYPE_INT, TYPE_FLOAT] else -1
+			var arr: Array = col_dupes.get(set_id, [])
+			if idx >= 0 and idx < arr.size():
+				arr[idx] = maxi(0, int(arr[idx]) - 1)
+			# `.get(key, default)` hands the default back only when the key is
+			# ABSENT, and donate_clan_help answers `sent_today: null` for a spin
+			# donation -- int(null) is a hard runtime error that ends the whole
+			# function. This branch only runs for cards, where the server always
+			# sends an integer, but the guard is written anyway: it is the same
+			# shape that re-awarded stars on every launch for a week.
+			var raw_sent: Variant = res.get("sent_today")
+			if typeof(raw_sent) in [TYPE_INT, TYPE_FLOAT]:
+				gift_budget["sent"] = int(raw_sent)
+			var raw_cap: Variant = res.get("give_cap")
+			if typeof(raw_cap) in [TYPE_INT, TYPE_FLOAT]:
+				gift_budget["give_cap"] = int(raw_cap)
+			_save_game()
+			_refresh()
+		Sfx.play("pop", -6.0)
+		var by: Dictionary = m.get("by") if typeof(m.get("by")) == TYPE_DICTIONARY else {}
+		_banner("Sent to %s" % String(by.get("name", "your clanmate")), Lagoon.KELP_HI)
+		_refresh_clan_chat()
+	)
+
+# The composer: what to say, and the two things to ask for.
+func _clan_composer(vb: VBoxContainer) -> void:
+	var say_row := HBoxContainer.new()
+	say_row.add_theme_constant_override("separation", 10)
+	vb.add_child(say_row)
+	var field := Lagoon.field(LineEdit.new(), "Say something")
+	# 140, which is what say_clan's own constraint allows. Refusing here as
+	# well is not duplication -- it is the difference between a box that stops
+	# taking characters and a message that is typed out and then rejected.
+	field.max_length = 140
+	field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	field.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	say_row.add_child(field)
+	var send := Button.new()
+	send.text = "SEND"
+	send.custom_minimum_size = Vector2(0, UI.TAP)
+	send.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	Lagoon.button(send, "primary")
+	Lagoon.button_gloss(send, 22)
+	FX.press_feedback(send)
+	say_row.add_child(send)
+
+	var post := func() -> void:
+		var text := field.text.strip_edges()
+		if text.is_empty():
+			return
+		var why := []
+		if _needs_network(why):
+			_banner(str(why[0]), Lagoon.CORAL_LO)
+			return
+		send.disabled = true
+		Cloud.say_clan(text, func(res: Dictionary) -> void:
+			if is_instance_valid(send):
+				send.disabled = false
+			if not bool(res.get("ok", false)):
+				_banner(_clan_refusal(res), Lagoon.CORAL_LO)
+				return
+			# CLEARED ONLY ON SUCCESS. A box emptied before the answer lands
+			# loses the sentence somebody typed every time the radio drops.
+			if is_instance_valid(field):
+				field.text = ""
+			_refresh_clan_chat()
+		)
+	send.pressed.connect(post)
+	field.text_submitted.connect(func(_t: String) -> void: post.call())
+
+	# -- THE TWO ASKS. -------------------------------------------------------
+	#
+	# They sit under the message box rather than beside it: three controls
+	# across a 720-wide phone leaves the field too narrow to read what is being
+	# typed in it, which is the one thing a composer's field has to do.
+	var asks := HBoxContainer.new()
+	asks.add_theme_constant_override("separation", 10)
+	vb.add_child(asks)
+	_clan_ask_btns = {}
+	for spec in [["spins", "ASK  FOR  SPINS", "bolt"], ["cards", "ASK  FOR  A  CARD", "gift"]]:
+		var kind := String(spec[0])
+		var b := Button.new()
+		b.custom_minimum_size = Vector2(0, UI.TAP)
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.add_theme_font_size_override("font_size", UI.F_CAPTION)
+		b.set_meta("ll_label", String(spec[1]))
+		Lagoon.button(b, "kelp" if kind == "spins" else "brass")
+		FX.press_feedback(b)
+		b.pressed.connect(func() -> void:
+			if kind == "spins":
+				_clan_ask_spins(b)
+			else:
+				_open_ask_card())
+		asks.add_child(b)
+		_clan_ask_btns[kind] = b
+	_clan_ask_sync()
+
+	# What a seat is worth, said once under the buttons rather than on every ask
+	# row. Without it the bar on somebody's ask is a fraction of nothing.
+	# ONE LINE AT 672 WIDE, AND THAT IS A CONSTRAINT RATHER THAN A STYLE NOTE.
+	# This label autowraps, and an autowrapping label reports a ONE-line
+	# minimum height however many lines it actually takes -- so a longer
+	# sentence here silently costs the composer a row that the fit above has
+	# not accounted for, and pushes the ask buttons under the nav bar. The
+	# five-hour rule is not said here because the buttons say it themselves,
+	# in the exact form "IN 3h 43m".
+	var terms := _page_note("Up to %d clanmates can answer \u2014 %d spins each."
+		% [int(clan_ask.get("seats", 10)), int(clan_ask.get("give", 3))], UI.F_TINY)
+	terms.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(terms)
+
+# THE GATE. One sentence and one button where the composer would be.
+func _clan_rules_gate(vb: VBoxContainer) -> void:
+	var body := _tinted_body(vb, Lagoon.BRASS, false, 14)
+	var line := Lagoon.label(
+		"Clan chat has a few rules. Read them once and you can post.",
+		UI.F_CAPTION, Lagoon.INK_SOFT, true)
+	line.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(line)
+	var go := Button.new()
+	go.text = "READ  THE  CHAT  RULES"
+	go.custom_minimum_size = Vector2(0, UI.TAP)
+	Lagoon.button(go, "primary")
+	Lagoon.button_gloss(go, 22)
+	FX.press_feedback(go)
+	go.pressed.connect(_open_chat_rules)
+	body.add_child(go)
+
+# WHAT THE PLAYER IS AGREEING TO, IN THE WORDS THEY WILL BE HELD TO.
+#
+# The four rules are the four things App Store guideline 1.2 asks of an app with
+# user-generated content, and each one is a thing the game actually DOES rather
+# than a promise: the filter is inside say_clan, the flag is on every message
+# somebody else wrote, the block is applied inside clan_chat in both directions,
+# and there is no way to reach anybody outside your own clan. The full text is
+# on the terms page, which this links to and which Options links to for ever
+# after -- so "read them again any time" is true.
+const CHAT_RULES := [
+	["No abuse, no hate, nothing sexual, nothing aimed at a person.",
+		"A message with a blocked word in it is refused outright \u2014 it never reaches anybody."],
+	["Nobody's personal details, including your own.",
+		"No phone numbers, no addresses, no links, no advertising."],
+	["Report anything that breaks this.",
+		"The flag on a message sends it to me. I answer reports within 24 hours."],
+	["Reporting blocks, both ways and at once.",
+		"You stop seeing them, they stop seeing you, and neither of you is offered the other in a raid."],
+]
+
+func _open_chat_rules() -> void:
+	var vbox := _open_popup("Clan Chat Rules", 580.0, true)
+	var lead := _popup_row_label(
+		"Anything you type is sent to everyone in your clan. There is no tolerance for objectionable content or for abusive behaviour \u2014 an account used for either can be closed.",
+		UI.F_CAPTION)
+	lead.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lead.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lead.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	vbox.add_child(lead)
+
+	for rule in CHAT_RULES:
+		var card := _tinted_body(vbox, Lagoon.BRASS_MID, false, 12)
+		var t := Lagoon.label(String(rule[0]), UI.F_LABEL, Lagoon.INK, true)
+		t.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		card.add_child(t)
+		var d := Lagoon.label(String(rule[1]), UI.F_TINY, Lagoon.INK_SOFT, true)
+		d.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		card.add_child(d)
+
+	# THE FULL TERMS, REACHABLE FROM THE SCREEN THAT ASKS FOR AGREEMENT. A
+	# consent pointing at a document the player cannot open from here is not
+	# one. OS.shell_open leaves for the system browser on both platforms and
+	# the game comes back on the back gesture -- the same trade the Options
+	# links already make.
+	var read := Button.new()
+	read.text = "Read the full terms"
+	read.custom_minimum_size = Vector2(0, UI.TAP)
+	Lagoon.button(read, "glass")
+	FX.press_feedback(read)
+	read.pressed.connect(func() -> void: OS.shell_open(LEGAL_TERMS + "#chat"))
+	vbox.add_child(read)
+
+	var yes := Button.new()
+	yes.text = "I  AGREE"
+	yes.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	Lagoon.button(yes, "kelp")
+	Lagoon.button_gloss(yes, 22)
+	FX.press_feedback(yes)
+	yes.pressed.connect(func() -> void:
+		chat_rules_ok = true
+		# Flushed rather than queued: a player who agrees and is then killed by
+		# the OS must not be asked again, and this is one bool.
+		_flush_save()
+		_close_popup()
+		if _current_page == pages.get("clan"):
+			_fill_page("clan")
+	)
+	vbox.add_child(yes)
+
+	var no := Button.new()
+	no.text = "Not now"
+	no.custom_minimum_size = Vector2(0, UI.TAP)
+	Lagoon.button(no, "glass")
+	FX.press_feedback(no)
+	no.pressed.connect(func() -> void: _close_popup())
+	vbox.add_child(no)
+
+# The two ask buttons, told what their clocks say. Called when the composer is
+# built and on every poll -- eight-second granularity on a five-hour countdown
+# is not something anybody can see, and it costs no timer of its own.
+func _clan_ask_sync() -> void:
+	for kind in _clan_ask_btns:
+		var b = _clan_ask_btns[kind]
+		# Validity BEFORE the type test, for the same reason the two handles
+		# above are untyped: a freed instance is not something to ask questions
+		# of, and the answer to `is` on one is not worth finding out.
+		if b == null or not is_instance_valid(b) or not (b is Button):
+			continue
+		var btn: Button = b
+		var wait := int(clan_ask.get("%s_wait" % kind, 0))
+		if wait > 0:
+			btn.text = "IN  %s" % _clan_wait_text(wait)
+			Lagoon.set_enabled(btn, false)
+		else:
+			btn.text = String(btn.get_meta("ll_label", "ASK"))
+			Lagoon.set_enabled(btn, true)
+
+# "4h 12m" / "38m" / "40s". _countdown_text prints 03:59:12, which on a button
+# reads as a stopwatch rather than as how long until you may ask again.
+func _clan_wait_text(secs: int) -> String:
+	if secs >= 3600:
+		return "%dh %02dm" % [secs / 3600, (secs % 3600) / 60]
+	if secs >= 60:
+		return "%dm" % (secs / 60)
+	return "%ds" % maxi(1, secs)
+
+func _clan_ask_spins(b: Button) -> void:
+	var why := []
+	if _needs_network(why):
+		_banner(str(why[0]), Lagoon.CORAL_LO)
+		return
+	Lagoon.set_enabled(b, false)
+	Cloud.ask_clan_help("spins", "", -1, 0, func(res: Dictionary) -> void:
+		# THE BUTTON MAY BE GONE. A chat poll landing while this was in flight
+		# repaints the page, and a lambda whose capture has been freed is handed
+		# a null -- which Lagoon.set_enabled then calls a method on. Every
+		# callback on this page that touches a control it captured has to ask.
+		if not bool(res.get("ok", false)):
+			if String(res.get("reason", "")) == "too_soon":
+				clan_ask["spins_wait"] = int(res.get("wait", 0))
+				_clan_ask_sync()
+			elif is_instance_valid(b):
+				Lagoon.set_enabled(b, true)
+			_banner(_clan_refusal(res), Lagoon.CORAL_LO)
+			return
+		Sfx.play("pop", -8.0)
+		_banner("Asked the clan for spins.", Lagoon.KELP_HI)
+		_refresh_clan_chat()
+	)
+
+# WHICH CARD TO ASK FOR, and the list is the answer to "what am I missing".
+#
+# Only 1-, 2- and 3-star cards, which is Guy's rule and the server's constraint
+# as well. Only ones this island does NOT own: asking the clan for a card that
+# is already on the shelf is asking for a spare, and a spare is worth a melt --
+# which would make this a way to farm stars off clanmates rather than a way to
+# finish a set.
+func _open_ask_card() -> void:
+	var vbox := _open_popup("Ask For A Card", 580.0, true)
+	var lead := _popup_row_label(
+		"Pick a card you are missing. It goes in the chat, and any clanmate holding a spare can send it.",
+		UI.F_CAPTION)
+	lead.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lead.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lead.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	vbox.add_child(lead)
+
+	var any := false
+	for c in CV.COLLECTIONS:
+		var items: Array = c["items"]
+		var set_id := String(c["id"])
+		var owned: Array = col_owned.get(set_id, [])
+		# WHICH SET EACH RUN OF CARDS BELONGS TO. Ninety low-star cards across
+		# fifteen sets is a scroll nobody can find anything in, and the player
+		# already thinks about the shelf one set at a time. The banner is added
+		# lazily so a set with nothing missing in it does not print a heading
+		# over an empty gap.
+		var headed := false
+		for i in items.size():
+			var star := int(items[i][2])
+			# GUY NAMED ONE, TWO AND THREE. The table constraint says it too, so
+			# a later rewrite of this list cannot quietly widen it.
+			if star < 1 or star > 3:
+				continue
+			if i < owned.size() and bool(owned[i]):
+				continue
+			if not headed:
+				headed = true
+				vbox.add_child(Lagoon.banner(String(c["name"]).to_upper(),
+					Lagoon.LAGOON_DEEP, 48.0))
+			any = true
+			var row := Button.new()
+			row.custom_minimum_size = Vector2(0, UI.TAP)
+			row.text = "%s  %s" % [String(items[i][0]), String(items[i][1])]
+			row.add_theme_font_size_override("font_size", UI.F_LABEL)
+			_candy_button(row, CV.STAR_COLORS[clampi(star - 1, 0, CV.MAX_STAR - 1)])
+			FX.press_feedback(row)
+			var idx := i
+			row.pressed.connect(func() -> void:
+				row.disabled = true
+				Cloud.ask_clan_help("cards", set_id, idx, star, func(res: Dictionary) -> void:
+					if not bool(res.get("ok", false)):
+						if is_instance_valid(row):
+							row.disabled = false
+						if String(res.get("reason", "")) == "too_soon":
+							clan_ask["cards_wait"] = int(res.get("wait", 0))
+						_banner(_clan_refusal(res), Lagoon.CORAL_LO)
+						return
+					_close_popup()
+					Sfx.play("pop", -8.0)
+					_banner("Asked the clan for %s." % String(items[idx][1]), Lagoon.KELP_HI)
+					_refresh_clan_chat()
+				)
+			)
+			vbox.add_child(row)
+
+	if not any:
+		var none := _popup_row_label(
+			"Nothing to ask for — you already hold every one, two and three star card. Four and five star cards can never be given.",
+			UI.F_CAPTION)
+		none.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		none.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		none.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		vbox.add_child(none)
+
+# =============================================================================
+#  Keeping the scroll fresh
+# =============================================================================
+
+# Both halves of the chat in one place: the lines, and my two clocks. Called on
+# entering the page, on the poll, and after anything that changes either.
+func _refresh_clan_chat() -> void:
+	if _clan_fake or not Cloud.linked() or my_clan.is_empty():
+		return
+	if not Cloud.clan_chat_ready():
+		return
+	Cloud.clan_ask_state(func(res: Dictionary) -> void:
+		if res.is_empty():
+			return
+		clan_ask = res
+		_clan_ask_sync()
+	)
+	Cloud.clan_chat(func(rows: Array) -> void:
+		var sig := _clan_chat_signature(rows)
+		var same := sig == _clan_chat_sig
+		clan_chat_rows = rows
+		_clan_chat_sig = sig
+		if same or _current_page != pages.get("clan") or my_clan.is_empty():
+			return
+		# ONLY THE COLUMN, NOT THE PAGE. _fill_page rebuilds the crest, the
+		# composer and everything else -- which every eight seconds would mean a
+		# half-typed message thrown away and the scroll yanked back to the top.
+		# The page rebuild is the fallback for a poll that lands after the page
+		# has been repainted for some other reason and the column has gone.
+		if not _clan_chat_repaint():
+			_fill_page("clan")
+	)
+
+# WHAT COUNTS AS A CHANGE. The ids in order, plus each ask's filled count and
+# whether I am in it -- which is everything the drawing depends on. Without this
+# the list is rebuilt from scratch every eight seconds whether anything happened
+# or not, and a rebuild under a finger is how a tap lands on the wrong row.
+func _clan_chat_signature(rows: Array) -> String:
+	var parts := PackedStringArray()
+	for r in rows:
+		if typeof(r) != TYPE_DICTIONARY:
+			continue
+		var m: Dictionary = r
+		parts.append("%s:%d:%s:%s" % [String(m.get("id", "")), int(m.get("filled", 0)),
+			"1" if bool(m.get("gave", false)) else "0",
+			"1" if bool(m.get("closed", false)) else "0"])
+	return "|".join(parts)
+
+# Repaints the message column in place, keeping the reader's position unless
+# they were already at the bottom -- in which case a new message should carry
+# them with it, which is what every chat in the world does.
+func _clan_chat_repaint() -> bool:
+	var raw_col = _clan_chat_col
+	if raw_col == null or not is_instance_valid(raw_col):
+		return false
+	var col: VBoxContainer = raw_col
+	var raw_sc = _clan_chat_scroll
+	var at_end := true
+	if raw_sc != null and is_instance_valid(raw_sc):
+		var sc: ScrollContainer = raw_sc
+		var bar := sc.get_v_scroll_bar()
+		at_end = bar == null or float(sc.scroll_vertical) >= bar.max_value - bar.page - 48.0
+	for c in col.get_children():
+		col.remove_child(c)
+		c.queue_free()
+	_clan_chat_fill(col)
+	_let_drags_through(col)
+	if at_end:
+		_clan_chat_to_bottom()
+	return true
+
+# A chat opens at the newest line. The scroll's range is not known until the
+# rows it holds have been laid out, so this waits a frame -- and re-checks the
+# node, because the page can be left inside that frame.
+func _clan_chat_to_bottom() -> void:
+	var raw = _clan_chat_scroll
+	if raw == null or not is_instance_valid(raw):
+		return
+	await get_tree().process_frame
+	await get_tree().process_frame
+	# Re-checked after the wait, not only before it: two frames is plenty of
+	# time for the page to have been left and the well freed.
+	if not is_instance_valid(raw):
+		return
+	var sc: ScrollContainer = raw
+	var bar := sc.get_v_scroll_bar()
+	if bar != null:
+		sc.scroll_vertical = int(bar.max_value)
+
+# The poll, which runs only while the clan page is the page on screen. Started
+# by _enter_clan_page and stopped by _goto on the way out -- see CLAN_CHAT_POLL
+# for why this is the one thing on this page that polls at all.
+func _clan_chat_poll(on: bool) -> void:
+	if not on:
+		if _clan_chat_timer != null and is_instance_valid(_clan_chat_timer):
+			_clan_chat_timer.stop()
+		return
+	if _clan_fake or not Cloud.linked():
+		return
+	if _clan_chat_timer == null or not is_instance_valid(_clan_chat_timer):
+		_clan_chat_timer = Timer.new()
+		_clan_chat_timer.wait_time = CLAN_CHAT_POLL
+		add_child(_clan_chat_timer)
+		_clan_chat_timer.timeout.connect(_refresh_clan_chat)
+	_clan_chat_timer.start()
+
+# "just now" / "4m" / "2h" / "3d". Short because it sits beside a name in a
+# caption, and the exact minute of a chat line has never mattered to anybody.
+func _clan_chat_when(m: Dictionary) -> String:
+	var at := float(m.get("at", 0.0)) if typeof(m.get("at")) in [TYPE_INT, TYPE_FLOAT] else 0.0
+	if at <= 0.0:
+		return ""
+	# The server's clock, not the phone's: `at` comes off the server and a phone
+	# whose clock is an hour out would print every line as "in 60m".
+	var secs := maxf(0.0, Cloud.server_now() - at)
+	if secs < 90.0:
+		return "just now"
+	if secs < 3600.0:
+		return "%dm" % int(secs / 60.0)
+	if secs < 86400.0:
+		return "%dh" % int(secs / 3600.0)
+	return "%dd" % int(secs / 86400.0)
 
 # The mark an empty clan page is built around. Centred in its own row so it
 # does not stretch to the card's width the way a bare Control would.
@@ -16178,7 +17585,17 @@ func _collection_complete(c: Dictionary) -> bool:
 # `applied_gifts` is the replay guard, the same one `applied_raids` is. The
 # server keeps handing a gift back until the ack lands, and the ack is the
 # thing most likely to be lost to a tunnel, so the id is remembered.
+# WHETHER THIS PLAYER HAS AGREED TO THE CHAT RULES. Guideline 1.2 wants the
+# agreement taken before the feature is used, so this gates the composer rather
+# than merely being recorded. Saved, never reset -- being asked twice reads as
+# the first answer not having been heard.
+var chat_rules_ok := false
 var applied_gifts := []
+# The same guard for spin gifts. Its own list rather than a shared one: the two
+# come off different tables with independently generated uuids, and one list
+# trimmed to 200 would let a busy card day evict the spin ids that stop a
+# dropped ack from paying twice.
+var applied_spin_gifts := []
 var my_clan := {}
 var gift_budget := {}
 
@@ -16329,6 +17746,73 @@ func _on_cloud_gifts(gifts: Array) -> void:
 	else:
 		_notify("gift", "Your clan sent you %d cards" % landed.size(), "\U01F0CF")
 
+# SPINS A CLANMATE DROPPED INTO AN ASK WHILE THIS PHONE WAS OFF.
+#
+# Shaped on _on_cloud_gifts, which is shaped on _offline_raids, and it inherits
+# both of their lessons:
+#
+#   * THE ID IS REMEMBERED BEFORE THE ACK IS SENT. unseen_spin_gifts keeps
+#     handing a gift over until seen_at is set, so a dropped ack means it
+#     arrives again on the next launch -- and spins are a currency, so arriving
+#     twice is money. `applied_spin_gifts` is the half that holds even if the
+#     ack never lands.
+#   * `by` IS GUARDED. public_player answers NULL for a soft-deleted island, and
+#     `.get(key, default)` returns the default only when the key is ABSENT --
+#     a present null comes back as null, and String(null) is a hard runtime
+#     error that ends the whole function. That is exactly what re-awarded stars
+#     on every launch for a week through the card-gift twin.
+#
+# THE COUNTER MOVES WHEN THE SPINS LAND, not when the answer arrives:
+# _grant_spins holds the shown figure and flies them in, which is the rule every
+# reward in this game follows.
+func _on_cloud_spin_gifts(gifts: Array) -> void:
+	if _hold_for_boot(_on_cloud_spin_gifts.bind(gifts)):
+		return
+	var ids := []
+	var total := 0
+	var who := ""
+	var many := false
+	for g in gifts:
+		if typeof(g) != TYPE_DICTIONARY:
+			continue
+		var row: Dictionary = g
+		var gid := str(row.get("id", ""))
+		if gid != "":
+			ids.append(gid)
+		if gid == "" or applied_spin_gifts.has(gid):
+			continue
+		var n := int(row.get("spins", 0)) if typeof(row.get("spins")) in [TYPE_INT, TYPE_FLOAT] else 0
+		# The server's own check constraint bounds this at 50; a row outside it
+		# cannot have been written by donate_clan_help, so it is acked and
+		# dropped rather than paid.
+		if n <= 0 or n > 50:
+			applied_spin_gifts.append(gid)
+			continue
+		applied_spin_gifts.append(gid)
+		total += n
+		var by: Dictionary = row.get("by") if typeof(row.get("by")) == TYPE_DICTIONARY else {}
+		var name := str(by.get("name", ""))
+		if who == "":
+			who = name
+		elif name != who:
+			many = true
+	if ids.is_empty():
+		return
+	if applied_spin_gifts.size() > APPLIED_GIFTS_KEEP:
+		applied_spin_gifts = applied_spin_gifts.slice(
+			applied_spin_gifts.size() - APPLIED_GIFTS_KEEP)
+	Cloud.ack_spin_gifts(ids)
+	if total <= 0:
+		_flush_save()
+		return
+	_grant_spins(total, view_size() * 0.5)
+	_flush_save()
+	_refresh()
+	if many or who == "":
+		_notify("gift", "Your clan sent you %d spins" % total, "⚡")
+	else:
+		_notify("gift", "%s sent you %d spins" % [who, total], "⚡")
+
 func _refresh_gift_budget() -> void:
 	if _clan_fake or not Cloud.linked():
 		return
@@ -16382,6 +17866,11 @@ var _clan_fake_requests: Array = []
 # the harness the board is the third thing on this page that can never be
 # rendered by a screenshot or measured by qa_layout.
 var _clan_fake_list: Array = []
+# And what the chat and the browse dialog's roster answer with. Same reason
+# again: without them the chat, both ask rows and the clan card are four more
+# things on this page no harness can reach.
+var _clan_fake_chat: Array = []
+var _clan_fake_roster: Array = []
 
 # True when this action needs a server that is not there. The pair of questions
 # has to be asked in this order and both have to be asked: `linked()` is about
@@ -16811,241 +18300,88 @@ func _fill_collections(vb: VBoxContainer) -> void:
 # questions -- what is it, how far in am I, is there a reward waiting -- and
 # all six fit above the fold.
 
-# The hours between one season and the next, said out loud.
-#
-# Three things have to be on this card, because all three are questions a player
-# looking at a shelf that has stopped taking cards will ask in this order:
-# what happened, what happens to what I collected, and when does it start again.
-#
-# THE SECOND ONE IS THE IMPORTANT ONE and it is why the break exists at the end
-# of a season rather than at the start of the next. Nothing is wiped yet. The
-# cards are all still there, a set that is finished can still be claimed, and a
-# card BOUGHT in the shop still lands and can still complete one -- money never
-# waits on a clock. What stops is the free drip from spinning. The wipe happens
-# when the new season actually opens, and the ribbon says so when it does.
-func _season_break_card(vb: VBoxContainer) -> void:
-	var until := maxf(0.0, _col_opens_at() - _now())
-	var panel := _tinted_card(vb, Lagoon.LAGOON, true)
-	var pad := MarginContainer.new()
-	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
-		pad.add_theme_constant_override(m, 14)
-	panel.add_child(pad)
-	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 6)
-	pad.add_child(col)
-
-	var title := Lagoon.label("\u23F8  SEASON  CLOSED", UI.F_SUBHEAD, Lagoon.LAGOON_DEEP, true)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	col.add_child(title)
-
-	var clock := Lagoon.label("New season opens in  %dh %02dm" % [int(until / 3600.0), int(fmod(until, 3600.0) / 60.0)],
-		UI.F_BODY, Lagoon.INK, true)
-	clock.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	col.add_child(clock)
-
-	var body := _popup_row_label("Spins have stopped dropping cards. Everything you have collected stays put, and a finished set can still be claimed \u2014 the shelf only resets when the new season opens.", UI.F_CAPTION)
-	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	body.add_theme_color_override("font_color", Lagoon.INK_SOFT)
-	col.add_child(body)
-
-# The one change in this game a player can miss entirely.
-#
-# A season turning over empties every set they filled and hands them a fresh
-# board, and all of that happens while the app is closed. Without something
-# saying so, the shelf just looks like it lost their month. So: a badge on the
-# Cards tab that survives launches until the shelf is opened, and this ribbon on
-# the shelf itself the once.
-func _season_ribbon(vb: VBoxContainer) -> void:
-	var panel := _tinted_card(vb, Lagoon.BRASS, true)
-	var margin := MarginContainer.new()
-	for m in ["margin_left", "margin_right", "margin_top", "margin_bottom"]:
-		margin.add_theme_constant_override(m, 14)
-	panel.add_child(margin)
-	var row := VBoxContainer.new()
-	row.add_theme_constant_override("separation", 4)
-	margin.add_child(row)
-
-	var title := Lagoon.label("\u2728  NEW  SEASON  \u2728", UI.F_SUBHEAD, Lagoon.BRASS_HI, true)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	row.add_child(title)
-
-	var body := _popup_row_label("Every set has been reset. Six fresh collections, and the grand prize is up for grabs again.", UI.F_CAPTION)
-	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	row.add_child(body)
-
-	FX.pop_in(panel)
-	Sfx.play("levelup", -6.0)
-
 # =============================================================================
-#  The album
+#  The grand prize, and the one bar under it
 # =============================================================================
 #
-# The shelf used to open on a card headed GRAND PRIZE: a sentence, a bar of
-# fifteen, and a countdown. Everything on it was true and none of it said what
-# the player was collecting -- the season had no name, no cover and no face, so
-# fifteen tiles under it read as a list of sets rather than as one thing worth
-# finishing. Guy sent a Cards Center screenshot where the season is a BOOK, and
-# he is right that that is the difference.
+# Guy, 2026-09-14: the whole top of this page goes. One big bar from edge to
+# edge, the prize above it with a big icon, every set under it, nothing else.
 #
-# So it is a book. A spine with bands down the left, a cover with the season's
-# name on it, the three hardest sets shown as the chase, and one bar across the
-# bottom. What is on it is what was on the old card plus an identity.
+# What stood here was the seasonal ALBUM -- a bound cover with a spine and
+# bands, the season's name, a three-card chase strip, a running count of cards
+# owned, a countdown, and the grand prize as a chip beside a half-width bar.
+# Six objects answering six questions on a page whose errand is "which set do I
+# open next". Two of those are the only ones a player acts on: what finishing
+# everything pays, and how far off it is. So they are the only two left, and
+# each is now the biggest thing of its kind on the screen instead of a line
+# inside a card.
 #
-# THE BAR STILL COUNTS SETS, and that is deliberate even though cards would move
-# more often and feel better. The bar is the grand prize's bar, the grand prize
-# is paid for fifteen finished sets, and a progress bar that measures something
-# other than the thing it unlocks is a lie the player finds out about at the
-# end. The card count is real and is worth stating, so it is stated -- beside
-# the bar, as a fact, not as the bar.
-func _album_card(vb: VBoxContainer) -> void:
-	var album := CV.season_album(_now())
-	var hue: Color = album["hue"]
-
+# THE BAR STILL COUNTS SETS, and that is deliberate even though cards would
+# move more often and feel better. The bar belongs to the grand prize, the
+# grand prize is paid for finishing every set, and a track that measures
+# something other than the thing it unlocks is a lie the player only finds out
+# about at the end.
+func _grand_prize_bar(vb: VBoxContainer) -> void:
 	var claimed_n := 0
 	for c in CV.COLLECTIONS:
 		if col_claimed.get(c["id"], false):
 			claimed_n += 1
-	var cards_owned := 0
-	for c in CV.COLLECTIONS:
-		cards_owned += _collection_owned_count(c)
+	var done := claimed_n >= CV.COLLECTIONS.size()
 
-	var book := _tinted_card(vb, hue, true)
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 0)
-	book.add_child(row)
+	# The prize, at hero size and with nothing printed around it. The bolt is
+	# the reel's own spin token at 132px -- the largest single object on the
+	# page, which is the point: the sets below are the work and this is what
+	# the work is for. The figure rides beside it rather than under it, because
+	# a five-digit number stacked under a 132 icon makes a column two thirds of
+	# a phone tall before the bar has even started.
+	var hero := HBoxContainer.new()
+	hero.alignment = BoxContainer.ALIGNMENT_CENTER
+	hero.add_theme_constant_override("separation", 10)
+	vb.add_child(hero)
+	hero.add_child(_prize_art("bolt", 132.0))
+	# amount_ink, not an ink from the table: a figure beside a prize icon wears
+	# that icon's own currency everywhere else in the game, and the spin
+	# currency is the one this page pays in.
+	var fig := Lagoon.title(_fmt(CV.COLLECTION_MEGA_SPINS), UI.F_DISPLAY,
+		Lagoon.amount_ink("bolt"), Lagoon.RIM_INK)
+	fig.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	hero.add_child(fig)
 
-	# The spine. A book seen face-on is a rectangle; the spine is the whole of
-	# what makes it a book, so it is drawn first and it is the only part of this
-	# card that is not the page's usual stock.
-	var spine := PanelContainer.new()
-	spine.custom_minimum_size = Vector2(34, 0)
-	var ssb := StyleBoxFlat.new()
-	ssb.bg_color = hue.lerp(Lagoon.HULL, 0.42)
-	ssb.corner_radius_top_left = Lagoon.R_CARD
-	ssb.corner_radius_bottom_left = Lagoon.R_CARD
-	ssb.border_width_right = 3
-	ssb.border_color = Lagoon.BRASS_LO
-	spine.add_theme_stylebox_override("panel", ssb)
-	row.add_child(spine)
-	var bands := VBoxContainer.new()
-	bands.alignment = BoxContainer.ALIGNMENT_CENTER
-	bands.add_theme_constant_override("separation", 16)
-	spine.add_child(bands)
-	for i in 3:
-		var band := Panel.new()
-		band.custom_minimum_size = Vector2(0, 9)
-		var bsb := StyleBoxFlat.new()
-		bsb.bg_color = Lagoon.BRASS
-		band.add_theme_stylebox_override("panel", bsb)
-		bands.add_child(band)
+	# Edge to edge, and deliberately NOT inside a card. A track with a rim and a
+	# margin around it is one entry in a list of cards; this one is the page's
+	# spine, so it runs the full width of the body and stands on the board.
+	var bar := _styled_progress(Lagoon.BRASS)
+	bar.custom_minimum_size = Vector2(0, 52)
+	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bar.max_value = CV.COLLECTIONS.size()
+	bar.value = claimed_n
+	vb.add_child(bar)
+	Lagoon.progress_value(bar, "%d / %d  sets" % [claimed_n, CV.COLLECTIONS.size()],
+		UI.F_BODY)
 
-	var margin := MarginContainer.new()
-	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	margin.add_theme_constant_override("margin_left", 18)
-	margin.add_theme_constant_override("margin_right", 16)
-	margin.add_theme_constant_override("margin_top", 14)
-	margin.add_theme_constant_override("margin_bottom", 14)
-	row.add_child(margin)
-	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 10)
-	margin.add_child(col)
+	# THE ONE STATE THAT STILL HAS TO SAY SOMETHING. Between one season and the
+	# next, spins stop dropping cards -- and a shelf that has quietly stopped
+	# taking them, with nothing on it saying so, reads as the game being broken.
+	# It used to be a whole panel of its own; it is one line now, under the bar
+	# and only during the break, because it is a few hours a season and the page
+	# is meant to be the prize, the track and the sets.
+	#
+	# It says the second half too -- nothing is wiped yet, a finished set can
+	# still be cashed in -- because that is the question a player who was three
+	# cards from the end asks the moment they read the first half.
+	if _col_break():
+		var until := maxf(0.0, _col_opens_at() - _now())
+		var shut := _popup_row_label(
+			"\u23F8  SEASON  CLOSED  \u2014  new cards in %dh %02dm.  Finished sets can still be claimed."
+			% [int(until / 3600.0), int(fmod(until, 3600.0) / 60.0)], UI.F_CAPTION)
+		shut.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		shut.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		shut.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+		vb.add_child(shut)
 
-	# The cover: a tag, and the season's name in brass.
-	var tag := Lagoon.chip("SEASONAL  ALBUM", hue, UI.F_TINY)
-	tag.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	col.add_child(tag)
-	var title := Lagoon.title(String(album["name"]).to_upper(), UI.F_TITLE,
-		Lagoon.BRASS_HI, Lagoon.ABYSS)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	col.add_child(title)
-
-	_album_chase(col)
-
-	# The bar, the count beside it, and the prize at the end.
-	var bar_row := HBoxContainer.new()
-	bar_row.add_theme_constant_override("separation", 10)
-	col.add_child(bar_row)
-	var gpb := _styled_progress(Lagoon.BRASS)
-	gpb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	gpb.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	gpb.max_value = CV.COLLECTIONS.size()
-	gpb.value = claimed_n
-	bar_row.add_child(gpb)
-	Lagoon.progress_value(gpb, "%d / %d  sets" % [claimed_n, CV.COLLECTIONS.size()])
-	# THE PRIZE SITS BESIDE THE BAR, NOT UNDER IT. _prize_column stacks its
-	# figure below its artwork, so dropped into this row the bolt lined up with
-	# the track and the "3,000" hung off the bottom of it -- the row grew to fit
-	# and the bar stopped looking like it had an end. A chip is one line and
-	# centres on the track it belongs to.
-	var prize := _reward_chip("bolt", _fmt_compact(CV.COLLECTION_MEGA_SPINS), Lagoon.INK)
-	prize.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	bar_row.add_child(prize)
-	if claimed_n == CV.COLLECTIONS.size():
-		FX.pulse_forever(prize, 1.08, 1.0)
-
-	# The two facts under it. The card count is the one that moves daily and it
-	# is the only place in the game it has ever been said.
-	var facts := _popup_row_label("%d of %d cards collected" % [cards_owned, CV.total_cards()],
-		UI.F_CAPTION)
-	facts.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	# INK_MUTE, not INK_SOFT. The ink table in lagoon.gd measures every token
-	# against bare SHELL and SOFT clears it at 5.3 -- but this card is washed
-	# with the album's own hue, and on that stock qa_contrast measured this line
-	# at 4.41. Same trap the note on INK_SOFT already describes: a token has to
-	# clear the bar on the surface it actually lands on, not on the swatch.
-	facts.add_theme_color_override("font_color", Lagoon.INK_MUTE)
-	col.add_child(facts)
-
-	if not _col_break():
-		var left := maxf(0.0, col_deadline - _now())
-		# WHAT "RESETS" MEANS, because the player closest to finishing a set is
-		# the one who most needs to know and the one this word frightens most.
-		#
-		# PrimeTestLab report 6935 (S-03): the countdown said the album resets
-		# and stopped there, so "resets" could equally have meant the shelf is
-		# re-sorted, the prizes come round again, or two weeks of collecting is
-		# deleted. It is the third one -- _ensure_collections() empties
-		# col_owned, col_dupes and col_claimed the moment the season index
-		# moves, cards bought in a pack included, which terms.html has said
-		# since 25 August and no screen in the game ever did.
-		#
-		# Two lines rather than one long one: the countdown is a glance and the
-		# consequence is a read, and they are not the same errand. The
-		# consequence carries CORAL_HI because it is the only warning on this
-		# page and INK_FAINT is the colour of small print nobody reads.
-		# ONE literal, not two joined with "+". "%" binds tighter than "+" in
-		# GDScript, so a split string formats only its second half -- which has
-		# no placeholders in it, and the whole expression raises.
-		var season := _popup_row_label(
-			"Ends in %dd %dh \u2014 the album resets and every card clears.  Claim your sets before then."
-			% [int(left / 86400.0), int(fmod(left, 86400.0) / 3600.0)], UI.F_TINY)
-		season.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		season.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		# ONE LINE IN ONE INK, not a second line in a warning colour.
-		#
-		# The first cut printed the consequence underneath in CORAL_HI, which is
-		# a FILL and not an ink: lagoon.gd's table is explicit that the ladder is
-		# three inks and that a fourth, paler or warmer, cannot be made to clear
-		# AA on the tinted stock the cards in this game are actually printed on.
-		# On this album's pale wash it rendered as a smudge along the bottom rule
-		# -- which is a worse answer to "what happens to my cards" than saying
-		# nothing, because it looks like something that was not meant to be read.
-		#
-		# So the fact joins the sentence that was already there. It is the same
-		# errand -- when the season ends and what that costs -- and one wrapped
-		# line at the same weight is how the rest of this card talks.
-		season.add_theme_color_override("font_color", Lagoon.INK_FAINT)
-		col.add_child(season)
-
-	if col_mega_claimed:
-		var done := _popup_row_label("GRAND  PRIZE  CLAIMED  \u2713", UI.F_LABEL)
-		done.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		done.add_theme_color_override("font_color", Lagoon.KELP_LO)
-		col.add_child(done)
-	elif claimed_n == CV.COLLECTIONS.size():
+	# The claim is the one other thing allowed up here, and only in the single
+	# state where this stops being a progress report and becomes a button.
+	if done and not col_mega_claimed:
 		var mega := Button.new()
 		mega.text = "CLAIM  GRAND  PRIZE!"
 		mega.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
@@ -17053,79 +18389,20 @@ func _album_card(vb: VBoxContainer) -> void:
 		FX.press_feedback(mega)
 		FX.pulse_forever(mega, 1.04, 1.0)
 		mega.pressed.connect(_claim_mega)
-		col.add_child(mega)
-
-# The three hardest sets, as the chase.
-#
-# Hardest means rarest drop, which is `weight` ascending -- the same number the
-# reel uses to decide which set a card comes from, so this cannot drift from
-# what the game actually makes hard. Each shows its own progress and what it
-# pays, because "nine cards away from 800 spins" is a reason to keep spinning
-# and "Night Market 0/9" on a tile in the grid below is not.
-func _album_chase(col: VBoxContainer) -> void:
-	var by_weight := CV.COLLECTIONS.duplicate()
-	by_weight.sort_custom(func(a, b) -> bool:
-		return int((a as Dictionary)["weight"]) < int((b as Dictionary)["weight"]))
-
-	var head := Lagoon.label("TOP  COLLECTIBLES", UI.F_TINY, Lagoon.INK_MUTE, true)
-	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	col.add_child(head)
-
-	var strip := HBoxContainer.new()
-	strip.alignment = BoxContainer.ALIGNMENT_CENTER
-	strip.add_theme_constant_override("separation", 14)
-	col.add_child(strip)
-
-	for i in mini(3, by_weight.size()):
-		var c: Dictionary = by_weight[i]
-		var items: Array = c["items"]
-		var owned := _collection_owned_count(c)
-
-		var cell := VBoxContainer.new()
-		cell.alignment = BoxContainer.ALIGNMENT_CENTER
-		cell.add_theme_constant_override("separation", 3)
-		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		strip.add_child(cell)
-
-		# The set's own rarest card is its face -- the last item, which is the
-		# five-star one in every collection in CV. A set is remembered by its
-		# chase card, not by its icon.
-		var face := Lagoon.token(String((items[items.size() - 1] as Array)[0]), 66.0,
-			Lagoon.BRASS if owned >= items.size() else Lagoon.HULL)
-		face.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-		cell.add_child(face)
-
-		var cnt := Lagoon.label("%d/%d" % [owned, items.size()], UI.F_TINY,
-			Lagoon.INK, true)
-		cnt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		cell.add_child(cnt)
-
-		var pay := _reward_chip("bolt", _fmt_compact(int(c["reward_spins"])), Lagoon.INK_MUTE)
-		pay.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-		cell.add_child(pay)
+		vb.add_child(mega)
 
 func _fill_collection_shelf(vb: VBoxContainer) -> void:
-	# Seeing the shelf IS noticing, so this is where the badge goes out -- not
-	# on the banner being shown, which fires on a page the player may never have
-	# reached, and not on the nav tap, which also lands on the card detail.
+	# Seeing the shelf IS noticing, so this is where the season badge goes out --
+	# not on the banner being shown, which fires on a page the player may never
+	# have reached, and not on the nav tap, which also lands on the card detail.
+	# It is still spent here now that the ribbon it used to introduce has gone
+	# with the rest of the header: a Cards tab still wearing its dot after the
+	# player has stood on the page is a dot that stops meaning anything.
 	if col_season_new:
 		col_season_new = false
 		_update_badges()
 		_save_game()
-		_season_ribbon(vb)
-	if _col_break():
-		_season_break_card(vb)
-	# The name goes in the card's band, not in ink at the top of its body. A
-	# title set in dark ink is a bold first line; a title in white on a band of
-	# colour is a label on an object, and it is what lets the page say what each
-	# card is for from arm's length.
-	_album_card(vb)
-
-	# The teaching line, for a player who has not seen a duplicate yet. Once
-	# they have spares the dock button's badge says it in one number and this
-	# sentence is in the way.
-	if _dupe_card_count() == 0:
-		vb.add_child(_page_note("Every spin has a chance to drop a card, and every new one is worth \u2605 stars!", UI.F_CAPTION))
+	_grand_prize_bar(vb)
 	var grid := GridContainer.new()
 	# TWO. See the note on _collection_tile: three columns is what held every
 	# card face at 76px, and a 76px picture cannot be fixed with contrast.
@@ -17728,6 +19005,30 @@ func _fill_collection_detail(vb: VBoxContainer, c: Dictionary) -> void:
 		left.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		left.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 		head.add_child(left)
+
+	# WHAT "RESETS" MEANS. This line lived on the album card at the top of the
+	# shelf until that card was removed, and it cannot simply go with it:
+	# PrimeTestLab report 6935 (S-03) is that the countdown said the album
+	# resets and stopped there, so "resets" could equally have meant the shelf
+	# is re-sorted or the prizes come round again. It is neither --
+	# _ensure_collections() empties col_owned, col_dupes and col_claimed the
+	# moment the season index moves, cards bought in a pack included, which
+	# terms.html has said since 25 August and no screen in the game did.
+	#
+	# So it moves one screen in, onto the set the player is actually working
+	# on, which is a better place for it than a header they scroll past: the
+	# player closest to finishing a set is the one the word frightens most and
+	# the one who most needs to know. INK_FAINT at F_TINY -- it is a fact to be
+	# found, not a warning shouted at somebody mid-collection.
+	if not _col_break():
+		var secs_left := maxf(0.0, col_deadline - _now())
+		var season := _popup_row_label(
+			"Season ends in %dd %dh \u2014 the album resets and every card clears.  Claim your sets before then."
+			% [int(secs_left / 86400.0), int(fmod(secs_left, 86400.0) / 3600.0)], UI.F_TINY)
+		season.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		season.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		season.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+		head.add_child(season)
 
 	var card := _page_card(vb)
 	var grid := GridContainer.new()
@@ -20555,9 +21856,16 @@ func _ranks_row(r: Dictionary, place: int) -> Control:
 	row.add_child(flag)
 	return plate
 
-func _confirm_report(player_id: String, who: String) -> void:
-	var box := _open_popup("Report name")
-	var body := _popup_row_label("Report \"%s\" and stop meeting them? They won't be offered as a rival again." % who, UI.F_CAPTION)
+# `what` is "name" or "message". The dialog used to be written for a name only,
+# because a name was the only thing there was to report; a chat line reported
+# with "Report this name?" over it reads as the wrong button having been pressed.
+func _confirm_report(player_id: String, who: String, what := "name") -> void:
+	var is_msg := what == "message"
+	var box := _open_popup("Report message" if is_msg else "Report name")
+	var text := ("Report this message from \"%s\"? It goes to the developer, and you and %s stop seeing each other in chat and in raids." % [who, who]) \
+		if is_msg else \
+		("Report \"%s\" and stop meeting them? They won't be offered as a rival again." % who)
+	var body := _popup_row_label(text, UI.F_CAPTION)
 	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	body.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	box.add_child(body)
@@ -20568,11 +21876,19 @@ func _confirm_report(player_id: String, who: String) -> void:
 	FX.press_feedback(go)
 	go.pressed.connect(func() -> void:
 		go.disabled = true
-		Cloud.report_player(player_id, "name", func(ok: bool) -> void:
+		Cloud.report_player(player_id, what, func(ok: bool) -> void:
 			_close_popup()
-			_banner("Reported. You won't be matched with them again."
+			_banner(("Reported. You won't see each other again." if is_msg
+					else "Reported. You won't be matched with them again.")
 					if ok else "Couldn't send that report — try again.",
 					Color(0.5, 0.85, 0.6) if ok else Color(0.95, 0.4, 0.4))
+			# The block is applied server-side by report_player, and clan_chat
+			# filters on it -- but only on the NEXT read. Asking for one now is
+			# what makes "you stop seeing them" true in the moment the player
+			# was promised it, rather than up to eight seconds later.
+			if ok and is_msg:
+				_clan_chat_sig = ""
+				_refresh_clan_chat()
 		)
 	)
 	box.add_child(go)
@@ -24482,7 +25798,9 @@ func _save_dict() -> Dictionary:
 		"revenge": revenge_pending,
 		"npcs": npcs,
 		"daily_last": daily_last,
+		"chat_rules_ok": chat_rules_ok,
 		"applied_gifts": applied_gifts,
+		"applied_spin_gifts": applied_spin_gifts,
 		"grudges": grudges,
 		"streak_days": streak_days,
 		"intro_spins": intro_spins,
@@ -24800,6 +26118,15 @@ func _load_game() -> void:
 	# would take all three down on the next launch.
 	# str() on every entry, like applied_raids: these are compared with has()
 	# against ids that arrive as strings off the wire.
+	chat_rules_ok = bool(data.get("chat_rules_ok", false))
+	applied_spin_gifts = []
+	var _asg = data.get("applied_spin_gifts", [])
+	if typeof(_asg) == TYPE_ARRAY:
+		for _a in _asg:
+			applied_spin_gifts.append(str(_a))
+		if applied_spin_gifts.size() > APPLIED_GIFTS_KEEP:
+			applied_spin_gifts = applied_spin_gifts.slice(
+				applied_spin_gifts.size() - APPLIED_GIFTS_KEEP)
 	applied_gifts = []
 	var _ag = data.get("applied_gifts", [])
 	if typeof(_ag) == TYPE_ARRAY:

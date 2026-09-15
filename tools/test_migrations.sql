@@ -1314,3 +1314,318 @@ begin
     raise notice 'CLAN STAR TESTS PASSED';
 end;
 $$;
+
+-- =============================================================================
+--  The clan chat, the two asks, and the bar a clan can put on its door
+-- =============================================================================
+--
+-- Every claim here is one the client draws a control from, so a failure is a
+-- control that lies: a bar that fills past its ten seats, an ask that can be
+-- made twice inside its five hours, a card ask that routes around the daily
+-- cap send_card enforces, or a threshold an older build can walk past.
+do $$
+declare
+    u1 uuid := gen_random_uuid(); u2 uuid := gen_random_uuid();
+    u3 uuid := gen_random_uuid(); u4 uuid := gen_random_uuid();
+    a uuid; b uuid; c uuid; d uuid;
+    clan_ uuid;
+    r jsonb; chat jsonb; line jsonb;
+    msg uuid; n integer;
+begin
+    insert into auth.users (id) values (u1), (u2), (u3), (u4);
+    perform pg_temp.be(u1);
+    a := (public.claim_player('{}'::jsonb, 'Chatter One', '🐙', 400, 9, 0, 0, '{0,0,0,0,0}')->'player'->>'id')::uuid;
+    perform pg_temp.be(u2);
+    b := (public.claim_player('{}'::jsonb, 'Chatter Two', '🦈', 300, 8, 0, 0, '{0,0,0,0,0}')->'player'->>'id')::uuid;
+    perform pg_temp.be(u3);
+    c := (public.claim_player('{}'::jsonb, 'Chatter Three', '🐚', 200, 7, 0, 0, '{0,0,0,0,0}')->'player'->>'id')::uuid;
+    perform pg_temp.be(u4);
+    d := (public.claim_player('{}'::jsonb, 'Lowly Four', '🪵', 5, 1, 0, 0, '{0,0,0,0,0}')->'player'->>'id')::uuid;
+
+    perform pg_temp.be(u1);
+    r := public.create_clan('Chatterbox Crew', '🗣');
+    clan_ := (r->'clan'->>'id')::uuid;
+    perform pg_temp.ck('a founder gets a clan to talk in', (r->>'ok')::boolean, r::text);
+    perform pg_temp.be(u2);
+    perform public.join_clan(clan_);
+    perform pg_temp.be(u3);
+    perform public.join_clan(clan_);
+
+    -- --- the star threshold --------------------------------------------------
+    perform pg_temp.be(u1);
+    r := public.set_clan_min_stars(250);
+    perform pg_temp.ck('the founder can put a bar on the door', (r->>'ok')::boolean, r::text);
+    perform pg_temp.ck('and the bar goes out with the clan',
+        (r->'clan'->>'min_stars')::int = 250, r::text);
+    perform pg_temp.ck('the browse list carries it too, so it can be seen from outside',
+        (select (e->>'min_stars')::int from jsonb_array_elements(public.clan_list(50)) e
+          where (e->>'id')::uuid = clan_) = 250);
+
+    perform pg_temp.be(u4);
+    r := public.join_clan(clan_);
+    perform pg_temp.ck('a player under the bar is refused, and told the number',
+        (r->>'ok')::boolean = false and r->>'reason' = 'stars' and (r->>'need')::int = 250,
+        r::text);
+    -- An open clan does not take requests at all, so the knock is tested
+    -- against a closed one -- which is the only door that has a queue.
+    perform pg_temp.be(u1);
+    perform public.set_clan_open(false);
+    perform pg_temp.be(u4);
+    r := public.request_join_clan(clan_);
+    perform pg_temp.ck('and cannot knock either -- no waiting for an answer that cannot come',
+        (r->>'ok')::boolean = false and r->>'reason' = 'stars', r::text);
+    perform pg_temp.be(u1);
+    perform public.set_clan_open(true);
+
+    -- Raising the bar over somebody already waiting must clear them out, or the
+    -- owner's badge stays lit for an approval that can no longer be granted.
+    perform pg_temp.be(u1);
+    perform public.set_clan_min_stars(0);
+    perform public.set_clan_open(false);
+    perform pg_temp.be(u4);
+    perform public.request_join_clan(clan_);
+    perform pg_temp.be(u1);
+    perform public.set_clan_min_stars(250);
+    perform pg_temp.ck('raising the bar answers the requests standing under it',
+        not exists (select 1 from public.clan_requests
+                     where clan_id = clan_ and player_id = d));
+    perform public.set_clan_min_stars(0);
+    perform public.set_clan_open(true);
+
+    -- An invitation is an exception the clan chose to make, so it outranks the
+    -- bar. This is the rule accept_clan_invite is deliberately NOT gated on.
+    perform pg_temp.be(u1);
+    perform public.set_clan_min_stars(250);
+    r := public.invite_to_clan(d);
+    perform pg_temp.ck('a member may still invite somebody under the bar', (r->>'ok')::boolean, r::text);
+    perform pg_temp.be(u4);
+    r := public.accept_clan_invite(
+        (select id from public.clan_invites where to_player = d limit 1));
+    perform pg_temp.ck('and being invited walks past the bar, the way it walks past a closed door',
+        (r->>'ok')::boolean, r::text);
+    perform public.leave_clan();
+    perform pg_temp.be(u1);
+    perform public.set_clan_min_stars(0);
+
+    -- --- finding a clan by name ---------------------------------------------
+    perform pg_temp.be(u4);
+    perform pg_temp.ck('find_clans matches a prefix',
+        (select count(*) from jsonb_array_elements(public.find_clans('Chatter')) e
+          where (e->>'id')::uuid = clan_) = 1);
+    perform pg_temp.ck('and it is a PREFIX -- the middle of a name does not match',
+        jsonb_array_length(public.find_clans('box Crew')) = 0);
+    perform pg_temp.ck('one letter answers nothing rather than the whole table',
+        jsonb_array_length(public.find_clans('C')) = 0);
+    perform pg_temp.ck('a wildcard cannot turn it into a scan of every clan',
+        jsonb_array_length(public.find_clans('%%')) = 0,
+        public.find_clans('%%')::text);
+
+    -- --- saying something ----------------------------------------------------
+    perform pg_temp.be(u1);
+    r := public.say_clan('  hello   crew  ');
+    perform pg_temp.ck('a member can say something', (r->>'ok')::boolean, r::text);
+    perform pg_temp.ck('and the whitespace is collapsed on the way in',
+        (select body from public.clan_messages where id = (r->>'id')::uuid) = 'hello crew');
+    r := public.say_clan('again so soon');
+    perform pg_temp.ck('two messages inside two seconds is refused',
+        (r->>'ok')::boolean = false and r->>'reason' = 'too_fast', r::text);
+    update public.clan_messages set created_at = created_at - interval '1 minute'
+     where player_id = a;
+    r := public.say_clan('you fucking muppet');
+    perform pg_temp.ck('the word filter REFUSES rather than masks',
+        (r->>'ok')::boolean = false and r->>'reason' = 'language', r::text);
+    r := public.say_clan(repeat('x', 200));
+    perform pg_temp.ck('and a message longer than the box is refused',
+        (r->>'ok')::boolean = false and r->>'reason' = 'long', r::text);
+    perform pg_temp.be(u4);
+    r := public.say_clan('let me in');
+    perform pg_temp.ck('somebody with no clan has nowhere to say it',
+        (r->>'ok')::boolean = false and r->>'reason' = 'no_clan', r::text);
+
+    -- --- asking for spins ----------------------------------------------------
+    perform pg_temp.be(u1);
+    r := public.ask_clan_help('spins');
+    perform pg_temp.ck('a member can ask the clan for spins', (r->>'ok')::boolean, r::text);
+    msg := (r->>'id')::uuid;
+    r := public.ask_clan_help('spins');
+    perform pg_temp.ck('and cannot ask again inside the five hours',
+        (r->>'ok')::boolean = false and r->>'reason' = 'too_soon'
+        and (r->>'wait')::int between 1 and 18000, r::text);
+    -- Per KIND, not one clock for both: asking for a card must not cost the
+    -- player their spin ask for five hours.
+    r := public.ask_clan_help('cards', 'pirates', 3, 2);
+    perform pg_temp.ck('the card clock is its own clock', (r->>'ok')::boolean, r::text);
+    r := public.ask_clan_help('cards', 'pirates', 4, 5);
+    perform pg_temp.ck('a gold card cannot be asked for at all',
+        (r->>'ok')::boolean = false and r->>'reason' = 'stars', r::text);
+    r := public.ask_clan_help('cards', 'pirates', 4, 4);
+    perform pg_temp.ck('and neither can a four-star -- Guy named one, two and three',
+        (r->>'ok')::boolean = false and r->>'reason' = 'stars', r::text);
+
+    -- --- answering one -------------------------------------------------------
+    perform pg_temp.be(u1);
+    r := public.donate_clan_help(msg);
+    perform pg_temp.ck('nobody fills their own bar',
+        (r->>'ok')::boolean = false and r->>'reason' = 'self', r::text);
+    perform pg_temp.be(u2);
+    r := public.donate_clan_help(msg);
+    perform pg_temp.ck('a clanmate drops spins in', (r->>'ok')::boolean, r::text);
+    perform pg_temp.ck('three of them, and one of ten seats is taken',
+        (r->>'spins')::int = 3 and (r->>'filled')::int = 1 and (r->>'cap')::int = 10,
+        r::text);
+    r := public.donate_clan_help(msg);
+    perform pg_temp.ck('and cannot take a second seat',
+        (r->>'ok')::boolean = false and r->>'reason' = 'already', r::text);
+    perform pg_temp.be(u4);
+    r := public.donate_clan_help(msg);
+    perform pg_temp.ck('somebody outside the clan cannot reach the bar at all',
+        (r->>'ok')::boolean = false and r->>'reason' = 'no_clan', r::text);
+
+    -- THE SPINS ARE HELD FOR THE ASKER, not added to a column on their row.
+    -- The counter moves on the device it belongs to, when the thing lands.
+    perform pg_temp.be(u1);
+    r := public.unseen_spin_gifts();
+    perform pg_temp.ck('the spins are waiting for the asker on their next launch',
+        jsonb_array_length(r) = 1 and (r->0->>'spins')::int = 3, r::text);
+    perform pg_temp.ck('and they know who gave them', r->0->'by'->>'name' = 'Chatter Two', r::text);
+    perform public.ack_spin_gifts(array[(r->0->>'id')::uuid]);
+    perform pg_temp.ck('an acked gift is not handed over twice',
+        jsonb_array_length(public.unseen_spin_gifts()) = 0);
+
+    -- The ten seats, filled by force. Every donor is a real clan member, so the
+    -- roster is stretched to hold them.
+    perform pg_temp.be(u1);
+    update public.clan_messages set created_at = now() where id = msg;
+    declare uu uuid; begin
+        for n in 1..12 loop
+            uu := gen_random_uuid();
+            insert into auth.users (id) values (uu);
+            perform pg_temp.be(uu);
+            perform public.claim_player('{}'::jsonb, 'Seat ' || n::text, '🙂',
+                                        10, 2, 0, 0, '{0,0,0,0,0}');
+            perform public.join_clan(clan_);
+            perform public.donate_clan_help(msg);
+        end loop;
+    end;
+    perform pg_temp.ck('the bar stops at exactly ten seats',
+        (select count(*) from public.clan_help where message_id = msg) = 10,
+        (select count(*)::text from public.clan_help where message_id = msg));
+    perform pg_temp.be(u3);
+    r := public.donate_clan_help(msg);
+    perform pg_temp.ck('and the eleventh is turned away',
+        (r->>'ok')::boolean = false and r->>'reason' = 'filled', r::text);
+
+    -- --- an ask goes quiet when its clock runs out ---------------------------
+    perform pg_temp.be(u2);
+    r := public.ask_clan_help('spins');
+    msg := (r->>'id')::uuid;
+    update public.clan_messages set created_at = now() - interval '6 hours' where id = msg;
+    perform pg_temp.be(u3);
+    r := public.donate_clan_help(msg);
+    perform pg_temp.ck('an ask older than its own five hours can no longer be filled',
+        (r->>'ok')::boolean = false and r->>'reason' = 'expired', r::text);
+
+    -- --- a card ask pays out of the same purse send_card does ----------------
+    perform pg_temp.be(u2);
+    r := public.ask_clan_help('cards', 'pirates', 3, 2);
+    msg := (r->>'id')::uuid;
+    perform pg_temp.be(u3);
+    r := public.donate_clan_help(msg);
+    perform pg_temp.ck('a clanmate can answer a card ask', (r->>'ok')::boolean, r::text);
+    perform pg_temp.ck('and the card really moves, through card_gifts',
+        exists (select 1 from public.card_gifts
+                 where from_player = c and to_player = b
+                   and set_id = 'pirates' and card_idx = 3 and stars = 2));
+    -- The receive cap is what stops a clan farming one player's collection by
+    -- taking it in turns to answer their asks.
+    insert into public.card_gifts (from_player, to_player, set_id, card_idx, stars)
+    select a, b, 'pirates', 9, 1
+      from generate_series(1, public.gift_receive_cap());
+    perform pg_temp.be(u1);
+    r := public.donate_clan_help(msg);
+    perform pg_temp.ck('an ask cannot walk past the asker''s own daily receive cap',
+        (r->>'ok')::boolean = false and r->>'reason' = 'their_cap', r::text);
+    delete from public.card_gifts where to_player = b and card_idx = 9;
+
+    -- --- reading it ----------------------------------------------------------
+    perform pg_temp.be(u1);
+    chat := public.clan_chat(60);
+    perform pg_temp.ck('the chat reads back, oldest first',
+        jsonb_array_length(chat) > 3
+        and (chat->0->>'at')::numeric <= (chat->-1->>'at')::numeric, chat::text);
+    perform pg_temp.ck('and it knows which lines are mine',
+        (select bool_or((e->>'mine')::boolean) from jsonb_array_elements(chat) e));
+    -- The one that was actually filled, not merely the first spin ask in the
+    -- scroll -- there are two by now and the other is the expired one.
+    line := (select e from jsonb_array_elements(chat) e where e->>'kind' = 'spins'
+              order by (e->>'filled')::int desc limit 1);
+    perform pg_temp.ck('a spin ask comes back with its bar on it',
+        (line->>'filled')::int > 0 and (line->>'cap')::int = 10, line::text);
+    perform pg_temp.ck('a filled ask is marked closed, by the server rather than by a phone clock',
+        (select bool_or((e->>'closed')::boolean) from jsonb_array_elements(chat) e
+          where (e->>'filled')::int >= 10));
+    perform pg_temp.ck('and the card ask carries the card it is asking for',
+        (select e->>'set' = 'pirates' and (e->>'stars')::int between 1 and 3
+           from jsonb_array_elements(chat) e where e->>'kind' = 'cards' limit 1));
+
+    -- BLOCKING IS THE HALF GUIDELINE 1.2 ACTUALLY TURNS ON. Somebody a player
+    -- blocked does not get to talk to them by joining their clan.
+    -- Chatter Three has only ever donated so far, and a donation is not a line.
+    perform pg_temp.be(u3);
+    perform public.say_clan('anyone seen the kraken');
+    perform pg_temp.be(u1);
+    n := (select count(*) from jsonb_array_elements(public.clan_chat(60)) e
+           where (e->'by'->>'id')::uuid = c);
+    perform pg_temp.ck('before blocking, that clanmate is in the scroll', n > 0);
+    perform public.block_player(c);
+    perform pg_temp.ck('after blocking, every line of theirs is gone from it',
+        (select count(*) from jsonb_array_elements(public.clan_chat(60)) e
+          where (e->'by'->>'id')::uuid = c) = 0);
+    -- And the other way round, so a block cannot be worked around by being the
+    -- one who did the blocking.
+    perform pg_temp.be(u3);
+    perform pg_temp.ck('and it works in both directions',
+        (select count(*) from jsonb_array_elements(public.clan_chat(60)) e
+          where (e->'by'->>'id')::uuid = a) = 0);
+    delete from public.blocks where blocker = a and blocked = c;
+
+    -- --- the two clocks the composer draws its buttons from ------------------
+    perform pg_temp.be(u1);
+    r := public.clan_ask_state();
+    perform pg_temp.ck('the composer is told how long until it may ask again',
+        (r->>'spins_wait')::int > 0 and (r->>'give')::int = 3 and (r->>'seats')::int = 10,
+        r::text);
+    perform pg_temp.be(u4);
+    r := public.clan_ask_state();
+    perform pg_temp.ck('and somebody who has never asked may ask at once',
+        (r->>'spins_wait')::int = 0 and (r->>'cards_wait')::int = 0, r::text);
+
+    -- --- the housekeeping ----------------------------------------------------
+    perform pg_temp.be(u1);
+    -- The whole scroll pushed past the keep window, asks included: the sweep is
+    -- by age and does not care what kind a line is.
+    update public.clan_messages set created_at = now() - interval '9 days'
+     where clan_id = clan_;
+    n := (select count(*) from public.clan_messages where clan_id = clan_);
+    perform public.say_clan('still here');
+    perform pg_temp.ck('a new message sweeps the ones older than three days',
+        (select count(*) from public.clan_messages
+          where clan_id = clan_ and created_at < now() - interval '3 days') = 0,
+        format('%s rows before', n));
+
+    -- --- privileges ----------------------------------------------------------
+    perform pg_temp.ck('the chat is callable by a signed-in player',
+        has_function_privilege('authenticated', 'public.clan_chat(integer)', 'execute'));
+    perform pg_temp.ck('and not by anon',
+        not has_function_privilege('anon', 'public.say_clan(text)', 'execute'));
+    -- Recreating a function resets its privileges. join_clan and clan_view were
+    -- both replaced by this migration; a grant block that only covered what it
+    -- invented would leave the clan page revoked.
+    perform pg_temp.ck('join_clan survived being replaced with its grant intact',
+        has_function_privilege('authenticated', 'public.join_clan(uuid)', 'execute'));
+    perform pg_temp.ck('and so did clan_view',
+        has_function_privilege('authenticated', 'public.clan_view(uuid)', 'execute'));
+
+    raise notice 'CLAN CHAT TESTS PASSED';
+end;
+$$;
