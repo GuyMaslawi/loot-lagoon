@@ -996,6 +996,94 @@ func _t_collections() -> void:
 	m._close_popup(true)
 	await get_tree().process_frame
 
+	# THE PILE IS PART OF THE PRICE. The melt is not a button any more -- the
+	# balance counts the spares and opening a box takes exactly what it needs
+	# off them, so every one of these is a rule the page's arithmetic now rests
+	# on rather than a convenience.
+	_fresh_cards()
+	m.stars = 0
+	var pile := 0
+	for c in CV.COLLECTIONS:
+		var its: Array = c["items"]
+		for i in its.size():
+			m.col_owned[c["id"]][i] = true
+			for k in 4:
+				m._add_dupe(c["id"], i)
+			pile += 4 * int(its[i][2])
+	_chk("the spendable balance is the wallet plus the pile",
+		m._spendable_stars() == pile, "%d vs %d" % [m._spendable_stars(), pile])
+	var vault: Dictionary = CV.CARD_BOXES[CV.CARD_BOXES.size() - 1]
+	var vault_cost := int(vault["stars"])
+	var cards_before: int = m._dupe_card_count()
+	var rank_at: int = m.rank_stars
+	m._open_card_box(vault)
+	await get_tree().process_frame
+	m._close_popup(true)
+	await get_tree().process_frame
+	_chk("a box opens on spares alone, with no wallet behind them",
+		m.stars >= 0 and m._dupe_card_count() < cards_before,
+		"%d stars, %d spares left" % [m.stars, m._dupe_card_count()])
+	_chk("melting to pay for it never touches the rank",
+		m.rank_stars >= rank_at, "%d -> %d" % [rank_at, m.rank_stars])
+	# Cheapest first is what keeps a rare spare on the shelf for the clanmate
+	# asking for it. Tested on the melt itself rather than through a box,
+	# because a box also HANDS BACK spares -- every card it draws is one the
+	# player owns here -- and a pile that grew during the test cannot say which
+	# end of it was eaten.
+	_fresh_cards()
+	m.stars = 0
+	var dearest := {"set": "", "idx": -1, "stars": 0}
+	var cheapest := {"set": "", "idx": -1, "stars": 99}
+	for c in CV.COLLECTIONS:
+		var its2: Array = c["items"]
+		for i in its2.size():
+			m.col_owned[c["id"]][i] = true
+			for k in 4:
+				m._add_dupe(c["id"], i)
+			if int(its2[i][2]) > int(dearest["stars"]):
+				dearest = {"set": String(c["id"]), "idx": i, "stars": int(its2[i][2])}
+			if int(its2[i][2]) < int(cheapest["stars"]):
+				cheapest = {"set": String(c["id"]), "idx": i, "stars": int(its2[i][2])}
+	var want := int(CV.CARD_BOXES[0]["stars"])
+	var took: int = m._melt_for(want)
+	_chk("melting for a price raises at least that price",
+		m.stars >= want and took > 0, "%d stars off %d cards" % [m.stars, took])
+	_chk("...and stops there rather than melting the pile",
+		m.stars < want + CV.MAX_STAR, str(m.stars))
+	_chk("...taking the commonest spares, not the rarest",
+		m._dupe_count(String(dearest["set"]), int(dearest["idx"])) == 4
+		and m._dupe_count(String(cheapest["set"]), int(cheapest["idx"])) < 4,
+		"%d left of a %d-star, %d of a %d-star" % [
+			m._dupe_count(String(dearest["set"]), int(dearest["idx"])), int(dearest["stars"]),
+			m._dupe_count(String(cheapest["set"]), int(cheapest["idx"])), int(cheapest["stars"])])
+	_chk("melting for nothing melts nothing", m._melt_for(0) == 0 and m._melt_for(-5) == 0)
+
+	# The shortfall is the shortfall. Stars already banked are spent first, so
+	# a player holding the price in the wallet keeps every card they have.
+	_fresh_cards()
+	m.stars = 500
+	for c in CV.COLLECTIONS:
+		for i in (c["items"] as Array).size():
+			m.col_owned[c["id"]][i] = true
+			m._add_dupe(c["id"], i)
+	var held_before: int = m._dupe_card_count()
+	m._open_card_box(CV.CARD_BOXES[0])
+	await get_tree().process_frame
+	m._close_popup(true)
+	await get_tree().process_frame
+	_chk("a wallet that covers the price melts nothing",
+		m._dupe_card_count() >= held_before, "%d -> %d" % [held_before, m._dupe_card_count()])
+
+	# And nothing at all can be opened on an empty page.
+	_fresh_cards()
+	m.stars = 0
+	var broke := true
+	for box in CV.CARD_BOXES:
+		m._open_card_box(box)
+		if m.stars != 0:
+			broke = false
+	_chk("with no wallet and no pile, no box opens", broke and m.stars == 0, str(m.stars))
+
 # =============================================================================
 #  12. the daily bonus and the free gift
 # =============================================================================

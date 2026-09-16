@@ -99,11 +99,11 @@ func _ready() -> void:
 			"filled": 10, "cap": 10, "gave": false, "closed": true, "by": roster[0]},
 	]
 	m._clan_fake_chat = m.clan_chat_rows
-	# THE COMPOSER IS BEHIND THE GUIDELINE-1.2 GATE UNTIL THE RULES ARE
-	# ACCEPTED, and the gate is one short card -- so a harness on a fresh save
-	# measures that instead of the field, the SEND and the two ask buttons,
-	# which are the widest row the page has. Both states are measured: the page
-	# with the composer here, and the gate itself in the modal sweep below.
+	# THE GATE IN FRONT OF THE COMPOSER IS GONE (2026-09-16) and this bool is
+	# now only the record that the rules were accepted. It is still set,
+	# because a saved game that has posted before is the ordinary case and
+	# because nothing should depend on it: if a measurement here ever moves
+	# when this line changes, something has grown a second gate.
 	m.chat_rules_ok = true
 	m._clan_fake_roster = roster
 	# A five-digit wait, which is the longest string the ask buttons ever wear.

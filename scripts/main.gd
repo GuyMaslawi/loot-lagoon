@@ -930,10 +930,6 @@ var col_deadline := 0.0
 # The Cards tab is two screens behind one nav button: a shelf of six sets, and
 # the set you tapped. Empty means the shelf.
 var col_open := ""
-# The spendable-star figure on the Card Boxes page. Melting flies stars into
-# this rather than into the top bar, which holds rank and does not move.
-var _star_bank_label: Label
-
 # How many failed saves in a row before the player is told.
 # A rival's purse, at the very most. Everything about a raid payout is derived
 # from it, so an unbounded one is an unbounded payout.
@@ -1481,6 +1477,10 @@ func _shot_clan_details() -> void:
 	_fake_clan()
 	_open_clan_details()
 
+func _shot_clan_league() -> void:
+	_fake_clan()
+	_open_clan_league()
+
 func _shot_chat_rules() -> void:
 	_fake_clan()
 	_open_chat_rules()
@@ -1554,10 +1554,11 @@ func _fake_clan() -> void:
 	]
 	clan_chat_rows = _clan_fake_chat
 	clan_ask = {"spins_wait": 13380, "cards_wait": 0, "give": 3, "seats": 10}
-	# The composer, not the guideline-1.2 gate. DEMO_CLAN_RULES=1 leaves the
-	# gate up instead, which is the state every player meets first and the one
-	# a reviewer is looking for.
-	chat_rules_ok = not OS.has_environment("DEMO_CLAN_RULES")
+	# THE GATE IS GONE (2026-09-16) and this bool is now only the record that
+	# the rules have been accepted -- nothing on the page reads it, so nothing
+	# on the page changes with it. SHOT=popup:rules still photographs the rules
+	# sheet itself, which is what a reviewer is looking for.
+	chat_rules_ok = true
 	_clan_fake_roster = roster
 	my_clan["min_stars"] = 2000
 	my_clan["max"] = CLAN_MAX_MEMBERS
@@ -1879,6 +1880,7 @@ func _capture_page(key: String) -> void:
 			# The three dialogs the 2026-09-14 clan pass added. All of them
 			# need the faked session for the same reason the roster does.
 			"details": _shot_clan_details()
+			"league":  _shot_clan_league()
 			"rules":   _shot_chat_rules()
 			"card":    _shot_clan_card()
 			"askcard": _shot_ask_card()
@@ -3519,6 +3521,16 @@ func _shop_anchor_y(anchor: String) -> int:
 # only once it has clearly gone sideways.
 
 const SWIPE_SLOP := 20.0       # travel before a drag has to declare an axis
+# How much more sideways than upright a drag has to be before the page takes
+# it off the list under it. IT USED TO BE A TIE-BREAK -- anything wider than
+# it was tall -- and a claimed gesture is swallowed whole: _drop_press has
+# already taken the press away from the scroll, and every event until the
+# finger lifts is handled in here. So a 21px diagonal off a thumb that meant
+# to scroll killed the scroll AND, if the throw then fell short of a page
+# turn, did nothing else either. That is "sometimes the scrolling just
+# doesn't work" (Guy, 2026-09-16). A page turn is a deliberate sideways
+# throw and can be asked for clearly; a scroll cannot afford to be stolen.
+const SWIPE_BIAS := 1.7
 const SWIPE_FRACTION := 0.16   # of the screen's width -- turns the page on distance
 const SWIPE_FLICK := 520.0     # px/s -- turns it on speed, however short the throw
 const SCROLL_SLOP := 16.0      # a list's own deadzone; see _make_page
@@ -3534,17 +3546,53 @@ var _swipe_home: Control
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
+		if event.pressed:
+			_drop_keyboard(event.position)
 		_swipe_touch(event)
 		return
 	if event is InputEventScreenDrag:
 		_swipe_drag(event)
 		return
+	if event is InputEventMouseButton and event.pressed:
+		_drop_keyboard(event.position)
 	# Every touch is shadowed by an emulated mouse event, and that is the one a
 	# Button actually listens to. Once a swipe owns the gesture those have to go
 	# too, or the button the finger started on gets its release and fires as the
 	# page is already sliding away.
 	if _swipe_axis == 1 and (event is InputEventMouseButton or event is InputEventMouseMotion):
 		get_viewport().set_input_as_handled()
+
+# GETTING OUT OF A TEXT FIELD, WHICH IS NOT SOMETHING THE ENGINE DOES.
+#
+# Guy, 2026-09-16: "a strange bug -- from the moment I put focus on the field
+# I cannot get out of it at all." That is the engine's actual behaviour and
+# not a bug in this game: a LineEdit holds focus until something else takes
+# it, and on these screens nothing can. Every button in the game is
+# FOCUS_NONE on purpose -- see Lagoon.button -- and tapping a label, a card or
+# the board behind them moves focus nowhere at all. So the virtual keyboard
+# stands over the bottom half of the screen for ever, covering the one control
+# it is in the way of.
+#
+# The fix is what every app on the phone does: a touch outside the field puts
+# it away. It runs in _input rather than _unhandled_input, and that is the
+# whole point -- a tap on a card is consumed by the card long before the
+# unhandled pass, so a handler down there would only ever see taps that landed
+# on bare board. NOTHING IS MARKED HANDLED: the tap still goes on to do
+# whatever it was for, including pressing SEND.
+func _drop_keyboard(at: Vector2) -> void:
+	var vp := get_viewport()
+	if vp == null:
+		return
+	var f := vp.gui_get_focus_owner()
+	if f == null or not (f is LineEdit):
+		return
+	var le: LineEdit = f
+	# Inside its own box is a caret being placed or a selection being dragged.
+	if le.get_global_rect().has_point(at):
+		return
+	# LineEdit hides the virtual keyboard itself on losing focus; there is
+	# nothing else to tell.
+	le.release_focus()
 
 func _swipe_touch(t: InputEventScreenTouch) -> void:
 	if t.pressed:
@@ -3577,9 +3625,10 @@ func _swipe_drag(d: InputEventScreenDrag) -> void:
 		var moved := d.position - _swipe_from
 		if moved.length() < SWIPE_SLOP:
 			return
-		if absf(moved.x) <= absf(moved.y):
-			# Up and down: this is a list being scrolled. Hand the whole gesture
-			# back and do not look at it again until the finger lifts.
+		if absf(moved.x) <= absf(moved.y) * SWIPE_BIAS:
+			# Up and down, or near enough: this is a list being scrolled. Hand the
+			# whole gesture back and do not look at it again until the finger
+			# lifts. See SWIPE_BIAS for why near enough counts.
 			_swipe_axis = -1
 			return
 		# Taken. Let go of whatever is holding the press first -- the order
@@ -5873,11 +5922,34 @@ func _open_popup(title: String, width := 580.0, scroll := false) -> VBoxContaine
 		# their minimum and huddle against the left edge.
 		vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		sc.add_child(vbox)
+		# RE-MEASURED WHENEVER THE CONTENT CHANGES, NOT ONCE AND FOR ALL.
+		#
+		# One deferred call measures a dialog that is not finished. Half the
+		# sheets in this game fill themselves from the server -- the clan card's
+		# roster, the league table, the invite search -- and every one of those
+		# lands long after the deferred call has taken the measurement of a sheet
+		# holding the word "Looking...". The well stayed pinned at its 360 floor
+		# and the thirty rows that arrived afterwards had nowhere to go: a dialog
+		# that is "very small" (Guy, 2026-09-16) with a scroll inside it that is
+		# mostly out of reach.
+		#
+		# AND THE DRAGS ARE LET THROUGH HERE TOO. _let_drags_through spells out
+		# why at length: a touch drag dies on the first MOUSE_FILTER_STOP control
+		# it meets, which on a sheet like this is whichever card the finger landed
+		# on, so the well never hears it and the only places the dialog scrolls
+		# from are the bare strips between its cards. Every page in the game has
+		# done this since the day it was written; no dialog ever did, which is the
+		# other half of "sometimes the scrolling doesn't work".
 		var fit := func() -> void:
-			if is_instance_valid(sc) and is_instance_valid(vbox):
-				sc.custom_minimum_size.y = clampf(
-					vbox.get_combined_minimum_size().y, 360.0, ceiling)
+			if not is_instance_valid(sc) or not is_instance_valid(vbox):
+				return
+			sc.custom_minimum_size.y = clampf(
+				vbox.get_combined_minimum_size().y, 360.0, ceiling)
+			_let_drags_through(vbox)
 		fit.call_deferred()
+		# Deferred out of the signal as well: it is emitted during a layout pass
+		# and the line above changes a minimum size.
+		vbox.minimum_size_changed.connect(func() -> void: fit.call_deferred())
 	else:
 		margin.add_child(vbox)
 	Lagoon.add_gloss(panel, Lagoon.R_PANEL)
@@ -7282,6 +7354,10 @@ var _clan_build := 0
 
 func _fill_clan(vb: VBoxContainer) -> void:
 	_clan_build += 1
+	# Cleared on every fill and set again only by the chat, which is the one
+	# shape of this page that wants the whole screen. The page body is reused
+	# across fills, so a flag set by one of them outlives it otherwise.
+	vb.size_flags_vertical = Control.SIZE_FILL
 	if not Cloud.linked():
 		var card := _page_card(vb)
 		# THE DRAWN CLAN MARK, not a 72px emoji flag at half opacity. Chrome is
@@ -7822,7 +7898,11 @@ func _open_clan_card(here: Dictionary) -> void:
 	var is_open := bool(here.get("open", true))
 	var is_full := bool(here.get("full", crew >= seats))
 	var bar := int(here.get("min_stars", 0))
-	var vbox := _open_popup(name if name != "" else "Clan", 580.0, true)
+	# 660, and the height comes from the refit in _open_popup rather than from
+	# anything here. Guy, 2026-09-16: "when you press another clan to look at
+	# it, the dialog is very small." It was, and by a bug rather than by a
+	# choice -- see the note on the well's fit there.
+	var vbox := _open_popup(name if name != "" else "Clan", 660.0, true)
 
 	# -- the crest line -----------------------------------------------------
 	var top := HBoxContainer.new()
@@ -7878,6 +7958,76 @@ func _open_clan_card(here: Dictionary) -> void:
 		gl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		gr.add_child(gl)
 
+	# -- THE DOOR, AT THE TOP, WHERE THE DECISION IS. -----------------------
+	#
+	# Guy, 2026-09-16: "make the join button at the top and not at the bottom."
+	# It was under the roster because the roster is what this dialog is FOR --
+	# but that is the reason to look, not the reason to open it. Somebody who
+	# has tapped a clan on the board has already half decided; making them
+	# scroll thirty faces to find the one control that acts on that is the
+	# dialog arguing with its own reader. The roster is still directly under it,
+	# which is what anybody who has not decided will scroll to anyway.
+	var act := Button.new()
+	act.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	var why := ""
+	if not my_clan.is_empty():
+		act.text = "ALREADY  IN  A  CLAN"
+		why = "Leave your clan before joining another."
+	elif is_full:
+		act.text = "FULL"
+		why = "Every seat is taken. Try another clan, or check back later."
+	elif bar > 0 and mine_stars < bar:
+		act.text = "NOT  ENOUGH  STARS"
+		why = "You need %s more stars." % _fmt_compact(bar - mine_stars)
+	else:
+		act.text = "JOIN" if is_open else "ASK  TO  JOIN"
+	Lagoon.button(act, "primary" if why == "" else "glass")
+	if why == "":
+		Lagoon.button_gloss(act, 22)
+	else:
+		act.disabled = true
+	FX.press_feedback(act)
+	vbox.add_child(act)
+	if why != "":
+		var note := _popup_row_label(why, UI.F_TINY)
+		note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		note.add_theme_color_override("font_color", Lagoon.INK_FAINT)
+		vbox.add_child(note)
+	else:
+		# THE HANDLER IS HUNG ONLY ON A LIVE BUTTON. This used to `return` after
+		# the note above, which was safe while the door was the last thing in the
+		# function and is exactly the sort of line that quietly drops half a
+		# dialog the first time something is added under it.
+		act.pressed.connect(func() -> void:
+			act.disabled = true
+			if is_open:
+				Cloud.join_clan(clan_id, func(res: Dictionary) -> void:
+					if not bool(res.get("ok", false)):
+						if is_instance_valid(act):
+							act.disabled = false
+						_banner(_clan_refusal(res), Lagoon.CORAL_LO)
+						return
+					my_clan = res.get("clan", {})
+					_close_popup()
+					Sfx.play("levelup", -6.0)
+					_banner("Joined %s" % String(my_clan.get("name", "")), Lagoon.KELP_HI)
+					_enter_clan_page()
+					_fill_page("clan")
+				)
+				return
+			Cloud.request_join_clan(clan_id, func(res: Dictionary) -> void:
+				if is_instance_valid(act):
+					act.disabled = false
+				if not bool(res.get("ok", false)):
+					_banner(_clan_refusal(res), Lagoon.CORAL_LO)
+					return
+				_close_popup()
+				_banner("Asked to join %s \u2014 they will get your request." % name,
+					Lagoon.KELP_HI)
+			)
+		)
+
 	# -- the roster, which is the whole reason this dialog exists -----------
 	vbox.add_child(Lagoon.banner("WHO  IS  IN  IT", Lagoon.LAGOON_DEEP))
 	var slot := VBoxContainer.new()
@@ -7909,64 +8059,6 @@ func _open_clan_card(here: Dictionary) -> void:
 		fill_roster.call({"members": _clan_fake_roster, "owner": String(_clan_fake_roster[0].get("id", "")) if not _clan_fake_roster.is_empty() else ""})
 	else:
 		Cloud.clan_view(clan_id, fill_roster)
-
-	# -- the door ------------------------------------------------------------
-	var act := Button.new()
-	act.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
-	var why := ""
-	if not my_clan.is_empty():
-		act.text = "ALREADY  IN  A  CLAN"
-		why = "Leave your clan before joining another."
-	elif is_full:
-		act.text = "FULL"
-		why = "Every seat is taken. Try another clan, or check back later."
-	elif bar > 0 and mine_stars < bar:
-		act.text = "NOT  ENOUGH  STARS"
-		why = "You need %s more stars." % _fmt_compact(bar - mine_stars)
-	else:
-		act.text = "JOIN" if is_open else "ASK  TO  JOIN"
-	Lagoon.button(act, "primary" if why == "" else "glass")
-	if why == "":
-		Lagoon.button_gloss(act, 22)
-	else:
-		act.disabled = true
-	FX.press_feedback(act)
-	vbox.add_child(act)
-	if why != "":
-		var note := _popup_row_label(why, UI.F_TINY)
-		note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		note.add_theme_color_override("font_color", Lagoon.INK_FAINT)
-		vbox.add_child(note)
-		return
-	act.pressed.connect(func() -> void:
-		act.disabled = true
-		if is_open:
-			Cloud.join_clan(clan_id, func(res: Dictionary) -> void:
-				if not bool(res.get("ok", false)):
-					if is_instance_valid(act):
-						act.disabled = false
-					_banner(_clan_refusal(res), Lagoon.CORAL_LO)
-					return
-				my_clan = res.get("clan", {})
-				_close_popup()
-				Sfx.play("levelup", -6.0)
-				_banner("Joined %s" % String(my_clan.get("name", "")), Lagoon.KELP_HI)
-				_enter_clan_page()
-				_fill_page("clan")
-			)
-			return
-		Cloud.request_join_clan(clan_id, func(res: Dictionary) -> void:
-			if is_instance_valid(act):
-				act.disabled = false
-			if not bool(res.get("ok", false)):
-				_banner(_clan_refusal(res), Lagoon.CORAL_LO)
-				return
-			_close_popup()
-			_banner("Asked to join %s \u2014 they will get your request." % name,
-				Lagoon.KELP_HI)
-		)
-	)
 
 # ONE FACE IN A LIST: avatar, name, island, stars. The read-only half of
 # _clan_member_row, for every list that is not your own clan's roster -- the
@@ -8066,41 +8158,52 @@ func _clan_roster_ui(vb: VBoxContainer) -> void:
 	var can_recruit := _clan_fake or Cloud.clan_extras_ready()
 	var seats := int(my_clan.get("max", CLAN_MAX_MEMBERS))
 
-	# -- The crest. The clan owns the top of its own page. ------------------
+	# -- The crest. ONE ROW, AND EVERYTHING UNDER IT IS THE CHAT. -----------
 	#
-	# THE 2026-09-14 PASS. Guy: "make sure that at the start he sees the name
-	# nicely, and under it how many players out of how many there are, and
-	# beside that how many clan stars in total; at the top right of this window
-	# there will be a DETAILS button."
+	# THE 2026-09-14 PASS put the clan's identity at the top of its own page.
+	# Guy: "make sure that at the start he sees the name nicely, and under it
+	# how many players out of how many there are, and beside that how many clan
+	# stars in total; at the top right of this window there will be a DETAILS
+	# button." The roster, the invite search, the door, the giving budget and
+	# the way out all moved into that dialog -- see _open_clan_details.
 	#
-	# So the card lost everything that was not identity. The roster, the invite
-	# search, the door, the giving budget, the league table and the way out all
-	# moved into the dialog behind that button -- see _open_clan_details. What
-	# is left is a crest and one row of facts, because everything under it now
-	# is the chat, and a chat that starts below the fold is a chat nobody uses.
-	# PADDING 14 AND A 66px TOKEN, both trimmed from the standing crest. The
-	# page under this is a chat with a composer that has to clear the nav bar,
-	# and every pixel the crest keeps is a pixel the conversation does not get.
-	var crest := _tinted_body(vb, Lagoon.BRASS, true, 14)
+	# THE 2026-09-16 PASS took the card apart and laid it back down as a strip.
+	# Guy, off his own phone: "when you go into the clan, the chat is full
+	# screen apart from the menu at the top." A headline name over a divider
+	# over two captioned figures was 190px of a 914px page -- a fifth of the
+	# room -- to say four things that fit on one line. So the name is F_SUBHEAD
+	# beside the token, the figures are chips under it, and the divider and the
+	# captions are gone: "8 / 30" beside a crest and a number behind a star do
+	# not need to be told what they count. The founder stamp and the star bar
+	# went with them -- both are in the details dialog, which is where the two
+	# people who need them (the founder, and whoever is setting the bar) are
+	# already going.
+	var crest := _tinted_body(vb, Lagoon.BRASS, true, 10)
 	var top := HBoxContainer.new()
-	top.add_theme_constant_override("separation", 16)
+	top.add_theme_constant_override("separation", 12)
 	crest.add_child(top)
-	top.add_child(Lagoon.token(String(my_clan.get("emoji", "\U01F3F4")), 66.0, Lagoon.BRASS))
+	var tok := Lagoon.token(String(my_clan.get("emoji", "\U01F3F4")), 56.0, Lagoon.BRASS)
+	tok.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	top.add_child(tok)
 	var idc := VBoxContainer.new()
 	idc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	idc.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	idc.add_theme_constant_override("separation", 8)
+	idc.add_theme_constant_override("separation", 4)
 	top.add_child(idc)
-	# F_TITLE and not F_HEAD, wrapped. A clan name is up to twenty characters
-	# and the token takes 108 of the column's 652 -- at head size the longest
-	# legal name runs off the card, which is the exact class of failure
-	# qa_layout exists to catch.
-	var nm := Lagoon.label(String(my_clan.get("name", "")), UI.F_TITLE, Lagoon.INK, true)
+	# F_SUBHEAD AND NOT F_TITLE, wrapped. A clan name is up to twenty characters
+	# and this row carries a league stamp and a details button as well -- at
+	# title size the longest legal name runs off the card, which is the exact
+	# class of failure qa_layout exists to catch.
+	var nm := Lagoon.label(String(my_clan.get("name", "")), UI.F_SUBHEAD, Lagoon.INK, true)
 	nm.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	idc.add_child(nm)
 	var marks := HBoxContainer.new()
 	marks.add_theme_constant_override("separation", 8)
 	idc.add_child(marks)
+	marks.add_child(Lagoon.chip("%d / %d" % [members.size(), seats], Lagoon.LAGOON, UI.F_TINY))
+	if my_clan.has("stars"):
+		marks.add_child(_reward_chip("star", _fmt_compact(int(my_clan.get("stars", 0))),
+			Lagoon.INK))
 	# WHICH DOOR THIS CLAN KEEPS, on the crest rather than only in the owner's
 	# switch -- a member who is not the founder could not find out their own
 	# clan's joining rule anywhere on the page.
@@ -8108,20 +8211,29 @@ func _clan_roster_ui(vb: VBoxContainer) -> void:
 		marks.add_child(Lagoon.chip("OPEN", Lagoon.KELP, UI.F_TINY))
 	else:
 		marks.add_child(Lagoon.chip("BY  APPROVAL", Lagoon.BRASS_MID, UI.F_TINY))
-	# THE FOUNDER MARK IS A WORD, NOT A CROWN. A brass crown on a brass-washed
-	# card is a smudge, and the glyph gets ~20px of drawable area at this size.
-	if is_owner:
-		marks.add_child(Lagoon.stamp("FOUNDER", Lagoon.BRASS_HI))
-	var bar_now := int(my_clan.get("min_stars", 0))
-	if bar_now > 0:
-		marks.add_child(_reward_chip("star", "%s+" % _fmt_compact(bar_now), Lagoon.INK_MUTE))
+
+	# WHERE THIS CLAN STANDS, AND THE TABLE BEHIND IT. The board used to sit on
+	# the page under the chat; a chat that runs to the bottom of the screen
+	# leaves nothing below it that anybody can scroll to, so the standing is a
+	# stamp up here and the thirty rows are a sheet of their own.
+	var place := int(my_clan.get("rank", 0))
+	var league := Button.new()
+	league.custom_minimum_size = Vector2(UI.TAP, UI.TAP)
+	league.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	league.text = "#%d" % place if place > 0 else "\u2014"
+	league.add_theme_font_size_override("font_size", UI.F_CAPTION)
+	league.tooltip_text = "Clan league"
+	Lagoon.button(league, "glass")
+	FX.press_feedback(league)
+	league.pressed.connect(_open_clan_league)
+	top.add_child(league)
 
 	# DETAILS, TOP RIGHT OF THE CREST, where Guy put it. A square glyph button:
 	# spelling the word out beside a twenty-character clan name is what carries
 	# this row off the right edge of a small phone.
 	var more := Button.new()
 	more.custom_minimum_size = Vector2(UI.TAP, UI.TAP)
-	more.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	more.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	more.tooltip_text = "Clan details"
 	Lagoon.button(more, "glass")
 	FX.press_feedback(more)
@@ -8135,57 +8247,6 @@ func _clan_roster_ui(vb: VBoxContainer) -> void:
 	more.add_child(more_g)
 	more_g.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	more_g.mouse_filter = Control.MOUSE_FILTER_IGNORE
-
-	# -- THE TWO FIGURES, SIDE BY SIDE. -------------------------------------
-	#
-	# "how many players out of how many, and beside that how many clan stars in
-	# total." They were a stamp on one line and a headline row two lines below
-	# it before, which made them two separate facts rather than the pair they
-	# are: a clan is this many people and that much score.
-	crest.add_child(Lagoon.divider())
-	var facts := HBoxContainer.new()
-	facts.add_theme_constant_override("separation", 10)
-	crest.add_child(facts)
-	# STACKED, NOT IN A LINE, AND THAT IS A MEASUREMENT. The first pass set each
-	# figure beside its own caption on one row -- "8 / 30  CLANMATES  148K  CLAN
-	# STARS  LEAGUE #12" -- which qa_layout measured at 737px against a 720-wide
-	# phone with a thirty-strong clan and a six-figure score in it. A caption
-	# under its value costs a line and nothing else, and it is what every other
-	# pair of figures in this game already does.
-	for spec in [
-			["%d / %d" % [members.size(), seats], "CLANMATES", ""],
-			[_fmt_compact(int(my_clan.get("stars", 0))), "CLAN  STARS", "star"]]:
-		if String(spec[2]) == "star" and not my_clan.has("stars"):
-			continue
-		var cell := VBoxContainer.new()
-		cell.add_theme_constant_override("separation", 2)
-		cell.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		facts.add_child(cell)
-		var line := HBoxContainer.new()
-		line.add_theme_constant_override("separation", 6)
-		line.alignment = BoxContainer.ALIGNMENT_CENTER
-		cell.add_child(line)
-		if String(spec[2]) != "":
-			line.add_child(_prize_art(String(spec[2]), 32.0))
-		var val := Lagoon.label(String(spec[0]), UI.F_HEAD, Lagoon.INK, true)
-		val.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		line.add_child(val)
-		var cap := Lagoon.label(String(spec[1]), UI.F_TINY, Lagoon.INK_MUTE, true)
-		cap.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		cell.add_child(cap)
-	var place := int(my_clan.get("rank", 0))
-	if place > 0:
-		var pc := VBoxContainer.new()
-		pc.add_theme_constant_override("separation", 2)
-		pc.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		facts.add_child(pc)
-		var st := CenterContainer.new()
-		pc.add_child(st)
-		st.add_child(Lagoon.stamp("#%d" % place,
-			Lagoon.BRASS_HI if place <= 3 else Lagoon.SAND))
-		var pl := Lagoon.label("LEAGUE", UI.F_TINY, Lagoon.INK_MUTE, true)
-		pl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		pc.add_child(pl)
 
 	# -- An empty clan's one job is to stop being empty. ---------------------
 	if alone:
@@ -8211,17 +8272,31 @@ func _clan_roster_ui(vb: VBoxContainer) -> void:
 	if can_recruit and is_owner:
 		_clan_requests_ui(vb)
 
-	# -- And then the clan is a room, not a list. ---------------------------
+	# -- And then the clan IS the room. Nothing goes under this. ------------
 	_clan_chat_ui(vb)
 
-	# -- Where this clan stands. --------------------------------------------
-	#
-	# The same board the browser draws, with your own row lit up in it. Without
-	# it the score on the crest is a number with nothing to compare against, and
-	# the ranking would only exist for people who do NOT have a clan -- which is
-	# everybody except the people it is supposed to motivate.
-	vb.add_child(Lagoon.banner("CLAN  LEAGUE", Lagoon.LAGOON_DEEP))
-	_clan_board_ui(vb, false)
+# THE LEAGUE TABLE, IN A SHEET OF ITS OWN.
+#
+# The same board the browser draws, with your own row lit up in it -- without
+# it the score on the crest is a number with nothing to compare against, and
+# the ranking would only exist for the people who do NOT have a clan.
+#
+# It stood on the page under the chat until 2026-09-16 and it cannot stay
+# there: the chat runs to the bottom of the screen now, so a table below it is
+# a scroll that begins underneath another scroll -- which is to say a table
+# nobody reaches. It is not inside _open_clan_details either, and that is the
+# measurement which kept it out of there the first time: a board row is the
+# widest thing this feature draws and that dialog is already carrying thirty
+# member rows. Its own sheet, at the widest a dialog gets, is where it fits.
+func _open_clan_league() -> void:
+	var vbox := _open_popup("Clan League", 660.0, true)
+	var lead := _popup_row_label(
+		"Every clan by total stars. Yours is the lit row.", UI.F_CAPTION)
+	lead.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lead.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lead.add_theme_color_override("font_color", Lagoon.INK_SOFT)
+	vbox.add_child(lead)
+	_clan_board_ui(vbox, false)
 
 # =============================================================================
 #  Clan details: the roster, recruiting, the settings, the league, the way out
@@ -8539,33 +8614,42 @@ func _clan_member_row(parent: Node, who: Dictionary, me_id: String) -> Control:
 #     through the same report_player the leaderboard's does -- and reporting
 #     blocks, so the person who was upset stops meeting them immediately.
 #   * BLOCKING is applied inside clan_chat, in both directions.
+#   * THE AGREEMENT is the act of posting -- see _clan_rules_notice, which
+#     replaced the I-AGREE gate on 2026-09-16.
 #   * THE EULA IS THE ONE THAT IS STILL MISSING and no amount of client work
 #     supplies it: the terms page has to carry the no-objectionable-content
 #     rule and Apple's standard licence terms. THAT IS A LAUNCH BLOCKER FOR THIS
 #     FEATURE, not a nicety -- see the note handed to Guy when this shipped.
 #
-# THE SCROLL IS ITS OWN WELL WITH A FIXED HEIGHT, inside the page's scroll. A
-# chat that simply grows the page means the composer walks off the bottom of the
-# screen as the conversation gets longer, which is the one thing a composer may
-# never do.
+# THE SCROLL IS ITS OWN WELL, inside the page's scroll. A chat that simply grows
+# the page means the composer walks off the bottom of the screen as the
+# conversation gets longer, which is the one thing a composer may never do. The
+# well takes every pixel the crest and the composer did not -- see
+# CLAN_CHAT_WELL_MIN for how it asks for them, and for the two drafts that
+# tried to work them out by hand.
 
-# How tall the well is, and it is MEASURED rather than chosen.
+# THE FLOOR UNDER THE WELL, AND THE ONLY NUMBER LEFT IN IT.
 #
-# How tall the well is, and it is MEASURED AFTER LAYOUT rather than guessed.
+# Four drafts of this were a chosen height (520, then 560), and every one of
+# them was wrong on the only screen that matters -- too short to be a chat, or
+# long enough to push the composer under the nav bar. The fifth measured
+# instead: take the well's own top edge and the composer's minimum and hand
+# the well what is left between them. THAT WAS WRONG TOO, and wrong in the
+# way that is hardest to see -- a deferred call lands BEFORE the frame's
+# containers are sorted, so it read the well's top at y=1105 on a 1280-tall
+# screen, came out with a negative answer, and clamped to this floor. Every
+# phone in the game got the smallest chat the constant allowed, which is
+# exactly what Guy saw on his: "make the chat bigger, it needs to be most of
+# the window, down to the bottom."
 #
-# Two drafts of this were a constant, and both were wrong on the only screen
-# that matters: a message box you have to go and find is a message box nobody
-# uses, and at 520 (and then at 560) the composer sat underneath the nav bar.
-# The heights above it are not knowable in advance either -- the crest is taller
-# with a wrapped twenty-character clan name than without one, and taller again
-# with a star bar on it.
-#
-# So: build the well at a provisional height, then once the frame has laid
-# everything out, take the well's own top edge and the composer's real minimum
-# and give the well what is actually left between them. The well's TOP does not
-# move when its height changes, so this converges in one pass.
+# So it is not measured any more either. The well ASKS for the room instead:
+# SIZE_EXPAND_FILL on the well and on the page's own column, and a
+# ScrollContainer hands an expanding child max(its own height, the child's
+# minimum). The engine does the arithmetic during layout, when the numbers
+# are real. This constant is what the well falls back to on the crowded page
+# -- an invitation standing and a queue of people knocking -- where there is
+# no slack to take and the page has to scroll.
 const CLAN_CHAT_WELL_MIN := 250.0
-const CLAN_CHAT_WELL_MAX := 560.0
 
 # How often the scroll is asked for, WHILE THE PAGE IS OPEN AND NOWHERE ELSE.
 #
@@ -8598,10 +8682,17 @@ func _clan_chat_ui(vb: VBoxContainer) -> void:
 	# the page works exactly as it did -- same reasoning as `clan_extras_ready`.
 	if not _clan_fake and not Cloud.clan_chat_ready():
 		return
-	vb.add_child(Lagoon.banner("CLAN  CHAT", Lagoon.LAGOON_DEEP))
-
+	# NO "CLAN CHAT" BANNER. The page is the chat -- a heading over the only
+	# thing on the screen is 72px of ribbon spent naming what the player is
+	# already looking at, and those 72px are the conversation's.
 	var well := PanelContainer.new()
 	well.add_theme_stylebox_override("panel", Lagoon.glass_well(Lagoon.R_CARD))
+	# THE TWO FLAGS THAT MAKE THE CHAT FULL SCREEN. The page's column asks the
+	# page scroll for all of its height, and the well asks the column for
+	# everything the crest and the composer did not take. Nothing is measured
+	# and nothing is deferred -- see CLAN_CHAT_WELL_MIN for what that cost.
+	well.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vb.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	vb.add_child(well)
 	var pad := MarginContainer.new()
 	for m in [["margin_left", 10], ["margin_right", 10], ["margin_top", 10], ["margin_bottom", 10]]:
@@ -8628,37 +8719,64 @@ func _clan_chat_ui(vb: VBoxContainer) -> void:
 	var comp := VBoxContainer.new()
 	comp.add_theme_constant_override("separation", 10)
 	vb.add_child(comp)
-	# NOBODY POSTS BEFORE THEY HAVE AGREED TO THE RULES, and that is guideline
-	# 1.2 rather than manners: an app with user-generated content has to have
-	# the player's agreement to terms forbidding objectionable content BEFORE
-	# the feature is used. The scroll stays readable meanwhile -- the rule is
-	# about what you may put into it, and hiding the conversation as well would
-	# make the gate read as a paywall.
-	if chat_rules_ok:
-		_clan_composer(comp)
-	else:
-		_clan_rules_gate(comp)
+	# THE RULES ARE NO LONGER A DOOR. Guy, 2026-09-16, off his own phone: the
+	# agreement screen in front of the chat is "very strange and uncomfortable
+	# -- get rid of it, and if the rules require something then do it the way
+	# the big games do, but definitely not like this." He is right, and the
+	# way the big games do it is consent BY POSTING rather than consent by
+	# ceremony: the rules are stated at the head of the room, the act of
+	# sending is the agreement, and the terms stay one tap away for ever. See
+	# _clan_rules_notice for the four guideline-1.2 legs that are unchanged.
+	_clan_composer(comp)
 
-	var fit := func() -> void:
-		if not is_instance_valid(sc) or not is_instance_valid(comp):
-			return
-		# The page's own scroll is at the top on arrival (_scroll_top), so the
-		# well's global y is where it really sits on the screen.
-		var room := content_bottom() - sc.global_position.y \
-			- comp.get_combined_minimum_size().y - 34.0
-		sc.custom_minimum_size.y = clampf(room, CLAN_CHAT_WELL_MIN, CLAN_CHAT_WELL_MAX)
-		_clan_chat_to_bottom()
-	fit.call_deferred()
+	# A chat opens on the newest line, not the oldest.
+	_clan_chat_to_bottom()
+
+# WHOSE VOICE THIS IS, AND IT IS NEVER "YOU".
+#
+# Guy, 2026-09-16: "when I send a message, or ask for spins or cards, don't
+# show the name You -- show my nickname." Every other line in this scroll
+# carries a person's name; the one that said "You" was the only object on the
+# page of a different kind from the ones around it, which is what made your own
+# messages read as notes to self rather than as things you said in a room.
+#
+# The server's name is preferred because it is the one everybody ELSE sees --
+# public_player, the same row the leaderboard draws -- and it answers on my own
+# lines too. The fallbacks are for the seconds before a fresh post is repainted
+# from the server, and for a soft-deleted island, whose `by` comes back NULL.
+func _chat_name(m: Dictionary) -> String:
+	var by: Dictionary = m.get("by") if typeof(m.get("by")) == TYPE_DICTIONARY else {}
+	var given := String(by.get("name", "")).strip_edges()
+	if given != "":
+		return given
+	if bool(m.get("mine", false)):
+		return _my_name()
+	return "A clanmate"
+
+# THE NAME THIS ISLAND WEARS IN FRONT OF OTHER PEOPLE. Cloud first, because
+# that is the one the server will hand to everybody else -- Options writes it
+# there and the profile only carries whatever the provider suggested. "You" is
+# the last resort and it should never be reached: nothing can be posted to a
+# clan without being signed in.
+func _my_name() -> String:
+	var n := str(Cloud.player().get("name", "")).strip_edges()
+	if n == "":
+		n = str(profile.get("name", "")).strip_edges()
+	return n if n != "" else "You"
 
 # The list itself. Called both when the page is built and by the poll, which is
 # why it takes the column rather than finding it.
 func _clan_chat_fill(col: VBoxContainer) -> void:
+	_clan_rules_notice(col)
 	if clan_chat_rows.is_empty():
-		var none := _popup_row_label(
+		# _page_note, NOT a popup row in INK_FAINT. The well is deep glass and
+		# the ink tokens are measured against cream card stock -- INK_FAINT on
+		# this surface is a dark teal on dark water, which is the one
+		# combination STYLE.md rules out. Quieter on dark stock is white used
+		# sparingly, which is what this note is.
+		var none := _page_note(
 			"Nothing said yet. Say hello, or ask the crew for spins.", UI.F_CAPTION)
 		none.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		none.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		none.add_theme_color_override("font_color", Lagoon.INK_FAINT)
 		col.add_child(none)
 		return
 	for row in clan_chat_rows:
@@ -8698,8 +8816,7 @@ func _clan_say_row(parent: Node, m: Dictionary) -> Control:
 	var head := HBoxContainer.new()
 	head.add_theme_constant_override("separation", 8)
 	col.add_child(head)
-	head.add_child(Lagoon.label("You" if mine else String(by.get("name", "")),
-		UI.F_CAPTION, Lagoon.INK, true))
+	head.add_child(Lagoon.label(_chat_name(m), UI.F_CAPTION, Lagoon.INK, true))
 	head.add_child(Lagoon.label(_clan_chat_when(m), UI.F_TINY, Lagoon.INK_MUTE, true))
 	var body := Lagoon.label(String(m.get("body", "")), UI.F_BODY, Lagoon.INK)
 	body.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -8736,7 +8853,7 @@ func _clan_ask_row(parent: Node, m: Dictionary) -> Control:
 	var gave := bool(m.get("gave", false))
 	var closed := bool(m.get("closed", false))
 	var by: Dictionary = m.get("by") if typeof(m.get("by")) == TYPE_DICTIONARY else {}
-	var who := String(by.get("name", "A clanmate"))
+	var who := _chat_name(m)
 	var filled := int(m.get("filled", 0))
 	var cap := maxi(1, int(m.get("cap", 10)))
 	# CORAL for spins, LAGOON for cards, and NEITHER of them is urchin -- urchin
@@ -8766,39 +8883,82 @@ func _clan_ask_row(parent: Node, m: Dictionary) -> Control:
 	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	col.add_theme_constant_override("separation", 2)
 	head.add_child(col)
-	# What is being asked for, and the two voices are written out rather than
-	# assembled from a name and a verb -- "%s needs spins" with "You" in it is
-	# how "You needs spins" got onto a screenshot.
-	var thing := "spins" if kind == "spins" else "a card"
-	col.add_child(Lagoon.label(
-		("You asked for %s" % thing) if mine else ("%s needs %s" % [who, thing]),
-		UI.F_LABEL, Lagoon.INK, true))
-	col.add_child(Lagoon.label(_clan_chat_when(m), UI.F_TINY, Lagoon.INK_MUTE, true))
-
-	# THE CARD BEING ASKED FOR, DRAWN. A set id and an index mean nothing to
-	# anybody, and a clanmate deciding whether to answer has to know what it is
-	# and whether they are holding a spare of it.
+	# WHICH CARD, RESOLVED BEFORE THE HEADLINE IS WRITTEN. One ask is one card
+	# -- that is the shape of the feature -- so the card's name belongs on the
+	# first line of the row rather than only on the chip under it. Guy,
+	# 2026-09-16: "when I ask for cards, show which card I asked for."
 	var spares := 0
+	var item: Array = []
+	var set_id := ""
+	var idx := -1
 	if kind == "cards":
-		var set_id := str(m.get("set")) if m.get("set") != null else ""
-		var idx := int(m.get("idx", -1)) if typeof(m.get("idx")) in [TYPE_INT, TYPE_FLOAT] else -1
+		set_id = str(m.get("set")) if m.get("set") != null else ""
+		idx = int(m.get("idx", -1)) if typeof(m.get("idx")) in [TYPE_INT, TYPE_FLOAT] else -1
 		var c := _collection_by_id(set_id)
 		if not c.is_empty() and idx >= 0 and idx < (c["items"] as Array).size():
-			var item: Array = (c["items"] as Array)[idx]
+			item = (c["items"] as Array)[idx]
 			spares = _dupe_count(set_id, idx)
-			var chip := HBoxContainer.new()
-			chip.add_theme_constant_override("separation", 6)
-			body.add_child(chip)
-			chip.add_child(Lagoon.token(String(item[0]), 44.0,
-				CV.STAR_COLORS[clampi(int(item[2]) - 1, 0, CV.MAX_STAR - 1)]))
-			var nm := Lagoon.label(String(item[1]), UI.F_CAPTION, Lagoon.INK, true)
-			nm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			nm.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-			chip.add_child(nm)
-			chip.add_child(Lagoon.chip("%d★" % int(item[2]),
-				CV.STAR_COLORS[clampi(int(item[2]) - 1, 0, CV.MAX_STAR - 1)], UI.F_TINY))
+
+	# THE HEADLINE. It is assembled from a name and a verb again, and this time
+	# that is safe: _chat_name never answers "You", which is the whole reason
+	# the two voices had to be written out separately before -- "You needs
+	# spins" is how that got onto a screenshot. Guy asked for the name for a
+	# better reason than grammar: every other line in this scroll carries a
+	# person, and the one that said "You" read as a different kind of object.
+	#
+	# AND THE THING ITSELF IS ON THE LINE. "Next to the word, put the spins
+	# icon" -- a bar filling up beside the word "spins" is a fraction of
+	# something abstract until the currency is drawn next to it.
+	var head_line := HBoxContainer.new()
+	head_line.add_theme_constant_override("separation", 6)
+	col.add_child(head_line)
+	var lead := Lagoon.label("%s needs" % who, UI.F_LABEL, Lagoon.INK, true)
+	lead.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	head_line.add_child(lead)
+	if kind == "spins":
+		head_line.add_child(_prize_art("bolt", 34.0))
+		var sp := Lagoon.label("spins", UI.F_LABEL, Lagoon.INK, true)
+		sp.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		head_line.add_child(sp)
+	else:
+		# The card's FACE and its name, the same way the spins ask wears its
+		# bolt. The face used to be on a chip of its own under here with the
+		# name beside it, which -- once the headline started naming the card --
+		# said "Crab" twice in two lines.
+		if not item.is_empty():
+			var face := Lagoon.token(String(item[0]), 40.0,
+				CV.STAR_COLORS[clampi(int(item[2]) - 1, 0, CV.MAX_STAR - 1)])
+			face.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			head_line.add_child(face)
+		var cn := Lagoon.label(String(item[1]) if not item.is_empty() else "a card",
+			UI.F_LABEL, Lagoon.INK, true)
+		cn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		cn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		cn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		head_line.add_child(cn)
+	col.add_child(Lagoon.label(_clan_chat_when(m), UI.F_TINY, Lagoon.INK_MUTE, true))
+
+	# WHAT THE CARD IS WORTH, AND WHETHER THIS READER IS HOLDING ONE. The face
+	# and the name are on the headline above; what is left is the pair of facts
+	# a clanmate needs in order to decide -- how rare it is, and whether they
+	# have a spare to send.
+	if not item.is_empty():
+		var chip := HBoxContainer.new()
+		chip.add_theme_constant_override("separation", 6)
+		body.add_child(chip)
+		chip.add_child(Lagoon.chip("%d★" % int(item[2]),
+			CV.STAR_COLORS[clampi(int(item[2]) - 1, 0, CV.MAX_STAR - 1)], UI.F_TINY))
+		# WHETHER I AM HOLDING A SPARE OF IT -- which is a fact about the reader,
+		# not about the ask, so it is not printed on my own row. "NO SPARE" on an
+		# ask I made myself is the game telling me what I already said.
+		if not mine:
 			chip.add_child(Lagoon.chip("%d SPARE" % spares if spares > 0 else "NO  SPARE",
 				Lagoon.KELP if spares > 0 else Lagoon.INK_SOFT, UI.F_TINY))
+		var gap := Control.new()
+		gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		chip.add_child(gap)
 
 	# The bar, and the button that fills a seat on it.
 	var foot := HBoxContainer.new()
@@ -8868,11 +9028,11 @@ func _clan_donate(msg_id: String, kind: String, m: Dictionary) -> void:
 			return
 		if kind == "cards":
 			# Now, and only now.
-			var set_id := str(m.get("set")) if m.get("set") != null else ""
-			var idx := int(m.get("idx", -1)) if typeof(m.get("idx")) in [TYPE_INT, TYPE_FLOAT] else -1
-			var arr: Array = col_dupes.get(set_id, [])
-			if idx >= 0 and idx < arr.size():
-				arr[idx] = maxi(0, int(arr[idx]) - 1)
+			var gset := str(m.get("set")) if m.get("set") != null else ""
+			var gidx := int(m.get("idx", -1)) if typeof(m.get("idx")) in [TYPE_INT, TYPE_FLOAT] else -1
+			var arr: Array = col_dupes.get(gset, [])
+			if gidx >= 0 and gidx < arr.size():
+				arr[gidx] = maxi(0, int(arr[gidx]) - 1)
 			# `.get(key, default)` hands the default back only when the key is
 			# ABSENT, and donate_clan_help answers `sent_today: null` for a spin
 			# donation -- int(null) is a hard runtime error that ends the whole
@@ -8934,10 +9094,18 @@ func _clan_composer(vb: VBoxContainer) -> void:
 			# loses the sentence somebody typed every time the radio drops.
 			if is_instance_valid(field):
 				field.text = ""
+			_note_chat_consent()
 			_refresh_clan_chat()
 		)
 	send.pressed.connect(post)
-	field.text_submitted.connect(func(_t: String) -> void: post.call())
+	# The return key sends AND puts the keyboard away. On a phone that key is
+	# the only affordance on the keyboard itself that could mean "done", and a
+	# composer that eats it and stays open is the field refusing to be left.
+	field.text_submitted.connect(func(_t: String) -> void:
+		post.call()
+		if is_instance_valid(field):
+			field.release_focus()
+	)
 
 	# -- THE TWO ASKS. -------------------------------------------------------
 	#
@@ -8980,24 +9148,57 @@ func _clan_composer(vb: VBoxContainer) -> void:
 	terms.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(terms)
 
-# THE GATE. One sentence and one button where the composer would be.
-func _clan_rules_gate(vb: VBoxContainer) -> void:
-	var body := _tinted_body(vb, Lagoon.BRASS, false, 14)
-	var line := Lagoon.label(
-		"Clan chat has a few rules. Read them once and you can post.",
-		UI.F_CAPTION, Lagoon.INK_SOFT, true)
-	line.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	body.add_child(line)
+# THE HOUSE RULES, AS THE FIRST THING IN THE ROOM.
+#
+# This is what replaced the agreement gate, and it is the shape every large
+# game with a clan chat uses: a quiet line at the head of the conversation
+# saying who can see what you type and what the rules are, with the rules one
+# tap away. It sits INSIDE the scroll, so it is the first thing above the
+# oldest message and it scrolls out of the way once there is a conversation --
+# a permanent band across a chat is a banner, and people stop seeing banners.
+#
+# GUIDELINE 1.2 IS NOT WEAKENED BY THIS. Three of its four legs never went
+# through the gate at all -- the filter is inside say_clan, the flag is on
+# every line somebody else wrote, the block is applied inside clan_chat in
+# both directions. The fourth is the player's agreement to terms forbidding
+# objectionable content, and that is what "by posting you agree" is: consent
+# by the act, recorded on the first message that lands (see _clan_composer),
+# with the full text reachable from this line and from Options for ever.
+func _clan_rules_notice(col: VBoxContainer) -> void:
+	var card := _tinted_card(col, Lagoon.BRASS_MID)
+	var pad := MarginContainer.new()
+	for m in [["margin_left", 12], ["margin_right", 12], ["margin_top", 6], ["margin_bottom", 6]]:
+		pad.add_theme_constant_override(m[0], m[1])
+	card.add_child(pad)
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 10)
+	pad.add_child(hb)
+	# TWO SHORT LINES, NEITHER OF THEM AUTOWRAPPING, and that is the trap this
+	# file keeps rediscovering: an autowrapping Label reports a ONE-LINE
+	# minimum height however many lines it actually draws. The first cut of
+	# this notice was one wrapped sentence, the card took its height from that
+	# one-line minimum, and the second line came out on top of the first
+	# message in the scroll.
+	var said := VBoxContainer.new()
+	said.add_theme_constant_override("separation", 2)
+	said.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	said.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	hb.add_child(said)
+	said.add_child(Lagoon.label("Everyone in the clan sees what you post.",
+		UI.F_TINY, Lagoon.INK_SOFT))
+	said.add_child(Lagoon.label("By posting you agree to the chat rules.",
+		UI.F_TINY, Lagoon.INK_SOFT))
 	var go := Button.new()
-	go.text = "READ  THE  CHAT  RULES"
+	go.text = "RULES"
 	go.custom_minimum_size = Vector2(0, UI.TAP)
-	Lagoon.button(go, "primary")
-	Lagoon.button_gloss(go, 22)
+	go.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	go.add_theme_font_size_override("font_size", UI.F_TINY)
+	Lagoon.button(go, "glass")
 	FX.press_feedback(go)
 	go.pressed.connect(_open_chat_rules)
-	body.add_child(go)
+	hb.add_child(go)
 
-# WHAT THE PLAYER IS AGREEING TO, IN THE WORDS THEY WILL BE HELD TO.
+# THE RULES, IN THE WORDS THE PLAYER WILL BE HELD TO.
 #
 # The four rules are the four things App Store guideline 1.2 asks of an app with
 # user-generated content, and each one is a thing the game actually DOES rather
@@ -9006,6 +9207,10 @@ func _clan_rules_gate(vb: VBoxContainer) -> void:
 # and there is no way to reach anybody outside your own clan. The full text is
 # on the terms page, which this links to and which Options links to for ever
 # after -- so "read them again any time" is true.
+#
+# IT IS READ-ONLY. It used to end in I AGREE / Not now and stand between the
+# player and the message box; see _clan_rules_notice for what replaced that
+# and why the guideline is still answered.
 const CHAT_RULES := [
 	["No abuse, no hate, nothing sexual, nothing aimed at a person.",
 		"A message with a blocked word in it is refused outright \u2014 it never reaches anybody."],
@@ -9018,7 +9223,7 @@ const CHAT_RULES := [
 ]
 
 func _open_chat_rules() -> void:
-	var vbox := _open_popup("Clan Chat Rules", 580.0, true)
+	var vbox := _open_popup("Clan Chat Rules", 600.0, true)
 	var lead := _popup_row_label(
 		"Anything you type is sent to everyone in your clan. There is no tolerance for objectionable content or for abusive behaviour \u2014 an account used for either can be closed.",
 		UI.F_CAPTION)
@@ -9049,30 +9254,25 @@ func _open_chat_rules() -> void:
 	read.pressed.connect(func() -> void: OS.shell_open(LEGAL_TERMS + "#chat"))
 	vbox.add_child(read)
 
-	var yes := Button.new()
-	yes.text = "I  AGREE"
-	yes.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
-	Lagoon.button(yes, "kelp")
-	Lagoon.button_gloss(yes, 22)
-	FX.press_feedback(yes)
-	yes.pressed.connect(func() -> void:
-		chat_rules_ok = true
-		# Flushed rather than queued: a player who agrees and is then killed by
-		# the OS must not be asked again, and this is one bool.
-		_flush_save()
-		_close_popup()
-		if _current_page == pages.get("clan"):
-			_fill_page("clan")
-	)
-	vbox.add_child(yes)
+	var done := Button.new()
+	done.text = "GOT  IT"
+	done.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
+	Lagoon.button(done, "kelp")
+	Lagoon.button_gloss(done, 22)
+	FX.press_feedback(done)
+	done.pressed.connect(func() -> void: _close_popup())
+	vbox.add_child(done)
 
-	var no := Button.new()
-	no.text = "Not now"
-	no.custom_minimum_size = Vector2(0, UI.TAP)
-	Lagoon.button(no, "glass")
-	FX.press_feedback(no)
-	no.pressed.connect(func() -> void: _close_popup())
-	vbox.add_child(no)
+# THE RECORD THAT THE RULES WERE ACCEPTED, WRITTEN BY THE ACT THAT ACCEPTS
+# THEM. The notice at the head of the chat says "by posting you agree"; this
+# is the other half of that sentence being true. Flushed rather than queued --
+# a player whose phone is killed by the OS right afterwards has still agreed,
+# and this is one bool.
+func _note_chat_consent() -> void:
+	if chat_rules_ok:
+		return
+	chat_rules_ok = true
+	_flush_save()
 
 # The two ask buttons, told what their clocks say. Called when the composer is
 # built and on every poll -- eight-second granularity on a five-hour countdown
@@ -9124,6 +9324,7 @@ func _clan_ask_spins(b: Button) -> void:
 			return
 		Sfx.play("pop", -8.0)
 		_banner("Asked the clan for spins.", Lagoon.KELP_HI)
+		_note_chat_consent()
 		_refresh_clan_chat()
 	)
 
@@ -9188,6 +9389,7 @@ func _open_ask_card() -> void:
 					_close_popup()
 					Sfx.play("pop", -8.0)
 					_banner("Asked the clan for %s." % String(items[idx][1]), Lagoon.KELP_HI)
+					_note_chat_consent()
 					_refresh_clan_chat()
 				)
 			)
@@ -9385,64 +9587,58 @@ const CLAN_MAX_MEMBERS := 30
 # The owner's door. Open, and anybody browsing walks in; closed, and they file a
 # request this same page then lists.
 #
-# ONE SENTENCE AND ONE BUTTON, not a two-way switch. The first pass was a pair
-# of segments with the current one disabled, and after the disabled style got
-# the fade it needed (see Lagoon.button_custom) that read exactly backwards:
-# the greyed-out half looked like the option you could not have rather than the
-# one you already had. A statement of the state, and a button that changes it,
-# cannot be read the wrong way round.
+# A SWITCH, WHICH IS WHAT IT LOOKS LIKE EVERYWHERE ELSE ON THE PHONE.
 #
-# It is also not the Toggle control the options page uses, because this is a
-# round trip that can be refused -- Toggle animates on press and would have to
-# be animated back on a failure, which reads as the game changing its mind.
+# Two earlier passes are worth keeping in view because both of them were about
+# the same failure. The first was a pair of segments with the current one
+# disabled, and after the disabled style got the fade it needed the greyed-out
+# half read exactly backwards -- it looked like the option you could not have
+# rather than the one you already had. The second answered that with a sentence
+# ("Anyone can join this clan.") and a glass button beside it saying which way
+# it moves, on the grounds that a statement and an action cannot be read the
+# wrong way round, and that a Toggle would have to animate BACK when the server
+# refuses, which reads as the game changing its mind.
 #
-# IT IS NOT A PRIMARY ACTION AND IT NO LONGER LOOKS LIKE ONE. It used to be a
-# full-width green slab directly under INVITE A PLAYER -- two identical green
-# bars, one that grows the clan and one that changes a preference. Now it is a
-# quiet strip of its own: the sentence carries the state, and the button that
-# changes it is glass and only as wide as its words.
+# Guy, 2026-09-16, off his own phone: "where it says anyone can join this clan,
+# make it a switch -- it's clearer." He is right, and the objection does not
+# survive being looked at: a switch that snaps back on a failed write is what
+# every settings switch on this phone does, and it is understood instantly,
+# which is more than a sentence that silently did not change can say for
+# itself. A setting that is on or off should look like a thing that is on or
+# off.
+#
+# IT IS STILL NOT A PRIMARY ACTION. It used to be a full-width green slab
+# directly under INVITE A PLAYER -- two identical green bars, one that grows
+# the clan and one that changes a preference.
 func _clan_door_switch(vb: VBoxContainer) -> void:
-	var open_now := bool(my_clan.get("open", true))
 	var body := _tinted_body(vb, Lagoon.LAGOON, false, 14)
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 12)
-	body.add_child(row)
-	var state := Lagoon.label(
-		"Anyone can join this clan." if open_now
-		else "New members need your approval.", UI.F_CAPTION, Lagoon.INK_SOFT, true)
-	state.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	state.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	state.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	row.add_child(state)
-
-	var want := not open_now
-	var b := Button.new()
-	# Two words, not four. "APPROVE EACH MEMBER" beside a sentence is what
-	# carries this row off the right edge of a small phone; the sentence next to
-	# it already says which state is on, so the button only has to say which way
-	# it moves.
-	b.text = "OPEN" if want else "CLOSE"
-	b.custom_minimum_size = Vector2(150, UI.TAP)
-	b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	Lagoon.button(b, "glass")
-	FX.press_feedback(b)
-	b.pressed.connect(func() -> void:
-		b.disabled = true
-		Cloud.set_clan_open(want, func(res: Dictionary) -> void:
+	var sw := Toggle.new("Anyone can join",
+		"Off, and new members need your approval.")
+	sw.set_on(bool(my_clan.get("open", true)))
+	body.add_child(sw)
+	sw.switched.connect(func(on: bool) -> void:
+		sw.disabled = true
+		Cloud.set_clan_open(on, func(res: Dictionary) -> void:
+			# The dialog may be gone: this is a round trip, and the sheet it lives
+			# on closes on a tap anywhere outside it.
+			if not is_instance_valid(sw):
+				return
+			sw.disabled = false
 			if not bool(res.get("ok", false)):
-				b.disabled = false
+				# SNAPPED BACK, WITHOUT RE-FIRING. set_on goes through
+				# set_pressed_no_signal, so this cannot turn into a second write.
+				sw.set_on(not on)
 				_banner(_clan_refusal(res), Lagoon.CORAL_LO)
 				return
 			my_clan = res.get("clan", my_clan)
-			# Opening the door answers every request standing at it, server
-			# side, so the badge has to be told rather than left to expire.
-			if want:
+			# Opening the door answers every request standing at it, server side,
+			# so the badge has to be told rather than left to expire.
+			if on:
 				clan_news["requests"] = 0
 				_update_badges()
 			_fill_page("clan")
 		)
 	)
-	row.add_child(b)
 
 # Who is knocking. Owner only, and the list is the authority on the count -- a
 # badge that survives the page it is answered on is the one thing this cannot
@@ -19061,6 +19257,23 @@ func _fill_collection_detail(vb: VBoxContainer, c: Dictionary) -> void:
 # have earned, so a box costs you nothing you have already climbed -- the top
 # bar does not move when you open one. This screen is therefore the only place
 # in the game that shows the spendable balance, and it says which is which.
+#
+# THE MELT IS NOT A CHORE ANY MORE. Guy, 2026-09-16: "no need to let the user
+# convert the cards one by one -- just put the amount of spare stars he has at
+# the top and let him choose a box for it; don't show the trade in all and
+# everything under it, it is redundant."
+#
+# He is right, and the step it removes was never a decision. Nobody melts SOME
+# of their spares: there is exactly one thing stars buy, so the answer to "trade
+# these in?" is always yes, and a page that asked it twelve times over -- once
+# per row, plus a TRADE IN ALL button over the top of them -- was a confirmation
+# dialog with a card list stapled to it. The balance at the top now counts the
+# pile as what it melts for, the boxes price themselves against that, and
+# opening one melts exactly enough to cover it.
+#
+# The spares are still HELD, not melted on sight, because a spare is also the
+# thing you give a clanmate. Only what a box costs comes off, and cheapest
+# first, so the rare spare somebody is asking for in chat is the last to go.
 
 func _melt_stack(set_id: String, idx: int, count: int) -> int:
 	var arr: Array = col_dupes.get(set_id, [])
@@ -19078,25 +19291,45 @@ func _melt_stack(set_id: String, idx: int, count: int) -> int:
 	stars += worth
 	return worth
 
-func _melt_and_refresh(gained: int, at: Vector2) -> void:
-	if gained <= 0:
-		return
-	Sfx.play("coins", -6.0)
-	FX.rise_label(self, at, "+%d \u2605" % gained, CV.STAR_COLORS[CV.MAX_STAR - 1], 40)
-	# To the bank on this page, not to the top bar. The capsule up there is the
-	# rank, and melting does not move it -- stars flying into a number that
-	# stays put is the animation telling a lie about the rules.
-	if _star_bank_label != null and is_instance_valid(_star_bank_label):
-		FX.fly_coins(self, at, _star_bank_label.global_position + _star_bank_label.size * 0.5,
-			clampi(gained, 4, 12), "star", "\u2b50")
-	_update_badges()
-	_refresh()
-	_save_game()
-	_fill_page("boxes")
+# WHAT THIS PAGE CAN SPEND. The wallet plus the pile, because the pile is only
+# ever one button press from being the wallet and the player should not have to
+# make that press to find out whether a box is in reach. Every price, progress
+# bar and shortfall on this screen is measured against this number and not
+# against `stars`.
+func _spendable_stars() -> int:
+	return stars + _dupe_star_value()
+
+# Melt just enough of the pile to raise `need` stars, and answer with how many
+# cards it cost. Cheapest first, and within one rarity the deepest pile first:
+# a box should come out of the fourth Seashell nobody will miss, not out of the
+# one 5-star spare a clanmate is asking for in chat. Over-melting by a card is
+# fine and inevitable -- a 3-star spare covering a 2-star shortfall leaves the
+# change in the wallet, where the next box will find it.
+func _melt_for(need: int) -> int:
+	if need <= 0:
+		return 0
+	var rows := _all_dupes()
+	rows.sort_custom(func(a, b) -> bool:
+		if int(a["stars"]) != int(b["stars"]):
+			return int(a["stars"]) < int(b["stars"])
+		return int(a["count"]) > int(b["count"]))
+	var melted := 0
+	for r in rows:
+		if need <= 0:
+			break
+		var star := int(r["stars"])
+		var take := mini(int(r["count"]), int(ceil(float(need) / float(star))))
+		var paid := _melt_stack(String((r["set"] as Dictionary)["id"]), int(r["idx"]), take)
+		if paid <= 0:
+			continue
+		need -= paid
+		melted += take
+	return melted
 
 func _fill_boxes(vb: VBoxContainer) -> void:
-	var rows := _all_dupes()
 	var pool := _dupe_star_value()
+	var spares := _dupe_card_count()
+	var purse := _spendable_stars()
 
 	# --- the bank -----------------------------------------------------------
 	var bank := _page_card(vb)
@@ -19112,125 +19345,55 @@ func _fill_boxes(vb: VBoxContainer) -> void:
 	# The balance this whole page spends, drawn as treasure rather than as a
 	# number in a paragraph: gold inside a deep rim, beside the gold star it
 	# counts. In flat ink at display size it read as a heading, not a wallet.
-	var amount := Lagoon.gold_value(_fmt(stars), UI.F_DISPLAY)
-	brow.add_child(amount)
-	_star_bank_label = amount
-	# Two glyphs on purpose: \u2b50 for the standing, matching the top bar, and
-	# the plain \u2605 everywhere else on this page for the balance and the
+	brow.add_child(Lagoon.gold_value(_fmt(purse), UI.F_DISPLAY))
+	# Two glyphs on purpose: ⭐ for the standing, matching the top bar, and
+	# the plain ★ everywhere else on this page for the balance and the
 	# prices. One sentence has to hold both numbers without them reading as the
 	# same number twice.
-	var bsub := _popup_row_label("Stars to spend. Your ⭐ %s world rank is what you have earned — opening a box never takes from it." % _fmt_compact(rank_stars), UI.F_CAPTION)
+	var bsub := _popup_row_label("Stars to spend. Opening a box never touches your ⭐ %s world rank." % _fmt_compact(rank_stars), UI.F_CAPTION)
 	bsub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	bsub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	bsub.add_theme_color_override("font_color", Lagoon.INK_SOFT)
 	bank.add_child(bsub)
 
-	# --- the spares ---------------------------------------------------------
-	_shop_section(vb, "", "STEP  1  \u2014  YOUR  SPARE  CARDS")
-	vb.add_child(_page_note("Tap \u267B on a row to turn those spares into \u2605 stars. The card you already own stays in the collection.", UI.F_CAPTION))
-	if rows.is_empty():
-		var none := _page_card(vb)
-		var nl := _popup_row_label("No spares yet. Pull a card you already own — on a spin or out of a chest — and it lands here instead of going to waste.", UI.F_CAPTION)
-		nl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		nl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		nl.add_theme_color_override("font_color", Lagoon.INK_SOFT)
-		none.add_child(nl)
+	# WHERE PART OF THAT NUMBER CAME FROM. The spares are inside the balance
+	# now, so the one thing the page still owes the player is the sentence that
+	# says so -- otherwise a pile of cards silently becomes a bigger number than
+	# the wallet ever held and the rule is unlearnable.
+	if spares > 0:
+		var srow := HBoxContainer.new()
+		srow.alignment = BoxContainer.ALIGNMENT_CENTER
+		srow.add_theme_constant_override("separation", 8)
+		bank.add_child(srow)
+		# URCHIN_LO, not the brighter CARD_VIOLET the spare stamps use. White
+		# at 22px on that hue measures 4.02 against a 4.5 line even after
+		# Lagoon.chip has taken the fill 58% toward deep water -- the same
+		# finding that moved the set header's "+N SPARE" chip, and this is the
+		# same chip saying the same word.
+		srow.add_child(Lagoon.chip("♻  %d SPARE%s" % [spares, "" if spares == 1 else "S"],
+			Lagoon.URCHIN_LO, UI.F_TINY))
+		srow.add_child(Lagoon.chip("★  %d" % pool, CV.STAR_COLORS[CV.MAX_STAR - 1], UI.F_TINY))
+		vb.add_child(_page_note("Spares are counted in — the cheapest are traded in when you open a box.", UI.F_CAPTION))
 	else:
-		var head := _page_card(vb)
-		var hrow := HBoxContainer.new()
-		hrow.add_theme_constant_override("separation", 10)
-		head.add_child(hrow)
-		var count_l := Lagoon.label("%d spare cards" % _dupe_card_count(), UI.F_LABEL, Lagoon.INK, true)
-		count_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		count_l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-		hrow.add_child(count_l)
-		hrow.add_child(Lagoon.chip("\u2605 %d" % pool, CV.STAR_COLORS[CV.MAX_STAR - 1], UI.F_CAPTION))
-		var melt_all := Button.new()
-		melt_all.text = "TRADE  IN  ALL   +%d \u2605" % pool
-		melt_all.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
-		_candy_button(melt_all, Color(0.72, 0.5, 0.95))
-		FX.press_feedback(melt_all)
-		melt_all.pressed.connect(func() -> void:
-			var gained := 0
-			for r in _all_dupes():
-				gained += _melt_stack((r["set"] as Dictionary)["id"], int(r["idx"]), int(r["count"]))
-			_melt_and_refresh(gained, Vector2(view_size().x * 0.5, view_size().y * 0.42))
-		)
-		head.add_child(melt_all)
-
-		for r in rows:
-			_dupe_row(vb, r)
+		vb.add_child(_page_note("Pull a card you already own and it lands here as a spare, worth its own stars towards a box.", UI.F_CAPTION))
 
 	# --- the boxes ----------------------------------------------------------
-	_shop_section(vb, "", "STEP  2  \u2014  OPEN  A  BOX")
-	vb.add_child(_page_note("Every box draws real cards — the pricier the box, the better the star odds.", UI.F_CAPTION))
+	_shop_section(vb, "", "CHOOSE  A  BOX")
+	vb.add_child(_page_note("The pricier the box, the more cards and the better the star odds.", UI.F_CAPTION))
 	for box in CV.CARD_BOXES:
 		_box_card(vb, box)
 	# The shelf's one door to the rate tables, standing in for the strip every
 	# box row used to carry. See the odds-disclosure note.
 	vb.add_child(_odds_info_link())
 
-func _dupe_row(vb: VBoxContainer, r: Dictionary) -> void:
-	var set_d: Dictionary = r["set"]
-	var idx: int = int(r["idx"])
-	var star: int = int(r["stars"])
-	var count: int = int(r["count"])
-	var sc: Color = CV.STAR_COLORS[star - 1]
-
-	var panel := _tinted_card(vb, sc, star >= 4)
-	var pad := MarginContainer.new()
-	for m in [["margin_left", 12], ["margin_right", 12], ["margin_top", 10], ["margin_bottom", 10]]:
-		pad.add_theme_constant_override(m[0], m[1])
-	panel.add_child(pad)
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 12)
-	pad.add_child(row)
-
-	var tok := Lagoon.token(str(r["emoji"]), 74.0, sc)
-	tok.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	row.add_child(tok)
-
-	var col := VBoxContainer.new()
-	col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	col.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	col.add_theme_constant_override("separation", 2)
-	row.add_child(col)
-	col.add_child(Lagoon.label(str(r["name"]), UI.F_LABEL, Lagoon.INK, true))
-	var meta := HBoxContainer.new()
-	meta.add_theme_constant_override("separation", 8)
-	col.add_child(meta)
-	meta.add_child(_star_row(star, UI.F_TINY))
-	var setl := Lagoon.label(str(set_d["name"]), UI.F_TINY, Lagoon.INK_FAINT)
-	setl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	meta.add_child(setl)
-
-	# "+3", the same mark the shelf tile, the set header and the card itself
-	# all use for this pile. It used to read "x3" here and "x4" on the card,
-	# for one stack of three spares.
-	var held := Lagoon.label("+%d" % count, UI.F_SUBHEAD, Lagoon.INK, true)
-	held.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	row.add_child(held)
-
-	var melt := Button.new()
-	# A bare "+12 \u2605" reads as a prize being handed out, not as a trade the
-	# player is about to make. The recycle glyph is the one mark that says a
-	# thing is going in as well as coming out, and it is the same mark the
-	# banner on the Cards page uses for the same errand.
-	melt.text = "\u267B  +%d \u2605" % (star * count)
-	melt.custom_minimum_size = Vector2(178, UI.TAP)
-	melt.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_candy_button(melt, Color(0.72, 0.5, 0.95))
-	FX.press_feedback(melt)
-	melt.pressed.connect(func() -> void:
-		var gained := _melt_stack(str(set_d["id"]), idx, count)
-		_melt_and_refresh(gained, melt.global_position + melt.size * 0.5)
-	)
-	row.add_child(melt)
-
 func _box_card(vb: VBoxContainer, box: Dictionary) -> void:
 	var cost: int = int(box["stars"])
 	var cc: Color = box["color"]
-	var affordable := stars >= cost
+	# Against the pile as well as the wallet. A box the player can open the
+	# instant they press it must not be drawn as a box they cannot afford --
+	# that was the whole reason the melting step had to happen first.
+	var purse := _spendable_stars()
+	var affordable := purse >= cost
 
 	var panel := _tinted_card(vb, cc, bool(box.get("guarantee5", false)))
 	var pad := MarginContainer.new()
@@ -19256,7 +19419,7 @@ func _box_card(vb: VBoxContainer, box: Dictionary) -> void:
 	art.custom_minimum_size = Vector2(104, 96)
 	well.add_child(art)
 	# A box you cannot open yet is drained rather than hidden -- the reason to
-	# keep melting spares has to stay on screen.
+	# keep pulling cards has to stay on screen.
 	if not affordable:
 		art.modulate = Color(0.65, 0.7, 0.72, 0.55)
 
@@ -19278,7 +19441,7 @@ func _box_card(vb: VBoxContainer, box: Dictionary) -> void:
 	info.add_child(price)
 	price.add_child(Lagoon.chip("\u2605  %d" % cost, cc, UI.F_CAPTION))
 	if not affordable:
-		var short := Lagoon.label("%d more to go" % (cost - stars), UI.F_TINY, Lagoon.INK_FAINT)
+		var short := Lagoon.label("%d more to go" % (cost - purse), UI.F_TINY, Lagoon.INK_FAINT)
 		short.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		price.add_child(short)
 
@@ -19286,9 +19449,9 @@ func _box_card(vb: VBoxContainer, box: Dictionary) -> void:
 	if not affordable:
 		var pb := _styled_progress(cc)
 		pb.max_value = cost
-		pb.value = stars
+		pb.value = purse
 		col.add_child(pb)
-		Lagoon.progress_value(pb, "%d / %d  \u2605" % [stars, cost], UI.F_TINY)
+		Lagoon.progress_value(pb, "%d / %d  \u2605" % [purse, cost], UI.F_TINY)
 
 	var open := Button.new()
 	open.text = "OPEN  BOX" if affordable else "NOT  ENOUGH  STARS"
@@ -19302,9 +19465,13 @@ func _box_card(vb: VBoxContainer, box: Dictionary) -> void:
 
 func _open_card_box(box: Dictionary) -> void:
 	var cost: int = int(box["stars"])
-	if stars < cost:
+	# The pile is part of the price now. Melt only the shortfall -- a player
+	# with the stars already banked keeps every spare they are holding, which
+	# is what makes this safe for the cards a clanmate is waiting on.
+	if _spendable_stars() < cost:
 		Sfx.play("error", -6.0)
 		return
+	var traded := _melt_for(cost - stars)
 	stars -= cost
 	Diag.note("chest")
 
@@ -19329,6 +19496,11 @@ func _open_card_box(box: Dictionary) -> void:
 	# screen, because that half is never spent and should not read as change.
 	var earned := stars - before
 	var note := "\u2605 %d spent" % cost
+	# What it cost in CARDS as well, when it cost any. Spares coming off the
+	# pile without a word said about it is the one way this page could feel
+	# like it took something the player did not agree to spend.
+	if traded > 0:
+		note += "   \u2022   %d spare%s traded in" % [traded, "" if traded == 1 else "s"]
 	if earned > 0:
 		note += "   \u2022   +%d \u2605 back from new cards" % earned
 	_show_chest_result(cards, "%s Opened!" % str(box["name"]), note, completed)

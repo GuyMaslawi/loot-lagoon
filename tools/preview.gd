@@ -22,7 +22,8 @@ func _ready() -> void:
 			# would, because a harness run on a fresh user:// otherwise sits
 			# behind it forever. SPINS=<n> then sets the meter -- SPINS=0 is
 			# the only way to look at the out-of-spins state on demand.
-			if OS.has_environment("GUEST") or OS.has_environment("SPINS"):
+			if OS.has_environment("GUEST") or OS.has_environment("SPINS") \
+					or OS.has_environment("SPARES") or OS.has_environment("STARS"):
 				_seed.call_deferred(game)
 			# PAGE=shop|collections|quests|options|island jumps straight there
 			# CLAN=join|roster renders the SIGNED-IN clan page offline.
@@ -324,6 +325,26 @@ func _seed(game: Control) -> void:
 		game.call("_close_login")
 	if OS.has_environment("SPINS"):
 		game.set("spins", int(OS.get_environment("SPINS")))
+		game.call("_refresh")
+	# STARS=<n> and SPARES=<n> dress the Card Boxes page, which otherwise can
+	# only ever be shot empty: a fresh user:// has no wallet and no pile, so
+	# every capture of it was three boxes nobody can afford and a zero. SPARES
+	# owns the whole shelf -- every card marked owned, then n spare copies of
+	# each -- because the page's arithmetic is now the pile's value and a pile
+	# of one card does not exercise it.
+	if OS.has_environment("SPARES"):
+		var n := int(OS.get_environment("SPARES"))
+		for c in CV.COLLECTIONS:
+			var items: Array = c["items"]
+			var owned: Array = (game.get("col_owned") as Dictionary).get(c["id"], [])
+			for i in items.size():
+				if i < owned.size():
+					owned[i] = true
+				for _k in n:
+					game.call("_add_dupe", String(c["id"]), i)
+		game.call("_refresh")
+	if OS.has_environment("STARS"):
+		game.set("stars", int(OS.get_environment("STARS")))
 		game.call("_refresh")
 
 func _cameo(game: Control, kind: String) -> void:
