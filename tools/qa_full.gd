@@ -603,16 +603,12 @@ func _t_mission_claims() -> void:
 			st["progress"][mission["id"]] = m._mission_target(mission) * 10
 			total_coins += m._mission_coins(mission)
 			total_spins += int(mission.get("spins", 0))
-		total_coins += m._bonus_coins(period)
-		total_spins += int(m.MISSION_BONUS[period]["spins"])
 
 	for period in ["daily", "weekly", "monthly"]:
 		for mission in m.MISSION_DEFS[period]:
 			_chk("  a finished %s mission reads as ready: %s" % [period, mission["id"]],
 				m._mission_ready(period, mission), "")
 			m._claim_mission(period, mission)
-		_chk("  the %s all-clear bonus unlocks" % period, m._bonus_ready(period))
-		m._claim_mission_bonus(period)
 	_chk("claiming every mission paid exactly the advertised coins",
 		m.coins == total_coins, "%d vs %d" % [m.coins, total_coins])
 	_chk("and exactly the advertised spins", m.spins == total_spins,
@@ -624,7 +620,6 @@ func _t_mission_claims() -> void:
 	for period in ["daily", "weekly", "monthly"]:
 		for mission in m.MISSION_DEFS[period]:
 			m._claim_mission(period, mission)
-		m._claim_mission_bonus(period)
 	_chk("nothing can be claimed twice",
 		m.coins == coins_after and m.spins == spins_after,
 		"+%d coins +%d spins" % [m.coins - coins_after, m.spins - spins_after])

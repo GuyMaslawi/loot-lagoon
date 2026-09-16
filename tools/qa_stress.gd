@@ -242,7 +242,6 @@ func _do(act: String) -> void:
 			var period: String = ["daily", "weekly", "monthly"].pick_random()
 			for mission in m.MISSION_DEFS[period]:
 				m._claim_mission(period, mission)
-			m._claim_mission_bonus(period)
 			m._close_popup(true)
 		"save_load":
 			m._flush_save()

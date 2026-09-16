@@ -170,8 +170,8 @@ const RIM_INK     := Color(0.008, 0.043, 0.062)
 #
 # AND THEN THERE WERE THREE. INK_FAINT was raised to 5.0 against SHELL once and
 # that was still measuring it against the wrong thing: almost nothing in this
-# game lands on bare SHELL. On a tinted card -- the sand of the all-clear bonus,
-# the pale glass of an inactive quests tab, the mint of a finished set -- the
+# game lands on bare SHELL. On a tinted card -- the pale glass of an inactive
+# quests tab, the mint of a finished set, the sand of a live deal -- the
 # same token came back at 3.7 to 4.2 on the season timer, the tab captions, the
 # card odds and the "World ranking" link. A fourth step down the ladder cannot
 # be made to clear on every surface it is used on, because the step below

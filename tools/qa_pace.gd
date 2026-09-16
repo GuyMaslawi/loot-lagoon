@@ -114,7 +114,6 @@ func _passive() -> void:
 	var daily_missions := 0.0
 	for q in m.MISSION_DEFS["daily"]:
 		daily_missions += float(q.get("coins", 0))
-	daily_missions += float(m.MISSION_BONUS["daily"]["coins"])
 
 	var gift := float(CV.SHOP_FREE_COINS)   # the shop's free gift, every 24h
 	var a_day := streak + daily_missions + gift
@@ -123,7 +122,7 @@ func _passive() -> void:
 	print("  coins a day that are NOT spins, at island-1 prices:")
 	print("    daily bonus (7-rung average)   %8s   (%s on day 7)"
 		% [UI.fmt(int(streak)), UI.fmt(int(top))])
-	print("    daily missions + their bonus   %8s" % UI.fmt(int(daily_missions)))
+	print("    daily missions                 %8s" % UI.fmt(int(daily_missions)))
 	print("    the shop's free gift           %8s" % UI.fmt(int(gift)))
 	print("    ----------------------------------------")
 	print("    per day                        %8s   = %.0f%% of an island"

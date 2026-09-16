@@ -590,85 +590,6 @@ const MISSION_DEFS := {
 		{"id": "daily_gift", "emoji": "🎁", "desc": "Claim 20 daily bonuses", "target": 20, "coins": 10500},
 	],
 }
-# Extra chest for claiming every mission in a cycle (coins scale like above).
-const MISSION_BONUS := {
-	"daily": {"emoji": "🎁", "coins": 2600, "spins": 15},
-	"weekly": {"emoji": "🧰", "coins": 10000, "spins": 45},
-	"monthly": {"emoji": "🏆", "coins": 26000, "spins": 90},
-}
-
-# =============================================================================
-#  The milestone track
-# =============================================================================
-#
-# WHAT WAS WRONG WITH THE ALL-CLEAR BONUS, which this does not replace so much
-# as give a middle to. It paid for eight missions out of eight and nothing at
-# all for seven, and seven out of eight is what a good day actually looks like:
-# some of these need rivals to be online, some need the reels to offer a raid.
-# So the one reward on the page that was worth chasing was, most days, invisibly
-# out of reach -- and a player who worked that out stopped reading the page.
-#
-# The track pays at a quarter, a half, three quarters and the whole, so progress
-# is always worth something and the last rung is still the prize. Nothing got
-# cheaper: the final milestone IS the old bonus, at the old value, and the three
-# below it are new money.
-#
-# `at` is a fraction of the period's mission count, rounded up, so one table
-# serves boards of eight missions and boards of seven. `share` is a fraction of
-# that period's bonus, so a rung is worth the same relative thing on all three
-# boards and there is one number to tune rather than twelve.
-const MISSION_MILESTONES := [
-	{"at": 0.25, "share": 0.20},
-	{"at": 0.50, "share": 0.35},
-	{"at": 0.75, "share": 0.55},
-	{"at": 1.00, "share": 1.00},
-]
-# The track's three bands, named rather than typed four times each. The rungs
-# hang off the BAR's edges (MILE_TOP_EDGE / MILE_BOT_EDGE) rather than off the
-# lane's, so a short rung and a tall one sit the same distance from the line
-# they stand on -- see _milestone_pip.
-#
-# THE SECOND SIZING PASS, and it came from Guy off the page: "the prizes are
-# very small -- make them significantly bigger". They were, and the reason was
-# geometry rather than taste. A rung printed its two currencies SIDE BY SIDE,
-# so its width had to carry a coin face, "26,000", a bolt face and "+90" on one
-# line -- and the width a rung is allowed is fixed by the board underneath it
-# (see MILE_BOX_MAX). Everything therefore had to shrink to fit the line: 26px
-# faces and 22px type, which is the smallest type in the game, for the page's
-# whole reward ladder.
-#
-# Stacked, the same width carries a 44px face and 26px type with room to spare,
-# because the box now only has to be as wide as ONE currency instead of two.
-# The cost is height, and height is the one dimension this card has to spend:
-# it grows down the page, where there is scroll, instead of sideways into the
-# rung next to it, where there is nothing.
-const MILE_ICON     := 44.0
-const MILE_BOX_MIN  := 152.0
-# 186 IS A MEASUREMENT, NOT A TASTE. The monthly board is seven missions, so
-# its rungs stand at 2, 4, 6 and 7 -- and the last two share the lower band,
-# 0.43 of a 658-unit lane apart. A box centred on the first and a box hung off
-# the card's right edge fit that gap only while 1.5w <= 282. See _mile_box_w.
-const MILE_BOX_MAX  := 186.0
-# What a rung stands in: two currency rows, and a third strip on the ones that
-# have something to say about themselves. Measured off the type rather than
-# guessed -- MILE_ROW_H is the 44px face, and the box is two of those plus the
-# padding, plus the CLAIM chip when there is one.
-const MILE_ROW_H    := 44.0
-const MILE_BOX_TALL := 142.0
-const MILE_BOX_SHORT := 104.0
-# 62 IS ALSO A MEASUREMENT, and the tightest one on the card. The monthly
-# board's last two rungs stand at 6 and 7 of 7, which is 0.143 of a 658-unit
-# lane -- 94 units. The pin at 6 is centred on its mark and the pin at 7 is
-# hung off the card's edge, so the two fit only while 1.5w <= 94. At 70 they
-# overlapped, which is what a pass at making them bigger bought.
-const MILE_PIN_W    := 62.0
-const MILE_TOP_EDGE := 146.0
-const MILE_BAR_TOP  := 154.0
-const MILE_BAR_BOT  := 190.0
-const MILE_BOT_EDGE := 198.0
-# The tall box ends at BOT_EDGE + MILE_BOX_TALL; the rest is the gap between it
-# and the line of type under the card.
-const MILE_LANE_H   := 352.0
 const MISSION_TAB_INFO := {
 	"daily": {"emoji": "☀️", "title": "DAILY", "color": Color(0.3, 0.62, 0.38)},
 	"weekly": {"emoji": "🗓️", "title": "WEEKLY", "color": Color(0.25, 0.5, 0.85)},
@@ -795,8 +716,7 @@ var deal_last_taken := 0
 # arrays of ints, and that is not a style choice: JSON has one number type, so
 # an int array comes back off the save as floats and `Array.has(3)` answers
 # false for the 3.0 that is sitting in it. That exact bug was an exploit once.
-# See [[godot-json-save-number-trap]] -- the mission milestones carry the same
-# comment and the same shape.
+# See [[godot-json-save-number-trap]].
 var fair_id := ""
 var fair_until := 0.0
 var fair_next := 0.0
@@ -1625,10 +1545,9 @@ func _shot_give_card() -> void:
 	var who: Dictionary = members[1] if members.size() > 1 else {"id": "x", "name": "Dave"}
 	_open_give_card(who)
 
-# n missions claimed on the board DEMO_QUESTS names, with the first rung of
-# the track already taken, so one shot carries every state a rung has. It
-# writes mission_state directly and pays nothing: the grant path flies coins
-# and opens a takeover, which would photobomb the page it was called to show.
+# n missions claimed on the board DEMO_QUESTS names. It writes mission_state
+# directly and pays nothing: the grant path flies coins and opens a takeover,
+# which would photobomb the page it was called to show.
 func _shot_quests() -> void:
 	var tab := OS.get_environment("DEMO_QUESTS")
 	if MISSION_DEFS.has(tab):
@@ -1643,7 +1562,6 @@ func _shot_quests() -> void:
 		var m: Dictionary = defs[i]
 		st["progress"][m["id"]] = _mission_target(m)
 		st["claimed"][m["id"]] = true
-	st["miles"] = {"0": true}
 
 func _shot_deal() -> void:
 	if not OS.has_environment("DEMO_DEAL_DONE"):
@@ -1802,10 +1720,9 @@ func _capture_page(key: String) -> void:
 	# card and nothing this page actually does.
 	if key == "alerts":
 		_shot_alerts()
-	# The reward track has three states standing on it at once -- taken,
-	# claimable, still out of reach -- and a fresh save can only ever show the
-	# third. DEMO_QUESTS_DONE=n claims the first n missions of the open board,
-	# which is the only way to photograph the other two.
+	# A fresh save has every mission on zero, so the board photographs as eight
+	# identical empty rows. DEMO_QUESTS_DONE=n claims the first n missions of
+	# the open board, which is the only way to see a row wearing its tick.
 	if key == "quests":
 		_shot_quests()
 	# The shelf's three states -- filling, READY, claimed -- and a harness save
@@ -5659,9 +5576,6 @@ func _mission_target(m: Dictionary) -> int:
 func _mission_coins(m: Dictionary) -> int:
 	return _scaled(int(m.get("coins", 0)))
 
-func _bonus_coins(period: String) -> int:
-	return _scaled(int(MISSION_BONUS[period]["coins"]))
-
 func _period_key(period: String) -> int:
 	var now := int(_now())
 	match period:
@@ -5710,8 +5624,7 @@ func _ensure_missions() -> void:
 		# All three key spaces (day count, week count, year*12+month) are
 		# monotonic, so "later than the one we recorded" is well defined.
 		if st.is_empty() or _i(st.get("key", -1), -1) < key:
-			mission_state[period] = {"key": key, "progress": {}, "claimed": {},
-				"bonus": false, "miles": {}}
+			mission_state[period] = {"key": key, "progress": {}, "claimed": {}}
 			changed = true
 	if changed:
 		_update_badges()
@@ -5722,97 +5635,9 @@ func _mission_ready(period: String, m: Dictionary) -> bool:
 		return false
 	return int(st["progress"].get(m["id"], 0)) >= _mission_target(m)
 
-# --- the milestone track -----------------------------------------------------
-
-# How many of this period's missions are already claimed. The track's unit.
-func _mission_done(period: String) -> int:
-	var st: Dictionary = mission_state[period]
-	var n := 0
-	for m in MISSION_DEFS[period]:
-		if bool(st["claimed"].get(m["id"], false)):
-			n += 1
-	return n
-
-# The mission count a rung sits at. Rounded UP, and clamped so two rungs can
-# never land on the same number -- on the monthly board, which has seven
-# missions, a quarter is 1.75 and a half is 3.5, and without the clamp a board
-# of four missions would put three rungs on top of each other.
-func _milestone_at(period: String, i: int) -> int:
-	var total: int = (MISSION_DEFS[period] as Array).size()
-	var want := int(ceil(float(MISSION_MILESTONES[i]["at"]) * float(total)))
-	return clampi(want, i + 1, total)
-
-# What a rung pays: a share of the period's own bonus. The last rung IS the
-# bonus, at its old value, so this is the same number it always was.
-func _milestone_reward(period: String, i: int) -> Dictionary:
-	var b: Dictionary = MISSION_BONUS[period]
-	var share: float = MISSION_MILESTONES[i]["share"]
-	return {
-		"coins": int(round(float(b["coins"]) * share)),
-		"spins": int(round(float(b["spins"]) * share)),
-	}
-
-# THE LAST RUNG KEEPS THE OLD SAVE KEY, and the ones below it get a new one.
-#
-# `bonus` is a bool that has been in the save since the all-clear existed, and
-# the top rung is that same reward at that same value -- so it stays where it
-# is rather than being migrated into the new field, and a save written by the
-# build before this one comes back with its bonus state intact.
-#
-# The new field is a DICTIONARY with string keys, not the array it obviously
-# wants to be. JSON has one number type: an array of ints written to the save
-# comes back as an array of floats, and `Array.has(2)` against `[2.0]` is false
-# -- which here would mean every lower rung silently re-arming on the next
-# launch. Object keys survive the round trip as the strings they were.
-func _milestone_claimed(period: String, i: int) -> bool:
-	if i >= MISSION_MILESTONES.size() - 1:
-		return bool(mission_state[period].get("bonus", false))
-	var raw = mission_state[period].get("miles", {})
-	var miles: Dictionary = raw if typeof(raw) == TYPE_DICTIONARY else {}
-	return bool(miles.get(str(i), false))
-
-func _milestone_ready(period: String, i: int) -> bool:
-	return not _milestone_claimed(period, i) \
-		and _mission_done(period) >= _milestone_at(period, i)
-
-func _claim_milestone(period: String, i: int) -> void:
-	if not _milestone_ready(period, i):
-		return
-	# The top rung goes through the original path, so there is exactly one
-	# place that can spend the all-clear bonus.
-	if i >= MISSION_MILESTONES.size() - 1:
-		_claim_mission_bonus(period)
-		return
-	var raw = mission_state[period].get("miles", {})
-	var miles: Dictionary = raw if typeof(raw) == TYPE_DICTIONARY else {}
-	miles[str(i)] = true
-	mission_state[period]["miles"] = miles
-	var r := _milestone_reward(period, i)
-	_grant_mission_reward(_scaled(int(r["coins"])), int(r["spins"]),
-		"Reward Unlocked!")
-	FX.confetti(self, 26)
-	_fill_page("quests")
-
-func _milestone_any_ready(period: String) -> bool:
-	for i in MISSION_MILESTONES.size():
-		if _milestone_ready(period, i):
-			return true
-	return false
-
-func _bonus_ready(period: String) -> bool:
-	var st: Dictionary = mission_state[period]
-	if bool(st.get("bonus", false)):
-		return false
-	for m in MISSION_DEFS[period]:
-		if not bool(st["claimed"].get(m["id"], false)):
-			return false
-	return true
-
 func _period_claimable(period: String) -> bool:
 	if mission_state.get(period, {}).is_empty():
 		return false
-	if _milestone_any_ready(period):
-		return true
 	for m in MISSION_DEFS[period]:
 		if _mission_ready(period, m):
 			return true
@@ -6983,8 +6808,8 @@ func _deliver_streak_card(day: int, card: Dictionary, from: Vector2) -> void:
 # knows what they got." He is right, and the reason is frequency: a daily board
 # is eight of these, so eight full-screen celebrations stand between a player
 # and a page they are trying to clear. The takeover was written for things that
-# happen ONCE -- a purchase, a rung of the reward track, a period bonus -- and
-# a mission is not one of those.
+# happen ONCE -- a purchase, a completed collection -- and a mission is not one
+# of those.
 #
 # So the reward is handed over in the three ways the game already uses for
 # money arriving without a screen, all at the row the finger is still on:
@@ -7038,16 +6863,6 @@ func _reward_in_place(coin_amt: int, spin_amt: int, from: Vector2) -> void:
 	_coin_flight(coin_amt, from)
 	_spin_flight(spin_amt, from)
 
-func _claim_mission_bonus(period: String) -> void:
-	if not _bonus_ready(period):
-		return
-	mission_state[period]["bonus"] = true
-	_grant_mission_reward(_bonus_coins(period), int(MISSION_BONUS[period]["spins"]),
-		"%s Bonus!" % String(MISSION_TAB_INFO[period]["title"]).capitalize())
-	FX.confetti(self, 46)
-	FX.flash(self)
-	_fill_page("quests")
-
 # Claimed from inside the missions dialog, which sits at z 120 -- so both
 # flights ride at 130 or they play out underneath the popup they left. This
 # was the last coin reward in the game still thrown as decoration at a counter
@@ -7058,10 +6873,9 @@ func _claim_mission_bonus(period: String) -> void:
 # their own screen with a cool animation -- right now it is very direct and
 # boring." He was right, and the reason is that PayoutShow only ever fired on a
 # PURCHASE. Every other way the game hands over currency -- a mission, a
-# mission period bonus, a rung of the reward track, a completed collection --
-# went through `_grant_mission_reward`, which flew the coins, popped a rise
-# label and played a sound. Fine for a reel win; far too little for something
-# the player deliberately went and claimed.
+# completed collection -- went through `_grant_mission_reward`, which flew the
+# coins, popped a rise label and played a sound. Fine for a reel win; far too
+# little for something the player deliberately went and claimed.
 #
 # NO BOX, and that is a decision rather than an omission (Guy left it to me).
 # Nothing was unwrapped, so a chest would be theatre about an object that does
@@ -16652,8 +16466,6 @@ func _fill_quests(vb: VBoxContainer) -> void:
 	head.add_child(hpb)
 	Lagoon.progress_value(hpb, "%d / %d" % [done, defs.size()], UI.F_CAPTION)
 
-	_quests_bonus_card(vb)
-
 	# ready first, then in-progress, claimed sink to the bottom
 	var order := []
 	for i in defs.size():
@@ -16753,303 +16565,6 @@ func _update_quests_timer() -> void:
 	if _quests_timer_label == null or not is_instance_valid(_quests_timer_label):
 		return
 	_quests_timer_label.text = "Resets in  %s" % _countdown_text(_period_reset_secs(quests_tab))
-
-# The milestone track: one card, four rungs, drawn along a bar.
-#
-# It replaces a single ALL-CLEAR BONUS row that paid for eight missions out of
-# eight and nothing for seven. See MISSION_MILESTONES for why that was the wrong
-# shape; this is the same reward with three smaller ones in front of it, so the
-# page has something to show for every mission claimed rather than only for the
-# last.
-#
-# The rungs are drawn ON the bar rather than listed under it. A list of four
-# rewards with four numbers beside them is a table; four markers standing on a
-# track the player can see themselves moving along is a ladder, and the whole
-# argument for the mechanic is that it reads as distance covered.
-func _quests_bonus_card(vb: VBoxContainer) -> void:
-	var period := quests_tab
-	var info: Dictionary = MISSION_TAB_INFO[period]
-	var total: int = (MISSION_DEFS[period] as Array).size()
-	var done := _mission_done(period)
-
-	var panel := _tinted_card(vb, Lagoon.BRASS, _milestone_any_ready(period))
-	FX.pop_in(panel, 0.3)
-	var margin := MarginContainer.new()
-	margin.add_theme_constant_override("margin_left", 16)
-	margin.add_theme_constant_override("margin_right", 16)
-	margin.add_theme_constant_override("margin_top", 14)
-	margin.add_theme_constant_override("margin_bottom", 14)
-	panel.add_child(margin)
-	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 10)
-	margin.add_child(col)
-
-	var head := HBoxContainer.new()
-	head.add_theme_constant_override("separation", 10)
-	col.add_child(head)
-	head.add_child(Lagoon.label("REWARD  TRACK", UI.F_LABEL, Lagoon.INK, true))
-	var spacer := Control.new()
-	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	head.add_child(spacer)
-	var tally := Lagoon.chip("%d / %d  MISSIONS" % [done, total],
-		Color(info["color"]), UI.F_TINY)
-	head.add_child(tally)
-
-	# The bar, with the rungs pinned along it.
-	#
-	# A plain Control holds both, rather than the markers being children of the
-	# ProgressBar: a ProgressBar draws its fill over its own children, so a
-	# marker parented to it disappears the moment the player passes it -- which
-	# is precisely when it matters most.
-	var lane := Control.new()
-	lane.custom_minimum_size = Vector2(0, MILE_LANE_H)
-	col.add_child(lane)
-
-	var bar := Lagoon.progress(Color(info["color"]).lightened(0.10))
-	bar.custom_minimum_size = Vector2(0, MILE_BAR_BOT - MILE_BAR_TOP)
-	bar.max_value = total
-	bar.value = done
-	lane.add_child(bar)
-	bar.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	bar.offset_top = MILE_BAR_TOP
-	bar.offset_bottom = MILE_BAR_BOT
-
-	for i in MISSION_MILESTONES.size():
-		_milestone_pip(lane, period, i, total, done)
-
-	var note := _popup_row_label("Every mission you claim moves the track", UI.F_TINY)
-	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	note.add_theme_color_override("font_color", Lagoon.INK_SOFT)
-	col.add_child(note)
-
-# HOW WIDE A RUNG HAS TO BE, MEASURED OFF THE FONT rather than assumed.
-#
-# A fixed 150 was the first pass and it was wrong in the one place it shows: a
-# PanelContainer whose contents do not fit grows PAST the rect its anchors gave
-# it, always to the right -- so the top rung, which is the one hung off the
-# card's right edge, was the one that hung over it. "26,000" and "+90" is six
-# glyphs and three, and no constant covers both that and "520  +3" without
-# being wrong for one of them.
-#
-# So the figures are measured in the font they will be set in, and the box is
-# what they need. Clamped at both ends: a floor so four rungs read as one row
-# of objects rather than four different sizes, and a ceiling so two rungs
-# sharing a band on the seven-mission board cannot touch.
-#
-# THE WIDER OF THE TWO ROWS, NOT THE SUM OF THEM. The currencies are stacked
-# now, so the box has to hold "26,000" or "+90" -- whichever is longer -- and
-# not both end to end. That one change is what paid for the 44px faces: the
-# same 186 units that used to be split between two currencies now belongs to
-# one, and the rest goes to the artwork.
-func _mile_box_w(coin_txt: String, spin_txt: String) -> float:
-	var fnt := Lagoon.ui_bold_font()
-	var ink := maxf(
-		fnt.get_string_size(coin_txt, HORIZONTAL_ALIGNMENT_LEFT, -1.0, UI.F_CAPTION).x,
-		fnt.get_string_size(spin_txt, HORIZONTAL_ALIGNMENT_LEFT, -1.0, UI.F_CAPTION).x)
-	# one face, the gap beside it, the card's own 8-a-side padding, and 4 for
-	# the rim.
-	return clampf(ink + MILE_ICON + 6.0 + 16.0 + 4.0, MILE_BOX_MIN, MILE_BOX_MAX)
-
-# One rung, standing on the bar at its own mark.
-#
-# THE GEOMETRY IS THREE BANDS AND IT HAD TO BE, after the first pass drew the
-# reward and the mission-count pin inside one box and let them find their own
-# room: the pin landed on top of the reward on every rung, and the rung at the
-# far right -- anchored at fraction 1.0 with a box hung symmetrically around it
-# -- had half its width off the edge of the card. Fractional anchors put a thing
-# AT a point; they do not keep it on the page.
-#
-#    0 .. 146   rewards for the even rungs, hung off the bar's top edge
-#  154 .. 190   the bar, and every rung's mission-count pin
-#  198 .. 340   rewards for the odd rungs
-#
-# Alternating above and below is not decoration either. Four rewards in a row on
-# a 620-unit card is 155 units each including the gaps, and the widest of them
-# reads "26,000 +90"; staggered, each one gets the width of two.
-#
-# WHAT A RUNG PAYS IS TWO PICTURES AND TWO NUMBERS, NOT TWO NUMBERS.
-#
-# Guy, 2026-09-13, off the page itself: "there are only numbers in certain
-# places on the bar, no icons, no colours -- you cannot tell what you get at
-# all". He was right and it was worse than it looked: a rung read "1,430  +8",
-# which is two figures in two different currencies with no unit on either, set
-# in the ONE control in the game that is deliberately colourless -- a disabled
-# candy button. `Lagoon.set_enabled(btn, false)` drains a button to grey stock
-# on purpose, because a control you cannot press must not look pressable; four
-# of them in a row is four grey pills on cream, which is the page's whole
-# reward ladder drawn in the game's "ignore me" material.
-#
-# So a rung is a CARD now, not a dead button, and it carries the coin and the
-# spin token at the same size the rest of the game pays in. The state is in the
-# stock and in the strip under the reward, never in the reward itself:
-#
-#   still out of reach  deep-water card, reward only -- "what it pays", not
-#                       "LOCKED", exactly as before: a rung out of reach is the
-#                       reason to claim the next mission.
-#   claimable           brass card, lit rim, a KELP CLAIM chip, and the whole
-#                       card is the button -- 150 x 76 of hit area, well over
-#                       the tap minimum a 32-unit chip could never carry.
-#   taken               kelp card at 62% with the game's tick-and-word stamp.
-func _milestone_pip(lane: Control, period: String, i: int, total: int, done: int) -> void:
-	var at := _milestone_at(period, i)
-	var reward := _milestone_reward(period, i)
-	var claimed := _milestone_claimed(period, i)
-	var ready := _milestone_ready(period, i)
-	var top := i % 2 == 0
-	var last := i >= MISSION_MILESTONES.size() - 1
-	var f := float(at) / float(maxi(1, total))
-	# A rung with something to say about itself is taller than one that only
-	# has a price on it, and it is hung off the bar's edge rather than off the
-	# band's -- so the short ones and the tall ones share the line the bar is
-	# on instead of floating at different distances from it.
-	var tall := ready or claimed
-	var h := MILE_BOX_TALL if tall else MILE_BOX_SHORT
-	var coin_txt := _fmt_compact(_scaled(int(reward["coins"])))
-	var spin_txt := "+%d" % int(reward["spins"])
-	var bw := _mile_box_w(coin_txt, spin_txt)
-
-	# The reward.
-	var box := Control.new()
-	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	lane.add_child(box)
-	box.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	box.anchor_left = f
-	box.anchor_right = f
-	# A rung at either end is hung off that end rather than centred on it, which
-	# is the only way a box this wide sits inside a card whose edge it is on.
-	if f > 0.97:
-		box.offset_left = -bw
-		box.offset_right = 0.0
-	elif f < 0.03:
-		box.offset_left = 0.0
-		box.offset_right = bw
-	else:
-		box.offset_left = -bw * 0.5
-		box.offset_right = bw * 0.5
-	box.offset_top = MILE_TOP_EDGE - h if top else MILE_BOT_EDGE
-	box.offset_bottom = MILE_TOP_EDGE if top else MILE_BOT_EDGE + h
-
-	var tint := Lagoon.KELP if claimed else (Lagoon.BRASS if ready or last else Lagoon.LAGOON)
-	var card := _tinted_card(box, tint, ready)
-	card.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	if claimed:
-		card.modulate = Color(1, 1, 1, 0.72)
-
-	# A claimable rung IS its button. The chip inside says which word; the card
-	# around it is what the finger lands on.
-	#
-	# WHY IT DID NOT COLLECT WHEN GUY PRESSED IT, and it is the oldest trap in
-	# this file rather than anything to do with the tap target. The button is a
-	# sibling UNDER the content, so everything drawn on top of it has to let
-	# the press through -- and every node in the stack below was set to
-	# MOUSE_FILTER_IGNORE for exactly that reason EXCEPT the one nobody
-	# thought of: Lagoon.chip is a PanelContainer, a PanelContainer defaults to
-	# MOUSE_FILTER_STOP, and the CLAIM chip sits dead centre on the card. So
-	# the press was swallowed by the one object on the rung that says the word
-	# "CLAIM" -- the exact pixels a finger aims at -- while the rim around it
-	# worked fine. `_mile_deaf` is applied to the whole subtree now rather than
-	# node by node, because the next control added here will default to STOP
-	# too and this must not come back. tools/qa_layout.gd presses the word.
-	var hit: Button = null
-	if ready:
-		hit = Button.new()
-		hit.flat = true
-		hit.focus_mode = Control.FOCUS_NONE
-		hit.set_meta("mile_pip", i)
-		card.add_child(hit)
-		FX.press_feedback(hit)
-		hit.pressed.connect(_claim_milestone.bind(period, i))
-		FX.pulse_forever(card, 1.05, 0.8)
-
-	var pad := MarginContainer.new()
-	for mg in ["margin_left", "margin_right"]:
-		pad.add_theme_constant_override(mg, 8)
-	for mg in ["margin_top", "margin_bottom"]:
-		pad.add_theme_constant_override(mg, 6)
-	card.add_child(pad)
-	var stack := VBoxContainer.new()
-	stack.alignment = BoxContainer.ALIGNMENT_CENTER
-	stack.add_theme_constant_override("separation", 2)
-	pad.add_child(stack)
-
-	# THE TWO CURRENCIES, EACH BEHIND ITS OWN FACE, ONE OVER THE OTHER. `coin`
-	# and `bolt` are the rendered props every other prize row in the game pays
-	# in, so a rung reads as the same money the shop and the chests hand over
-	# -- see _prize_art. Stacked rather than in a line: see MILE_ICON for why
-	# that is what makes them big enough to read.
-	for pair in [["coin", coin_txt], ["bolt", spin_txt]]:
-		var face := HBoxContainer.new()
-		face.alignment = BoxContainer.ALIGNMENT_CENTER
-		face.add_theme_constant_override("separation", 6)
-		face.custom_minimum_size = Vector2(0, MILE_ROW_H)
-		stack.add_child(face)
-		face.add_child(_prize_art(String(pair[0]), MILE_ICON))
-		var amt := Lagoon.label(String(pair[1]), UI.F_CAPTION, Lagoon.INK, true)
-		amt.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		face.add_child(amt)
-
-	if tall:
-		var strip := HBoxContainer.new()
-		strip.alignment = BoxContainer.ALIGNMENT_CENTER
-		stack.add_child(strip)
-		strip.add_child(Lagoon.chip("CLAIM", Lagoon.KELP, UI.F_CAPTION) if ready
-			else Lagoon.stamp("\u2713  TAKEN", Lagoon.KELP_HI, UI.F_CAPTION))
-	# Everything printed on the rung is scenery; the button under it is the
-	# control. Applied last so it covers whatever the branches above added.
-	_mile_deaf(pad)
-
-	# The mark on the bar: how many missions this rung stands at. Its own child
-	# of the lane rather than of the box above, so the two can never be asked to
-	# share a rect -- which is exactly how they came to be drawn on top of each
-	# other.
-	#
-	# AND IT CARRIES THE TICK, because "2" alone is a number on a bar and
-	# nothing on the page said what it counted. The tick is the game's mark for
-	# a claimed mission and it is stamped on the pin that stands for two of
-	# them, so the pin reads as "two claimed" without a word of caption. A pin
-	# the track has already passed goes kelp, which is the same green the ticks
-	# on the missions under it wear.
-	var reached := done >= at
-	var pin_ink := Lagoon.KELP_HI if reached else (Lagoon.BRASS_HI if last else Lagoon.SAND)
-	var pin := Lagoon.stamp_plate(pin_ink)
-	pin.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	lane.add_child(pin)
-	pin.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	pin.anchor_left = f
-	pin.anchor_right = f
-	# Hung off the end at the ends, like the reward above it. The last rung is
-	# always at fraction 1.0 -- it is the whole board -- so a pin centred there
-	# has half its width outside the card, where the rounded corner clips it.
-	if f > 0.97:
-		pin.offset_left = -MILE_PIN_W
-		pin.offset_right = 0.0
-	elif f < 0.03:
-		pin.offset_left = 0.0
-		pin.offset_right = MILE_PIN_W
-	else:
-		pin.offset_left = -MILE_PIN_W * 0.5
-		pin.offset_right = MILE_PIN_W * 0.5
-	pin.offset_top = MILE_BAR_TOP - 4.0
-	pin.offset_bottom = MILE_BAR_BOT + 4.0
-	# Still the game's smallest type, and deliberately: the pin is a mark ON the
-	# bar, not a prize. It cannot grow without colliding with the pin beside it
-	# (see MILE_PIN_W), and the thing Guy could not read was the reward.
-	var pl := Lagoon.label("\u2713 %d" % at, UI.F_TINY, pin_ink, true)
-	pl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	pl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	pin.add_child(pl)
-
-# Every control in a rung's face, made deaf to the finger.
-#
-# A press has to reach the Button sitting UNDER this subtree, and the default
-# for a Control is to eat it. Done as a walk rather than a line per node so
-# that nothing added to a rung later can quietly re-break the claim -- which is
-# precisely how the CLAIM chip came to be the one dead spot on the card.
-func _mile_deaf(n: Node) -> void:
-	if n is Control:
-		(n as Control).mouse_filter = Control.MOUSE_FILTER_IGNORE
-	for c in n.get_children():
-		_mile_deaf(c)
 
 func _quest_card(vb: VBoxContainer, m: Dictionary, index: int) -> void:
 	var st: Dictionary = mission_state[quests_tab]
@@ -26530,7 +26045,7 @@ func _load_game() -> void:
 			if typeof(cd) == TYPE_DICTIONARY:
 				for k in cd:
 					cl[k] = _b(cd[k])
-			mission_state[period] = {"key": _i(pst.get("key", -1), -1), "progress": prog, "claimed": cl, "bonus": _b(pst.get("bonus", false))}
+			mission_state[period] = {"key": _i(pst.get("key", -1), -1), "progress": prog, "claimed": cl}
 	# Clamped and resized exactly the way the rivals below already are. This
 	# array was the one the loader trusted, and it is the player's own: a level
 	# of -10 sends village_view's costs[level] out of bounds and the island

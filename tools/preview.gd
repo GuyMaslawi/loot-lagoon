@@ -686,7 +686,6 @@ func _open_page(game: Control, key: String) -> void:
 		for period in st:
 			st[period]["progress"] = {}
 			st[period]["claimed"] = {}
-			st[period]["bonus"] = false
 	if key == "island":
 		game.call("_goto", game.get("village_page"))
 	else:

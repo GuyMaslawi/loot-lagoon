@@ -75,7 +75,6 @@ func _ready() -> void:
 	for period in m.mission_state:
 		m.mission_state[period]["progress"] = {}
 		m.mission_state[period]["claimed"] = {}
-		m.mission_state[period]["bonus"] = false
 
 	for key in keys:
 		await _goto(key)
