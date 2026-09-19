@@ -691,41 +691,14 @@ var piggy_promised := 0
 var offer_id := ""
 var offer_until := 0.0
 var offer_next := 0.0
-# The live deal chain -- see scripts/deals.gd. Which chain, when it dies, the
-# earliest the next may roll, and how many of its six rungs have been taken.
-# All four persist for the same reason the offer's three do: a ladder a player
-# is half-way up is the entire mechanic, and a ladder that forgets where it was
-# is worse than no ladder at all.
-var deal_id := ""
-var deal_until := 0.0
-var deal_next := 0.0
-var deal_taken := 0
-# Whether the grand prize at the top has been paid out. Separate from
-# `deal_taken == 6` because the sixth rung and the finale are two grants and
-# the app can be killed between them.
-var deal_finale := false
-# Whether the chain that just went dark went out CLEARED. Guy, 2026-09-11: he
-# finished a ladder, opened the events disc during the cooldown, and found
-# nothing but a clock — the game had forgotten the thing he did. Persisted,
-# because the cooldown is thirty hours and an achievement that survives a
-# restart is the only kind that is one. Cleared when the next chain rolls in.
-var deal_done := false
-# HOW MANY RUNGS THE LAST CHAIN WENT OUT WITH, which is the same argument one
-# step further along. `deal_done` only remembered a PERFECT run, and a perfect
-# run is not what most cooldowns follow: the rungs alternate free and paid, so
-# a player who takes every free thing on offer and buys nothing stops at four
-# of six and has genuinely done well. That player got the bare clock — the
-# exact screen Guy objected to on 2026-09-13 ("when the user finishes, don't
-# show only the time to the next one; show that he took them all, and leave the
-# clock above or below").
-#
-# So the teaser draws the ladder the player actually left behind, whatever
-# shape it was in, and the clock goes underneath it. `deal_taken` cannot do
-# this job: it is reset to zero the instant the chain rolls out, which is the
-# same instant this screen becomes the one on show.
-var deal_last_taken := 0
+# THE EVENTS DISC IS THE FAIR'S NOW. The six-rung chain that used to share it
+# was removed on 2026-09-19 -- see the note at the head of scripts/deals.gd --
+# and with it went `deal_id`, `deal_until`, `deal_next`, `deal_taken`,
+# `deal_finale`, `deal_done` and `deal_last_taken`. Old saves still carry those
+# keys and they are simply never read.
+
 # THE FAIR -- nine one-off stalls on a points board. See scripts/deals.gd for
-# what it is and why it is not simply a longer chain.
+# what it is and why it is a points board rather than a queue.
 #
 # `fair_taken` and `fair_miles` are dictionaries with STRING keys rather than
 # arrays of ints, and that is not a style choice: JSON has one number type, so
@@ -798,11 +771,11 @@ var solo_until := 0.0
 var solo_next := 0.0
 var solo_shown := false
 var solo_pending := ""
-# The chain and the fair get the same one-per-session showing, and their flag
-# is NOT saved. The premium two keep theirs on disk because a receipt can come
-# back into a process that was killed inside Apple's sheet; an event ladder has
-# nothing to lose that way, and a flag that only ever means "this session" is
-# clearer as a field that cannot outlive one.
+# The fair gets one showing a session, and its flag is NOT saved. The premium
+# two keep theirs on disk because a receipt can come back into a process that
+# was killed inside Apple's sheet; an event board has nothing to lose that way,
+# and a flag that only ever means "this session" is clearer as a field that
+# cannot outlive one.
 var _event_shown := false
 # How long in the background counts as a new session. Anything under it is
 # somebody flicking to the messages app and back, and a deal opening itself on
@@ -824,22 +797,17 @@ var topup_pending := {}
 var _ui_tick := 0.0
 var _shop_gift_timer_label: Label
 var _offer_timer_label: Label
-# The deal chain's countdown, and which chain ran last. The label is nulled
-# whenever its screen is rebuilt; the id is session-only on purpose -- it stops
-# the same chain rolling twice in a row, and a fresh launch has nothing to
-# repeat.
-var _deal_timer_label: Label
-# The teaser's countdown, while the events disc is opened between chains. The
-# same tick that feeds the ladder's clock feeds this one, and when it reaches
-# zero the tick swaps the teaser for the ladder that just went live.
-var _deal_next_timer_label: Label
+# The events teaser's countdown, while the disc is opened in the fair's dark
+# window. The same tick that drives the fair's own clock feeds this one, and
+# when it reaches zero the tick swaps the promise for the event that just
+# sailed.
+var _event_next_timer_label: Label
 # The daily dialog's countdown, and the three prize nodes its flights launch
 # from. The parts are held on the node rather than passed through the press,
 # because the press is now two different controls -- the hero and today's rung
 # -- and both have to hand _claim_daily the same three places.
 var _daily_timer_label: Label
 var _daily_hero_parts := {}
-var _deal_last_id := ""
 var _powerup_timer_label: Label
 # The clock on the "next offer" row, which only exists while no offer does.
 var _powerup_next_timer_label: Label
@@ -1578,55 +1546,6 @@ func _shot_quests() -> void:
 		st["progress"][m["id"]] = _mission_target(m)
 		st["claimed"][m["id"]] = true
 
-func _shot_deal() -> void:
-	if not OS.has_environment("DEMO_DEAL_DONE"):
-		# DEMO_DEAL_TAKEN=<n> parks a LIVE ladder n rungs up it, which is the
-		# only way to look at the three states a rung has at once -- spent,
-		# live, locked -- and at the waymarkers that are supposed to say which
-		# is which. Climbing to it honestly costs a purchase, since rung three
-		# of every chain is a paid one.
-		if OS.has_environment("DEMO_DEAL_TAKEN"):
-			_deal_tick()
-			# A SAVE IN THE DARK WINDOW CANNOT BE TICKED INTO A LIVE CHAIN, and
-			# that is most saves: a chain runs 24 hours in every 54, so four
-			# times in nine the harness photographed the teaser instead of the
-			# ladder it was asked for -- with no error, because the teaser is a
-			# real screen. The chain is armed here instead when the tick did not
-			# produce one. DEMO_DEAL_ID names which; the first is the default.
-			if _active_deal().is_empty():
-				var want := OS.get_environment("DEMO_DEAL_ID")
-				deal_id = want if not Deals.by_id(want).is_empty() \
-					else String((Deals.CHAINS[0] as Dictionary)["id"])
-				deal_until = _now() + Deals.CHAIN_DURATION
-				deal_finale = false
-			deal_taken = clampi(int(OS.get_environment("DEMO_DEAL_TAKEN")),
-				0, Deals.STEPS)
-		_open_deal()
-		# DEMO_DEAL_TAKE=1 then PRESSES the live rung a beat after the ladder
-		# opens, which is the only way to film the unlock: the beat needs a
-		# rung to have just been taken, and taking one honestly means either a
-		# purchase or a free rung that the harness cannot reach through a
-		# Button it has no finger for.
-		if OS.get_environment("DEMO_DEAL_TAKE") == "1" and deal_taken < Deals.STEPS \
-				and not Deals.is_paid((_active_deal()["steps"] as Array)[deal_taken]):
-			_after(1.2, _take_deal.bind(deal_taken))
-		return
-	var n := clampi(int(OS.get_environment("DEMO_DEAL_DONE")), 0, Deals.STEPS)
-	deal_id = ""
-	deal_until = 0.0
-	deal_taken = 0
-	deal_finale = false
-	deal_done = n >= Deals.STEPS
-	deal_last_taken = n
-	deal_next = _now() + 9.0 * 3600.0 + 742.0
-	# POWERUP_NEXT=<hours> parks the 1+2 in its dark half, which is the state
-	# the teaser's door row was written for.
-	if OS.has_environment("POWERUP_NEXT"):
-		powerup_id = ""
-		powerup_until = 0.0
-		powerup_next = _now() + float(OS.get_environment("POWERUP_NEXT")) * 3600.0
-	_open_deal()
-
 # The 1+2. It only rolls in after the first POWERUP_COOLDOWN of a save, so on a
 # fresh one there is never an offer live and SHOT=popup:powerup photographed
 # whatever page was underneath it -- which is a harness that silently reports
@@ -1691,8 +1610,6 @@ func _shot_voyage() -> void:
 	_open_voyage()
 
 func _shot_fair() -> void:
-	deal_id = ""
-	deal_until = 0.0
 	fair_next = 0.0
 	fair_id = ""
 	_fair_tick()
@@ -1790,17 +1707,10 @@ func _capture_page(key: String) -> void:
 			"tourney": _open_tourney()
 			"daily":   _open_daily()
 			"piggy":   _shot_piggy()
-			# The deal chain. It rolls itself in on the first tick of a fresh
-			# save, and the harness waits five seconds before it opens
-			# anything, so by here there is always one live -- which means the
-			# COOLDOWN screen, the other half of this disc, could not be
-			# photographed at all. DEMO_DEAL_DONE=<n> sends the live chain out
-			# with n rungs taken and shoots the teaser instead.
-			"deal":    _shot_deal()
-			# The fair cannot be reached by waiting: a fresh save rolls a CHAIN
-			# in on its first tick and the fair only opens in that chain's dark
-			# window, a day later. DEMO_FAIR_TAKEN=n takes the first n stalls,
-			# DEMO_FAIR_SHUT=1 shows the restocking state.
+			# The fair, forced live: it runs a day in every FAIR_COOLDOWN and
+			# a harness save is as likely as not to be in the dark half.
+			# DEMO_FAIR_TAKEN=n takes the first n stalls, DEMO_FAIR_SHUT=1
+			# shows the restocking state.
 			"fair":    _shot_fair()
 			# The voyage, on whichever day DEMO_VOY_DAY asks for, with
 			# DEMO_VOY_DONE goals of that day already met. Reaching day four
@@ -3015,23 +2925,17 @@ func _process(delta: float) -> void:
 			else:
 				_daily_timer_label.text = "Next bonus in  %s" % _countdown_text(
 					maxi(0, int(DAILY_COOLDOWN - (_trusted_now() - daily_last))))
-		_deal_tick()
-		if _deal_timer_label != null and is_instance_valid(_deal_timer_label):
-			# Bare digits: the clock shares the progress row now and "ENDS IN"
-			# would push the bar under the width it needs to read as a bar.
-			_deal_timer_label.text = _deal_countdown_text()
 		# The teaser's clock, while it is up. The ancestor test for the same
 		# reason the daily's clock has one: _close_popup fades the old popup
 		# out before freeing it, so a stale label stays valid for a beat.
-		if _deal_next_timer_label != null and is_instance_valid(_deal_next_timer_label) \
-				and _popup != null and _popup.is_ancestor_of(_deal_next_timer_label):
-			if not _active_deal().is_empty() or not _active_fair().is_empty():
+		if _event_next_timer_label != null and is_instance_valid(_event_next_timer_label) \
+				and _popup != null and _popup.is_ancestor_of(_event_next_timer_label):
+			if not _active_fair().is_empty():
 				# The event the countdown promised just went live under the
 				# player's nose -- swap the promise for the thing itself.
-				# _open_deal routes to whichever of the two it is.
-				_open_deal()
+				_open_event()
 			else:
-				_deal_next_timer_label.text = _countdown_text(
+				_event_next_timer_label.text = _countdown_text(
 					maxi(0, int(_next_event_at() - _now())))
 		_voyage_tick()
 		if _voy_timer_label != null and is_instance_valid(_voy_timer_label) \
@@ -3057,13 +2961,13 @@ func _process(delta: float) -> void:
 		if _solo_timer_label != null and is_instance_valid(_solo_timer_label):
 			_solo_timer_label.text = "ENDS  IN  %s" % _solo_countdown_text()
 		# The "next offer" clock on the teaser's door row. Same ancestor test as
-		# the chain's, and the same swap at zero: an offer that arms while the
+		# the teaser's own clock, and the same swap at zero: an offer that arms while the
 		# player is watching the countdown replaces the promise with the row
 		# that opens the thing.
 		if _powerup_next_timer_label != null and is_instance_valid(_powerup_next_timer_label) \
 				and _popup != null and _popup.is_ancestor_of(_powerup_next_timer_label):
 			if _offer_live():
-				if _active_deal().is_empty():
+				if _active_fair().is_empty():
 					_open_event_teaser()
 			else:
 				_powerup_next_timer_label.text = _countdown_text(
@@ -4769,7 +4673,7 @@ func _add_side_rail(parent: Control, top: float) -> void:
 			# no way to reach it again. Guy, 2026-09-12: give these deals a
 			# main icon of their own. The disc stands while an offer is live
 			# and leaves with it (see _update_badges); between offers the
-			# spark disc's teaser is the door, same as for the chains.
+			# events disc's teaser is the door, same as for the fair.
 			["box",    "Offer",      "powerup", _open_offer]]))
 	# The trophy is the one disc that carries a number, and the reason is that
 	# the tournament is the only event in the game whose progress is invisible
@@ -4781,11 +4685,11 @@ func _add_side_rail(parent: Control, top: float) -> void:
 			["gift",   "Daily",      "daily",  _open_daily],
 			["trophy", "Tournament", "ranks",  _open_tourney, true],
 			["piggy",  "Piggy Bank", "piggy",  _open_piggy],
-			# The events. It used to vanish with the chain and come back with
+			# The events. It used to vanish between events and come back with
 			# the next one, which was survivable while the shop carried its own
-			# event rows -- with those gone this disc is the only door the two
-			# events have, so it is permanent now and the cooldown opens the
-			# next-event teaser instead. See _open_deal.
+			# event rows -- with those gone this disc is the only door the fair
+			# has, so it is permanent now and the dark window opens the
+			# next-event teaser instead. See _open_event.
 			#
 			# A TAG, NOT A SPARK, and no alert dot on it. Guy, 2026-09-14, off
 			# his own phone: the icon "should change to something more relevant
@@ -4793,7 +4697,7 @@ func _add_side_rail(parent: Control, top: float) -> void:
 			# beside it "is not relevant". Both notes are about the same thing --
 			# this is the door to the deals, and it was wearing the two marks
 			# that say least about them. See Glyph._tag and _update_badges.
-			["tag",    "Deals",      "deal",   _open_deal]]))
+			["tag",    "Deals",      "deal",   _open_event]]))
 
 # One lane. The run grows downward from its top, so adding a button lengthens
 # the rail rather than re-centring the ones above it.
@@ -5406,11 +5310,11 @@ func _update_badges() -> void:
 		# NO DOT ON THE DEALS DISC, and this is the shop-dot argument arriving
 		# at the disc the shop dot was moved off.
 		#
-		# It meant "a free rung is waiting", never "an event exists", which was
-		# the honest version of the rule -- and it still stood almost all the
-		# time. A chain runs 24 hours in every 54 and its rungs alternate free
-		# and paid, so the dot was lit for most of a live chain and for every
-		# open stall at the fair: a red alert badge that is on more often than
+		# It meant "a free thing is waiting", never "an event exists", which
+		# was the honest version of the rule -- and it still stood almost all
+		# the time. The fair runs a day in every 54 hours and most of its nine
+		# stalls are free, so the dot was lit for every open stall of every
+		# live fair: a red alert badge that is on more often than
 		# it is off is wallpaper by the second hour, exactly as it was when the
 		# Shop tab wore one for a live offer of any age. Guy, 2026-09-14: it
 		# "is not relevant".
@@ -5434,12 +5338,12 @@ func _update_badges() -> void:
 			var pu_box := pu_btn.get_parent() as Control
 			if pu_box != null:
 				pu_box.visible = pu_live
-		# The disc used to go out entirely between chains, so a button opening
+		# The disc used to go out entirely between events, so a button opening
 		# an empty screen never existed -- and then the shop's event rows were
 		# retired (2026-09-09) and this disc became the events' ONLY door, which
 		# it cannot be while it spends the 30-hour cooldown invisible. Guy,
 		# 2026-09-10: it was supposed to disappear from the shop, not from the
-		# game. So it stays, and _open_deal answers the cooldown with the
+		# game. So it stays, and _open_event answers the dark window with the
 		# next-event teaser instead of with nothing -- a countdown is a screen,
 		# an absence is not.
 	# The gold inside the disc's pig, on the same pass. Not tweened: this runs
@@ -5703,10 +5607,11 @@ func _period_claimable(period: String) -> bool:
 # a drag that does the wrong one. Only dialogs that can genuinely outgrow the
 # screen ask for it.
 #
-# WHAT IT FIXES. The deal chain is six cards in three rows and it comes to about
-# 1420 units; the game is drawn for 720x1280. On the tall phones the harness
-# usually shoots at, it fitted and looked finished. On the canvas it is actually
-# designed for, the grand prize was off the bottom of the screen and the
+# WHAT IT FIXES. The deal chain -- six cards in three rows, removed in
+# 2026-09 -- came to about 1420 units; the game is drawn for 720x1280. On the
+# tall phones the harness usually shoots at, it fitted and looked finished. On
+# the canvas it is actually designed for, the grand prize was off the bottom of
+# the screen and the
 # nameplate was jammed under the notch -- and nothing about the modal said so,
 # because a CenterContainer centres content larger than itself by hanging it off
 # both ends.
@@ -11908,99 +11813,13 @@ func _shop_badge_due() -> bool:
 	return _shop_free_ready() or _offer_expiring()
 
 # =============================================================================
-#  The deal chain
+#  The events disc
 # =============================================================================
 #
-# A limited-time ladder of six rewards where taking one reveals the next. The
-# data, the rules and the reasoning are in scripts/deals.gd; this is the state
-# machine and the screen.
-#
-# It rotates like the timed offer does and for the same reason -- a live window
-# and a dark one, both persisted, so that opening the game is checking whether
-# something is happening. The difference is that the offer is one card the
-# player either takes or does not, and this is a queue they can be part-way
-# through. That is the entire point: a half-finished ladder is a reason to come
-# back tonight, and the offer never had one.
-
-# The next rung, or an empty dictionary when the chain is finished or dark.
-func _deal_step() -> Dictionary:
-	var chain := _active_deal()
-	if chain.is_empty() or deal_taken >= Deals.STEPS:
-		return {}
-	return chain["steps"][deal_taken]
-
-# The live chain, or an empty dictionary. Same shape of answer as _active_offer.
-func _active_deal() -> Dictionary:
-	if deal_id == "" or _now() >= deal_until:
-		return {}
-	return Deals.by_id(deal_id)
-
-func _deal_countdown_text() -> String:
-	var left := maxi(0, int(deal_until - _now()))
-	return "%d:%02d:%02d" % [left / 3600, (left / 60) % 60, left % 60]
-
-# Rolls a chain in, and rolls a dead one out. Called once a second off the same
-# tick that drives the timed offer.
-func _deal_tick() -> void:
-	var now := _now()
-	if deal_id != "":
-		# A chain that ran out of time, WITH ITS GRAND PRIZE STILL OWED, pays it
-		# on the way out. The finale is earned by clearing six rungs and the
-		# clock has nothing to do with it -- a player who finished the ladder in
-		# the last minute of the window and closed the app would otherwise have
-		# cleared it for nothing, which is the one outcome that would make the
-		# whole mechanic feel rigged.
-		if now >= deal_until:
-			if deal_taken >= Deals.STEPS and not deal_finale:
-				_deal_pay_finale(true)
-			deal_done = deal_taken >= Deals.STEPS
-			# Taken BEFORE the reset below wipes it, because the cooldown
-			# screen is built out of it.
-			deal_last_taken = deal_taken
-			deal_id = ""
-			deal_until = 0.0
-			deal_taken = 0
-			deal_finale = false
-			deal_next = now + Deals.CHAIN_COOLDOWN
-			# THE CALENDAR IS ONE CALENDAR. The fair runs inside the chain's
-			# own dark window rather than on a clock of its own, three hours
-			# after the ladder goes out and finishing three hours before the
-			# next one sails -- so the two events alternate and the spark disc
-			# never has to decide which of two live events it opens. The gaps
-			# either side are what keeps "an event is running" information
-			# rather than wallpaper.
-			fair_next = now + FAIR_GAP
-			_save_game()
-			_update_badges()
-		return
-	if now < deal_next:
-		return
-	# Never the same chain twice running. With four of them the odds of a repeat
-	# are one in four, and two identical events back to back is what makes a
-	# rotation read as "the game has one event" rather than as a calendar.
-	var pool := []
-	for c in Deals.CHAINS:
-		if String(c["id"]) != _deal_last_id:
-			pool.append(c)
-	if pool.is_empty():
-		pool = Deals.CHAINS.duplicate()
-	var pick: Dictionary = pool[randi() % pool.size()]
-	deal_id = String(pick["id"])
-	_deal_last_id = deal_id
-	deal_until = now + Deals.CHAIN_DURATION
-	deal_taken = 0
-	deal_finale = false
-	deal_done = false
-	_save_game()
-	_notify("spins", "%s has begun — six rewards, %d hours!" % [pick["name"], int(Deals.CHAIN_HOURS)], "🎁")
-	_update_badges()
-
-# --- the screen --------------------------------------------------------------
-
-# The serpentine. Six rungs in three rows of two, and the middle row runs
-# right-to-left, so the eye walks the ladder in one unbroken stroke instead of
-# carriage-returning twice. Values are step indices in visual order.
-const DEAL_SERPENTINE := [0, 1, 3, 2, 4, 5]
+# It used to hold two events that took turns: a six-rung chain and the fair.
+# The chain was removed on 2026-09-19 (see the head of scripts/deals.gd), so
+# the fair has the disc to itself and a clock of its own -- everything below
+# that says "the calendar" now means one event, not an alternation.
 
 # THE EVENT CARDS ARE STRUCK IN JEWEL STOCK, NOT PRINTED ON PAPER.
 #
@@ -12048,137 +11867,48 @@ const EVENT_STOCK := {
 	"gold":  [Color(0.145, 0.094, 0.027), Color(0.475, 0.325, 0.106), Lagoon.BRASS_HI,          Color(1.00, 0.88, 0.58)],
 }
 
-# Which rung was just taken, held until the ladder next draws itself.
-#
-# A rung landing changes two cards -- one is spent, the next comes unlocked --
-# and a rebuild made both changes between frames, which is the one thing this
-# mechanic could not afford to do silently. The whole reason a chain works is
-# that the player watches a door open; a ladder that simply *is* one rung
-# further along the next time you look at it is a progress bar.
-#
-# It is not cleared by the rebuild that consumes it but by the rung it names
-# going stale, so a PAID rung -- which leaves this screen for a StoreKit sheet
-# and may not come back for minutes -- still plays its unlock the next time the
-# ladder is opened. That is the moment the player is looking for it.
-var _deal_anim_from := -1
-# The cells and the waymarkers of the ladder currently on screen, by step
-# index. Rebuilt with the screen; only ever read by the animation.
-var _deal_cell_nodes := {}
-var _deal_arrow_nodes := {}
-# The track across the top, held so a rung can move it without the screen it
-# lives on being torn down. See _deal_patch.
-var _deal_bar: Range
-var _deal_count: Label
-var _deal_finale_art: Control
-
-# WHAT THE EVENTS DISC OPENS BETWEEN CHAINS. The disc is permanent (Guy,
-# 2026-09-10: the shop rows were what was supposed to go, not the door itself),
-# so the 30-hour cooldown needs a screen -- and a countdown to the next chain
-# is the honest one: it turns dead air into anticipation, which is the same
+# WHAT THE EVENTS DISC OPENS WHILE NOTHING IS RUNNING. The disc is permanent
+# (Guy, 2026-09-10: the shop rows were what was supposed to go, not the door
+# itself), so the fair's dark window needs a screen -- and a countdown to the
+# next one is the honest answer: it turns dead air into anticipation, the same
 # trade the piggy's fill meter makes. If a 1+2 power-up happens to be running
 # it gets a row here too, because retiring the shop rows left the takeover as
 # its only door, and an offer dismissed in the first two seconds of a launch
-# was otherwise gone for twelve hours -- the exact problem the shop rows
-# existed to solve, handed back one page over.
+# was otherwise gone for twelve hours.
 func _open_event_teaser() -> void:
 	var vbox := _open_popup("EVENTS", 560.0, false)
 	if not vbox.is_inside_tree():
 		return
-	_deal_timer_label = null
-	_deal_next_timer_label = null
+	_event_next_timer_label = null
 	_powerup_next_timer_label = null
 
 	# With the clock, because this screen IS the dark half of the calendar.
 	_powerup_door_row(vbox, true)
 
-	# What stands above the clock is the ladder the last chain went out with.
-	# Guy, 2026-09-11: finishing every rung and then finding nothing here but a
-	# countdown erased the finishing. Guy again, 2026-09-13, about the same
-	# screen one case wider: a player who took four of six has also finished
-	# something, and the bare clock erased that too. So ANY ladder with a rung
-	# down on it comes back — the taken slabs struck, the ones left behind
-	# locked — and only a player who took nothing at all gets the spark, which
-	# for them is honest: the cooldown really is only a promise.
-	if deal_last_taken > 0:
-		_teaser_done_strip(vbox, deal_last_taken)
-		var all_six := deal_last_taken >= Deals.STEPS
-		# A stamp, not a label: bright green type wants a deep well under it —
-		# on the cream card it is the pale-on-pale problem all over again.
-		var done := Lagoon.stamp(
-			"ALL  SIX  REWARDS  TAKEN" if all_six
-			else "%d  OF  %d  REWARDS  TAKEN" % [deal_last_taken, Deals.STEPS],
-			Lagoon.KELP_HI if all_six else Lagoon.BRASS_HI, UI.F_CAPTION)
-		done.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-		vbox.add_child(done)
-	else:
-		# The next chain, as a promise with a clock on it.
-		var mark2 := _prize_art("spark", 108.0)
-		mark2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-		vbox.add_child(mark2)
-		FX.pulse_forever(mark2, 1.06, 1.6)
+	# The next fair, as a promise with a clock on it. The strip that used to
+	# stand here -- the last chain's ladder, kept on the wall through its
+	# cooldown -- went with the chain: the fair is nine stalls taken in any
+	# order, so "how far you got" is a score, not a path, and the board itself
+	# already says it while it is live.
+	var mark2 := _prize_art("spark", 108.0)
+	mark2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	vbox.add_child(mark2)
+	FX.pulse_forever(mark2, 1.06, 1.6)
 	var head := Lagoon.label("THE  NEXT  EVENT  SETS  SAIL  IN", UI.F_LABEL, Lagoon.INK, true)
 	head.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(head)
 	var plate2 := Lagoon.stamp_plate(Lagoon.KELP_HI)
 	plate2.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	vbox.add_child(plate2)
-	_deal_next_timer_label = Lagoon.label(
+	_event_next_timer_label = Lagoon.label(
 		_countdown_text(maxi(0, int(_next_event_at() - _now()))), UI.F_SUBHEAD,
 		Lagoon.KELP_HI, true)
-	plate2.add_child(_deal_next_timer_label)
-	var sub_text := "Six rewards on one ladder — the free ones cost nothing but showing up."
-	if deal_done:
-		sub_text = "The whole ladder, cleared — another six sail in with the next tide."
-	elif deal_last_taken > 0:
-		sub_text = "That ladder is behind you — a fresh six sail in with the next tide."
+	plate2.add_child(_event_next_timer_label)
+	var sub_text := "Nine stalls, taken in any order — the free ones cost nothing but showing up."
 	var sub := _popup_row_label(sub_text, UI.F_CAPTION)
 	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	sub.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	vbox.add_child(sub)
-
-# The ladder as the player left it, kept on the wall through the cooldown: six
-# slabs walked by the same chevron the full ladder uses, struck in the same
-# stock. Miniatures of the real thing rather than a fresh mark, so the player
-# is looking at what they took and not at a new abstraction — and one straight
-# row, not the serpentine, because at this size the path has nothing left to
-# lead anywhere.
-#
-# `taken` is how far they got. The slabs behind it are spent and ticked; the
-# ones in front are the stock a locked rung is struck on, at the alpha the
-# ladder itself uses for one, so the strip says how far this went rather than
-# only that it happened. The chevron turns with it: green up to the last rung
-# taken, dead after it.
-func _teaser_done_strip(vbox: VBoxContainer, taken: int) -> void:
-	var row := HBoxContainer.new()
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	row.add_theme_constant_override("separation", 5)
-	vbox.add_child(row)
-	for i in Deals.STEPS:
-		var got := i < taken
-		if i > 0:
-			var head := Glyph.new()
-			head.kind = "chevron"
-			head.tint = Lagoon.KELP_HI if got else Lagoon.INK_FAINT
-			head.custom_minimum_size = Vector2(20, 20)
-			head.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-			row.add_child(head)
-		var cube := _event_stock(row, "taken" if got else "free", false)
-		cube.custom_minimum_size = Vector2(62, 58)
-		cube.modulate = Color(1, 1, 1, 0.85 if got else 0.45)
-		# The medallion in its own box — a PanelContainer re-fits anchored
-		# children to its whole rect, the same trap the full-size rung hit.
-		var slot := Control.new()
-		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		cube.add_child(slot)
-		var mark := Glyph.new()
-		mark.kind = "tick" if got else "lock"
-		mark.modulate = Lagoon.KELP_HI if got else Color(1, 1, 1, 0.62)
-		slot.add_child(mark)
-		mark.set_anchors_preset(Control.PRESET_CENTER)
-		mark.offset_left = -17.0
-		mark.offset_right = 17.0
-		mark.offset_top = -17.0
-		mark.offset_bottom = 17.0
 
 # =============================================================================
 #  THE VOYAGE — seven days, three goals a day, one bar
@@ -12269,7 +11999,7 @@ func _claim_voyage(day: int, goal: Dictionary) -> void:
 	voy_stamps += int(goal["stamps"])
 	Sfx.play("jackpot", -4.0)
 	FX.confetti(self, 22)
-	_deal_pay(Deals.voyage_reward(goal), Vector2(view_size().x * 0.5, view_size().y * 0.45))
+	_event_pay(Deals.voyage_reward(goal), Vector2(view_size().x * 0.5, view_size().y * 0.45))
 	_voyage_pay_miles()
 	_save_game()
 	_update_badges()
@@ -12284,7 +12014,7 @@ func _claim_voyage(day: int, goal: Dictionary) -> void:
 				if is_instance_valid(_voy_bar_label):
 					_voy_bar_label.text = "%d / %d  STAMPS" % [
 						mini(voy_stamps, int(_voy_bar.max_value)), int(_voy_bar.max_value)])
-	_deal_show_cards("Voyage reward!")
+	_event_show_cards("Voyage reward!")
 	if _popup == null or not _popup.has_meta("voyage"):
 		return
 	# The row that was just claimed has to become a spent row, and the cleanest
@@ -12304,7 +12034,7 @@ func _voyage_pay_miles() -> void:
 		Sfx.play("levelup" if last else "jackpot", -3.0)
 		FX.confetti(self, 70 if last else 34)
 		FX.flash(self)
-		_deal_pay(Deals.voyage_reward(mile))
+		_event_pay(Deals.voyage_reward(mile))
 		_banner("THE VOYAGE IS YOURS!  The whole chest" if last
 			else "VOYAGE PRIZE!  %d stamps" % int(mile["at"]),
 			Lagoon.BRASS_HI if last else Lagoon.KELP_HI, "⛵")
@@ -12675,23 +12405,28 @@ func _voyage_shortcut(vbox: VBoxContainer, goals: Array) -> void:
 # What it is and why it is not a second ladder is argued in scripts/deals.gd.
 # What lives here is the clock, the screen and the two ways a stall is taken.
 #
-# Three hours after the chain goes dark, and three hours clear of the next one.
+# THE FAIR KEEPS THE CALENDAR ON ITS OWN NOW. It used to be armed by the
+# chain's death -- three hours after a ladder went dark, three hours clear of
+# the next one -- so with the chain gone (2026-09-19) it would have run once
+# and never again. The numbers below are the same rhythm the chain had, for
+# the same reason it had it: a day live is long enough that a player who opens
+# the game once meets it, and a longer dark window is what keeps "an event is
+# running" information rather than wallpaper.
+#
+# FAIR_GAP survives as the ARMING delay only -- the pause between one fair
+# ending and the calendar looking at the clock again is FAIR_COOLDOWN.
 const FAIR_GAP := 3.0 * 3600.0
+const FAIR_COOLDOWN := 30.0 * 3600.0
 
 func _active_fair() -> Dictionary:
 	if fair_id == "" or _now() >= fair_until:
 		return {}
 	return Deals.fair_by_id(fair_id)
 
-# WHEN THE NEXT EVENT SAILS, whichever of the two it is. The teaser's clock was
-# `deal_next` outright, which since the fair exists would have counted down to
-# the wrong event for most of the gap -- and then sat at 0:00:00 while a fair
-# the player could not see from that screen ran for a day.
+# WHEN THE NEXT EVENT SAILS. One event, one clock -- this was a comparison of
+# two while the chain existed.
 func _next_event_at() -> float:
-	var nxt := deal_next
-	if fair_next > _now() and fair_next < nxt:
-		nxt = fair_next
-	return nxt
+	return fair_next
 
 func _fair_countdown_text() -> String:
 	var left := maxi(0, int(fair_until - _now()))
@@ -12699,6 +12434,15 @@ func _fair_countdown_text() -> String:
 
 func _fair_took(i: int) -> bool:
 	return bool(fair_taken.get(str(i), false))
+
+# How many stalls are still standing. Only used by the notification, which may
+# never say "come back" about an event with nothing left in it.
+func _fair_left() -> int:
+	var left := 0
+	for i in Deals.FAIR_SLOTS:
+		if not _fair_took(i):
+			left += 1
+	return left
 
 # Whether the free half of the fair is open. Paid stalls never close: a queue
 # in front of a till is a sale the store did not make.
@@ -12715,18 +12459,15 @@ func _fair_tick() -> void:
 			fair_miles = {}
 			fair_pts = 0
 			fair_restock = 0.0
+			# Its own cooldown, which is what the chain's death used to do for
+			# it. Without this line `fair_next` stays where it was and the next
+			# fair rolls in on the very next tick -- an event that is always on
+			# is a price list.
+			fair_next = now + FAIR_COOLDOWN
 			_save_game()
 			_update_badges()
 		return
 	if now < fair_next:
-		return
-	# NEVER TWO EVENTS AT ONCE. The gap either side of the fair is three hours
-	# and a chain runs for a day, so this only bites when a clock has been
-	# moved -- a device whose time changed, or a save carried between phones --
-	# but the failure it prevents is the spark disc having two screens and no
-	# way to choose, which is exactly the shape of bug that only ever appears
-	# on someone else's phone.
-	if not _active_deal().is_empty():
 		return
 	var pool := []
 	for f in Deals.FAIRS:
@@ -12781,19 +12522,19 @@ func _take_fair(i: int) -> void:
 	fair_taken[str(i)] = true
 	fair_pts += int(deal["pts"])
 	fair_restock = _now() + Deals.FAIR_RESTOCK
-	_deal_pay(Deals.fair_reward(deal), at)
+	_event_pay(Deals.fair_reward(deal), at)
 	_fair_pay_miles()
 	_save_game()
 	_update_badges()
 	# The cards a stall paid, and then the screen again with the stall spent.
-	_deal_show_cards("%s — stall taken!" % String(fair["name"]))
+	_event_show_cards("%s — stall taken!" % String(fair["name"]))
 	if _popup == null:
 		_open_fair()
 
 # The receipt for a paid stall. Called from _on_purchase_ok, so a transaction
 # that arrives on a later launch still marks the stall it was bought from.
-# True when the stall was stamped -- see _deal_credit_purchase for what the
-# caller does with that.
+# True when the stall was stamped, which is how the caller knows whether the
+# screen behind the payment sheet was this one.
 func _fair_credit_purchase(pack_id: String) -> bool:
 	var fair := _active_fair()
 	if fair.is_empty():
@@ -12837,7 +12578,7 @@ func _fair_pay_miles() -> void:
 		Sfx.play("levelup" if last else "jackpot", -3.0)
 		FX.confetti(self, 60 if last else 30)
 		FX.flash(self)
-		_deal_pay(Deals.fair_reward(mile))
+		_event_pay(Deals.fair_reward(mile))
 		_banner("GRAND PRIZE!  The board is full" if last
 			else "BOARD PRIZE!  %d points" % int(mile["at"]),
 			Lagoon.BRASS_HI if last else Lagoon.KELP_HI, "🎪")
@@ -12857,8 +12598,7 @@ func _open_fair() -> void:
 	var vbox := _open_popup(String(fair["name"]), 648.0, true)
 	if not vbox.is_inside_tree():
 		return
-	_deal_timer_label = null
-	_deal_next_timer_label = null
+	_event_next_timer_label = null
 	_powerup_next_timer_label = null
 	_fair_timer_label = null
 	_fair_restock_label = null
@@ -13296,202 +13036,16 @@ func _powerup_door_row(vbox: VBoxContainer, with_clock := false) -> void:
 	go.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	right.add_child(go)
 
-func _open_deal() -> void:
-	var chain := _active_deal()
-	if chain.is_empty():
-		# The spark disc is one door onto whatever the calendar has running.
-		# The chain and the fair alternate by construction (see FAIR_GAP), so
-		# this is a sequence and never a choice.
-		if not _active_fair().is_empty():
-			_open_fair()
-		else:
-			_open_event_teaser()
-		return
-	var hue: Color = chain["hue"]
-	# 700, matching the other two deal screens. The extra 52 units go straight
-	# into the two cells: a rung carrying three kinds of goods had about 96
-	# units a column and the drawings were the first thing to give.
-	var vbox := _open_popup(String(chain["name"]), 700.0, true)
-	if not vbox.is_inside_tree():
-		return
-	_deal_timer_label = null
-	_deal_next_timer_label = null
-	_powerup_next_timer_label = null
-	# 10, not the popup's default 14. Six rungs already overrun the sheet, and
-	# four units a seam across seven rows is most of a rung's worth of scroll.
-	vbox.add_theme_constant_override("separation", 10)
-	_deal_cell_nodes.clear()
-	_deal_arrow_nodes.clear()
-	_deal_bar = null
-	_deal_count = null
-	_deal_finale_art = null
-
-	# The animation is owed only to the rung that was actually just taken. A
-	# stale flag -- the chain rolled over, the save came back from another
-	# device, a purchase landed against a ladder that has since expired -- names
-	# a rung this screen is not standing on, and playing an unlock for it would
-	# be the game lying about what the player just did.
-	var beat := _deal_anim_from if _deal_anim_from == deal_taken - 1 else -1
-	_deal_anim_from = beat
-
-	# THE CLOCK RIDES THE PROGRESS ROW NOW, and it is a space argument as much
-	# as a design one. The ladder is six cards and it does not fit on a 720x1280
-	# sheet -- so every row of chrome above it is a rung the player has to
-	# scroll to find. The clock used to have a line of its own and the track
-	# opened with a decorative spark glyph; one of those is the reason to act
-	# and the other is a picture of nothing. The spark's place goes to the
-	# clock, and the ladder starts 66 units higher. See _deal_track.
-	var blurb := _popup_row_label(String(chain["blurb"]).to_upper(), UI.F_CAPTION)
-	blurb.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	blurb.add_theme_color_override("font_color", Lagoon.INK_SOFT)
-	vbox.add_child(blurb)
-
-	_deal_track(vbox, hue, beat)
-
-	# The ladder itself.
-	var rows := VBoxContainer.new()
-	rows.add_theme_constant_override("separation", 0)
-	vbox.add_child(rows)
-	for r in 3:
-		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", DEAL_ROW_GAP)
-		row.alignment = BoxContainer.ALIGNMENT_CENTER
-		rows.add_child(row)
-		var a: int = DEAL_SERPENTINE[r * 2]
-		var b: int = DEAL_SERPENTINE[r * 2 + 1]
-		row.add_child(_deal_cell(a, hue))
-		# WHICH WAY THE MIDDLE ROW RUNS IS NOT GUESSABLE, and without this it
-		# was simply wrong on the screen: rung three sits on the right of row
-		# two and rung four on its left, so a reader walking the page in
-		# ordinary reading order meets them backwards and the free rung they
-		# can actually take looks locked. The arrow between the two cells is
-		# what makes the serpentine a path rather than a grid.
-		#
-		# A waymarker knows which rung it leads INTO, which is what lets the
-		# unlock run down the path instead of appearing at both ends of it.
-		row.add_child(_deal_arrow(DEAL_TURN_ON if r != 1 else DEAL_TURN_BACK, hue, maxi(a, b)))
-		row.add_child(_deal_cell(b, hue))
-		if r < 2:
-			# The turn. It hangs under the column the flow leaves from, which is
-			# the right on row one and the left on row two.
-			rows.add_child(_deal_turn(r == 0, hue, r * 2 + 2))
-
-	# What clearing the whole ladder pays, stated up front. A grand prize the
-	# player only discovers on the sixth rung is a grand prize that never
-	# motivated anybody to climb.
-	vbox.add_child(Lagoon.divider())
-	var foot := HBoxContainer.new()
-	foot.alignment = BoxContainer.ALIGNMENT_CENTER
-	foot.add_theme_constant_override("separation", 14)
-	vbox.add_child(foot)
-	var fico := _prize_art("gift", 48.0)
-	fico.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	foot.add_child(fico)
-	var fl := Lagoon.label("ALL  SIX", UI.F_CAPTION, Lagoon.INK_MUTE, true)
-	fl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	foot.add_child(fl)
-	foot.add_child(_reward_row(Deals.FINALE, Lagoon.INK, UI.F_LABEL))
-
-	# The paid rungs sell cards, and with the confirm dialog gone this screen
-	# is the last one before Apple's sheet -- so it keeps a door to the rate
-	# tables. A door, not the tables: see the odds-disclosure note.
-	for i in chain["steps"].size():
-		if _is_randomized(Deals.step_pack(chain["steps"][i])):
-			vbox.add_child(_odds_info_link())
-			break
-
-	# The 1+2's door at the ladder's foot as well as in the teaser. While a
-	# chain is running the spark disc opens THIS screen, so without it a live
-	# offer's only doors are its own rail disc and a takeover that has already
-	# been dismissed -- and the two events run on different clocks, so they
-	# overlap for hours at a time.
-	_powerup_door_row(vbox)
-
-	if beat >= 0:
-		_deal_anim_from = -1
-		_deal_play_take(beat)
-
-# The progress track: how many rungs are down, and the chest they add up to.
-func _deal_track(vbox: VBoxContainer, hue: Color, beat: int) -> void:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 12)
-	vbox.add_child(row)
-
-	# The clock, where the spark glyph used to stand. See the note in _open_deal.
-	var plate := Lagoon.stamp_plate(Lagoon.CORAL_HI)
-	plate.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	row.add_child(plate)
-	# WHITE, WITH THE RIM CARRYING THE URGENCY. Coral highlight on the stamp
-	# plate measures 2.50 : 1 -- the one line on the screen that is the reason
-	# to act was the hardest on it to read. The plate is already coral-rimmed;
-	# the digits do not have to be.
-	_deal_timer_label = Lagoon.title("", UI.F_CAPTION, Color.WHITE, Lagoon.ABYSS)
-	_deal_timer_label.text = _deal_countdown_text()
-	plate.add_child(_deal_timer_label)
-
-	var bar := Lagoon.progress(hue.lerp(Color.WHITE, 0.12))
-	bar.custom_minimum_size = Vector2(0, 40)
-	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	bar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	bar.max_value = Deals.STEPS
-	row.add_child(bar)
-	var count := Lagoon.progress_value(bar, "%d / %d" % [deal_taken, Deals.STEPS], UI.F_CAPTION)
-	_deal_bar = bar
-	_deal_count = count
-	# The bar climbs the rung rather than already being up it. It is the one
-	# thing on the screen that says how much of the ladder is behind you, so
-	# arriving pre-filled throws away the only reading it exists to give.
-	#
-	# This is the OWED beat -- a rung taken while the screen was shut, which is
-	# only ever a paid one coming back off a StoreKit sheet. A rung taken with
-	# the ladder open never comes through here at all; _deal_climb_track moves
-	# the same bar in place. See _deal_patch.
-	if beat >= 0:
-		bar.value = beat
-		_deal_climb_track(beat)
+# THE EVENTS DISC, which now has one event behind it rather than two taking
+# turns. Kept as a router rather than calling _open_fair directly: the disc,
+# the tick, the arrival takeover and three harnesses all ask this one question
+# -- "open whatever the calendar has" -- and only this function should have to
+# know the answer.
+func _open_event() -> void:
+	if not _active_fair().is_empty():
+		_open_fair()
 	else:
-		bar.value = deal_taken
-
-	# The prize at the end of the bar, lit once it is owed and flat until then.
-	var chest := _prize_art("gift", 56.0)
-	chest.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	_deal_finale_art = chest
-	if deal_taken >= Deals.STEPS and not deal_finale:
-		FX.pulse_forever(chest, 1.12, 1.1)
-	else:
-		chest.modulate = Color(1, 1, 1, 0.55)
-	row.add_child(chest)
-
-# The bar walking up one rung, with the count popping when it arrives. Split
-# out of _deal_track because it is now called twice: once for a rung taken
-# while the ladder was shut (the bar is built at the old value and climbs), and
-# once for a rung taken with the ladder open (the bar is already on screen at
-# the old value and climbs from where it stands).
-func _deal_climb_track(from: int) -> void:
-	if not is_instance_valid(_deal_bar):
-		return
-	var bar := _deal_bar
-	var count := _deal_count
-	bar.value = from
-	var tw := bar.create_tween()
-	tw.tween_interval(0.18)
-	tw.tween_property(bar, "value", float(deal_taken), 0.45) \
-		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	tw.tween_callback(func() -> void:
-		if is_instance_valid(count):
-			count.text = "%d / %d" % [deal_taken, Deals.STEPS]
-			FX.counter_pop(count, Lagoon.BRASS_HI))
-	# The prize at the end lights the moment the last rung is down, on the same
-	# beat the bar reaches it -- it is the one thing on this screen that says
-	# the ladder is finished.
-	if deal_taken >= Deals.STEPS and not deal_finale and is_instance_valid(_deal_finale_art):
-		var art := _deal_finale_art
-		var lt := art.create_tween()
-		lt.tween_interval(0.55)
-		lt.tween_property(art, "modulate", Color.WHITE, 0.30)
-		lt.tween_callback(func() -> void:
-			if is_instance_valid(art):
-				FX.pulse_forever(art, 1.12, 1.1))
+		_open_event_teaser()
 
 # The stock a rung is struck on: a dark slab in the rung's own signal colour,
 # with the light on it painted rather than styled.
@@ -13655,708 +13209,6 @@ func _event_lock_plate() -> Control:
 	plate.move_child(glow, 0)
 	return plate
 
-# One rung.
-#
-# Three states, and they are three different objects rather than three shades of
-# one:
-#   TAKEN    a spent slab with a medallion struck on it, out of the running
-#   LIVE     the only card on the page with a pressable button, brass-rimmed,
-#            sweeping, standing in its own pool of light
-#   LOCKED   the goods at full strength behind a lock plate -- readable, inert
-#
-# LOCKED RUNGS ARE NOT DIMMED, and that took a rewrite to get right. The first
-# pass faded them, on the reasoning that a control you cannot press should not
-# look pressable; what it actually produced was a page of six pale rectangles
-# where the reward the player is climbing toward was the hardest thing on
-# screen to read. The whole mechanic is "you can see it and you cannot have it
-# yet", so the goods stay bright and the LOCK carries the state.
-#
-# The colour is systematic and not decorative: sea glass for a free rung, violet
-# for a paid one. Six invented hues would look more like the reference games and
-# would break the rule the rest of this game is built on -- a colour here means
-# something. VIOLET AND NOT THE CHAIN'S OWN HUE, for the same reason: the chain
-# colour dresses the banner, the track and the waymarkers, and on the cards it
-# was doing a second job it is no good at. High Tide Hunt is blue and sea glass
-# is blue, so its paid rungs and its free rungs came out the same colour and the
-# one distinction that matters on this screen vanished.
-func _deal_cell(idx: int, hue: Color) -> Control:
-	var chain := _active_deal()
-	var step: Dictionary = chain["steps"][idx]
-	var reward := Deals.step_reward(step)
-	var paid := Deals.is_paid(step)
-	var taken := idx < deal_taken
-	var live := idx == deal_taken
-	# The rung that has just come live is BUILT LIVE and then dressed back down,
-	# so the unlock has something real to undo. Everything under the plate --
-	# the brass rim, the lit stock, the wired button -- is the finished card;
-	# the lock is one layer over the top of it and the beat takes that layer
-	# off. Rebuilding the cell a second time to reveal it would be two chances
-	# to disagree about what the rung is.
-	# `_deal_anim_from >= 0` IS THE WHOLE GUARD, AND WITHOUT IT NO CHAIN COULD
-	# BE STARTED AT ALL.
-	#
-	# The idle value of `_deal_anim_from` is -1, and rung 0's `idx - 1` is also
-	# -1. So the first rung of every chain matched "the rung that has just come
-	# free", built itself in the opening state -- lock plate on, button
-	# disabled, stock dressed down -- and then no beat ran to take the lock off,
-	# because `beat` was -1 too. Six rewards, a countdown, and nothing on the
-	# screen that could be pressed. The harness never saw it: qa_flows drives
-	# `_take_deal(0)` directly and never presses the button.
-	var opening := live and idx > 0 and _deal_anim_from == idx - 1
-
-	var holder := VBoxContainer.new()
-	holder.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	# 200, down from 236. Six of these do not fit a 720x1280 sheet and never
-	# will -- the ladder is 930 units against the ~1020 the whole dialog has --
-	# so every unit here is one the player does not have to scroll past to find
-	# the rung they can actually take. What was cut is margin and type scale,
-	# never the drawing: the goods are the only thing on a rung worth the space.
-	holder.custom_minimum_size = Vector2(0, 200)
-	_deal_cell_nodes[idx] = holder
-
-	var kind := "taken" if taken else ("paid" if paid else "free")
-	var card := _event_stock(holder, kind, live)
-	card.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	holder.set_meta("kind", kind)
-	holder.set_meta("card", card)
-	holder.set_meta("paid", paid)
-
-	var margin := MarginContainer.new()
-	margin.add_theme_constant_override("margin_left", 9)
-	margin.add_theme_constant_override("margin_right", 9)
-	margin.add_theme_constant_override("margin_top", 9)
-	margin.add_theme_constant_override("margin_bottom", 9)
-	card.add_child(margin)
-
-	var col := VBoxContainer.new()
-	col.alignment = BoxContainer.ALIGNMENT_CENTER
-	col.add_theme_constant_override("separation", 4)
-	margin.add_child(col)
-
-	# What a paid rung is worth, stated on the card. The shop never sells a pack
-	# without its value chip and a rung is the same pack at the same price, so
-	# leaving it off would make the ladder look like the expensive way to buy
-	# something the store discounts.
-	#
-	# ON ITS OWN LINE, not as a corner ribbon. The ribbon is drawn diagonally
-	# across the top-left of the panel and this panel's top-left is where the
-	# first prize sits -- it struck straight through the bolt and the coin. A
-	# corner band needs a corner with nothing in it.
-	var flag := CenterContainer.new()
-	flag.custom_minimum_size = Vector2(0, 26)
-	col.add_child(flag)
-	if paid and CV.bonus_pct(Deals.step_pack(step)) >= 8:
-		# A STAMP, NOT A CHIP, and the stock is why. A chip is white type on a
-		# darkened fill -- built for a cream card, and on a violet slab it is
-		# dark on dark twice over. A stamp is the inverse: bright gold type in a
-		# deep well, which is the one thing that reads on every card here.
-		flag.add_child(Lagoon.stamp("+%d%%  VALUE" % CV.bonus_pct(Deals.step_pack(step)),
-			Lagoon.BRASS_HI, UI.F_TINY))
-
-	# The goods, as icon-over-figure columns -- the same vocabulary the daily
-	# ladder and the tournament tips use, so a prize looks like a prize
-	# everywhere in the game. WHITE FIGURES, because the stock under them is
-	# dark now: ink on a jewel card is the pale-on-pale problem inverted.
-	var goods := HBoxContainer.new()
-	goods.alignment = BoxContainer.ALIGNMENT_CENTER
-	goods.add_theme_constant_override("separation", 10)
-	goods.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	col.add_child(goods)
-	# Three is the ceiling and it is a width limit, not a taste one: the cell is
-	# a shade over 290 units wide and a fourth column takes the figures under
-	# the size they can be read at. No rung in Deals.CHAINS carries four kinds
-	# of goods, and Deals.verify() is where that would be caught if one did.
-	var shown := 0
-	for entry in [["bolt", int(reward.get("spins", 0))],
-			["coin", _scaled(int(reward.get("coins", 0)))],
-			["cards", int(reward.get("cards", 0))],
-			["shield", int(reward.get("shields", 0))]]:
-		var n: int = entry[1]
-		# THE GOODS GO WHEN THE RUNG IS SPENT. A card still advertising a
-		# reward that has already been handed over is the ladder telling the
-		# player there is something there for them; the medallion is the whole
-		# content of a taken rung, and it needs the middle of the card to land
-		# in rather than a crowd to be stamped through.
-		if n <= 0 or shown >= 3 or taken:
-			continue
-		shown += 1
-		# The figure wears its currency (Lagoon.amount_ink) and steps up to
-		# F_LABEL: on a rung the amount IS the offer, and at caption size in
-		# plain white it was the quietest thing on its own card.
-		goods.add_child(_prize_column(String(entry[0]), 62.0,
-			_fmt_compact(n), Lagoon.amount_ink(String(entry[0])), 1.0, UI.F_LABEL,
-			Color(1.0, 0.88, 0.52, 0.50) if live else Color(1.0, 0.94, 0.72, 0.20)))
-
-	if taken:
-		# The goods go, the slab stays. A spent rung still has to hold its place
-		# in the ladder -- it is the evidence of how far up it the player
-		# already is -- but it must not go on advertising a reward that has
-		# already been handed over.
-		var got := Lagoon.stamp("TAKEN", Lagoon.KELP_HI, UI.F_TINY)
-		got.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-		col.add_child(got)
-		card.modulate = Color(1, 1, 1, 0.72)
-		# A MEDALLION IN ITS OWN BOX, and that box is the fix.
-		#
-		# The tick was added straight to the card and then anchored to its
-		# centre. The card is a PanelContainer, and a Container re-fits every
-		# child it holds to its own rect on each layout pass -- anchors and all
-		# -- so a 52px tick came out as a 290x236 tick covering the entire
-		# rung, goods included. Every taken rung on the ladder was a green
-		# rectangle. The wrapper is what a Container is allowed to stretch;
-		# the medallion inside it is not.
-		var slot := Control.new()
-		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		card.add_child(slot)
-		var tick := Glyph.new()
-		tick.kind = "tick"
-		tick.custom_minimum_size = Vector2(96, 96)
-		tick.modulate = Lagoon.KELP_HI
-		tick.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		slot.add_child(tick)
-		tick.set_anchors_preset(Control.PRESET_CENTER)
-		tick.offset_left = -48.0
-		tick.offset_right = 48.0
-		tick.offset_top = -60.0
-		tick.offset_bottom = 36.0
-		holder.set_meta("tick", tick)
-		return holder
-
-	var btn := Button.new()
-	btn.custom_minimum_size = Vector2(0, UI.TAP)
-	btn.add_theme_font_size_override("font_size", UI.F_LABEL)
-	if paid:
-		btn.text = IAP.price_for(Deals.step_pack(step))
-		_candy_button(btn, Color(0.28, 0.68, 0.34))
-	else:
-		btn.text = "FREE"
-		_candy_button(btn, Lagoon.KELP)
-	col.add_child(btn)
-	holder.set_meta("btn", btn)
-	# What the face says once it is pressable, held so the unlock can put it
-	# back after the plate has taken it away.
-	holder.set_meta("face", btn.text)
-	if live:
-		FX.press_feedback(btn)
-		btn.pressed.connect(_take_deal.bind(idx))
-		if not paid:
-			FX.pulse_forever(btn, 1.035, 1.3)
-	if not live or opening:
-		btn.disabled = true
-		# The word goes with the lock. The plate covers the face completely, so
-		# a "FREE" or a "$2.99" under it is type nobody can read -- and it is
-		# type the contrast harness measures against the plate and rightly
-		# fails. What the rung is worth is on the card above it; what it costs
-		# arrives with the unlock.
-		btn.text = ""
-		var plate := _event_lock_plate()
-		btn.add_child(plate)
-		plate.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-		holder.set_meta("lock", plate)
-	if opening:
-		_event_dress(card, kind, false)
-
-	return holder
-
-# --- the two beats a rebuild would otherwise swallow -------------------------
-#
-# Guy, off build 111: when a rung is taken it should "show that it was bought,
-# with a nice animation, and then the next one opens beautifully, because right
-# now it is just locked". The ladder had no motion in it at all -- taking a rung
-# rebuilt the whole screen, so the card you pressed and the card that came free
-# both simply changed between one frame and the next.
-#
-# Three beats, run down the path in the order the eye reads it: the rung is
-# spent, the waymarker between them fires, the next lock gives. Nothing here
-# decides anything -- the state was settled before the rebuild -- so a beat
-# that is interrupted by the player closing the screen costs nothing.
-func _deal_play_take(from: int) -> void:
-	# One frame, so every cell has a real rect to pivot and burst around.
-	await get_tree().process_frame
-	# is_instance_valid BEFORE the type test, every time. `x is Control` on a
-	# freed instance is not false, it is a script error -- and by the time a
-	# beat runs the screen it was built for may well have been closed.
-	var spent = _deal_cell_nodes.get(from)
-	if is_instance_valid(spent) and spent is Control:
-		_deal_beat_spent(spent)
-	var mark = _deal_arrow_nodes.get(from + 1)
-	if is_instance_valid(mark) and mark is Control:
-		_after(0.30, func() -> void:
-			if is_instance_valid(mark):
-				_deal_beat_waymark(mark))
-	var opened = _deal_cell_nodes.get(from + 1)
-	if is_instance_valid(opened) and opened is Control:
-		_after(0.50, func() -> void:
-			if is_instance_valid(opened):
-				_deal_beat_unlock(opened))
-
-# A LAYER FOR EFFECTS, INSIDE A CONTROL THE LAYOUT OWNS.
-#
-# `FX.ring` and `FX.burst` add plain Panels to whatever parent they are handed,
-# and a Container lays out every child it holds. So a ring dropped straight onto
-# a rung's VBoxContainer became a third row of that box and shoved the goods and
-# the button apart -- the neighbouring card visibly grew and the whole row
-# jumped while the beat played -- and eighteen burst particles dropped onto a
-# 56x38 waymarker disc were each re-fitted to 56x38 and came out as pale slabs
-# instead of sparks.
-#
-# Neither is an animation problem. The tweens were right; they were running on
-# nodes the layout owned. A plain Control is not a Container, so anything put
-# inside one keeps the size and position it was given. One is stretched over
-# each host and cached on it.
-func _beat_stage(host: Control) -> Control:
-	if host.has_meta("stage"):
-		var found = host.get_meta("stage")
-		if is_instance_valid(found) and found is Control:
-			return found
-	var stage := Control.new()
-	stage.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	stage.z_index = 2
-	host.add_child(stage)
-	stage.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	host.set_meta("stage", stage)
-	return stage
-
-# The receipt. The card takes the hit, a ring leaves it, and the medallion
-# lands last and hardest -- it is the thing the player is meant to remember
-# seeing.
-func _deal_beat_spent(holder: Control) -> void:
-	var card = holder.get_meta("card", null) if holder.has_meta("card") else null
-	var stage: Control = _beat_stage(card) if (is_instance_valid(card) and card is Control) else holder
-	var centre := stage.size * 0.5
-	holder.pivot_offset = holder.size * 0.5
-	var tw := holder.create_tween()
-	tw.tween_property(holder, "scale", Vector2(1.10, 1.10), 0.11) \
-		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.tween_property(holder, "scale", Vector2.ONE, 0.30) \
-		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	FX.ring(stage, centre, Lagoon.KELP_HI, stage.size.x * 0.60, 0.50, 8.0)
-	FX.burst(stage, centre, Lagoon.KELP_HI, 18)
-	Sfx.play("pop", -4.0, 0.02, 1.12)
-
-	if is_instance_valid(card) and card is Control:
-		# It fades to a spent plate rather than arriving as one, so the eye has
-		# a moment to see WHICH card was spent.
-		(card as Control).modulate = Color.WHITE
-		(card as Control).create_tween().tween_property(card, "modulate",
-			Color(1, 1, 1, 0.62), 0.55).set_delay(0.30)
-
-	var tick = holder.get_meta("tick", null)
-	if is_instance_valid(tick) and tick is Control:
-		var t: Control = tick
-		t.pivot_offset = t.size * 0.5
-		t.scale = Vector2(0.15, 0.15)
-		t.modulate.a = 0.0
-		var tt := t.create_tween()
-		tt.set_parallel(true)
-		tt.tween_property(t, "scale", Vector2.ONE, 0.46).set_delay(0.14) \
-			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-		tt.tween_property(t, "modulate:a", 1.0, 0.20).set_delay(0.14)
-
-# The path lighting up between the two cards. Small, and the reason the unlock
-# does not read as two unrelated things happening at either end of the screen.
-func _deal_beat_waymark(disc: Control) -> void:
-	disc.pivot_offset = disc.size * 0.5
-	# The pulse loop and this beat both drive `scale`, and the loop wins the
-	# frame after -- so the live marker's flare used to be snapped away
-	# half-played. It stops for the beat and is put back when the beat lands.
-	var loop = disc.get_meta("beat", null) if disc.has_meta("beat") else null
-	if loop is Tween and (loop as Tween).is_valid():
-		(loop as Tween).kill()
-	disc.set_meta("beat", null)
-	var tw := disc.create_tween()
-	tw.tween_property(disc, "scale", Vector2(1.55, 1.55), 0.14) \
-		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.tween_property(disc, "scale", Vector2.ONE, 0.32) \
-		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.tween_callback(func() -> void: _deal_dress_arrow(disc))
-	var stage := _beat_stage(disc)
-	FX.burst(stage, stage.size * 0.5, Lagoon.BRASS_HI, 8)
-	Sfx.play("pop", -14.0, 0.02, 1.45)
-
-# The lock giving. Two hard shakes -- the latch refusing -- and then the plate
-# blows off, the stock comes up to full, the brass rim arrives and the button
-# lands underneath at full size. The card is already the finished live card; all
-# of this is one layer coming off it.
-# THE LOCK OPENS, AND THAT IS THE BEAT THE RUNG IS SOLD ON.
-#
-# Three moves, in the order a real one gives way: the body jolts against the
-# shackle (the player's tap arriving), the shackle SNAPS open about its right
-# leg with a spark off the keyhole, and only then does the whole lock drop away
-# and let the button through. It used to be one move -- the plate scaled up and
-# faded -- which is a padlock evaporating.
-#
-# The pivot is the RIGHT leg's foot, measured off the render rather than
-# guessed: the legs sit at x 0.32 and x 0.67 of the canvas and the cut is at
-# y 0.32. A shackle hinged at its centre swings like a propeller.
-const LOCK_HINGE := Vector2(0.674, 0.318)
-# Clockwise, which is what lifts the FREE leg up and out of the body. The sign
-# matters: turned the other way the shackle sweeps down across the face it is
-# supposed to be releasing.
-const LOCK_SWING := 34.0
-
-func _deal_beat_unlock(holder: Control) -> void:
-	var plate = holder.get_meta("lock", null)
-	Sfx.play("pop", -6.0, 0.02, 0.78)
-	if is_instance_valid(plate) and plate is Control:
-		FX.shake(plate, 6.0, 4)
-		# The shackle gives at the end of the rattle, not after the plate has
-		# gone: the opening has to be seen ON the lock.
-		_after(0.22, func() -> void:
-			if is_instance_valid(plate):
-				_lock_spring(plate))
-	# 0.75, not 0.32: the rattle runs to 0.22, the shackle swings until about
-	# 0.56, and then the lock is allowed to stand there OPEN for a beat before
-	# anything takes it away. That pause is the whole ask -- an unlock the
-	# player can see happen rather than infer from a button appearing.
-	_after(0.75, func() -> void:
-		if not is_instance_valid(holder):
-			return
-		var card = holder.get_meta("card", null) if holder.has_meta("card") else null
-		var stage: Control = _beat_stage(card) if (is_instance_valid(card) and card is Control) else holder
-		var centre := stage.size * 0.5
-		if is_instance_valid(card) and card is PanelContainer:
-			_event_dress(card, String(holder.get_meta("kind", "free")), true)
-		var btn = holder.get_meta("btn", null)
-		if is_instance_valid(btn) and btn is Button:
-			(btn as Button).disabled = false
-			(btn as Button).text = String(holder.get_meta("face", "FREE"))
-			var b: Button = btn
-			b.pivot_offset = b.size * 0.5
-			b.scale = Vector2(0.72, 0.72)
-			b.create_tween().tween_property(b, "scale", Vector2.ONE, 0.38) \
-				.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-		if is_instance_valid(plate) and plate is Control:
-			var p: Control = plate
-			p.pivot_offset = p.size * 0.5
-			var pt := p.create_tween()
-			pt.set_parallel(true)
-			# IT FALLS OFF, it does not swell and vanish. An open padlock has
-			# nothing holding it, so it tips, drops out of the card and takes
-			# the plate with it -- the same 0.30 the old scale used, spent on a
-			# move that means something.
-			pt.tween_property(p, "position:y", p.position.y + p.size.y * 0.9, 0.34) \
-				.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_IN)
-			pt.tween_property(p, "rotation_degrees", 14.0, 0.34) \
-				.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
-			pt.tween_property(p, "modulate:a", 0.0, 0.30)
-			pt.chain().tween_callback(p.queue_free)
-		Sfx.play("coin", -5.0)
-		FX.ring(stage, centre, Lagoon.BRASS_HI, stage.size.x * 0.70, 0.55, 9.0)
-		FX.burst(stage, centre, Lagoon.BRASS_HI, 22)
-		holder.pivot_offset = holder.size * 0.5
-		var tw := holder.create_tween()
-		tw.tween_property(holder, "scale", Vector2(1.13, 1.13), 0.15) \
-			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-		tw.tween_property(holder, "scale", Vector2.ONE, 0.42) \
-			.set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT))
-
-# The shackle coming open, with the lock's own pieces.
-#
-# Falls back to a jolt of the whole lock when the two-piece art is missing --
-# `prop_tex` is allowed to return null, and a beat that crashed on a file that
-# had not shipped yet would take the ladder down with it.
-func _lock_spring(plate: Control) -> void:
-	var shackle = plate.get_meta("lock_shackle", null)
-	if not is_instance_valid(shackle) or not (shackle is Control):
-		return
-	var sh: Control = shackle
-	sh.pivot_offset = sh.size * LOCK_HINGE
-	var tw := sh.create_tween()
-	# A shackle under load: it presses down a hair before it lets go, and then
-	# overshoots. TRANS_BACK on the way out is the whole character of the move.
-	tw.tween_property(sh, "rotation_degrees", -4.0, 0.07) \
-		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
-	tw.tween_property(sh, "rotation_degrees", LOCK_SWING, 0.34) \
-		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	# And a lift, so it clears the body rather than grinding through it.
-	var up := sh.create_tween()
-	up.tween_interval(0.07)
-	up.tween_property(sh, "position:y", sh.position.y - sh.size.y * 0.06, 0.34) \
-		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	# The click, at the keyhole, on the frame it gives.
-	_after(0.07, func() -> void:
-		if not is_instance_valid(plate):
-			return
-		Sfx.play("pop", -3.0, 0.03, 1.5)
-		var stage := _beat_stage(plate)
-		FX.burst(stage, stage.size * Vector2(0.5, 0.56), Lagoon.BRASS_HI, 10)
-		FX.ring(stage, stage.size * Vector2(0.5, 0.56), Lagoon.BRASS_HI,
-			stage.size.x * 0.42, 0.34, 5.0))
-
-# The turn between two rows, under the column the ladder leaves from.
-#
-# IT MIRRORS THE ROW ABOVE IT, CELL FOR CELL, and that is the fix for what Guy
-# saw on his phone on 2026-09-19: *"the arrows are not centred and they look
-# broken."* The lane used to be an alignment -- the marker shoved to the END or
-# the BEGIN of a full-width box -- which puts it against the OUTER EDGE of the
-# sheet, while the column it is supposed to be leaving from is centred a long
-# way inside that. So the turn hung off the corner of the card below it instead
-# of under the one above it, and on a ladder whose whole job is to be a path,
-# the waymarker pointed at nothing.
-#
-# The three slots below are the row's three: cell, gutter, cell, at the row's
-# own separation. The marker goes in the slot it belongs to and is centred
-# there, so it lands exactly under the middle of its column at any width.
-#
-# AND THE LANE IS AS TALL AS THE MARKER. It was 30 against a 44-unit disc with
-# zero separation between rows, so the disc overflowed 7 units into the cards
-# above and below and drew ON them -- the other half of "looks broken".
-func _deal_turn(right: bool, hue: Color, into: int) -> Control:
-	var lane := HBoxContainer.new()
-	lane.add_theme_constant_override("separation", DEAL_ROW_GAP)
-	lane.custom_minimum_size = Vector2(0, DEAL_TURN_LANE)
-	var mark := _deal_arrow(DEAL_TURN_DOWN, hue, into)
-	for i in 3:
-		if i == 1:
-			# The gutter the row's own arrow stands in, kept empty here so the
-			# two cell slots measure the same as the row's.
-			var gutter := Control.new()
-			gutter.custom_minimum_size = Vector2(DEAL_ARROW_W, 0)
-			gutter.mouse_filter = Control.MOUSE_FILTER_IGNORE
-			lane.add_child(gutter)
-			continue
-		var slot := CenterContainer.new()
-		slot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		lane.add_child(slot)
-		if (i == 2) == right:
-			slot.add_child(mark)
-	return lane
-
-# A chevron on its own disc.
-#
-# It was a bare glyph first and it read as a stray triangle: the ladder's
-# direction is the one thing on this screen that has to be legible instantly,
-# and an unbacked arrow on a cream page at 26px is not. On a lit disc it is a
-# waymarker, which is what it is.
-#
-# The one pointing at the rung you can actually take breathes, and the ones past
-# it are dimmed to half. That turns six identical markers into a path with a
-# position on it -- the eye lands on the live rung without having to read a
-# single card to find it.
-func _deal_arrow(turn: float, hue: Color, into := -1) -> Control:
-	var disc := PanelContainer.new()
-	# 64x44, up from 56x38. Guy's word for this ladder is a STREAM -- six rungs
-	# where each one depends on the one before it -- and the waymarkers are the
-	# only thing on the screen that says so. At the old size they were pale
-	# lozenges between two much larger cards and the six rungs read as a grid.
-	# A TURN IS SQUARE; A STEP ALONG THE ROW IS WIDE. Both discs are 44 tall,
-	# and a chevron pointing DOWN in a 64x44 lozenge runs its point into the
-	# curve where the same chevron pointing sideways has a whole cap of room --
-	# which is the second half of "they look broken". The turn marker gets a
-	# box as tall as it is wide instead, so the mark has the same clearance
-	# whichever way it is turned.
-	disc.custom_minimum_size = Vector2(44, 44) if is_equal_approx(turn, DEAL_TURN_DOWN) \
-		else Vector2(DEAL_ARROW_W, 44)
-	disc.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	disc.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	# OVER THE CARDS, NOT UNDER THEM. The rung cards carry a drop shadow that
-	# draws outside their own rect, and the rows sit at zero separation -- so a
-	# waymarker standing in the seam was half under the shadow of the card
-	# below it and read as a disc someone had smudged.
-	disc.z_index = 1
-	# A DRAWN CHEVRON, NOT A TYPED ONE. It was `Lagoon.title("\u25b6")` -- a
-	# geometric-shapes character set in the game's display face, which is a
-	# rounded Latin face and does not carry that block. What came back was
-	# whatever the platform substituted: a different weight, a different
-	# optical size and a different vertical centre on iOS than in the editor,
-	# which is exactly the kind of detail that reads as "made of text" rather
-	# than as an object. The mark is a polygon now, so it is the same shape at
-	# every size on every device -- and `turn` is a rotation in degrees rather
-	# than a character to look a rotation up by, so there are three call sites
-	# and one shape instead of three glyphs.
-	#
-	# IN ITS OWN BOX, for the same reason the taken rung's medallion is. `disc`
-	# is a PanelContainer, and a Container re-fits every child to its own rect,
-	# anchors and all -- so a 26-unit chevron put straight on it came out as a
-	# 56x38 one rotating about a corner. A plain Control is what the container
-	# is allowed to stretch; the mark inside it is not.
-	var slot := Control.new()
-	slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	disc.add_child(slot)
-	var head := Glyph.new()
-	head.kind = "chevron"
-	head.tint = hue
-	head.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	# AND THIS LINE IS THE WHOLE OF "THE ARROWS ARE NOT CENTRED AND LOOK
-	# BROKEN" (Guy, 2026-09-19, off his own phone).
-	#
-	# Glyph._init sets custom_minimum_size to 40x40 -- sensible for a glyph in
-	# a row, wrong for one placed by hand. Control.size is CLAMPED to the
-	# combined minimum size, so the offsets below were setting a 24-unit box
-	# and getting a 40-unit one back, grown down and to the right from the
-	# anchor. The mark therefore sat 8 units off centre inside its disc, and
-	# `pivot_offset` -- which has to be half the REAL size -- was pointing at a
-	# spot 8 units from the true middle, so every rotation swung the chevron
-	# out instead of turning it in place. A right arrow came out tilted, a
-	# turn-down arrow came out tilted and hanging over the rim.
-	#
-	# Nothing about the mark's own geometry was ever wrong, which is why three
-	# passes at the polygon would not have found it.
-	head.custom_minimum_size = Vector2.ZERO
-	slot.add_child(head)
-	# 28, down from 30, now that the mark is centred for real: the chevron is
-	# drawn to the edges of its own box and the disc is a rounded lozenge, so
-	# the point needs a little more room than a square would give it.
-	head.set_anchors_preset(Control.PRESET_CENTER)
-	head.offset_left = -DEAL_MARK
-	head.offset_right = DEAL_MARK
-	head.offset_top = -DEAL_MARK
-	head.offset_bottom = DEAL_MARK
-	head.pivot_offset = Vector2(DEAL_MARK, DEAL_MARK)
-	head.rotation_degrees = turn
-	disc.set_meta("head", head)
-	disc.set_meta("hue", hue)
-	disc.set_meta("into", into)
-	if into >= 0:
-		_deal_arrow_nodes[into] = disc
-	_deal_dress_arrow(disc)
-	return disc
-
-# Which way a waymarker points, in degrees clockwise from "along the row". One
-# drawn chevron, turned -- rather than three glyphs, or three characters the
-# display face does not carry.
-# The row's geometry, named so the turn lane under it cannot drift out of step:
-# it mirrors the row slot for slot and both read these.
-const DEAL_ROW_GAP := 6
-# Half the chevron's box. 28 units on a 44-unit disc: eight clear all round,
-# which is what keeps the point off the rim now that the mark is genuinely
-# centred. See the note where it is placed.
-const DEAL_MARK := 14.0
-const DEAL_ARROW_W := 64.0
-# Tall enough to hold a waymarker whole. The rows sit at zero separation, so
-# anything less than the disc's own height is drawn over the cards.
-const DEAL_TURN_LANE := 52.0
-
-const DEAL_TURN_ON := 0.0
-const DEAL_TURN_BACK := 180.0
-const DEAL_TURN_DOWN := 90.0
-
-# A waymarker's whole state, in one place, so a rung taken with the ladder open
-# can re-dress the two markers that changed instead of the screen rebuilding to
-# get them right. Everything here is a pure function of `deal_taken`.
-func _deal_dress_arrow(disc: Control) -> void:
-	if not is_instance_valid(disc):
-		return
-	var into := int(disc.get_meta("into", -1))
-	var hue: Color = disc.get_meta("hue", Lagoon.BRASS)
-	var walked := into >= 0 and into <= deal_taken
-	var sb := StyleBoxFlat.new()
-	# A WALKED MARKER GOES GREEN, NOT A SHADE OF THE CHAIN'S OWN COLOUR.
-	#
-	# It used to be the hue lerped 30% toward the hull against a plain hull for
-	# an unwalked one, which on High Tide Hunt -- a blue chain on a blue-grey
-	# well -- was two tones of the same slate. The path behind the player and
-	# the path in front of them were the same object. Sea green is what this
-	# game means by "done" everywhere else: the TAKEN medallion, the free
-	# rung's button, the fair's claimed stalls.
-	# ...AND AN UNWALKED ONE IS BRASS, NOT THE CHAIN'S HUE EITHER.
-	#
-	# Dressing the marker in the chain's own colour looked systematic and was
-	# not: Reef Festival is coral, so its whole path came out as a run of pink
-	# lozenges, and High Tide Hunt's blue vanished into the well it was drawn
-	# on. The chain's hue belongs on the banner and the track, where it is the
-	# only thing wearing it; a waymarker is a fitting, and every fitting in this
-	# game -- the machine's frame, the page plaques, the HUD capsules -- is
-	# brass. Brass also happens to be the one rim that reads against all four
-	# chain colours, which is what a rotation needs.
-	sb.bg_color = Lagoon.KELP_LO if walked else Lagoon.HULL
-	sb.set_corner_radius_all(22)
-	sb.set_border_width_all(3)
-	sb.border_color = Lagoon.KELP_HI if walked else Lagoon.BRASS
-	sb.shadow_size = 8
-	sb.shadow_color = Color(0, 0, 0, 0.40)
-	sb.shadow_offset = Vector2(0, 3)
-	disc.add_theme_stylebox_override("panel", sb)
-	var head = disc.get_meta("head", null) if disc.has_meta("head") else null
-	if is_instance_valid(head) and head is Glyph:
-		(head as Glyph).tint = Lagoon.KELP_HI if walked else Lagoon.BRASS_HI
-		(head as Glyph).queue_redraw()
-	# KILLED BEFORE IT IS REPLACED. `create_tween()` does not stop the tweens a
-	# node already owns, and pulse_forever's is a looping one -- re-dressing a
-	# marker without this leaves two loops fighting over `scale`, which is a
-	# jitter rather than a pulse and does not stop when the marker goes quiet.
-	var old = disc.get_meta("beat", null) if disc.has_meta("beat") else null
-	if old is Tween and (old as Tween).is_valid():
-		(old as Tween).kill()
-	disc.set_meta("beat", null)
-	disc.scale = Vector2.ONE
-	if into == deal_taken:
-		disc.modulate = Color.WHITE
-		disc.set_meta("beat", FX.pulse_forever(disc, 1.12, 1.05))
-	elif into > deal_taken:
-		disc.modulate = Color(1, 1, 1, 0.55)
-	else:
-		disc.modulate = Color.WHITE
-# --- taking a rung -----------------------------------------------------------
-
-func _take_deal(idx: int) -> void:
-	# Re-checked rather than trusted. The button was wired when the screen was
-	# built and the screen can outlive the state it was built from -- the clock
-	# rolls the chain over once a second, and a purchase opened from here comes
-	# back through a StoreKit sheet that may have taken minutes.
-	var chain := _active_deal()
-	if chain.is_empty() or idx != deal_taken or idx >= Deals.STEPS:
-		return
-	var step: Dictionary = chain["steps"][idx]
-	if Deals.is_paid(step):
-		# Money goes down the same road as every other purchase in the game --
-		# _start_purchase, IAP, _on_purchase_ok, _grant_pack. The rung is
-		# advanced by the receipt, never by the tap; see _deal_credit_purchase.
-		#
-		# The ladder stays up behind the payment sheet. `_after_deal_step` has
-		# always had a branch for "the ladder is on screen" -- it walks the
-		# track, unlocks the next rung and plays the beats -- and closing the
-		# popup here was what made that branch unreachable for the one rung
-		# that costs money: a paid rung fell through to the no-screen path and
-		# the unlock the player just paid for was owed to their next visit.
-		_start_purchase(Deals.step_pack(step))
-		return
-	# Read BEFORE the cell is thrown away by the patch below, and as a point
-	# rather than as a node: _deal_swap_cell frees the holder this button lives
-	# on, and a typed read off a freed instance raises before any validity
-	# guard can run.
-	var at := Vector2.ZERO
-	var cell = _deal_cell_nodes.get(idx)
-	if is_instance_valid(cell) and cell is Control:
-		at = (cell as Control).global_position + (cell as Control).size * 0.5
-	deal_taken = idx + 1
-	_deal_anim_from = idx
-	_deal_pay(Deals.step_reward(step), at)
-	_save_game()
-	_after_deal_step()
-
-# The receipt for a paid rung. Called from _on_purchase_ok, so a transaction
-# that arrives on a later launch -- an interrupted purchase replayed at boot --
-# still advances the ladder it was bought from.
-# TRUE MEANS "THE SCREEN THIS CAME FROM OWNS THE RECEIPT". _on_purchase_ok
-# closes the popup only when nothing claims it, so a ladder that is still open
-# behind the payment sheet gets to walk its own track instead of being torn
-# down and owing the unlock to the player's next visit.
-func _deal_credit_purchase(pack_id: String) -> bool:
-	var chain := _active_deal()
-	if chain.is_empty() or deal_taken >= Deals.STEPS:
-		return false
-	var step: Dictionary = chain["steps"][deal_taken]
-	if not Deals.is_paid(step) or String(step["pack"]) != pack_id:
-		return false
-	# The goods themselves were already handed over by _grant_pack. All this
-	# owes is the rung.
-	_deal_anim_from = deal_taken
-	deal_taken += 1
-	_save_game()
-	# BEHIND THE BOX, NEVER UNDER IT. `_grant_pack` has already opened the
-	# takeover for what the rung cost, and the ladder's beats play on the popup
-	# at z 120 underneath it -- so run straight from here they would be a rung
-	# stamping itself where the player cannot see it. Queued, they play on the
-	# screen the player comes back to. See _reward_queue.
-	if _reward_busy():
-		_reward_queue.append(_after_deal_step)
-	else:
-		_after_deal_step()
-	return true
-
 # What the free rungs actually hand over. Paid rungs never come through here --
 # _grant_pack pays those, so the pack is the single source of what a pack is
 # worth whether it is bought from the shop or from a ladder.
@@ -14365,7 +13217,7 @@ func _deal_credit_purchase(pack_id: String) -> bool:
 # just pressed came from the thing they pressed, and on a page with six cards
 # on it that is the difference between a reward and a number changing. Zero
 # means "no rung asked", which is the finale and the expiry payout.
-func _deal_pay(reward: Dictionary, at := Vector2.ZERO) -> void:
+func _event_pay(reward: Dictionary, at := Vector2.ZERO) -> void:
 	var from := at if at != Vector2.ZERO else Vector2(view_size().x * 0.5, view_size().y * 0.42)
 	var spins_n := int(reward.get("spins", 0))
 	var coins_n := _scaled(int(reward.get("coins", 0)))
@@ -14383,7 +13235,7 @@ func _deal_pay(reward: Dictionary, at := Vector2.ZERO) -> void:
 	var held := 0
 	for i in int(reward.get("cards", 0)):
 		var card := _grant_chest_card(int(reward.get("tier", 1)), 0)
-		_deal_pending_cards.append(card)
+		_event_pending_cards.append(card)
 		if not card.get("dup", false):
 			held += int(card.get("stars", 0))
 	_hud_hold("stars", held)
@@ -14398,179 +13250,24 @@ func _deal_pay(reward: Dictionary, at := Vector2.ZERO) -> void:
 # So a rung that paid a card used to take the ladder off the screen on the same
 # frame it was pressed -- no spend, no waymarker, no unlock, just the card
 # dialog -- and on the SIXTH rung it was worse than that: the rung's card
-# dialog opened, the finale's `_deal_pay` opened a second one over it, and
+# dialog opened, the finale's `_event_pay` opened a second one over it, and
 # `Grand Prize!` closed that. Three modals in one frame, two of them destroyed
 # before they had drawn.
 #
 # The cards granted by a rung are banked immediately -- they are on the shelf
 # and in the save the moment the rung lands -- and merely SHOWN once the beats
 # are done. One dialog, holding everything the step paid.
-var _deal_pending_cards := []
+var _event_pending_cards := []
 
-func _deal_show_cards(title: String) -> void:
-	if _deal_pending_cards.is_empty():
+func _event_show_cards(title: String) -> void:
+	if _event_pending_cards.is_empty():
 		return
-	var cards := _deal_pending_cards
-	_deal_pending_cards = []
-	# `held` -- the stars were put on hold by _deal_pay when the cards were
+	var cards := _event_pending_cards
+	_event_pending_cards = []
+	# `held` -- the stars were put on hold by _event_pay when the cards were
 	# banked, and holding them a second time would leave the pill permanently
 	# short by the same amount the tiles are about to deliver.
 	_show_chest_result(cards, title, "", [], true)
-
-# After a rung lands, whichever way it landed.
-#
-# THE LADDER IS PATCHED NOW, NOT REBUILT, AND THAT IS THE WHOLE OF WHAT WAS
-# WRONG WITH THIS SCREEN.
-#
-# It used to call `_open_deal()`, which goes through `_open_popup` -- and
-# `_open_popup` frees the dialog it is replacing and plays `FX.pop_in` on the
-# new one. So taking a rung tore down the plaque, the clock, the blurb, the
-# track and all six cards and scaled the lot back in from 30% over 0.32s. Every
-# object on the screen jumped, including the five that had not changed, and the
-# three carefully-ordered beats then played on top of a page that had just
-# teleported. That is the "animation and transitions look amateurish" Guy
-# reported off his own phone: the beats were fine, they were simply being run
-# over a hard cut of the entire screen.
-#
-# Nothing about the state was wrong -- the reasoning for a rebuild was that
-# every cell is a function of `deal_taken` and a patch might leave one in a
-# state no rule describes. That is still true, and it is answered by patching
-# through the SAME builders rather than by hand: `_deal_swap_cell` throws the
-# old cell away and asks `_deal_cell` for a new one in the same slot, and
-# `_deal_dress_arrow` is the only place a waymarker's look is decided. Two
-# cells and two markers change; the page they sit on does not move.
-#
-# is_instance_valid, NOT `!= null`. `_deal_timer_label` is the ladder's own
-# clock and it is not cleared when the ladder closes -- a freed Object is
-# still not null in GDScript, so a PAID rung, which leaves this screen for a
-# StoreKit sheet and comes back to whatever the purchase flow put up, was
-# re-opening the ladder straight over the top of the player's reward.
-func _after_deal_step() -> void:
-	if deal_taken >= Deals.STEPS and not deal_finale:
-		# The ladder is finished. Walk the track and spend the last rung first,
-		# then hand over the grand prize -- the finale used to land on top of a
-		# screen that had not yet shown the sixth rung being taken, so the one
-		# beat the whole chain builds to was covered by its own reward.
-		if _popup != null and is_instance_valid(_deal_timer_label):
-			_deal_patch()
-			_after(DEAL_BEAT_TOTAL, _deal_pay_finale.bind(false))
-			return
-		_deal_pay_finale(false)
-		return
-	if _popup != null and is_instance_valid(_deal_timer_label):
-		_deal_patch()
-		if not _deal_pending_cards.is_empty():
-			_after(DEAL_BEAT_TOTAL, _deal_show_cards.bind("Deal Taken!"))
-		return
-	# No ladder on screen to play the beats on -- a paid rung coming back off a
-	# StoreKit sheet. The cards go up straight away and the unlock stays owed to
-	# the next time the ladder is opened, which is where the player will look
-	# for it.
-	_deal_show_cards("Deal Taken!")
-
-# How long the three beats take end to end. Used to hold the finale and the
-# card box back until the ladder has finished showing what the player just did.
-#
-# It went 1.15 -> 1.60 when the lock learned to open: the shackle springs at
-# 0.22 and takes 0.34 to swing, and an OPEN padlock that is instantly buried
-# under the next screen is the same as one that never opened. The extra
-# 0.45 is that beat plus the moment the lock stands there undone.
-const DEAL_BEAT_TOTAL := 1.60
-
-# One rung landing, on the screen that is already up.
-func _deal_patch() -> void:
-	var chain := _active_deal()
-	if chain.is_empty():
-		return
-	var from := deal_taken - 1
-	if from < 0:
-		return
-	var hue: Color = chain["hue"]
-	# `opening` inside _deal_cell reads this, which is what makes the rung that
-	# has just come free build LIVE and then dress back down -- so the unlock
-	# beat has a finished card to take a lock off rather than a second render
-	# to agree with. Cleared once both cells exist, before the beats run.
-	_deal_anim_from = from
-	_deal_swap_cell(from, hue)
-	_deal_swap_cell(from + 1, hue)
-	_deal_anim_from = -1
-	# The markers either side of the rung that moved: the one leading into it
-	# has just been walked, the one past it is now the live one.
-	for into in [from, from + 1]:
-		_deal_dress_arrow(_deal_arrow_nodes.get(into))
-	_deal_climb_track(from)
-	_deal_play_take(from)
-
-# Throws one cell away and asks the builder for the same cell again, back in the
-# same place in its row.
-#
-# The slot rather than the node is what has to survive: both holders carry the
-# identical sizing (SIZE_EXPAND_FILL, a 200 minimum), so the row does not
-# reflow and the two cards that did not change do not move by a pixel.
-func _deal_swap_cell(idx: int, hue: Color) -> void:
-	if idx < 0 or idx >= Deals.STEPS:
-		return
-	var old = _deal_cell_nodes.get(idx)
-	if not is_instance_valid(old) or not (old is Control):
-		return
-	var row := (old as Control).get_parent()
-	if row == null:
-		return
-	var at := (old as Control).get_index()
-	row.remove_child(old)
-	(old as Control).queue_free()
-	var fresh := _deal_cell(idx, hue)
-	row.add_child(fresh)
-	row.move_child(fresh, at)
-
-# The grand prize. `quiet` is the expiry path, where there is no screen to put a
-# dialog over and the player is not necessarily even in the app.
-func _deal_pay_finale(quiet: bool) -> void:
-	deal_finale = true
-	_deal_pay(Deals.FINALE)
-	_save_game()
-	if quiet:
-		# Nobody is looking. The cards are already banked and on the shelf; the
-		# dialog that would have shown them has no screen to open over.
-		_deal_pending_cards = []
-		_notify("spins", "Grand prize paid — you cleared the whole ladder!", "🏆")
-		return
-	Sfx.play("jackpot", -3.0)
-	FX.confetti(self, 52)
-	FX.flash(self)
-	var vbox := _open_popup("Grand Prize!")
-	if not vbox.is_inside_tree():
-		return
-	var lead := _popup_row_label("Six for six. The whole ladder is yours.", UI.F_BODY)
-	lead.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lead.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	vbox.add_child(lead)
-	var goods := HBoxContainer.new()
-	goods.alignment = BoxContainer.ALIGNMENT_CENTER
-	goods.add_theme_constant_override("separation", 22)
-	vbox.add_child(goods)
-	for entry in [["bolt", int(Deals.FINALE.get("spins", 0))],
-			["coin", _scaled(int(Deals.FINALE.get("coins", 0)))],
-			["cards", int(Deals.FINALE.get("cards", 0))]]:
-		var n: int = entry[1]
-		if n <= 0:
-			continue
-		goods.add_child(_prize_column(String(entry[0]), 96.0, _fmt_compact(n),
-			Lagoon.amount_ink(String(entry[0])), 1.0, UI.F_TITLE, Color(1.0, 0.85, 0.4, 0.55)))
-	var ok := Button.new()
-	ok.text = "COLLECT"
-	ok.custom_minimum_size = Vector2(0, UI.TAP_COMFY)
-	_candy_button(ok, Lagoon.KELP)
-	FX.press_feedback(ok)
-	ok.pressed.connect(_close_popup)
-	vbox.add_child(ok)
-	# The cards the ladder owes -- the sixth rung's and the finale's together --
-	# land as one handful once this dialog goes, rather than as two dialogs that
-	# flashed past before the grand prize even opened. On the CLOSE rather than
-	# on the button, so the corner cross pays them too.
-	_popup_closed_cb = func() -> void:
-		if not _deal_pending_cards.is_empty():
-			_after(0.22, _deal_show_cards.bind("Ladder Cleared!"))
 
 # =============================================================================
 #  The power up
@@ -14694,8 +13391,7 @@ func _maybe_show_offer(forced := false) -> void:
 		return
 	var solo_due := not _active_solo().is_empty() and not solo_shown
 	var pu_due := not _active_powerup().is_empty() and not powerup_shown
-	var event_due := not _event_shown and (not _active_deal().is_empty() \
-			or not _active_fair().is_empty())
+	var event_due := not _event_shown and not _active_fair().is_empty()
 	if not solo_due and not pu_due and not event_due:
 		return
 	if _popup != null or _boot != null or _journey_layer != null:
@@ -14734,9 +13430,9 @@ func _maybe_show_offer(forced := false) -> void:
 	elif pu_due:
 		_open_powerup()
 	else:
-		# Routes chain -> fair by itself, and cannot fall through to the dark
-		# teaser: event_due is exactly "one of those two is live".
-		_open_deal()
+		# Cannot fall through to the dark teaser: event_due is exactly "the
+		# fair is live".
+		_open_event()
 
 # A session is starting, so every deal the calendar has running is owed one
 # showing again. Boot calls this, and so does a return from long enough in the
@@ -16111,13 +14807,12 @@ func _on_purchase_ok(product_id: String) -> void:
 	# The popup is no longer torn down on the tap that opens Apple's sheet, so
 	# a cancel comes back to the offer the player was reading -- which leaves
 	# this function owing the close. An event that claims the receipt does its
-	# own: the ladder and the fair KEEP their screen and stamp it in front of
-	# the player, the two premium offers close theirs because the offer is
+	# own: the fair KEEPS its screen and stamps it in front of the player, the
+	# two premium offers close theirs because the offer is
 	# spent. Anything else -- the shop, a contextual offer, a top-up -- is
 	# closed here, behind the takeover `_grant_pack` has already raised, so
 	# nothing of it is ever seen going.
-	var claimed := _deal_credit_purchase(short)
-	claimed = _powerup_credit_purchase(short) or claimed
+	var claimed := _powerup_credit_purchase(short)
 	claimed = _solo_credit_purchase(short) or claimed
 	claimed = _fair_credit_purchase(short) or claimed
 	if not claimed:
@@ -16439,7 +15134,7 @@ func _show_pack_result(pack: Dictionary, held := false) -> void:
 
 # `held` says the caller has already put this handful's stars on hold. It is set
 # by the deal ladder, which banks a rung's cards a beat before it shows them so
-# the ladder can finish its own animation first -- see _deal_show_cards. Holding
+# the ladder can finish its own animation first -- see _event_show_cards. Holding
 # twice would leave the rank pill short by the amount the tiles then deliver.
 # Every chest in the game opens here.
 #
@@ -16550,7 +15245,7 @@ func _show_chest_result(cards: Array, title := "Chest Opened!", bonus_text := ""
 		# ChestOpen.note, while the cards it refers to are still on screen.
 		#
 		# The panel and its tile-based star harvest are GONE, not kept for a
-		# rainy day: `_deal_show_cards` -- the only other handful-of-cards
+		# rainy day: `_event_show_cards` -- the only other handful-of-cards
 		# surface -- routes through `_show_chest_result` too, so both had zero
 		# callers the moment this line was deleted. `_card_burst_tile` and
 		# `_star_harvest_at` replace them and the tile-building duplication
@@ -22883,20 +21578,14 @@ func _event_deadlines() -> Array:
 	if col_deadline > 0.0:
 		out.append({"id": "season", "ends": col_deadline, "name": "The card season",
 			"body": "One hour to finish a set before the season resets."})
-	# THE TWO EVENTS, and leaving them out would have made the ladder pointless
-	# on the platform it ships to. A deal chain runs for a day and its whole
-	# mechanic is a queue the player is part-way through -- but a player who is
-	# part-way through it is, by definition, not in the app. The one reminder
-	# the game is allowed to send is the one that says the queue is closing.
-	#
-	# Only while there is still something in it to take. A notification about an
-	# event the player has already finished is the kind that gets notifications
-	# turned off for good.
-	var chain := _active_deal()
-	if not chain.is_empty() and deal_taken < Deals.STEPS:
-		out.append({"id": "deal", "ends": deal_until, "name": String(chain["name"]),
-			"body": "%d rewards still on the ladder — it closes in an hour."
-				% (Deals.STEPS - deal_taken)})
+	# THE EVENT, and only while there is still something in it to take. A
+	# notification about an event the player has already cleared is the kind
+	# that gets notifications turned off for good.
+	var fair := _active_fair()
+	if not fair.is_empty() and _fair_left() > 0:
+		out.append({"id": "fair", "ends": fair_until, "name": String(fair["name"]),
+			"body": "%d stalls still open — the fair closes in an hour."
+				% _fair_left()})
 	var pu := _active_powerup()
 	if not pu.is_empty():
 		out.append({"id": "powerup", "ends": powerup_until, "name": String(pu["name"]),
@@ -25612,8 +24301,8 @@ func _sanitize_clock() -> void:
 	shop_free_last = minf(shop_free_last, now)
 	offer_until = minf(offer_until, now + CV.OFFER_DURATION)
 	offer_next = minf(offer_next, now + CV.OFFER_COOLDOWN)
-	deal_until = minf(deal_until, now + Deals.CHAIN_DURATION)
-	deal_next = minf(deal_next, now + Deals.CHAIN_COOLDOWN)
+	fair_until = minf(fair_until, now + Deals.FAIR_DURATION)
+	fair_next = minf(fair_next, now + FAIR_COOLDOWN)
 	powerup_until = minf(powerup_until, now + Deals.POWERUP_DURATION)
 	powerup_next = minf(powerup_next, now + Deals.POWERUP_COOLDOWN)
 	beach_gift_next = minf(beach_gift_next, now + BEACH_GIFT_COOLDOWN)
@@ -25740,13 +24429,6 @@ func _save_dict() -> Dictionary:
 		"offer_id": offer_id,
 		"offer_until": offer_until,
 		"offer_next": offer_next,
-		"deal_id": deal_id,
-		"deal_until": deal_until,
-		"deal_next": deal_next,
-		"deal_taken": deal_taken,
-		"deal_finale": deal_finale,
-		"deal_done": deal_done,
-		"deal_last_taken": deal_last_taken,
 		"fair_id": fair_id,
 		"fair_until": fair_until,
 		"fair_next": fair_next,
@@ -26131,17 +24813,9 @@ func _load_game() -> void:
 	offer_id = _s(data.get("offer_id", ""))
 	offer_until = _f(data.get("offer_until", 0.0))
 	offer_next = _f(data.get("offer_next", 0.0))
-	deal_id = _s(data.get("deal_id", ""))
-	deal_until = _f(data.get("deal_until", 0.0))
-	deal_next = _f(data.get("deal_next", 0.0))
-	deal_taken = _i(data.get("deal_taken", 0))
-	deal_finale = bool(data.get("deal_finale", false))
-	deal_done = bool(data.get("deal_done", false))
-	# A save written before this key existed still knows whether the last chain
-	# was cleared, so the old flag seeds the new counter rather than showing a
-	# cleared ladder as an empty one.
-	deal_last_taken = clampi(_i(data.get("deal_last_taken",
-		Deals.STEPS if deal_done else 0)), 0, Deals.STEPS)
+	# The seven `deal_*` keys a save written before 2026-09-19 still carries are
+	# not read. Nothing has to strip them either: the writer below simply stops
+	# emitting them, so they survive exactly one more save and then go.
 	fair_id = _s(data.get("fair_id", ""))
 	fair_until = _f(data.get("fair_until", 0.0))
 	fair_next = _f(data.get("fair_next", 0.0))

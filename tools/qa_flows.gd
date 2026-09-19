@@ -19,7 +19,6 @@ func _ready() -> void:
 	await _t_steal_raid()
 	await _t_season_rollover()
 	await _t_offline_raids()
-	await _t_deal_chain()
 	await _t_fair()
 	await _t_voyage()
 	await _t_powerup()
@@ -342,92 +341,6 @@ func _t_every_purchase() -> void:
 
 # --- the deal chain -----------------------------------------------------------
 #
-# Three things this has to prove, and they are the three ways the ladder can go
-# wrong without anybody noticing on a desktop build:
-#
-#   1. Every paid rung names a product the stores actually sell. A rung naming
-#      an unregistered id renders a button that does nothing on a real phone and
-#      looks perfectly fine here.
-#   2. Six rungs can be walked end to end and the grand prize lands exactly once.
-#   3. A rung cannot be taken twice, or out of order, by a stale button -- the
-#      screen outlives the state it was built from every time a purchase goes
-#      through a StoreKit sheet.
-func _t_deal_chain() -> void:
-	print("deal chain")
-	_chk("every chain is well-formed", Deals.verify().is_empty(),
-		", ".join(PackedStringArray(Deals.verify())))
-
-	for chain in Deals.CHAINS:
-		m._close_popup(true)
-		m.deal_id = String(chain["id"])
-		m.deal_until = m._now() + Deals.CHAIN_DURATION
-		m.deal_taken = 0
-		m.deal_finale = false
-		m._open_deal()
-		await get_tree().process_frame
-
-		var paid_rungs := 0
-		for i in Deals.STEPS:
-			var step: Dictionary = chain["steps"][i]
-			var before_taken: int = m.deal_taken
-			# A stale button from two rungs ago must do nothing at all.
-			m._take_deal(maxi(0, i - 2))
-			if i >= 2 and m.deal_taken != before_taken:
-				_chk("%s rung %d refuses an out-of-order tap" % [chain["id"], i], false)
-			if Deals.is_paid(step):
-				paid_rungs += 1
-				# Money never advances the ladder on the tap; the receipt does.
-				m._take_deal(i)
-				# BACK OUT OF THE PRETEND SHEET. The tap above armed the desktop
-				# sim, which would otherwise pay a real receipt 0.7s from now --
-				# long after this loop has moved on -- and that stray grant lands
-				# inside whatever test is measuring by then. It hit the power-up
-				# assertions at random and read exactly like the free columns
-				# being paid twice; the loyalty leak documented in _t_powerup was
-				# this same receipt wearing a different number.
-				IAP.sim_cancel()
-				m._close_popup(true)
-				_chk("%s rung %d waits for the receipt" % [chain["id"], i + 1],
-					m.deal_taken == i)
-				m._deal_credit_purchase(String(step["pack"]))
-			else:
-				m._take_deal(i)
-			m._close_popup(true)
-			await get_tree().process_frame
-			_chk("%s rung %d lands" % [chain["id"], i + 1], m.deal_taken == i + 1,
-				"taken=%d" % m.deal_taken)
-
-		_chk("%s pays its grand prize" % chain["id"], m.deal_finale)
-		_chk("%s has at least one paid rung" % chain["id"], paid_rungs > 0)
-		# Paid twice would be the expensive bug: the expiry path pays the finale
-		# on the way out, and it must see that it is already settled.
-		var spins_before: int = m.spins
-		m.deal_until = m._now() - 1.0
-		m._deal_tick()
-		_chk("%s does not pay the grand prize twice" % chain["id"],
-			m.spins == spins_before, "+%d" % (m.spins - spins_before))
-		_chk("%s rolls out when its clock runs out" % chain["id"], m.deal_id == "")
-
-	# The other half of that: a ladder finished with seconds to spare, and the
-	# app closed before the finale dialog was answered.
-	m.deal_id = String(Deals.CHAINS[0]["id"])
-	m.deal_until = m._now() + 10.0
-	m.deal_taken = Deals.STEPS
-	m.deal_finale = false
-	var owed: int = m.spins
-	m.deal_until = m._now() - 1.0
-	m._deal_tick()
-	# The PAYOUT is what is asserted, not the flag. `deal_finale` is reset by the
-	# same tick that pays it -- rolling the chain out clears every field so the
-	# next one starts unpaid -- so a test that read the flag would be testing
-	# the teardown rather than the grant.
-	_chk("a ladder cleared at the buzzer is still paid",
-		m.spins >= owed + int(Deals.FINALE["spins"]), "+%d spins" % (m.spins - owed))
-	m._close_popup(true)
-	m.deal_id = ""
-	m.deal_next = 0.0
-	await get_tree().create_timer(0.5).timeout
-
 # --- the power up ------------------------------------------------------------
 #
 # The failure this exists to catch is the expensive one: the player is charged
@@ -448,8 +361,6 @@ func _t_fair() -> void:
 
 	for fair in Deals.FAIRS:
 		m._close_popup(true)
-		m.deal_id = ""
-		m.deal_until = 0.0
 		m.fair_id = String(fair["id"])
 		m.fair_until = m._now() + Deals.FAIR_DURATION
 		m.fair_taken = {}
@@ -465,9 +376,8 @@ func _t_fair() -> void:
 		for i in deals.size():
 			var deal: Dictionary = deals[i]
 			if String(deal.get("pack", "")) != "":
-				# Money never marks a stall on the tap. _take_deal's own test
-				# makes the same assertion about a rung and for the same
-				# reason: the sheet can be cancelled, and a stall marked on the
+				# Money never marks a stall on the tap: the sheet can be
+				# cancelled, and a stall marked on the
 				# tap would be a reward the player paid nothing for.
 				m._take_fair(i)
 				await get_tree().process_frame
@@ -542,21 +452,23 @@ func _t_fair() -> void:
 			"%d stalls" % back_taken.size())
 		m._close_popup(true)
 
-	# The calendar: the fair opens in the chain's dark window and the two are
-	# never live at once.
+	# The calendar, which the fair now keeps on its own: it arms when its own
+	# clock says so, and it does not roll straight back in the moment one ends.
 	m.fair_id = ""
 	m.fair_until = 0.0
+	m.fair_next = m._now() + 600.0
+	m._fair_tick()
+	_chk("no fair opens before its clock", m.fair_id == "")
 	m.fair_next = 0.0
-	m.deal_id = String(Deals.CHAINS[0]["id"])
-	m.deal_until = m._now() + 60.0
 	m._fair_tick()
-	_chk("no fair opens while a chain is running", m.fair_id == "")
-	m.deal_id = ""
-	m.deal_until = 0.0
-	m._fair_tick()
-	_chk("the fair opens once the chain is out", m.fair_id != "")
-	_chk("and the spark disc opens the fair, not the teaser",
+	_chk("the fair opens when the clock comes round", m.fair_id != "")
+	_chk("and the events disc opens it, not the teaser",
 		not m._active_fair().is_empty())
+	# Out again, and the cooldown has to be stamped or the next tick re-arms it.
+	m.fair_until = m._now() - 1.0
+	m._fair_tick()
+	_chk("a fair that ends stamps its own cooldown",
+		m.fair_id == "" and m.fair_next > m._now())
 	m.fair_id = ""
 	m.fair_until = 0.0
 	m.fair_next = m._now() + Deals.FAIR_DURATION

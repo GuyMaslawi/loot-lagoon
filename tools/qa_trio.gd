@@ -44,12 +44,6 @@ func _ready() -> void:
 	for away in [8.0, 120.0]:
 		for resume_first in [true, false]:
 			await _run("pu_deckhand", away, resume_first)
-	# AND THE STATE A REAL PLAYER IS MOST LIKELY TO BE IN. A chain runs 24 hours
-	# in every 54 and a trio 12 in every 32, so the two overlap most days -- and
-	# `pu_squall` sells `to_squall`, which is rung three of the High Tide Hunt.
-	# Both credit handlers claim the same receipt, and the ladder's beats go
-	# into the same queue as the two free columns.
-	await _run("pu_squall", 0.0, false, "tide_hunt")
 	await _impatient()
 
 	m._clear_reward_screens()
@@ -157,7 +151,7 @@ func _find_buy(node: Node) -> Button:
 	return null
 
 
-func _run(pu_id: String, away: float, resume_first: bool, chain_id := "") -> void:
+func _run(pu_id: String, away: float, resume_first: bool) -> void:
 	var pu := Deals.powerup_by_id(pu_id)
 	var pack := CV.pack_by_id(String(pu["pack"]))
 	print("")
@@ -169,22 +163,6 @@ func _run(pu_id: String, away: float, resume_first: bool, chain_id := "") -> voi
 
 	m._clear_reward_screens()
 	m._close_popup(true)
-	# A chain parked on the rung that sells this pack, when the case asks for
-	# one. deal_taken is the rung the ladder is standing on.
-	m.set("deal_id", "")
-	if chain_id != "":
-		var chain := Deals.by_id(chain_id)
-		var rung := -1
-		for i in (chain["steps"] as Array).size():
-			if String((chain["steps"][i] as Dictionary).get("pack", "")) == String(pu["pack"]):
-				rung = i
-		if rung < 0:
-			print("   [SKIP] %s does not sell %s" % [chain_id, pu["pack"]])
-			return
-		m.set("deal_id", chain_id)
-		m.set("deal_until", m._now() + Deals.CHAIN_DURATION)
-		m.set("deal_taken", rung)
-		print("   (%s is standing on rung %d, which sells the same pack)" % [chain_id, rung + 1])
 	# The offer, forced live exactly as SHOT=popup:powerup does it.
 	m.set("powerup_id", pu_id)
 	m.set("powerup_until", m._now() + Deals.POWERUP_DURATION)
@@ -274,7 +252,6 @@ func _impatient() -> void:
 	print("== pu_deckhand -- two taps a frame apart, the way a phone gets them")
 	m._clear_reward_screens()
 	m._close_popup(true)
-	m.set("deal_id", "")
 	m.set("powerup_id", "pu_deckhand")
 	m.set("powerup_until", m._now() + Deals.POWERUP_DURATION)
 	m.set("powerup_pending", "")
