@@ -367,8 +367,41 @@ func chest_center() -> Vector2:
 # A tap before the lid pops skips straight to it; a tap after collects. Never
 # ignore the first tap -- a player who taps during an animation is telling you
 # the animation is too long.
+
+# THE TAP THAT WAS MEANT FOR THE BOX BEFORE THIS ONE.
+#
+# Guy, 2026-09-19, off his own phone: he bought the 1+2, *"the window closes
+# after the purchase and then you cannot take the two free ones, it is gone
+# completely."* One receipt owes two boxes here -- the pack he paid for and the
+# two free columns -- and they arrive one after the other, 0.22s apart. A
+# finger tapping through the first at phone speed is still coming down when the
+# second opens, so the second was popped and dismissed by taps aimed at the
+# first and the player never saw the screen that says what the offer gave them.
+# The goods were in the purse the whole time, which is exactly why it read as
+# them being lost: nothing on screen ever said they arrived.
+#
+# So a box the player did not ask for -- one opened by the queue rather than by
+# their own tap -- is deaf for a moment. `_reward_next` is the only caller and
+# it sets this on the screen it opens.
+#
+# THIS DOES NOT WEAKEN "never ignore the first tap". That rule is about a box
+# the player is looking at: a tap during its animation means the animation is
+# too long, and it still skips straight to the end. This is about a tap aimed
+# at a box that is no longer there.
+var _deaf_until := 0.0
+
+func deaf_for(seconds: float) -> void:
+	_deaf_until = Time.get_ticks_msec() / 1000.0 + seconds
+
+
+func _deaf() -> bool:
+	return Time.get_ticks_msec() / 1000.0 < _deaf_until
+
+
 func _on_input(ev: InputEvent) -> void:
 	if not (ev is InputEventMouseButton and ev.is_pressed()):
+		return
+	if _deaf():
 		return
 	if _state == 0:
 		if _tw != null and _tw.is_valid():

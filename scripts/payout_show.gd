@@ -321,8 +321,23 @@ func _tile(r: Array, tile: Vector2) -> Control:
 # Never ignore the first tap: a player tapping through an animation is telling
 # you the animation is too long. A tap while the rows are still arriving snaps
 # them home rather than skipping the reward.
+# Deaf for a moment when the queue opened this rather than the player. See the
+# long note on ChestOpen.deaf_for -- one receipt can owe two boxes, and the
+# finger dismissing the first was blowing straight through the second.
+var _deaf_until := 0.0
+
+func deaf_for(seconds: float) -> void:
+	_deaf_until = Time.get_ticks_msec() / 1000.0 + seconds
+
+
+func _deaf() -> bool:
+	return Time.get_ticks_msec() / 1000.0 < _deaf_until
+
+
 func _on_input(ev: InputEvent) -> void:
 	if not (ev is InputEventMouseButton and ev.is_pressed()):
+		return
+	if _deaf():
 		return
 	if _state == 0:
 		if _tw != null and _tw.is_valid():

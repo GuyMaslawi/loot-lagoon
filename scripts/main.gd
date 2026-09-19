@@ -212,6 +212,11 @@ var _prize_stage_done := Callable()
 # up behind a screen that has not been shown yet, and the queued call is passed
 # `held = true` so it cannot hold the same figure twice.
 var _reward_queue: Array[Callable] = []
+# How long a queued screen ignores taps. Long enough to outlast a double tap on
+# the box before it (~0.25s apart at phone speed) and short enough that a player
+# who deliberately taps the new box sees it respond -- the second tap of a
+# burst lands inside this, a considered one does not.
+const QUEUED_DEAF := 0.45
 # True in the gap between one screen leaving and the next arriving. Without it
 # `_reward_busy` reads false for that beat and a third reward jumps the queue.
 var _reward_draining := false
@@ -266,6 +271,16 @@ func _reward_next() -> void:
 		var what: Callable = _reward_queue.pop_front()
 		if what.is_valid():
 			what.call()
+			# AND WHATEVER IT JUST OPENED IS DEAF FOR A BEAT. The player did
+			# not ask for this box -- the queue did -- and their finger is
+			# still coming down from dismissing the one before it. Without
+			# this, one receipt that owes two boxes shows the player one:
+			# Guy bought the 1+2 on his phone and the two free columns' box
+			# was popped and dismissed by the taps meant for the pack he had
+			# paid for. See ChestOpen.deaf_for for the whole argument.
+			for seq in [_chest_seq, _payout_seq]:
+				if seq != null and is_instance_valid(seq):
+					seq.deaf_for(QUEUED_DEAF)
 		# NOT EVERY ENTRY IS A SCREEN. The deal ladder queues its own beats --
 		# the rung being stamped, the track climbing, the next card unlocking --
 		# because those play on the popup standing behind the takeover and
@@ -1572,10 +1587,29 @@ func _shot_deal() -> void:
 		# of every chain is a paid one.
 		if OS.has_environment("DEMO_DEAL_TAKEN"):
 			_deal_tick()
-			if not _active_deal().is_empty():
-				deal_taken = clampi(int(OS.get_environment("DEMO_DEAL_TAKEN")),
-					0, Deals.STEPS)
+			# A SAVE IN THE DARK WINDOW CANNOT BE TICKED INTO A LIVE CHAIN, and
+			# that is most saves: a chain runs 24 hours in every 54, so four
+			# times in nine the harness photographed the teaser instead of the
+			# ladder it was asked for -- with no error, because the teaser is a
+			# real screen. The chain is armed here instead when the tick did not
+			# produce one. DEMO_DEAL_ID names which; the first is the default.
+			if _active_deal().is_empty():
+				var want := OS.get_environment("DEMO_DEAL_ID")
+				deal_id = want if not Deals.by_id(want).is_empty() \
+					else String((Deals.CHAINS[0] as Dictionary)["id"])
+				deal_until = _now() + Deals.CHAIN_DURATION
+				deal_finale = false
+			deal_taken = clampi(int(OS.get_environment("DEMO_DEAL_TAKEN")),
+				0, Deals.STEPS)
 		_open_deal()
+		# DEMO_DEAL_TAKE=1 then PRESSES the live rung a beat after the ladder
+		# opens, which is the only way to film the unlock: the beat needs a
+		# rung to have just been taken, and taking one honestly means either a
+		# purchase or a free rung that the harness cannot reach through a
+		# Button it has no finger for.
+		if OS.get_environment("DEMO_DEAL_TAKE") == "1" and deal_taken < Deals.STEPS \
+				and not Deals.is_paid((_active_deal()["steps"] as Array)[deal_taken]):
+			_after(1.2, _take_deal.bind(deal_taken))
 		return
 	var n := clampi(int(OS.get_environment("DEMO_DEAL_DONE")), 0, Deals.STEPS)
 	deal_id = ""
@@ -1807,10 +1841,25 @@ func _capture_page(key: String) -> void:
 		# Long enough for FX.pop_in and the progress bar's fill tween to land;
 		# a shot taken mid-tween measures the animation, not the layout.
 		await get_tree().create_timer(1.6).timeout
-		var pimg := get_viewport().get_texture().get_image()
+		# SHOTS=<n> SHOT_GAP=<s> FILMS A BEAT INSTEAD OF MEASURING A LAYOUT.
+		#
+		# Every dialog in this game now has motion in it -- a lock springing
+		# open, a rung being stamped, a track climbing -- and a single frame
+		# 1.6 seconds in is the one thing that cannot show whether any of it
+		# works. preview.gd has had a burst mode for the page path since the
+		# island journey needed one; the popup path is where the beats
+		# actually live and it had no way to ask for it.
 		var ppath := "user://shot_%s.png" % key.replace(":", "_")
-		pimg.save_png(ppath)
-		print("SHOT written: %s (%dx%d)" % [ProjectSettings.globalize_path(ppath), pimg.get_width(), pimg.get_height()])
+		var shots := maxi(1, int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 1)
+		var gap := float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.25
+		for i in shots:
+			if i > 0:
+				await get_tree().create_timer(gap).timeout
+			var pimg := get_viewport().get_texture().get_image()
+			var at_i := ppath if shots == 1 else ppath.replace(".png", "_%02d.png" % i)
+			pimg.save_png(at_i)
+			print("SHOT written: %s (%dx%d)" % [ProjectSettings.globalize_path(at_i),
+				pimg.get_width(), pimg.get_height()])
 		get_tree().quit()
 		return
 	# SHOT=shop:spins shoots the shop already scrolled to a named shelf, which
@@ -13305,7 +13354,7 @@ func _open_deal() -> void:
 	vbox.add_child(rows)
 	for r in 3:
 		var row := HBoxContainer.new()
-		row.add_theme_constant_override("separation", 6)
+		row.add_theme_constant_override("separation", DEAL_ROW_GAP)
 		row.alignment = BoxContainer.ALIGNMENT_CENTER
 		rows.add_child(row)
 		var a: int = DEAL_SERPENTINE[r * 2]
@@ -13569,13 +13618,37 @@ func _event_lock_plate() -> Control:
 	# 38px trinket. It is the only mark on a rung the player cannot press, so it
 	# has to carry the whole state on its own -- and it is a rendered brass prop,
 	# which needs size before any of that reads.
-	var lock := _prize_art("lock", 64.0)
+	# THE PADLOCK COMES APART, because a lock that unlocks has to open.
+	#
+	# Guy, 2026-09-19: *"if I bought a deal and something was cracked open by
+	# it, let's have a cool animation of a lock opening."* The prop was one
+	# render, so the only thing the unlock could do with it was scale it up and
+	# fade it -- a padlock dissolving, which is not the thing the player just
+	# paid for. `lock_shackle` and `lock_body` are the same render cut at the
+	# body's top edge (tools cut it once; both keep the full 1024 canvas, so
+	# stacked at the same rect they reassemble into the original pixel for
+	# pixel and nothing here has to know where the seam is).
+	#
+	# The shackle goes UNDERNEATH the body: when it swings, whatever dips below
+	# the rim is hidden by the body, so it reads as hinged inside the lock
+	# rather than as a sticker sliding off the front.
+	var lock := Control.new()
+	lock.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	plate.add_child(lock)
 	lock.set_anchors_preset(Control.PRESET_CENTER)
 	lock.offset_left = -32.0
 	lock.offset_right = 32.0
 	lock.offset_top = -32.0
 	lock.offset_bottom = 32.0
+	for part in ["lock_shackle", "lock_body"]:
+		var piece := _prize_art(part, 64.0)
+		# _prize_art hands back a node with a 64 minimum, and a minimum is what
+		# Control.size is clamped to -- see the waymarker's chevron for the
+		# same trap. These are placed by anchors, so the minimum has to go.
+		piece.custom_minimum_size = Vector2.ZERO
+		lock.add_child(piece)
+		piece.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		plate.set_meta(part, piece)
 	# A pool of light under it, so the brass has somewhere to come off.
 	var glow := _radial_glow(Color(1.0, 0.86, 0.52, 0.75), 132.0)
 	plate.add_child(glow)
@@ -13905,12 +13978,38 @@ func _deal_beat_waymark(disc: Control) -> void:
 # blows off, the stock comes up to full, the brass rim arrives and the button
 # lands underneath at full size. The card is already the finished live card; all
 # of this is one layer coming off it.
+# THE LOCK OPENS, AND THAT IS THE BEAT THE RUNG IS SOLD ON.
+#
+# Three moves, in the order a real one gives way: the body jolts against the
+# shackle (the player's tap arriving), the shackle SNAPS open about its right
+# leg with a spark off the keyhole, and only then does the whole lock drop away
+# and let the button through. It used to be one move -- the plate scaled up and
+# faded -- which is a padlock evaporating.
+#
+# The pivot is the RIGHT leg's foot, measured off the render rather than
+# guessed: the legs sit at x 0.32 and x 0.67 of the canvas and the cut is at
+# y 0.32. A shackle hinged at its centre swings like a propeller.
+const LOCK_HINGE := Vector2(0.674, 0.318)
+# Clockwise, which is what lifts the FREE leg up and out of the body. The sign
+# matters: turned the other way the shackle sweeps down across the face it is
+# supposed to be releasing.
+const LOCK_SWING := 34.0
+
 func _deal_beat_unlock(holder: Control) -> void:
 	var plate = holder.get_meta("lock", null)
 	Sfx.play("pop", -6.0, 0.02, 0.78)
 	if is_instance_valid(plate) and plate is Control:
 		FX.shake(plate, 6.0, 4)
-	_after(0.32, func() -> void:
+		# The shackle gives at the end of the rattle, not after the plate has
+		# gone: the opening has to be seen ON the lock.
+		_after(0.22, func() -> void:
+			if is_instance_valid(plate):
+				_lock_spring(plate))
+	# 0.75, not 0.32: the rattle runs to 0.22, the shackle swings until about
+	# 0.56, and then the lock is allowed to stand there OPEN for a beat before
+	# anything takes it away. That pause is the whole ask -- an unlock the
+	# player can see happen rather than infer from a button appearing.
+	_after(0.75, func() -> void:
 		if not is_instance_valid(holder):
 			return
 		var card = holder.get_meta("card", null) if holder.has_meta("card") else null
@@ -13932,9 +14031,15 @@ func _deal_beat_unlock(holder: Control) -> void:
 			p.pivot_offset = p.size * 0.5
 			var pt := p.create_tween()
 			pt.set_parallel(true)
-			pt.tween_property(p, "scale", Vector2(1.45, 1.85), 0.30) \
+			# IT FALLS OFF, it does not swell and vanish. An open padlock has
+			# nothing holding it, so it tips, drops out of the card and takes
+			# the plate with it -- the same 0.30 the old scale used, spent on a
+			# move that means something.
+			pt.tween_property(p, "position:y", p.position.y + p.size.y * 0.9, 0.34) \
 				.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_IN)
-			pt.tween_property(p, "modulate:a", 0.0, 0.26)
+			pt.tween_property(p, "rotation_degrees", 14.0, 0.34) \
+				.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+			pt.tween_property(p, "modulate:a", 0.0, 0.30)
 			pt.chain().tween_callback(p.queue_free)
 		Sfx.play("coin", -5.0)
 		FX.ring(stage, centre, Lagoon.BRASS_HI, stage.size.x * 0.70, 0.55, 9.0)
@@ -13946,19 +14051,77 @@ func _deal_beat_unlock(holder: Control) -> void:
 		tw.tween_property(holder, "scale", Vector2.ONE, 0.42) \
 			.set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT))
 
+# The shackle coming open, with the lock's own pieces.
+#
+# Falls back to a jolt of the whole lock when the two-piece art is missing --
+# `prop_tex` is allowed to return null, and a beat that crashed on a file that
+# had not shipped yet would take the ladder down with it.
+func _lock_spring(plate: Control) -> void:
+	var shackle = plate.get_meta("lock_shackle", null)
+	if not is_instance_valid(shackle) or not (shackle is Control):
+		return
+	var sh: Control = shackle
+	sh.pivot_offset = sh.size * LOCK_HINGE
+	var tw := sh.create_tween()
+	# A shackle under load: it presses down a hair before it lets go, and then
+	# overshoots. TRANS_BACK on the way out is the whole character of the move.
+	tw.tween_property(sh, "rotation_degrees", -4.0, 0.07) \
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN)
+	tw.tween_property(sh, "rotation_degrees", LOCK_SWING, 0.34) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	# And a lift, so it clears the body rather than grinding through it.
+	var up := sh.create_tween()
+	up.tween_interval(0.07)
+	up.tween_property(sh, "position:y", sh.position.y - sh.size.y * 0.06, 0.34) \
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	# The click, at the keyhole, on the frame it gives.
+	_after(0.07, func() -> void:
+		if not is_instance_valid(plate):
+			return
+		Sfx.play("pop", -3.0, 0.03, 1.5)
+		var stage := _beat_stage(plate)
+		FX.burst(stage, stage.size * Vector2(0.5, 0.56), Lagoon.BRASS_HI, 10)
+		FX.ring(stage, stage.size * Vector2(0.5, 0.56), Lagoon.BRASS_HI,
+			stage.size.x * 0.42, 0.34, 5.0))
+
 # The turn between two rows, under the column the ladder leaves from.
+#
+# IT MIRRORS THE ROW ABOVE IT, CELL FOR CELL, and that is the fix for what Guy
+# saw on his phone on 2026-09-19: *"the arrows are not centred and they look
+# broken."* The lane used to be an alignment -- the marker shoved to the END or
+# the BEGIN of a full-width box -- which puts it against the OUTER EDGE of the
+# sheet, while the column it is supposed to be leaving from is centred a long
+# way inside that. So the turn hung off the corner of the card below it instead
+# of under the one above it, and on a ladder whose whole job is to be a path,
+# the waymarker pointed at nothing.
+#
+# The three slots below are the row's three: cell, gutter, cell, at the row's
+# own separation. The marker goes in the slot it belongs to and is centred
+# there, so it lands exactly under the middle of its column at any width.
+#
+# AND THE LANE IS AS TALL AS THE MARKER. It was 30 against a 44-unit disc with
+# zero separation between rows, so the disc overflowed 7 units into the cards
+# above and below and drew ON them -- the other half of "looks broken".
 func _deal_turn(right: bool, hue: Color, into: int) -> Control:
 	var lane := HBoxContainer.new()
-	lane.custom_minimum_size = Vector2(0, 30)
-	lane.alignment = BoxContainer.ALIGNMENT_END if right else BoxContainer.ALIGNMENT_BEGIN
-	var pad := Control.new()
-	pad.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	if right:
-		lane.add_child(pad)
+	lane.add_theme_constant_override("separation", DEAL_ROW_GAP)
+	lane.custom_minimum_size = Vector2(0, DEAL_TURN_LANE)
 	var mark := _deal_arrow(DEAL_TURN_DOWN, hue, into)
-	lane.add_child(mark)
-	if not right:
-		lane.add_child(pad)
+	for i in 3:
+		if i == 1:
+			# The gutter the row's own arrow stands in, kept empty here so the
+			# two cell slots measure the same as the row's.
+			var gutter := Control.new()
+			gutter.custom_minimum_size = Vector2(DEAL_ARROW_W, 0)
+			gutter.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			lane.add_child(gutter)
+			continue
+		var slot := CenterContainer.new()
+		slot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		lane.add_child(slot)
+		if (i == 2) == right:
+			slot.add_child(mark)
 	return lane
 
 # A chevron on its own disc.
@@ -13978,9 +14141,21 @@ func _deal_arrow(turn: float, hue: Color, into := -1) -> Control:
 	# where each one depends on the one before it -- and the waymarkers are the
 	# only thing on the screen that says so. At the old size they were pale
 	# lozenges between two much larger cards and the six rungs read as a grid.
-	disc.custom_minimum_size = Vector2(64, 44)
+	# A TURN IS SQUARE; A STEP ALONG THE ROW IS WIDE. Both discs are 44 tall,
+	# and a chevron pointing DOWN in a 64x44 lozenge runs its point into the
+	# curve where the same chevron pointing sideways has a whole cap of room --
+	# which is the second half of "they look broken". The turn marker gets a
+	# box as tall as it is wide instead, so the mark has the same clearance
+	# whichever way it is turned.
+	disc.custom_minimum_size = Vector2(44, 44) if is_equal_approx(turn, DEAL_TURN_DOWN) \
+		else Vector2(DEAL_ARROW_W, 44)
 	disc.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	disc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# OVER THE CARDS, NOT UNDER THEM. The rung cards carry a drop shadow that
+	# draws outside their own rect, and the rows sit at zero separation -- so a
+	# waymarker standing in the seam was half under the shadow of the card
+	# below it and read as a disc someone had smudged.
+	disc.z_index = 1
 	# A DRAWN CHEVRON, NOT A TYPED ONE. It was `Lagoon.title("\u25b6")` -- a
 	# geometric-shapes character set in the game's display face, which is a
 	# rounded Latin face and does not carry that block. What came back was
@@ -14004,13 +14179,32 @@ func _deal_arrow(turn: float, hue: Color, into := -1) -> Control:
 	head.kind = "chevron"
 	head.tint = hue
 	head.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# AND THIS LINE IS THE WHOLE OF "THE ARROWS ARE NOT CENTRED AND LOOK
+	# BROKEN" (Guy, 2026-09-19, off his own phone).
+	#
+	# Glyph._init sets custom_minimum_size to 40x40 -- sensible for a glyph in
+	# a row, wrong for one placed by hand. Control.size is CLAMPED to the
+	# combined minimum size, so the offsets below were setting a 24-unit box
+	# and getting a 40-unit one back, grown down and to the right from the
+	# anchor. The mark therefore sat 8 units off centre inside its disc, and
+	# `pivot_offset` -- which has to be half the REAL size -- was pointing at a
+	# spot 8 units from the true middle, so every rotation swung the chevron
+	# out instead of turning it in place. A right arrow came out tilted, a
+	# turn-down arrow came out tilted and hanging over the rim.
+	#
+	# Nothing about the mark's own geometry was ever wrong, which is why three
+	# passes at the polygon would not have found it.
+	head.custom_minimum_size = Vector2.ZERO
 	slot.add_child(head)
+	# 28, down from 30, now that the mark is centred for real: the chevron is
+	# drawn to the edges of its own box and the disc is a rounded lozenge, so
+	# the point needs a little more room than a square would give it.
 	head.set_anchors_preset(Control.PRESET_CENTER)
-	head.offset_left = -15.0
-	head.offset_right = 15.0
-	head.offset_top = -15.0
-	head.offset_bottom = 15.0
-	head.pivot_offset = Vector2(15, 15)
+	head.offset_left = -DEAL_MARK
+	head.offset_right = DEAL_MARK
+	head.offset_top = -DEAL_MARK
+	head.offset_bottom = DEAL_MARK
+	head.pivot_offset = Vector2(DEAL_MARK, DEAL_MARK)
 	head.rotation_degrees = turn
 	disc.set_meta("head", head)
 	disc.set_meta("hue", hue)
@@ -14023,6 +14217,18 @@ func _deal_arrow(turn: float, hue: Color, into := -1) -> Control:
 # Which way a waymarker points, in degrees clockwise from "along the row". One
 # drawn chevron, turned -- rather than three glyphs, or three characters the
 # display face does not carry.
+# The row's geometry, named so the turn lane under it cannot drift out of step:
+# it mirrors the row slot for slot and both read these.
+const DEAL_ROW_GAP := 6
+# Half the chevron's box. 28 units on a 44-unit disc: eight clear all round,
+# which is what keeps the point off the rim now that the mark is genuinely
+# centred. See the note where it is placed.
+const DEAL_MARK := 14.0
+const DEAL_ARROW_W := 64.0
+# Tall enough to hold a waymarker whole. The rows sit at zero separation, so
+# anything less than the disc's own height is drawn over the cards.
+const DEAL_TURN_LANE := 52.0
+
 const DEAL_TURN_ON := 0.0
 const DEAL_TURN_BACK := 180.0
 const DEAL_TURN_DOWN := 90.0
@@ -14262,9 +14468,14 @@ func _after_deal_step() -> void:
 	# for it.
 	_deal_show_cards("Deal Taken!")
 
-# How long the three beats take end to end. Used to hold the finale back until
-# the ladder has finished showing what the player just did.
-const DEAL_BEAT_TOTAL := 1.15
+# How long the three beats take end to end. Used to hold the finale and the
+# card box back until the ladder has finished showing what the player just did.
+#
+# It went 1.15 -> 1.60 when the lock learned to open: the shackle springs at
+# 0.22 and takes 0.34 to swing, and an OPEN padlock that is instantly buried
+# under the next screen is the same as one that never opened. The extra
+# 0.45 is that beat plus the moment the lock stands there undone.
+const DEAL_BEAT_TOTAL := 1.60
 
 # One rung landing, on the screen that is already up.
 func _deal_patch() -> void:
@@ -15840,6 +16051,23 @@ func _start_purchase(pack: Dictionary) -> void:
 # grant writes the save, so finishing before it would risk charging a player
 # for coins that never landed.
 func _on_purchase_ok(product_id: String) -> void:
+	# NOT DURING BOOT, and this is the other half of the same report.
+	#
+	# A receipt does not only arrive while the player is watching. StoreKit
+	# replays anything left unfinished as soon as IAP.begin() runs, which is
+	# inside the load sequence -- so a purchase whose app was killed on the
+	# payment sheet (a sandbox sign-in is long enough for iOS to do exactly
+	# that) came back on the NEXT LAUNCH and handed its boxes over on top of
+	# the loading bar. The goods landed; the screens that say so played to a
+	# player still looking at a progress bar, and the 1+2's two free columns
+	# went with them.
+	#
+	# _boot_mail is the queue every other arrival-time event already uses. The
+	# grant is deferred with it, and so is IAP.finish() -- which is the safe
+	# direction: an unfinished transaction is replayed, a finished one that
+	# never granted is gone.
+	if _hold_for_boot(_on_purchase_ok.bind(product_id)):
+		return
 	Diag.note("purchase")
 	Diag.milestone("first_purchase")
 	var short := product_id.trim_prefix(IAP.PREFIX)
