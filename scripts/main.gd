@@ -840,6 +840,12 @@ var _deal_next_timer_label: Label
 var _daily_timer_label: Label
 var _daily_hero_parts := {}
 var _deal_last_id := ""
+# The two FREE seals and the price button of the 1+2 currently on screen.
+# Rebuilt with the sheet, and only ever read by the beat that opens them --
+# the receipt leaves the takeover standing now, so there is something to play
+# on. See _powerup_unseal.
+var _powerup_seals := []
+var _powerup_buy_btn: Button
 var _powerup_timer_label: Label
 # The clock on the "next offer" row, which only exists while no offer does.
 var _powerup_next_timer_label: Label
@@ -1645,6 +1651,23 @@ func _shot_powerup() -> void:
 		loyalty_buys = clampi(int(OS.get_environment("DEMO_LOYALTY")),
 			0, Deals.LOYALTY_TARGET)
 	_open_powerup()
+	# DEMO_POWERUP_BUY=1 presses the price and lets the desktop sim deliver the
+	# receipt, which is the only way to film what the offer does AFTER it is
+	# bought -- the sheet staying up, the two seals springing open, the figures
+	# leaving the columns. Reaching that state honestly costs a real purchase.
+	if OS.get_environment("DEMO_POWERUP_BUY") == "1":
+		_after(1.0, func() -> void:
+			if is_instance_valid(_powerup_buy_btn):
+				_powerup_buy_btn.pressed.emit())
+		# ...and the tap that dismisses what the PAID pack opened, because the
+		# unseal plays behind it and nothing in a harness has a finger. Two
+		# seconds after the receipt, which is about as long as a player looks
+		# at a chest they have just been handed.
+		_after(3.4, func() -> void:
+			if _chest_seq != null and is_instance_valid(_chest_seq):
+				_chest_seq.skip(true)
+			elif _payout_seq != null and is_instance_valid(_payout_seq):
+				_payout_seq.skip(true))
 
 # The solo. It only rolls in after a trio has come and gone, which on a fresh
 # save is a day and a half away -- so like the 1+2 it could not be photographed
@@ -14776,6 +14799,8 @@ func _open_powerup() -> void:
 	var vbox := _open_popup(String(pu["name"]), 692.0, true)
 	if not vbox.is_inside_tree():
 		return
+	_powerup_seals.clear()
+	_powerup_buy_btn = null
 	# 10, not the popup's default 14: this dialog has six rows and a hard
 	# height budget on the design floor; four units a seam buys the foot row
 	# a place above the fold.
@@ -14938,6 +14963,7 @@ func _powerup_column(col: Dictionary, pack: Dictionary) -> Control:
 	_candy_button(btn, Color(0.28, 0.68, 0.34))
 	FX.press_feedback(btn)
 	FX.pulse_forever(btn, 1.04, 1.25)
+	_powerup_buy_btn = btn
 	btn.pressed.connect(func() -> void:
 		# The intent is recorded BEFORE the store sheet opens, and it is
 		# recorded on disk. Between here and the receipt is Apple's own
@@ -14996,15 +15022,46 @@ func _free_seal() -> Control:
 	# 36, which is small on purpose: the padlock is a footnote on this plate,
 	# not its subject. At the ladder's 64 it would be the mark again and the
 	# word beside it the caption, which is the arrangement this replaces.
-	var lock := _prize_art("lock", 36.0)
+	#
+	# IN TWO PIECES, because this one has to OPEN. Guy, 2026-09-19: after the
+	# purchase goes through, *"the two locks open with an animation"* -- on the
+	# offer screen itself, which stays standing. Same split render the ladder's
+	# rung uses (see _event_lock_plate): shackle behind, body in front, so the
+	# swing reads as hinged inside the lock.
+	var lock := Control.new()
+	lock.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	lock.custom_minimum_size = Vector2(36, 36)
 	lock.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	row.add_child(lock)
+	for part in ["lock_shackle", "lock_body"]:
+		var piece := _prize_art(part, 36.0)
+		piece.custom_minimum_size = Vector2.ZERO
+		lock.add_child(piece)
+		piece.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		plate.set_meta(part, piece)
 	# DEEP INK ON THE BAND, which is the one pairing on this plate that reads --
 	# white on brass is under 2 : 1. The outline is the plate's own colour, so
 	# the letters are cut into the metal rather than ringed by a second one.
 	var word := Lagoon.title("FREE", UI.F_TITLE, Lagoon.ABYSS, Lagoon.BRASS_HI)
 	word.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	word.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	row.add_child(word)
+	# THE WORD NEVER CHANGES, AND THAT IS A LAYOUT DECISION, NOT A COPY ONE.
+	#
+	# The seal's opened state said TAKEN first -- one letter longer and about
+	# forty units wider at F_TITLE. A Label in an HBox in a PanelContainer in
+	# an expanding column passes that straight up the chain: both side columns
+	# grew, the sheet grew with them, and a 692 dialog that fits the design
+	# floor went off the right of the screen with the third column cut in half.
+	# Pinning the label's minimum to the longer word only moved the problem to
+	# the closed state.
+	#
+	# It does not need new text. The plate goes from struck brass to spent
+	# green and the padlock on it springs open -- two changes the eye reads
+	# faster than a word anyway, and neither of them is a word this layout has
+	# to find room for. See _powerup_seal_open.
+	plate.set_meta("word", word)
+	_powerup_seals.append(plate)
 	return plate
 
 # --- the loyalty card --------------------------------------------------------
@@ -15082,12 +15139,20 @@ func _powerup_credit_purchase(pack_id: String) -> bool:
 	var pu := Deals.powerup_by_id(powerup_pending)
 	if pu.is_empty() or String(pu["pack"]) != pack_id:
 		return false
-	# THE OFFER SCREEN GOES NOW, not on the tap that opened the payment sheet.
-	# It stayed up behind Apple's sheet so a cancel could come back to it; this
-	# is the point at which it really is spent, and a 1+2 left standing with a
-	# dead countdown and a live price button would sell the same pack again
-	# without the two free columns attached to it.
-	_close_popup()
+	# THE OFFER SCREEN STAYS, AND THAT IS THE WHOLE SHAPE OF THIS BEAT NOW.
+	#
+	# Guy, 2026-09-19: *"after the purchase finishes successfully the window
+	# has to stay open until the user closes it himself, and the two locks
+	# open with an animation."* It used to be torn down the moment the receipt
+	# landed and replaced with a box titled "Your 2 Free Packs!" -- which
+	# answered the wrong question. The player did not buy a box; they bought
+	# the two sealed columns they were looking at, and the thing they want to
+	# see is those two seals coming off.
+	#
+	# So the sheet is left standing and _powerup_unseal plays on it. What the
+	# close used to be protecting against -- a spent offer with a live price
+	# button on it, sellable a second time without its free columns -- is
+	# handled there too: the button is retired in the same beat.
 	# Cleared before the grant, never after: the grant writes the save, and a
 	# record left standing through it would survive a crash mid-grant and pay
 	# the bonus columns a second time on the next launch.
@@ -15151,15 +15216,113 @@ func _powerup_credit_purchase(pack_id: String) -> bool:
 		note = "+%s spins" % _fmt_compact(spins_n)
 	if coins_n > 0:
 		note += ("   \u00b7   " if note != "" else "") + "+%s coins" % _fmt_compact(coins_n)
-	var pay_free := func() -> void:
-		var at := Vector2(view_size().x * 0.5, view_size().y * 0.52)
-		_spin_release(spins_n, at)
-		_coin_release(coins_n, at)
-	if not cards.is_empty():
-		_show_chest_result(cards, "Your 2 Free Packs!", note, [], false, -1, pay_free)
+
+	# THE SEALS COME OFF ON THE SHEET, BEHIND WHATEVER THE PAID PACK PUT UP.
+	# `_grant_pack` has already opened the chest or the payout for the middle
+	# column, and that takeover is at z 126 with the offer at 120 -- so run
+	# straight from here the two locks would spring where nobody can see them.
+	# Queued, they play on the screen the player comes back to. See
+	# _reward_queue, which is built for exactly this: one receipt owing more
+	# than one thing.
+	var unseal := func() -> void:
+		_powerup_unseal(spins_n, coins_n, cards, note)
+	if _reward_busy():
+		_reward_queue.append(unseal)
 	else:
-		_show_currency_payout("Your 2 Free Packs!", coins_n, spins_n, 0, true)
+		unseal.call()
 	return true
+
+
+# The two seals coming off, on the offer screen the player bought them from.
+#
+# The columns' own figures fly out of the columns -- not out of the middle of
+# the screen -- because the whole claim of this takeover is that those two
+# stacks are real, and a counter that lifts off the stack it was printed under
+# is the only version of that claim the player can watch. The cards, if the
+# bonus carried any, still need a box: they are objects, not figures, and the
+# box opens over the sheet and leaves it standing underneath.
+func _powerup_unseal(spins_n: int, coins_n: int, cards: Array, note: String) -> void:
+	# The price is gone the moment the receipt lands, whether or not the seals
+	# are still on screen to be opened -- a spent offer must never be sellable
+	# again. Done first for that reason.
+	if is_instance_valid(_powerup_buy_btn):
+		var b := _powerup_buy_btn
+		b.disabled = true
+		b.text = "BOUGHT"
+		_candy_button(b, Lagoon.KELP_LO)
+	var seals := []
+	for plate in _powerup_seals:
+		if is_instance_valid(plate) and plate is Control:
+			seals.append(plate)
+	# Nothing left to play on -- the player closed the sheet while the paid
+	# pack's box was up, which is allowed. The goods are already banked; all
+	# that is owed is the flights, and they leave from the middle instead.
+	if seals.is_empty():
+		var mid := Vector2(view_size().x * 0.5, view_size().y * 0.52)
+		_spin_release(spins_n, mid)
+		_coin_release(coins_n, mid)
+		if not cards.is_empty():
+			_show_chest_result(cards, "Your 2 Free Packs!", note)
+		return
+	Sfx.play("pop", -6.0, 0.02, 0.78)
+	for i in seals.size():
+		var plate: Control = seals[i]
+		# Staggered, so the two read as two locks rather than as one event
+		# happening twice. 0.18 is long enough to see the first give and short
+		# enough that the pair still feels like one release.
+		_after(0.18 * float(i), func() -> void:
+			if is_instance_valid(plate):
+				_powerup_seal_open(plate))
+	# The figures leave the columns once both locks are off.
+	#
+	# is_instance_valid BEFORE the cast, every time -- `x as Control` on a freed
+	# instance is a script error, not a null, and this beat runs half a second
+	# after the seals were found, which is long enough for the sheet to have
+	# been closed underneath it. Same rule the ladder's beats follow.
+	var left: Control = seals[0]
+	var right: Control = seals[seals.size() - 1]
+	var when := 0.18 * float(seals.size()) + 0.42
+	_after(when, func() -> void:
+		var mid := view_size() * Vector2(0.5, 0.52)
+		var at := mid
+		if is_instance_valid(left):
+			at = left.global_position + left.size * 0.5
+		var at2 := mid
+		if is_instance_valid(right):
+			at2 = right.global_position + right.size * 0.5
+		_spin_release(spins_n, at)
+		_coin_release(coins_n, at2)
+		# And the cards, which cannot be flown to a counter. The sheet stays
+		# up behind the box, so dismissing it lands the player back on the two
+		# open seals rather than on the page.
+		if not cards.is_empty():
+			_show_chest_result(cards, "Your 2 Free Packs!", note))
+
+
+# One seal giving way: the shackle springs about its right leg, the plate says
+# TAKEN instead of FREE, and a spark comes off the keyhole. Same two-piece
+# padlock and the same hinge the ladder's rung uses -- see _lock_spring, which
+# this defers to for the swing itself.
+func _powerup_seal_open(plate: Control) -> void:
+	plate.set_meta("opened", true)
+	FX.shake(plate, 4.0, 3)
+	_lock_spring(plate)
+	_after(0.30, func() -> void:
+		if not is_instance_valid(plate):
+			return
+		var word = plate.get_meta("word", null)
+		if is_instance_valid(word) and word is Label:
+			# The same word, thumped. It is the plate under it that changed.
+			FX.counter_pop(word as Control, Lagoon.ABYSS)
+		# The plate goes from struck brass to a spent green, which is the same
+		# move a taken rung makes on the ladder: the colour is what says the
+		# thing is behind you.
+		var sb := plate.get_theme_stylebox("panel")
+		if sb is StyleBoxFlat:
+			var box: StyleBoxFlat = (sb as StyleBoxFlat).duplicate()
+			box.bg_color = Lagoon.KELP_HI
+			box.border_color = Lagoon.KELP
+			plate.add_theme_stylebox_override("panel", box))
 
 # =============================================================================
 #  The solo deal — one heap, one number, one button

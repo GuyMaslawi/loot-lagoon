@@ -10,11 +10,16 @@ extends Node
 # failure is in the seam between them.
 #
 # So this presses the real button on the real takeover, lets the desktop sim
-# deliver the receipt, and then DISMISSES EVERY SCREEN THE WAY A FINGER WOULD,
-# checking after each one that the queue kept moving. The measurement that
-# matters is the last: the purse has to end up holding the bonus spins and
-# coins, because those are the two free columns and they are what the player
-# was sold.
+# deliver the receipt, and then dismisses what the paid pack put up the way a
+# finger would -- and then checks the three things the offer owes, which Guy
+# named on 2026-09-19:
+#
+#   1. THE SHEET STAYS. The takeover is not torn down by its own receipt; the
+#      player closes it when they are done looking at it.
+#   2. THE TWO SEALS OPEN. Both padlocks spring, and the price button retires
+#      so a spent offer cannot be sold twice.
+#   3. THE GOODS LAND. The purse ends up holding the bonus spins and coins and
+#      the HUD is not left with a figure on hold.
 #
 #   godot --headless --path . res://tools/qa_trio.tscn
 
@@ -242,10 +247,46 @@ func _run(pu_id: String, away: float, resume_first: bool, chain_id := "") -> voi
 		print("   tap %d: %s -> %s (queue %d)" % [i + 1, before, _screen(),
 			(m.get("_reward_queue") as Array).size()])
 
+	# THE CARDS COME LAST NOW. The unseal plays on the sheet first and only then
+	# opens the box for whatever cards the two columns carried -- about eight
+	# tenths of a second after the paid pack's box was dismissed. A harness that
+	# read the HUD on the frame the seals opened caught the stars still on hold
+	# and called it a bug, when all that was owed was the tap that dismisses
+	# that box. So: wait for any late box, dismiss it, then measure.
+	var t_late := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - t_late < 2500:
+		await get_tree().process_frame
+		if _screen() != "":
+			await _tap()
+			break
 	# The flights land in chunks over a second or so and each one takes its
 	# figure off the hold, so the HUD has to be read after they have arrived --
 	# not on the frame the last box closed.
 	await _settle_flights()
+	# 1. the sheet is still standing, and its price is retired
+	var sheet_up := m.get("_popup") != null
+	var btn_after = m.get("_powerup_buy_btn")
+	var retired := btn_after != null and is_instance_valid(btn_after) and (btn_after as Button).disabled
+	print("   the offer sheet after the receipt: %s   price button retired: %s"
+		% ["still up" if sheet_up else "GONE", retired])
+	if not sheet_up:
+		fails += 1
+		print("   [FAIL] the receipt closed the offer -- it has to stay until the player closes it")
+	if not retired:
+		fails += 1
+		print("   [FAIL] the price button is still live on a spent offer")
+
+	# 2. both seals came off
+	var seals: Array = m.get("_powerup_seals")
+	var opened := 0
+	for plate in seals:
+		if is_instance_valid(plate) and bool((plate as Control).get_meta("opened", false)):
+			opened += 1
+	print("   seals opened: %d of %d" % [opened, seals.size()])
+	if opened < 2:
+		fails += 1
+		print("   [FAIL] the two locks did not open on the sheet")
+
 	var got_spins := int(m.get("spins")) - spins0
 	var got_coins := int(m.get("coins")) - coins0
 	print("   purse: spins +%d (owed %d)   coins +%d (owed %d)" % [
@@ -265,16 +306,16 @@ func _run(pu_id: String, away: float, resume_first: bool, chain_id := "") -> voi
 
 # THE FINGER THAT IS STILL COMING DOWN.
 #
-# The regression test for what Guy reported: one receipt owes two boxes, and
-# the taps that dismiss the first must not carry through the second. Both boxes
-# have to be seen, so the box opened by the queue has to survive a tap that
-# arrives on the frame it opens.
+# The regression test for what Guy reported: the taps that dismiss the paid
+# pack's box must not carry through to whatever the offer opens next. With the
+# sheet now surviving its own receipt, the thing that must survive the burst is
+# the sheet itself -- a stray tap may not close the screen the player is about
+# to watch two locks open on.
 func _impatient() -> void:
 	print("")
 	print("== pu_deckhand -- two taps a frame apart, the way a phone gets them")
 	m._clear_reward_screens()
 	m._close_popup(true)
-	m.set("deal_id", "")
 	m.set("powerup_id", "pu_deckhand")
 	m.set("powerup_until", m._now() + Deals.POWERUP_DURATION)
 	m.set("powerup_pending", "")
@@ -297,33 +338,26 @@ func _impatient() -> void:
 	_poke(first)
 	await get_tree().process_frame
 	_poke(first)
-	# And a third, aimed at a box that is already on its way out. This is the
-	# one that used to land on the free columns' box the instant it opened.
-	var second = null
 	var t0 := Time.get_ticks_msec()
-	while Time.get_ticks_msec() - t0 < 1500:
+	while is_instance_valid(first) and Time.get_ticks_msec() - t0 < 2000:
 		await get_tree().process_frame
-		var live = m.get("_chest_seq")
-		if live != null and is_instance_valid(live) and live != first:
-			second = live
-			# Both of them on the frame it opened: pop and dismiss, which is
-			# what a burst aimed at the box before it actually does.
-			_poke(second)
-			_poke(second)
-			break
-	if second == null:
-		fails += 1
-		print("   [FAIL] the two free columns' box never opened at all")
-		return
-	# Past the deaf window AND past the 0.24s dismissal fade, so "still valid"
-	# means still standing rather than still fading out.
+	# Everything the unseal owes, plus the box the cards open in.
 	var t1 := Time.get_ticks_msec()
-	while Time.get_ticks_msec() - t1 < 1200:
+	while Time.get_ticks_msec() - t1 < 2500:
 		await get_tree().process_frame
-	if not is_instance_valid(second):
+	var seals: Array = m.get("_powerup_seals")
+	var opened := 0
+	for plate in seals:
+		if is_instance_valid(plate) and bool((plate as Control).get_meta("opened", false)):
+			opened += 1
+	if m.get("_popup") == null:
 		fails += 1
-		print("   [FAIL] the stray taps dismissed it -- the free columns were never seen")
+		print("   [FAIL] the stray taps took the offer sheet down with the box")
+	elif opened < 2:
+		fails += 1
+		print("   [FAIL] the seals did not open: %d of %d" % [opened, seals.size()])
 	else:
-		print("   the free columns' box is standing after the stray taps: PASS")
-		second.skip(true)
+		print("   the sheet is standing and both seals are open: PASS")
+	m._clear_reward_screens()
+	m._close_popup(true)
 	await _settle_flights()
