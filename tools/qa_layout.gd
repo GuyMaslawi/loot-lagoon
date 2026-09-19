@@ -228,11 +228,12 @@ func _ready() -> void:
 	# being set up again here, so the two can never disagree about what "a live
 	# offer" looks like -- the same argument _shot_quests settles for the
 	# mission board.
-	m.fair_id = ""
-	m.fair_until = 0.0
-	m.fair_next = 0.0
-	m._fair_tick()
-	for deal_opener in ["_shot_fair", "_shot_powerup", "_shot_solo"]:
+	m.deal_id = ""
+	m.deal_until = 0.0
+	m.deal_next = 0.0
+	m.deal_taken = 0
+	m._deal_tick()
+	for deal_opener in ["_open_deal", "_shot_powerup", "_shot_solo"]:
 		m.call(deal_opener)
 		await get_tree().process_frame
 		await get_tree().process_frame
@@ -240,18 +241,20 @@ func _ready() -> void:
 		_check_fixed_height("popup " + deal_opener, m._popup)
 		m._close_popup(true)
 		await get_tree().process_frame
-	# ...and the events teaser, which is the same disc in its dark window and
-	# the only screen on it that is pure chrome -- a clock, a mark and a door
-	# row, all of which have overflowed a sheet before.
-	m.fair_id = ""
-	m.fair_until = 0.0
-	m.call("_open_event_teaser")
+	# ...and the ladder again, parked mid-climb, which is the only state that
+	# draws all three kinds of rung at once -- spent, live and locked -- and the
+	# only one where a TAKEN medallion is on the page to be measured.
+	m.deal_taken = 2
+	m.call("_open_deal")
 	await get_tree().process_frame
 	await get_tree().process_frame
-	_check_page("popup event teaser", m._popup)
-	_check_fixed_height("popup event teaser", m._popup)
+	_check_page("popup _open_deal mid-climb", m._popup)
+	_check_fixed_height("popup _open_deal mid-climb", m._popup)
 	m._close_popup(true)
 	await get_tree().process_frame
+	m.deal_id = ""
+	m.deal_until = 0.0
+	m.deal_taken = 0
 	m.solo_id = ""
 	m.solo_until = 0.0
 	m.solo_next = 0.0

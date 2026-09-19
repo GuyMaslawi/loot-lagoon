@@ -131,9 +131,14 @@ func _ready() -> void:
 	await _measure("clan join", m)
 	m.my_clan = kept
 
-	# The "buy a bonus" takeover. It is struck on dark jewel stock with white
-	# figures on it -- exactly the kind of surface this harness exists to
-	# check, and the kind a source read cannot check at all.
+	# The two "buy a bonus" events. Neither was measured here, and both are
+	# struck on dark jewel stock with white figures on it -- which is exactly
+	# the kind of surface this harness exists to check, and the kind a source
+	# read cannot check at all.
+	m.deal_id = "tide_hunt"
+	m.deal_until = m._now() + 7000.0
+	m.deal_taken = 2
+	m.deal_finale = false
 	m.powerup_id = "pu_quartermaster"
 	m.powerup_until = m._now() + 7000.0
 	m.powerup_pending = ""
@@ -161,7 +166,7 @@ func _ready() -> void:
 	m.voy_claimed[m._voyage_key(3, String((vday[1] as Dictionary)["id"]))] = true
 
 	for opener in ["_open_tourney", "_open_world_ranks", "_open_daily",
-			"_open_powerup", "_open_fair", "_open_voyage"]:
+			"_open_deal", "_open_powerup", "_open_fair", "_open_voyage"]:
 		await _goto("slot")
 		m.call(opener)
 		await get_tree().create_timer(2.0).timeout

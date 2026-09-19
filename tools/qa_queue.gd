@@ -77,8 +77,54 @@ func _ready() -> void:
 	m._clear_reward_screens()
 	await _wait(0.5)
 
+	# --- and the ladder, which is the other half of the same report: the six
+	# rungs, where a paid one used to close the screen it was bought from.
+	await _chain()
+
 	print("")
 	print("QA-QUEUE: %s" % ("ALL PASS" if fails == 0 else "%d FAILURES" % fails))
 	get_tree().quit(1 if fails > 0 else 0)
 
 
+# A PAID RUNG KEEPS THE LADDER. It used to be torn down on the tap, which made
+# _after_deal_step's "the ladder is on screen" branch unreachable for the one
+# rung that costs money -- so the unlock the player had just paid for was owed
+# to their next visit. Now the screen survives the payment sheet and the beats
+# play when the box in front of them is dismissed.
+func _chain() -> void:
+	print("")
+	var chain: Dictionary = Deals.CHAINS[0]
+	var paid := -1
+	for i in (chain["steps"] as Array).size():
+		if Deals.is_paid(chain["steps"][i]):
+			paid = i
+			break
+	m.set("deal_id", String(chain["id"]))
+	m.set("deal_until", m._now() + 3600.0)
+	m.set("deal_taken", paid)
+	m._open_deal()
+	await _wait(0.6)
+	if m.get("_popup") == null:
+		fails += 1
+		print("   [FAIL] the ladder would not open")
+		return
+	m._take_deal(paid)
+	IAP.sim_cancel()
+	print("ladder, rung %d pressed: popup still up = %s" % [paid + 1, m.get("_popup") != null])
+	if m.get("_popup") == null:
+		fails += 1
+		print("   [FAIL] the ladder was torn down on the tap -- it has to stay behind the payment sheet")
+
+	m._on_purchase_ok(IAP.PREFIX + String(chain["steps"][paid]["pack"]))
+	await _wait(1.0)
+	print("   after the receipt: rung taken = %d, popup still up = %s, box on screen = %s"
+		% [m.get("deal_taken"), m.get("_popup") != null,
+		   is_instance_valid(m.get("_chest_seq")) or is_instance_valid(m.get("_payout_seq"))])
+	if int(m.get("deal_taken")) != paid + 1:
+		fails += 1
+		print("   [FAIL] the rung did not advance")
+	if m.get("_popup") == null:
+		fails += 1
+		print("   [FAIL] the ladder is gone -- the unlock plays where nobody can see it")
+	m._clear_reward_screens()
+	await _wait(0.8)

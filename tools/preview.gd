@@ -81,11 +81,14 @@ func _ready() -> void:
 			# which a still of either end proves nothing about.
 			if OS.has_environment("CAMEO"):
 				_cameo.call_deferred(game, OS.get_environment("CAMEO"))
-			# EVENT=1 opens the events disc in its dark window -- the teaser
-			# with the clock, which is the one screen on that disc that has
-			# no live event behind it. The fair itself is SHOT=popup:fair.
-			if OS.has_environment("EVENT"):
-				_event_teaser.call_deferred(game)
+			# DEAL=<taken>[:take] opens the deal ladder with that many rungs
+			# already down. `:take` then presses the live rung, which is the
+			# only way to watch the two beats the ladder is built around --
+			# the rung being spent and the next one coming unlocked. In play
+			# a ladder rolls in on its own clock and the pair is about two
+			# seconds long, so SHOTS/SHOT_GAP over this is how it gets judged.
+			if OS.has_environment("DEAL"):
+				_deal.call_deferred(game, OS.get_environment("DEAL"))
 			# POWERUP=<id> opens the 1+2 takeover. It shows itself once per
 			# offer at the start of a session and never again, so this is the
 			# only way to look at it twice in a row.
@@ -140,7 +143,7 @@ func _ready() -> void:
 	if OS.has_environment("SHOT") and not OS.has_environment("GRANT") \
 			and not OS.has_environment("SCORE") and not OS.has_environment("CLAIM") \
 			and not OS.has_environment("GOTO") and not OS.has_environment("TIP") \
-			and not OS.has_environment("EVENT") and not OS.has_environment("POWERUP") \
+			and not OS.has_environment("DEAL") and not OS.has_environment("POWERUP") \
 			and not OS.has_environment("SOLO") and not OS.has_environment("ARRIVE") \
 			and not OS.has_environment("CLAN") and not OS.has_environment("CAMEO"):
 		_shoot.call_deferred()
@@ -263,31 +266,55 @@ func _claim(game: Control, what: String) -> void:
 			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 10,
 			float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.22)
 
-func _event_teaser(game: Control) -> void:
+func _deal(game: Control, spec: String) -> void:
 	while game.get("_boot") != null:
 		await get_tree().process_frame
 	await get_tree().create_timer(1.6).timeout
 	# The splash is still paying itself out when `_boot` goes null, so a capture
-	# started on that alone opens over a loading bar rather than over the dialog.
+	# started on that alone opens over a loading bar rather than over the ladder.
 	await get_tree().create_timer(3.0).timeout
-	# THE LADDER IS GONE (2026-09-19) and every DEAL= fixture went with it.
-	# What is left on this disc is the fair and, in its dark window, this
-	# teaser -- so the only state it needs is an empty calendar with a clock.
-	game.set("fair_id", "")
-	game.set("fair_until", 0.0)
-	game.set("fair_next", game.call("_now") + 7.0 * 3600.0 + 1234.0)
-	# POWERUP_NEXT=<hours> puts the 1+2's own clock on this screen too; the
-	# teaser carries its door row whether or not an offer is live.
-	if OS.has_environment("POWERUP_NEXT"):
-		game.set("powerup_id", "")
-		game.set("powerup_until", 0.0)
-		game.set("powerup_next",
-			game.call("_now") + float(OS.get_environment("POWERUP_NEXT")) * 3600.0)
-	game.call("_open_event")
+	var parts := spec.split(":")
+	# DEAL=done[:<n>] seeds the cooldown after a chain that went out with n
+	# rungs down — the teaser with the spent miniatures over the countdown, not
+	# the ladder. Bare `done` is the cleared ladder; DEAL=done:4 is the far more
+	# common case, a player who took every free rung and bought nothing.
+	if parts[0] == "done":
+		var last := Deals.STEPS if parts.size() < 2 else clampi(int(parts[1]), 0, Deals.STEPS)
+		game.set("deal_id", "")
+		game.set("deal_until", 0.0)
+		game.set("deal_taken", 0)
+		game.set("deal_done", last >= Deals.STEPS)
+		game.set("deal_last_taken", last)
+		game.set("deal_next", game.call("_now") + 7.0 * 3600.0 + 1234.0)
+		# POWERUP_NEXT=<hours> puts the 1+2's own clock on this screen too; the
+		# teaser carries its door row whether or not an offer is live.
+		if OS.has_environment("POWERUP_NEXT"):
+			game.set("powerup_id", "")
+			game.set("powerup_until", 0.0)
+			game.set("powerup_next",
+				game.call("_now") + float(OS.get_environment("POWERUP_NEXT")) * 3600.0)
+		game.call("_open_deal")
+	else:
+		# CHAIN=<id> picks which of the four runs; they differ in hue and in where
+		# their paid rungs sit, which is most of what the screen looks like.
+		var chain: String = OS.get_environment("CHAIN") if OS.has_environment("CHAIN") else "tide_hunt"
+		game.set("deal_id", chain)
+		game.set("deal_until", game.call("_now") + Deals.CHAIN_DURATION)
+		game.set("deal_taken", clampi(int(parts[0]), 0, Deals.STEPS))
+		game.set("deal_finale", false)
+		game.set("spins", 400)
+		game.call("_open_deal")
+	await get_tree().create_timer(0.6).timeout
+	if parts.size() > 1 and parts[1] == "take":
+		var btn := _find_button(game.get("_popup"), "FREE")
+		if btn == null:
+			print("  deal: the live rung is not a free one")
+		else:
+			btn.emit_signal("pressed")
 	if OS.has_environment("SHOT"):
 		await _reel(OS.get_environment("SHOT"),
-			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 1,
-			float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.5)
+			int(OS.get_environment("SHOTS")) if OS.has_environment("SHOTS") else 10,
+			float(OS.get_environment("SHOT_GAP")) if OS.has_environment("SHOT_GAP") else 0.22)
 
 func _seed(game: Control) -> void:
 	while game.get("_boot") != null:
@@ -322,8 +349,7 @@ func _seed(game: Control) -> void:
 
 func _cameo(game: Control, kind: String) -> void:
 	# The same wait every other helper in this file uses, and for the reason
-	# spelled out in _event_teaser: `_boot` going null is not the splash being
-	# gone. It
+	# spelled out in _deal: `_boot` going null is not the splash being gone. It
 	# is cleared before `splash.dismiss()` runs so the game can tick while the
 	# title screen dissolves, which leaves a window where a cue would land on
 	# a mascot still frozen underneath a full-screen splash. The 4.6s on top

@@ -1332,16 +1332,7 @@ func _t_purchases() -> void:
 
 	# A top-up settles through an ordinary coin-pack id and must not be scaled
 	# a second time on the way in.
-	#
-	# THE LOYALTY CARD IS PART OF THE FIXTURE. Every paid pack counts toward it
-	# and the fifth one opens a chest -- whose duplicate cards refund coins
-	# into the very figure the two checks below measure to the unit. It fired
-	# here on 2026-09-19 for the first time in months, purely because removing
-	# the deal chain took its `randi()` calls out of the stream and moved every
-	# later roll: a game bug's clothes on a harness's own state. Wound back to
-	# zero before each measured purchase, so the chest cannot land inside one.
 	m.island_level = 12
-	m.loyalty_buys = 0
 	m.coins = 0
 	var exact := 4321000
 	m.topup_pending = {"id": "coins_m", "coins": exact}
@@ -1351,7 +1342,6 @@ func _t_purchases() -> void:
 		m.coins == exact, "%d vs %d" % [m.coins, exact])
 	_chk("and the pending record is spent", m.topup_pending.is_empty())
 	m.coins = 0
-	m.loyalty_buys = 0
 	m._on_purchase_ok(IAP.PREFIX + "coins_m")
 	await get_tree().process_frame
 	_chk("a replayed top-up transaction pays the shelf, not the quote again",
