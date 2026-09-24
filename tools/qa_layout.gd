@@ -241,6 +241,39 @@ func _ready() -> void:
 		_check_fixed_height("popup " + deal_opener, m._popup)
 		m._close_popup(true)
 		await get_tree().process_frame
+	# THE 1+2 AFTER THE RECEIPT, WHICH IS THE WIDER OF ITS TWO SHEETS.
+	#
+	# This is the state that broke it once. The opened seal used to say TAKEN:
+	# 130 units at F_TITLE against the sealed word's 100, in a Label in an HBox
+	# in a PanelContainer in an expanding column, which passes the difference
+	# straight up to the dialog -- the 692 sheet went off the right of a 720
+	# screen with the third column cut in half. Nothing measured it, because
+	# the only powerup state this harness ever drew was the sealed one, and the
+	# sealed one fits. It is measured now, in both states the receipt produces:
+	# both packs unsealed and waiting to be opened (the word is TAKE, which is
+	# 100 like FREE because this is what picked it -- OPEN, at 113, failed here
+	# at 21px over), and one of them opened (the word goes out, a tick of 36
+	# comes in).
+	m.call("_shot_powerup")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	# Two columns owing nothing: the layout is the subject here, not the goods,
+	# and a real receipt would put a chest takeover over the sheet being
+	# measured.
+	m._powerup_unseal([
+		{"spins": 0, "coins": 0, "cards": [], "note": "", "taken": false},
+		{"spins": 0, "coins": 0, "cards": [], "note": "", "taken": false}])
+	# The stagger plus the shackle's swing plus the beat the word changes on.
+	await get_tree().create_timer(1.4).timeout
+	_check_page("popup powerup unsealed", m._popup)
+	_check_fixed_height("popup powerup unsealed", m._popup)
+	m._powerup_take(0)
+	await get_tree().create_timer(0.5).timeout
+	_check_page("popup powerup one pack opened", m._popup)
+	_check_fixed_height("popup powerup one pack opened", m._popup)
+	m._close_popup(true)
+	await get_tree().process_frame
+
 	# ...and the ladder again, parked mid-climb, which is the only state that
 	# draws all three kinds of rung at once -- spent, live and locked -- and the
 	# only one where a TAKEN medallion is on the page to be measured.

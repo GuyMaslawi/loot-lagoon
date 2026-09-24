@@ -18,8 +18,14 @@ extends Node
 #      player closes it when they are done looking at it.
 #   2. THE TWO SEALS OPEN. Both padlocks spring, and the price button retires
 #      so a spent offer cannot be sold twice.
-#   3. THE GOODS LAND. The purse ends up holding the bonus spins and coins and
-#      the HUD is not left with a figure on hold.
+#   3. THE TWO PACKS CAN BE OPENED. Guy, off the build on 2026-09-24: after the
+#      purchase the animation opens both of them *"but they are not clickable,
+#      and that is very severe"*. So an unsealed column is not scenery -- it
+#      carries a live target, one press opens one pack, and a second press on
+#      the same one may not pay it twice.
+#   4. THE GOODS LAND. The purse ends up holding the bonus spins and coins and
+#      the HUD is not left with a figure on hold -- whether the player opened
+#      the two packs or walked away from them (_abandoned).
 #
 #   godot --headless --path . res://tools/qa_trio.tscn
 
@@ -56,6 +62,7 @@ func _ready() -> void:
 	# into the same queue as the two free columns.
 	await _run("pu_squall", 0.0, false, "tide_hunt")
 	await _impatient()
+	await _abandoned()
 
 	m._clear_reward_screens()
 	for _i in 30:
@@ -140,6 +147,53 @@ func _settle_flights() -> void:
 			pending += int(lag[k])
 		if pending == 0:
 			return
+
+
+# THE TWO FREE PACKS, OPENED THE WAY THE PLAYER OPENS THEM.
+#
+# The target is a real Button laid over the whole column and kept on the seal
+# as `tap` -- see _powerup_seal_arm -- so pressing it here is the same event a
+# finger raises, and its absence is the failure this harness exists to catch.
+#
+# It is waited for, not read once: the seal arms about half a second after the
+# box in front of it was dismissed (the queue's pause, the stagger between the
+# two locks, and the shackle's own swing), and a harness that looked on the
+# frame the chest closed would report a dead pack every time.
+#
+# Returns how many of the two could actually be pressed.
+func _open_free_packs() -> int:
+	var seals: Array = m.get("_powerup_seals")
+	var armed := 0
+	for i in seals.size():
+		var plate = seals[i]
+		if not is_instance_valid(plate):
+			continue
+		var t0 := Time.get_ticks_msec()
+		while Time.get_ticks_msec() - t0 < 3000:
+			if is_instance_valid(plate.get_meta("tap", null)):
+				break
+			await get_tree().process_frame
+		var tap = plate.get_meta("tap", null)
+		if not (is_instance_valid(tap) and tap is Button):
+			continue
+		armed += 1
+		(tap as Button).pressed.emit()
+		# TWICE, A FRAME APART. One pack, one payout: a double tap on the same
+		# column must not pay it a second time, and the purse check at the end
+		# of _run is what would catch it if it did.
+		await get_tree().process_frame
+		if is_instance_valid(tap):
+			(tap as Button).pressed.emit()
+		await _settle()
+		# Whatever that pack put up -- a column carrying cards opens a box.
+		for _i in 3:
+			if _screen() == "":
+				break
+			await _tap()
+		if not bool((plate as Control).get_meta("takenmark", false)):
+			fails += 1
+			print("   [FAIL] pressing a free pack left its seal unspent")
+	return armed
 
 
 # A real tap, routed through the takeover's own input handler rather than
@@ -247,18 +301,16 @@ func _run(pu_id: String, away: float, resume_first: bool, chain_id := "") -> voi
 		print("   tap %d: %s -> %s (queue %d)" % [i + 1, before, _screen(),
 			(m.get("_reward_queue") as Array).size()])
 
-	# THE CARDS COME LAST NOW. The unseal plays on the sheet first and only then
-	# opens the box for whatever cards the two columns carried -- about eight
-	# tenths of a second after the paid pack's box was dismissed. A harness that
-	# read the HUD on the frame the seals opened caught the stars still on hold
-	# and called it a bug, when all that was owed was the tap that dismisses
-	# that box. So: wait for any late box, dismiss it, then measure.
-	var t_late := Time.get_ticks_msec()
-	while Time.get_ticks_msec() - t_late < 2500:
-		await get_tree().process_frame
-		if _screen() != "":
-			await _tap()
-			break
+	# AND NOW THE PART THE RECEIPT DOES NOT DO. The two free packs are sitting
+	# on the sheet unsealed and unopened; nothing is owed to the HUD until a
+	# finger takes them. This is the press Guy went looking for and did not
+	# find, so a harness that measured the counters without it would be
+	# measuring the bug and passing it.
+	var armed := await _open_free_packs()
+	print("   free packs armed: %d of 2" % armed)
+	if armed < 2:
+		fails += 1
+		print("   [FAIL] an unsealed free pack had nothing to press")
 	# The flights land in chunks over a second or so and each one takes its
 	# figure off the hold, so the HUD has to be read after they have arrived --
 	# not on the frame the last box closed.
@@ -347,17 +399,99 @@ func _impatient() -> void:
 		await get_tree().process_frame
 	var seals: Array = m.get("_powerup_seals")
 	var opened := 0
+	var eaten := 0
 	for plate in seals:
-		if is_instance_valid(plate) and bool((plate as Control).get_meta("opened", false)):
-			opened += 1
+		if not (is_instance_valid(plate) and bool((plate as Control).get_meta("opened", false))):
+			continue
+		opened += 1
+		# AND THE BURST MUST NOT HAVE OPENED A PACK EITHER. The seal arms about
+		# half a second after the box in front of it goes, which is past the
+		# window a double tap lives in -- if that ever drifts, the finger that
+		# dismissed the paid pack's chest would spend one of the two free ones
+		# on its way back up and the player would never see it open.
+		if bool((plate as Control).get_meta("takenmark", false)):
+			eaten += 1
 	if m.get("_popup") == null:
 		fails += 1
 		print("   [FAIL] the stray taps took the offer sheet down with the box")
 	elif opened < 2:
 		fails += 1
 		print("   [FAIL] the seals did not open: %d of %d" % [opened, seals.size()])
+	elif eaten > 0:
+		fails += 1
+		print("   [FAIL] %d free pack(s) were opened by the stray taps" % eaten)
 	else:
-		print("   the sheet is standing and both seals are open: PASS")
+		print("   the sheet is standing, both seals are open and neither pack was spent: PASS")
 	m._clear_reward_screens()
 	m._close_popup(true)
+	await _settle_flights()
+
+
+# THE PLAYER WHO NEVER PRESSES THEM.
+#
+# The two packs wait for a finger, and a finger is the one thing a screen
+# cannot insist on: the cross is right there, and a dialog opening over the top
+# of the sheet takes it down without asking. What must not happen is the goods
+# going with it -- they are banked and saved by then, but they are also HELD
+# off the HUD, and a hold nobody settles is a purse that reads short for the
+# rest of the session. See _powerup_abandon, which _close_popup runs before it
+# frees anything.
+func _abandoned() -> void:
+	print("")
+	print("== pu_quartermaster -- both free packs left unopened, sheet closed with the cross")
+	m._clear_reward_screens()
+	m._close_popup(true)
+	await _settle_flights()
+	m.set("powerup_id", "pu_quartermaster")
+	m.set("powerup_until", m._now() + Deals.POWERUP_DURATION)
+	m.set("powerup_pending", "")
+	m._open_powerup()
+	for _i in 6:
+		await get_tree().process_frame
+	var spins0 := int(m.get("spins"))
+	var coins0 := int(m.get("coins"))
+	var pu := Deals.powerup_by_id("pu_quartermaster")
+	var owed := _bonus_owed(pu)
+	var btn := _find_buy(m.get("_popup"))
+	if btn == null:
+		fails += 1
+		print("   [FAIL] no price button on the takeover")
+		return
+	btn.pressed.emit()
+	await _settle()
+	# Dismiss the paid pack's box and let both seals spring, then walk away.
+	for _i in 3:
+		if _screen() == "":
+			break
+		await _tap()
+	var t0 := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - t0 < 1800:
+		await get_tree().process_frame
+	var held_before: Dictionary = (m.get("_hud_lag") as Dictionary).duplicate()
+	m._close_popup()
+	# The box the unopened cards open behind it, dismissed like any other.
+	for _i in 3:
+		await _settle()
+		if _screen() == "":
+			break
+		await _tap()
+	await _settle_flights()
+	var got_spins := int(m.get("spins")) - spins0
+	var got_coins := int(m.get("coins")) - coins0
+	var held: Dictionary = m.get("_hud_lag")
+	print("   held with both packs still sealed: %s" % held_before)
+	print("   purse: spins +%d (owed >=%d)   coins +%d (owed >=%d)   held after: %s"
+		% [got_spins, owed["spins"], got_coins, owed["coins"], held])
+	if int(held_before.get("coins", 0)) <= 0:
+		fails += 1
+		print("   [FAIL] an unopened pack was not holding its coins off the HUD")
+	if got_spins < int(owed["spins"]) or got_coins < int(owed["coins"]):
+		fails += 1
+		print("   [FAIL] closing the sheet lost what the two packs were holding")
+	for k in held.keys():
+		if int(held[k]) != 0:
+			fails += 1
+			print("   [FAIL] '%s' is still held after the sheet went -- the HUD is short by %d"
+				% [k, held[k]])
+	m._clear_reward_screens()
 	await _settle_flights()

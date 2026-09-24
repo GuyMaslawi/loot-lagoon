@@ -845,6 +845,20 @@ var _deal_last_id := ""
 # the receipt leaves the takeover standing now, so there is something to play
 # on. See _powerup_unseal.
 var _powerup_seals := []
+# WHAT THE TWO FREE COLUMNS ARE HOLDING FOR THE PLAYER, one entry a column, in
+# the same order as `_powerup_seals`.
+#
+# It is written by the receipt and emptied by the sheet: every entry is goods
+# that are ALREADY BANKED AND SAVED (they must be -- IAP.finish() settles the
+# transaction the moment the receipt handler returns) and that are waiting on
+# the tap that shows them arriving. `taken` is that tap. Nothing in here is a
+# grant; losing the lot would cost the player two animations and not one coin.
+#
+# It must never be dropped while an entry is untaken: the counters it is
+# holding back are held on the HUD, and a hold nobody settles is a purse that
+# reads short for the rest of the session. `_powerup_abandon` is the way out,
+# and the sheet cannot close without going through it.
+var _powerup_loot := []
 var _powerup_buy_btn: Button
 var _powerup_timer_label: Label
 # The clock on the "next offer" row, which only exists while no offer does.
@@ -1668,6 +1682,14 @@ func _shot_powerup() -> void:
 				_chest_seq.skip(true)
 			elif _payout_seq != null and is_instance_valid(_payout_seq):
 				_payout_seq.skip(true))
+		# ...and DEMO_POWERUP_TAKE=1 presses the left free column once its seal
+		# is off, which is the only way to film the other half of the beat: the
+		# plate going from struck to spent, the tick coming in behind the word,
+		# and the figures leaving the column they were printed under. A finger
+		# is the one thing a harness does not have, and this screen is now
+		# waiting for one by design.
+		if OS.get_environment("DEMO_POWERUP_TAKE") == "1":
+			_after(5.0, func() -> void: _powerup_take(0))
 
 # The solo. It only rolls in after a trio has come and gone, which on a fresh
 # save is a day and a half away -- so like the 1+2 it could not be photographed
@@ -14800,6 +14822,11 @@ func _open_powerup() -> void:
 	if not vbox.is_inside_tree():
 		return
 	_powerup_seals.clear()
+	# Anything the LAST offer was still holding has already been paid out by
+	# the close above -- _open_popup tears the old sheet down, and the sheet
+	# cannot go without running _powerup_abandon. Cleared here so the new
+	# seals cannot be paired against the old offer's goods.
+	_powerup_loot.clear()
 	_powerup_buy_btn = null
 	# 10, not the popup's default 14: this dialog has six rows and a hard
 	# height budget on the design floor; four units a seam buys the foot row
@@ -14945,7 +14972,10 @@ func _powerup_column(col: Dictionary, pack: Dictionary) -> Control:
 		# brass, at the same height as the button beside it so the three cards
 		# still stand level; the padlock survives on it as a small mark, which
 		# is all it was ever needed for -- "this comes with the middle one".
-		body.add_child(_free_seal())
+		# The card goes with it: once the seal is off, the WHOLE COLUMN is the
+		# thing the player presses, and the plate is only where that is
+		# advertised. See _powerup_seal_arm.
+		body.add_child(_free_seal(card))
 		return holder
 
 	var btn := Button.new()
@@ -14991,7 +15021,7 @@ func _powerup_column(col: Dictionary, pack: Dictionary) -> Control:
 
 # The foot of a free column on the 1+2. See the note at its call site for why
 # this is a seal and not the ladder's padlock plate.
-func _free_seal() -> Control:
+func _free_seal(card: PanelContainer) -> Control:
 	var plate := PanelContainer.new()
 	var sb := StyleBoxFlat.new()
 	# THE POLISHED BAND, NOT THE MIDDLE TONE. Struck on plain BRASS the seal
@@ -15046,21 +15076,41 @@ func _free_seal() -> Control:
 	word.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	word.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	row.add_child(word)
-	# THE WORD NEVER CHANGES, AND THAT IS A LAYOUT DECISION, NOT A COPY ONE.
+	# AND THE WORD IS MEASURED, NOT CHOSEN, which is the whole history of this
+	# label.
 	#
-	# The seal's opened state said TAKEN first -- one letter longer and about
-	# forty units wider at F_TITLE. A Label in an HBox in a PanelContainer in
-	# an expanding column passes that straight up the chain: both side columns
-	# grew, the sheet grew with them, and a 692 dialog that fits the design
-	# floor went off the right of the screen with the third column cut in half.
-	# Pinning the label's minimum to the longer word only moved the problem to
-	# the closed state.
+	# A Label in an HBox in a PanelContainer in an expanding column passes its
+	# width straight up the chain, and this sheet has almost nothing spare:
+	# 692 of panel on a 720 design floor, and the three columns come out about
+	# 715 wide with FREE (100 units at F_TITLE) on both seals. The opened seal
+	# said TAKEN once -- 130 -- and that is how a takeover shipped with its
+	# third column cut off the right of the screen. Pinning the label's minimum
+	# to the longer word only moved the problem into the closed state.
 	#
-	# It does not need new text. The plate goes from struck brass to spent
-	# green and the padlock on it springs open -- two changes the eye reads
-	# faster than a word anyway, and neither of them is a word this layout has
-	# to find room for. See _powerup_seal_open.
+	# So the opened word is a MEASUREMENT. It has to say what pressing the
+	# plate does, now that pressing it is how the two free packs are taken, and
+	# it has to do it in 100 units or fewer: OPEN is 113, which qa_layout
+	# rejected at 21px over the floor before it ever reached a phone. TAKE is
+	# 100 on the nose -- the same width as the word it replaces, so the sheet
+	# cannot move at all -- and it is the same verb the ladder's free rung
+	# uses. See _powerup_seal_arm.
 	plate.set_meta("word", word)
+	# The spent mark, built here and hidden, so taking a pack swaps two
+	# visibilities rather than building a node into a row mid-beat. A tick is
+	# 36 wide against the word's 100, so the taken state can only ever make
+	# this column NARROWER -- the direction that cannot break the sheet.
+	var done := Glyph.new()
+	done.kind = "tick"
+	done.custom_minimum_size = Vector2(36, 36)
+	done.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	# Deep ink for the same reason the word is: the plate under it is about to
+	# go sea green, and a green tick on a green plate is a tick nobody sees.
+	done.modulate = Lagoon.ABYSS
+	done.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	done.visible = false
+	row.add_child(done)
+	plate.set_meta("done", done)
+	plate.set_meta("card", card)
 	_powerup_seals.append(plate)
 	return plate
 
@@ -15173,7 +15223,7 @@ func _powerup_credit_purchase(pack_id: String) -> bool:
 		# The rail disc goes down with the offer it opened.
 		_update_badges()
 	var from := Vector2(view_size().x * 0.5, view_size().y * 0.42)
-	# THE TWO FREE COLUMNS ARE ONE REWARD, NOT TWO HALVES THAT PAY SEPARATELY.
+	# TWO FREE COLUMNS, TWO PACKS, TWO THINGS THE PLAYER OPENS.
 	#
 	# They used to hand their spins and coins over the instant the receipt
 	# landed -- `_grant_spins` and `_grant_coins` bank AND fly in one call --
@@ -15183,39 +15233,51 @@ func _powerup_credit_purchase(pack_id: String) -> bool:
 	# about turned up a beat later carrying only the cards. Guy read the whole
 	# thing as the free packs never arriving.
 	#
-	# So the figures are banked here (they must be: IAP.finish() settles the
-	# transaction the moment this returns) and HELD, the box is queued behind
-	# the paid one, and the flights leave when the player dismisses it -- the
-	# held-counter rule, with the screen that owes the counters finally being
-	# the screen the player is looking at.
-	var spins_n := 0
-	var coins_n := 0
-	var cards := []
+	# Holding them fixed where the goods went. WHOSE GOODS THEY WERE was fixed
+	# here. The hold was one sum over both columns and the cards were one
+	# array, so the sheet paid out as a single anonymous event -- and when the
+	# seals started coming off on the sheet itself, that left two unsealed
+	# packs standing on screen with nothing behind them. Guy, off the build:
+	# after the purchase the animation opens both of them *"but they are not
+	# clickable, and that is very severe"*. It is: the game had just drawn two
+	# packs being unlocked and then refused the finger that went for them.
+	#
+	# So every column keeps its own goods, and opening it is the player's move.
+	# The figures are still banked here -- they must be, IAP.finish() settles
+	# the transaction the moment this returns -- and still HELD, which is the
+	# whole held-counter rule: banked in the save, invisible on the HUD, and
+	# delivered out of the column the player presses. Nothing in `loot` is a
+	# grant, so nothing in it can be lost; see _powerup_abandon for the sheet
+	# that closes with a pack still unopened.
+	var loot := []
 	for bonus in pu["bonus"]:
 		var b: Dictionary = bonus
-		spins_n += int(b.get("spins", 0))
-		coins_n += _scaled(int(b.get("coins", 0)))
+		var col_spins := int(b.get("spins", 0))
+		var col_coins := _scaled(int(b.get("coins", 0)))
 		# Shields stay where they are, for the reason _show_pack_result spells
 		# out: `_grant_shields` banks and animates in one call, and deferring it
 		# would leave the `_flush_save` below writing a save with the shields
 		# missing -- paid content lost to a crash.
 		_grant_shields(int(b.get("shields", 0)), from)
+		var col_cards := []
 		for i in int(b.get("cards", 0)):
-			cards.append(_grant_chest_card(int(b.get("tier", 1)), 0))
-	spins += spins_n
-	coins += coins_n
-	_hud_hold("spins", spins_n)
-	_hud_hold("coins", coins_n)
+			col_cards.append(_grant_chest_card(int(b.get("tier", 1)), 0))
+		spins += col_spins
+		coins += col_coins
+		_hud_hold("spins", col_spins)
+		_hud_hold("coins", col_coins)
+		# What the cards cannot say. The box shows the handful; this line under
+		# it is the rest of what THIS column was worth, printed the way the HUD
+		# prints it.
+		var note := ""
+		if col_spins > 0:
+			note = "+%s spins" % _fmt_compact(col_spins)
+		if col_coins > 0:
+			note += ("   \u00b7   " if note != "" else "") + "+%s coins" % _fmt_compact(col_coins)
+		loot.append({"spins": col_spins, "coins": col_coins, "cards": col_cards,
+			"note": note, "taken": false})
 	_flush_save()
 	_refresh()
-	# What the cards cannot say. The box shows the handful; this line under it
-	# is the rest of what the two free packs were worth, printed the way the
-	# HUD prints it.
-	var note := ""
-	if spins_n > 0:
-		note = "+%s spins" % _fmt_compact(spins_n)
-	if coins_n > 0:
-		note += ("   \u00b7   " if note != "" else "") + "+%s coins" % _fmt_compact(coins_n)
 
 	# THE SEALS COME OFF ON THE SHEET, BEHIND WHATEVER THE PAID PACK PUT UP.
 	# `_grant_pack` has already opened the chest or the payout for the middle
@@ -15225,7 +15287,7 @@ func _powerup_credit_purchase(pack_id: String) -> bool:
 	# _reward_queue, which is built for exactly this: one receipt owing more
 	# than one thing.
 	var unseal := func() -> void:
-		_powerup_unseal(spins_n, coins_n, cards, note)
+		_powerup_unseal(loot)
 	if _reward_busy():
 		_reward_queue.append(unseal)
 	else:
@@ -15233,15 +15295,25 @@ func _powerup_credit_purchase(pack_id: String) -> bool:
 	return true
 
 
-# The two seals coming off, on the offer screen the player bought them from.
+# The two seals coming off, on the offer screen the player bought them from --
+# and the two packs they were holding shut becoming pressable.
 #
-# The columns' own figures fly out of the columns -- not out of the middle of
-# the screen -- because the whole claim of this takeover is that those two
-# stacks are real, and a counter that lifts off the stack it was printed under
-# is the only version of that claim the player can watch. The cards, if the
-# bonus carried any, still need a box: they are objects, not figures, and the
-# box opens over the sheet and leaves it standing underneath.
-func _powerup_unseal(spins_n: int, coins_n: int, cards: Array, note: String) -> void:
+# WHAT THE LOCK OPENING IS FOR. It is not the payout; it is the permission. The
+# unseal used to be the whole beat: both plates sprang, and half a second later
+# the columns' figures flew off on their own and a box turned up with the
+# cards in it. Watched on a phone that is a screen doing things at you -- and
+# the two packs it was doing them to sat there inert, which is exactly what
+# Guy reported (*"the animation opens both of them but they are not clickable,
+# and that is very severe"*). The lock is the game's own mark for "you cannot
+# have this yet", so taking it off and then not handing the thing over is the
+# one move that cannot be made with it.
+#
+# So the beat is: the locks spring, the two columns light up as the live cards
+# on the sheet, and each one waits for the finger that opens it. The goods are
+# already banked and already held off the HUD -- see _powerup_credit_purchase
+# -- so the tap costs nothing and can be skipped entirely; _powerup_abandon
+# pays out anything still sealed the moment the sheet closes.
+func _powerup_unseal(loot: Array) -> void:
 	# The price is gone the moment the receipt lands, whether or not the seals
 	# are still on screen to be opened -- a spent offer must never be sellable
 	# again. Done first for that reason.
@@ -15250,60 +15322,185 @@ func _powerup_unseal(spins_n: int, coins_n: int, cards: Array, note: String) -> 
 		b.disabled = true
 		b.text = "BOUGHT"
 		_candy_button(b, Lagoon.KELP_LO)
-	var seals := []
-	for plate in _powerup_seals:
-		if is_instance_valid(plate) and plate is Control:
-			seals.append(plate)
-	# Nothing left to play on -- the player closed the sheet while the paid
-	# pack's box was up, which is allowed. The goods are already banked; all
-	# that is owed is the flights, and they leave from the middle instead.
-	if seals.is_empty():
-		var mid := Vector2(view_size().x * 0.5, view_size().y * 0.52)
-		_spin_release(spins_n, mid)
-		_coin_release(coins_n, mid)
-		if not cards.is_empty():
-			_show_chest_result(cards, "Your 2 Free Packs!", note)
-		return
-	Sfx.play("pop", -6.0, 0.02, 0.78)
-	for i in seals.size():
-		var plate: Control = seals[i]
+	_powerup_loot = loot
+	# PAIRED BY INDEX WITH `_powerup_seals`, AND BY NOTHING ELSE.
+	#
+	# `Deals.powerup_columns` lays the sheet out as [bonus 0, paid, bonus 1]
+	# and `_free_seal` appends as the columns are built, so seal i is bonus i.
+	# The walk is over the shorter of the two and a dead plate is SKIPPED
+	# rather than compacted away: a filtered array renumbers everything after
+	# the hole, which would hand the left column's goods to the right column's
+	# seal on any sheet that had lost one.
+	var live := 0
+	for i in mini(_powerup_seals.size(), _powerup_loot.size()):
+		var plate = _powerup_seals[i]
+		if not (is_instance_valid(plate) and plate is Control):
+			continue
+		var idx := i
+		var ctl: Control = plate
 		# Staggered, so the two read as two locks rather than as one event
 		# happening twice. 0.18 is long enough to see the first give and short
 		# enough that the pair still feels like one release.
-		_after(0.18 * float(i), func() -> void:
-			if is_instance_valid(plate):
-				_powerup_seal_open(plate))
-	# The figures leave the columns once both locks are off.
+		_after(0.18 * float(live), func() -> void:
+			if is_instance_valid(ctl):
+				_powerup_seal_open(ctl, idx))
+		live += 1
+	# Nothing left to play on -- the player closed the sheet while the paid
+	# pack's box was up, which is allowed. The goods are already banked; all
+	# that is owed is the showing, and it happens from the middle instead.
+	if live == 0:
+		_powerup_abandon()
+		return
+	Sfx.play("pop", -6.0, 0.02, 0.78)
+	# THE SHEET MAY NOT LEAVE OWING A PACK.
 	#
-	# is_instance_valid BEFORE the cast, every time -- `x as Control` on a freed
-	# instance is a script error, not a null, and this beat runs half a second
-	# after the seals were found, which is long enough for the sheet to have
-	# been closed underneath it. Same rule the ladder's beats follow.
-	var left: Control = seals[0]
-	var right: Control = seals[seals.size() - 1]
-	var when := 0.18 * float(seals.size()) + 0.42
-	_after(when, func() -> void:
-		var mid := view_size() * Vector2(0.5, 0.52)
-		var at := mid
-		if is_instance_valid(left):
-			at = left.global_position + left.size * 0.5
-		var at2 := mid
-		if is_instance_valid(right):
-			at2 = right.global_position + right.size * 0.5
-		_spin_release(spins_n, at)
-		_coin_release(coins_n, at2)
-		# And the cards, which cannot be flown to a counter. The sheet stays
-		# up behind the box, so dismissing it lands the player back on the two
-		# open seals rather than on the page.
-		if not cards.is_empty():
-			_show_chest_result(cards, "Your 2 Free Packs!", note))
+	# Everything below this line is waiting on a finger, and a finger is the
+	# one thing no screen can insist on: the player can close the offer with
+	# the corner cross, another dialog can open over the top of it, and the
+	# forced-update gate can take it down from under everything. Each of those
+	# routes runs `_close_popup`, and `_close_popup` calls this before it frees
+	# anything -- so the last word on an unopened pack is always the payout,
+	# never the teardown. Set here rather than in _open_powerup because until
+	# the receipt lands the sheet owes nothing at all.
+	_popup_closed_cb = func() -> void: _powerup_abandon()
 
 
-# One seal giving way: the shackle springs about its right leg, the plate says
-# TAKEN instead of FREE, and a spark comes off the keyhole. Same two-piece
-# padlock and the same hinge the ladder's rung uses -- see _lock_spring, which
-# this defers to for the swing itself.
-func _powerup_seal_open(plate: Control) -> void:
+# The finger arriving on a free column, which is what opening one of the two
+# free packs IS -- the seal, the card it stands on and everything printed up
+# it are one target, because a player who has just watched a lock spring off a
+# pack reaches for the PACK.
+func _powerup_take(idx: int) -> void:
+	if idx < 0 or idx >= _powerup_loot.size():
+		return
+	var loot: Dictionary = _powerup_loot[idx]
+	# Twice is a double tap, and it must be worth exactly one pack. The flag
+	# goes down before anything else happens for that reason.
+	if bool(loot.get("taken", false)):
+		return
+	loot["taken"] = true
+	var at := view_size() * Vector2(0.5, 0.52)
+	if idx < _powerup_seals.size() and is_instance_valid(_powerup_seals[idx]):
+		var plate: Control = _powerup_seals[idx]
+		# OUT OF THE COLUMN, not out of the plate at its foot. The whole claim
+		# of this takeover is that the two stacks are real, and a counter that
+		# lifts off the stack it was printed under is the only version of that
+		# claim the player can watch.
+		var card = plate.get_meta("card", null)
+		var src: Control = card if (is_instance_valid(card) and card is Control) else plate
+		at = src.global_position + src.size * 0.5
+		_powerup_seal_spent(plate)
+	_powerup_deliver(loot, at)
+
+
+# Everything one free column was holding, on its way to the counters it
+# belongs in. Also the abandon path's one and only payout, so a pack the
+# player never pressed arrives by exactly the same route as one they did.
+#
+# Answers true when the figures are still waiting on a box the player has to
+# dismiss, which is the one thing the caller cannot work out for itself.
+func _powerup_deliver(loot: Dictionary, at: Vector2) -> bool:
+	var sp := int(loot.get("spins", 0))
+	var co := int(loot.get("coins", 0))
+	# OVER THE SHEET, NOT UNDER IT.
+	#
+	# 101 is the flight layer for a counter crossing a page, and the offer is a
+	# modal at 120 -- so released at the default, bolts and coins left the
+	# column and were drawn BEHIND the screen they left, and the only part of
+	# the trip anybody saw was the burst landing on the HUD. The claim this
+	# beat is making is that the goods came out of that column; a flight nobody
+	# can see makes it worse than no flight at all. 122 is over the sheet and
+	# still under a takeover at 126, which is the other thing that can be
+	# standing here.
+	#
+	# `taken` was struck off the entry before this was called, so the settle at
+	# the end of each flight no longer counts this column as sealed and the
+	# counter comes all the way up to the truth. The other column, if it is
+	# still shut, keeps its hold through both of them -- see _settle_hud.
+	var fly := func() -> void:
+		_spin_release(sp, at, 122)
+		_coin_release(co, at, 122)
+	var cards: Array = loot.get("cards", [])
+	if cards.is_empty():
+		fly.call()
+		return false
+	# A COLUMN WITH CARDS IN IT PAYS THE CARDS FIRST. They cannot be flown to a
+	# counter -- they are objects, and they get the box the game gives every
+	# handful of cards -- and a figure released while that box is up flies at
+	# 122 behind a takeover at 126, which is the same counter moving where
+	# nobody can see it. So the figures leave the column when the player comes
+	# back to it: `on_done` is on _show_chest_result for exactly this caller,
+	# and the solo deal's bonus has been paid this way since it shipped.
+	#
+	# The sheet stays up behind the box, so dismissing it lands the player back
+	# on the columns -- the other one still sealed, if they have not opened it.
+	_show_chest_result(cards, "Your Free Pack!", String(loot.get("note", "")),
+		[], false, -1, fly)
+	return true
+
+
+# What the two columns are still holding, in one counter's units.
+func _powerup_owed(key: String) -> int:
+	var n := 0
+	for entry in _powerup_loot:
+		var e: Dictionary = entry
+		if not bool(e.get("taken", false)):
+			n += int(e.get(key, 0))
+	return n
+
+
+# Both counters the two columns can be holding, put straight in one call. The
+# work is _settle_hud's; this only names the pair, and it is the last thing an
+# abandoned sheet does -- a column with nothing but cards in it flies nothing,
+# so there is no landing whose settle would do it for us.
+func _powerup_settle_holds() -> void:
+	_settle_hud("spins")
+	_settle_hud("coins")
+
+
+# THE WAY OUT FOR A PACK NOBODY PRESSED.
+#
+# A sealed column is banked goods held off the HUD, so the two things it can
+# cost are a counter that reads short for the rest of the session and a handful
+# of cards the player never saw arrive. Both are paid here: the figures fly
+# from the middle of the screen (the column they belonged to is going or gone)
+# and the cards open their box over whatever is there.
+#
+# Idempotent, and it has to be: it runs from `_close_popup`, which is reached
+# by the cross, by another dialog opening, by _open_powerup rebuilding the
+# sheet and by the harnesses' `_clear_reward_screens` -- in any order and more
+# than once.
+func _powerup_abandon() -> void:
+	if _powerup_loot.is_empty():
+		return
+	var mid := view_size() * Vector2(0.5, 0.52)
+	var owing := _powerup_loot
+	_powerup_loot = []
+	var waiting := false
+	for entry in owing:
+		var loot: Dictionary = entry
+		if bool(loot.get("taken", false)):
+			continue
+		loot["taken"] = true
+		waiting = _powerup_deliver(loot, mid) or waiting
+	# Whatever the flights above do not catch. Only when nothing is waiting on
+	# a box: a settle run while a handful of cards is still on screen would
+	# jump both counters to the truth in front of the player and leave the
+	# flight behind it with nothing to deliver.
+	if not waiting:
+		_after(2.6, func() -> void: _powerup_settle_holds())
+
+
+# One seal giving way: the shackle springs about its right leg, a spark comes
+# off the keyhole, and the plate stops being a label and becomes the button the
+# pack is opened with. Same two-piece padlock and the same hinge the ladder's
+# rung uses -- see _lock_spring, which this defers to for the swing itself.
+#
+# THE PLATE STAYS BRASS. It went spent green here once, back when the spring
+# WAS the payout and green meant "that is behind you now". It is the opposite
+# claim now: the pack is in front of the player and waiting to be pressed, and
+# brass is what this game strikes a live thing in. The green is still the
+# answer -- it just belongs to _powerup_seal_spent, one tap further on.
+func _powerup_seal_open(plate: Control, idx := -1) -> void:
 	plate.set_meta("opened", true)
 	FX.shake(plate, 4.0, 3)
 	_lock_spring(plate)
@@ -15312,17 +15509,116 @@ func _powerup_seal_open(plate: Control) -> void:
 			return
 		var word = plate.get_meta("word", null)
 		if is_instance_valid(word) and word is Label:
-			# The same word, thumped. It is the plate under it that changed.
+			# FREE was the pitch and it has been paid; TAKE is the
+			# instruction. Exactly as wide as the word it replaces, which is
+			# not a coincidence -- see the measurement in _free_seal, and
+			# qa_layout, which walks the opened sheet and fails on a word that
+			# does not fit.
+			(word as Label).text = "TAKE"
 			FX.counter_pop(word as Control, Lagoon.ABYSS)
-		# The plate goes from struck brass to a spent green, which is the same
-		# move a taken rung makes on the ladder: the colour is what says the
-		# thing is behind you.
-		var sb := plate.get_theme_stylebox("panel")
-		if sb is StyleBoxFlat:
-			var box: StyleBoxFlat = (sb as StyleBoxFlat).duplicate()
-			box.bg_color = Lagoon.KELP_HI
-			box.border_color = Lagoon.KELP
-			plate.add_theme_stylebox_override("panel", box))
+		_powerup_seal_arm(plate, idx))
+
+
+# The opened seal, wired to the finger.
+#
+# THE TARGET IS THE WHOLE COLUMN, NOT THE PLATE. The plate is 104 units tall at
+# the foot of a card about four times that; a player reaching for a pack that
+# has just been unlocked reaches for the pack. The button is a transparent
+# sheet over the card -- PanelContainer stretches every child it holds to its
+# own rect, so it covers the head, the goods and the seal without being given a
+# size at all -- and the plate is where the invitation is drawn.
+#
+# WHY A REAL BUTTON and not a gui_input hook: a Button is the only Control in
+# this file that already knows about touch cancellation, the press-inside/
+# release-outside case and the focus rules. A hand-rolled tap target on a
+# takeover that costs real money is not the place to re-derive those.
+#
+# It arms about half a second after the box in front of it was dismissed (the
+# queue's own 0.22s, the stagger, and the 0.30 the shackle takes), which puts
+# it past the QUEUED_DEAF window a burst of impatient taps lives in -- so the
+# finger that closed the paid pack's chest cannot open a free one on its way
+# back up.
+func _powerup_seal_arm(plate: Control, idx: int) -> void:
+	if idx < 0 or idx >= _powerup_loot.size():
+		return
+	if bool((_powerup_loot[idx] as Dictionary).get("taken", false)):
+		return
+	# THE PLATE IS THE FALLBACK, NEVER NOTHING. The card is reached through a
+	# meta set when the column was built, and a target that quietly failed to
+	# appear is the entire bug this beat exists to fix -- so a missing card
+	# costs the dressing and the bigger target, and the seal itself takes the
+	# press.
+	var host: Control = plate
+	var card = plate.get_meta("card", null)
+	if is_instance_valid(card) and card is PanelContainer:
+		# The ladder's live-rung dressing, and it is the same sentence here:
+		# brass rim, warm shadow, the sweep running. This is the one card on
+		# the sheet that can be pressed now, and the game has a mark for that.
+		_event_dress(card as PanelContainer, "free", true)
+		host = card
+	var tap := Button.new()
+	# Invisible in all five states. The card underneath IS the button's face --
+	# anything drawn here would be a second panel over a panel.
+	for st in ["normal", "hover", "pressed", "focus", "disabled"]:
+		tap.add_theme_stylebox_override(st, StyleBoxEmpty.new())
+	tap.focus_mode = Control.FOCUS_NONE
+	tap.pressed.connect(func() -> void: _powerup_take(idx))
+	# Both hosts are PanelContainers, which fit every child they hold to their
+	# own rect -- so the target covers the column (or the plate) without being
+	# given a size, and follows it if the sheet is ever laid out again.
+	host.add_child(tap)
+	plate.set_meta("tap", tap)
+	# The pulse the buy button beside it carries, at the same job: on a screen
+	# with no cursor, movement is what says "pressable". Held on the plate so
+	# the take can stop it -- a spent seal that goes on breathing reads as a
+	# tap that did not land.
+	plate.set_meta("pulse", FX.pulse_forever(plate, 1.05, 1.15))
+
+
+# The seal after its pack has been opened: struck brass to spent green, the
+# word out and the tick in, the pulse stopped and the target gone. The same
+# move a taken rung makes on the ladder -- the colour is what says the thing
+# is behind you -- and the open padlock stays on it as the evidence of how it
+# got that way.
+func _powerup_seal_spent(plate: Control) -> void:
+	if not is_instance_valid(plate):
+		return
+	plate.set_meta("takenmark", true)
+	var pulse = plate.get_meta("pulse", null)
+	if pulse is Tween and (pulse as Tween).is_valid():
+		(pulse as Tween).kill()
+	plate.set_meta("pulse", null)
+	# Back to rest by hand: killing a scale tween mid-breath leaves the plate
+	# wherever it was when the finger landed.
+	plate.scale = Vector2.ONE
+	var tap = plate.get_meta("tap", null)
+	if is_instance_valid(tap) and tap is Node:
+		(tap as Node).queue_free()
+	plate.set_meta("tap", null)
+	var card = plate.get_meta("card", null)
+	if is_instance_valid(card) and card is PanelContainer:
+		_event_dress(card as PanelContainer, "free", false)
+		# The ladder's spent rung fades to this exactly. The goods printed up
+		# the column are still worth reading -- they are what the player just
+		# took -- they are simply no longer an offer.
+		(card as Control).modulate = Color(1, 1, 1, 0.72)
+	var word = plate.get_meta("word", null)
+	if is_instance_valid(word) and word is Control:
+		(word as Control).visible = false
+	var done = plate.get_meta("done", null)
+	if is_instance_valid(done) and done is Control:
+		(done as Control).visible = true
+		FX.counter_pop(done as Control, Lagoon.KELP_HI)
+	var sb := plate.get_theme_stylebox("panel")
+	if sb is StyleBoxFlat:
+		var box: StyleBoxFlat = (sb as StyleBoxFlat).duplicate()
+		box.bg_color = Lagoon.KELP_HI
+		box.border_color = Lagoon.KELP
+		plate.add_theme_stylebox_override("panel", box)
+	var stage := _beat_stage(plate)
+	FX.ring(stage, stage.size * 0.5, Lagoon.KELP_HI, stage.size.x * 0.66, 0.46, 7.0)
+	FX.burst(stage, stage.size * 0.5, Lagoon.KELP_HI, 16)
+	Sfx.play("pop", -4.0, 0.02, 1.12)
 
 # =============================================================================
 #  The solo deal — one heap, one number, one button
@@ -24592,8 +24888,26 @@ func _hud_land(key: String, amount: int, tint: Color) -> void:
 # The backstop. A flight interrupted by a page change, a raid or a quit leaves
 # its lag behind, and a counter that is permanently one short of the save is
 # worse than no animation at all.
+#
+# EXCEPT FOR WHAT IS STILL SEALED. A settle says "everything in the air has
+# landed, show the truth" -- and the 1+2 breaks that assumption, because the
+# two free packs are banked goods that are deliberately NOT in the air: they
+# are waiting on the tap that opens the column they came in. The erase is
+# indiscriminate, so the paid pack's own flight used to settle the counter out
+# from under both free columns, and opening the first pack would then tick the
+# second one's figures up while its seal was still on -- the game handing over
+# goods it is at that moment refusing to hand over.
+#
+# So a settle clears everything except what the unopened columns are holding.
+# There is exactly one way for that figure to be wrong -- `_powerup_loot`
+# outliving its sheet -- and _powerup_abandon is why it cannot: the sheet
+# cannot close without emptying it.
 func _settle_hud(key: String) -> void:
-	_hud_lag.erase(key)
+	var sealed := _powerup_owed(key)
+	if sealed > 0:
+		_hud_lag[key] = mini(int(_hud_lag.get(key, 0)), sealed)
+	else:
+		_hud_lag.erase(key)
 	_refresh()
 
 # Where the chip a reward is flying to actually is.
