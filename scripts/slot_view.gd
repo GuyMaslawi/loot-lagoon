@@ -32,7 +32,23 @@ signal auto_toggled(on: bool)
 # only returns the ones this balance can actually pay, so the button never
 # cycles onto a wager that fails the moment it is pressed, and a new rung
 # appearing is itself the reward for having stacked up.
-const BETS := [1, 2, 3, 5, 10, 25, 50, 100]
+#
+# IT USED TO STOP AT x100, AND THAT WAS A CEILING ON THE LADDER, NOT ON A BET.
+# Guy, 2026-10-01: the most a player may stake in one spin is about a tenth of
+# what they hold. BET_UNLOCK_SPINS already says exactly that -- a rung is
+# offered once the balance covers it ten times over -- so the rule was never
+# missing, the ladder simply ran out underneath it. At 19,875 spins a tenth is
+# 1,987 and the machine was still offering x100, which is half a percent.
+#
+# So it keeps climbing in the shape it already had (x2.5, x2, x2) to x100,000.
+# Every rung is a round whole number BY CONSTRUCTION -- never 1,987 and never
+# 178.8 -- which is the other half of the ask: a stake is a figure a player
+# says out loud. The price of that is a true ceiling landing between 4% and
+# 10% of the balance rather than exactly 10%, and it is worth paying, because
+# stable rungs are what the never-lower rule further down depends on. A top
+# rung recomputed from the balance would move on every single spin.
+const BETS := [1, 2, 3, 5, 10, 25, 50, 100,
+	250, 500, 1000, 2500, 5000, 10000, 25000, 50000, 100000]
 
 # A rung is offered once the player could spin it ten times over. Ten is the
 # number that keeps the top rung from being a single button press that empties
@@ -648,8 +664,14 @@ func _card_style() -> StyleBoxFlat:
 # One per rung, and the ladder climbs in heat. mini() already guards the index,
 # but a list this short against eight rungs meant every bet above x5 wore the
 # same coat as x5 -- which is the exact thing the colour is there to prevent.
+#
+# Padded to BETS' length rather than left short at eight. A short list is not a
+# crash here, which is the problem: it is a silent trap for whoever next adds a
+# material and cannot see why the top rungs ignore it.
 const BET_KINDS := ["brass", "kelp", "urchin", "primary",
-	"primary", "primary", "primary", "primary"]
+	"primary", "primary", "primary", "primary", "primary",
+	"primary", "primary", "primary", "primary", "primary",
+	"primary", "primary", "primary"]
 
 # Which rungs this balance may use. Always at least x1: a player with no spins
 # left still has to see a bet on the button, and the out-of-spins offer is what
@@ -689,8 +711,18 @@ func _clamp_bet() -> void:
 		bet = 1
 		_style_bet()
 
+# x250 fits the button and x100000 does not: 158px at F_LABEL holds about nine
+# characters and the raw figure is twelve. Above a thousand the rung is said in
+# K -- which is EXACT here rather than rounded, because every rung above x1000
+# is a whole number of thousands by construction. UI.fmt_compact is no use for
+# this: it only compacts above 100,000, so x25000 would come back as "25,000".
+static func bet_text(n: int) -> String:
+	if n < 1000:
+		return str(n)
+	return ("%.1f" % (float(n) / 1000.0)).trim_suffix(".0") + "K"
+
 func _style_bet() -> void:
-	bet_button.text = "BET  x%d" % bet
+	bet_button.text = "BET  x%s" % bet_text(bet)
 	Lagoon.button(bet_button, BET_KINDS[mini(BETS.find(bet), BET_KINDS.size() - 1)], 26)
 
 # THE POT IS THE VAULT, NOT THE VAULT TIMES THE BET.
@@ -787,7 +819,7 @@ func set_meter(held: int, cap: int, secs_to_refill: float, refill: int, tide := 
 		FX.rise_label(self,
 			bet_button.global_position - global_position \
 				+ Vector2(bet_button.size.x * 0.5 - 96.0, -30.0),
-			"BET  x%d  UNLOCKED" % int(bet_steps().back()), Lagoon.BRASS_HI, 26)
+			"BET  x%s  UNLOCKED" % bet_text(int(bet_steps().back())), Lagoon.BRASS_HI, 26)
 	_meter.max_value = float(cap)
 	_meter.value = float(mini(held, cap))
 	# Over the cap the "/ 50" is not a limit any more, it is a smaller number

@@ -375,6 +375,33 @@ func _ready() -> void:
 			await get_tree().process_frame
 			_check_page("%s on lap %d (%s)" % [pair[0], lap, CV.island_name(m.island_level)], node)
 			page.visible = was
+	# THE BET BUTTON AT THE TOP OF ITS LADDER, which is the widest the meter row
+	# ever gets and was never measured: every run above started from a fresh
+	# save, so the button said "BET  x1" and the one rung that can overflow was
+	# the one rung never drawn.
+	#
+	# It matters because the ladder is gated on the BALANCE (bet_steps), so the
+	# top rung is unreachable in a harness unless the meter is loaded first --
+	# which is exactly the shape that hides a bug until a real player stacks up.
+	# x100,000 needs 183px of button against a 158px floor; it fits only because
+	# the row lets the well give the width back, and that is a fact worth
+	# re-proving on every build rather than trusting once.
+	m.island_level = 1
+	m._apply_island_theme()
+	for rung in SlotView.BETS:
+		var r := int(rung)
+		m.spins = r * SlotView.BET_UNLOCK_SPINS
+		m.slot.bet = r
+		m.slot._style_bet()
+		m.slot.set_meter(m.spins, m.SPIN_CAP, 42.0, 5, false)
+		var sp: Control = m.slot_page
+		var was_sp: bool = sp.visible
+		sp.visible = true
+		await get_tree().process_frame
+		await get_tree().process_frame
+		_check_page("bet rung x%s" % SlotView.bet_text(r), m.slot)
+		sp.visible = was_sp
+
 	print("QA-LAYOUT: %s" % ("ALL PASS" if fails == 0 else "%d FAILURES" % fails))
 	get_tree().quit(1 if fails > 0 else 0)
 
