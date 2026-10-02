@@ -312,11 +312,12 @@ def cmd_schedule(a):
     if ends <= starts:
         die("the window ends before it starts")
 
-    # A deal_chain row naming a chain the build does not have is not an error
-    # -- the client falls back to its rotation -- but it is almost always a typo,
-    # and the one place to catch it is before it is written.
-    if a.kind == "deal_chain":
-        known = known_chain_ids()
+    # A row naming something the build does not have is not an error -- the
+    # client falls back to its rotation -- but it is almost always a typo, and
+    # the one place to catch it is before it is written. Both kinds draw their
+    # ids from the same file, so the same check covers both.
+    if a.kind in KIND_SOURCE:
+        known = known_ids(a.kind)
         if known and payload.get("id") not in known:
             print("WARNING: %r is not a chain in deals.gd. Known: %s"
                   % (payload.get("id"), ", ".join(sorted(known))))
@@ -346,18 +347,29 @@ def cmd_schedule(a):
                                   platform=a.platform, horizon=24 * 90))
 
 
-def known_chain_ids():
-    """Every `"id"` in deals.gd, which is a SUPERSET of the deal chains.
+# Which source file holds the ids a kind can name. deal_chain and fair are both
+# in deals.gd; an offer is a PRODUCT and lives with the other products in cv.gd,
+# which is the same split the game itself makes.
+KIND_SOURCE = {"deal_chain": "scripts/deals.gd",
+               "fair":       "scripts/deals.gd",
+               "offer":      "scripts/cv.gd"}
 
-    It also picks up the powerups, the fairs and the mission keys, so the check
-    in front of a schedule is permissive: it catches `tide_hnut` and would let
-    `pu_deckhand` through. That is the right direction for a warning -- a false
-    alarm on a legitimate id would teach somebody to stop reading them, and the
-    client already treats an id it does not have as "run the rotation" rather
-    than as an error. Parsing the CHAINS block specifically would be a stricter
-    check and a more fragile one.
+
+def known_ids(kind):
+    """Every `"id"` in the file that kind draws from, which is a SUPERSET.
+
+    deals.gd also yields the powerups and the mission keys; cv.gd yields every
+    pack in the shop. So the check in front of a schedule is permissive: it
+    catches `tide_hnut` and would let `pu_deckhand` through. That is the right
+    direction for a warning -- a false alarm on a legitimate id would teach
+    somebody to stop reading them, and the client already treats an id it does
+    not have as "run the rotation" rather than as an error. Parsing the specific
+    block would be a stricter check and a far more fragile one.
     """
-    path = os.path.join(ROOT, "scripts", "deals.gd")
+    rel = KIND_SOURCE.get(kind)
+    if rel is None:
+        return set()
+    path = os.path.join(ROOT, rel)
     if not os.path.exists(path):
         return set()
     with open(path) as f:
@@ -430,7 +442,7 @@ def main():
     s.set_defaults(fn=cmd_events)
 
     s = sub.add_parser("schedule", help="put an event on a date")
-    s.add_argument("kind", help="deal_chain")
+    s.add_argument("kind", help="deal_chain | fair | offer")
     s.add_argument("payload", help="JSON object, e.g. '{\"id\":\"tide_hunt\"}'")
     s.add_argument("--from", required=True, dest="start",
                    help="ISO 8601 WITH an offset: 2026-10-31T18:00+03:00")

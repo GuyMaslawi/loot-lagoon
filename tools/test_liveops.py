@@ -208,7 +208,18 @@ out = run(lo.cmd_schedule, app="loot-lagoon", kind="deal_chain",
 ck("a chain id that is not in deals.gd is warned about, not silently accepted",
    "not a chain in deals.gd" in out, out.strip()[:200])
 ck("and the real chain ids were read out of the source",
-   "tide_hunt" in lo.known_chain_ids(), str(sorted(lo.known_chain_ids()))[:120])
+   "tide_hunt" in lo.known_ids("deal_chain"),
+   str(sorted(lo.known_ids("deal_chain")))[:110])
+# Each kind draws its ids from the file the GAME keeps them in: an offer is a
+# product and lives with the products, not with the events.
+ck("a fair's ids come from deals.gd too", "harbour_fair" in lo.known_ids("fair"))
+ck("an offer's ids come from cv.gd, where the products are",
+   "to_squall" in lo.known_ids("offer"),
+   str(sorted(lo.known_ids("offer")))[:110])
+ck("and a chain id is NOT an offer id, so the two sources really differ",
+   "tide_hunt" not in lo.known_ids("offer"))
+ck("a kind nobody has taught it about warns about nothing",
+   lo.known_ids("some_future_kind") == set())
 
 print("-- reading the calendar back --")
 out = run(lo.cmd_events, app="loot-lagoon", build=150, platform="ios", horizon=72)

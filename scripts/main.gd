@@ -11935,6 +11935,9 @@ func _break_piggy() -> void:
 func _offer_tick() -> void:
 	var now := _now()
 	if offer_id != "":
+		var osched_until := _scheduled_until("offer", offer_id, OFFER_MAX_SPAN)
+		if osched_until > offer_until:
+			offer_until = osched_until
 		if now >= offer_until:
 			offer_id = ""
 			offer_until = 0.0
@@ -11943,13 +11946,59 @@ func _offer_tick() -> void:
 			if _current_page == pages.get("shop"):
 				_fill_page("shop")
 		return
+	# ITS OWN SWITCH, NOT THE SHOP'S. `shop` stops the game taking money, which
+	# is the answer to a broken purchase path; this stops it ADVERTISING, which
+	# is the answer to a promotion that is priced wrong or themed wrong. A
+	# storefront that still sells while its discount banner is pulled is a
+	# normal state, and collapsing the two would make the cheaper problem cost
+	# the expensive remedy.
+	if not Flags.on("offers"):
+		return
+	# --- an offer somebody put on a date ------------------------------------
+	#
+	# No "two events at once" guard here, unlike the chain and the fair: an
+	# offer lives on the shop shelf rather than behind the spark disc, so it has
+	# never competed with them for a door.
+	#
+	# NO CADENCE KNOBS EITHER, which the chain has and this deliberately does
+	# not. Two hours is an urgency mechanic rather than a schedule -- the
+	# countdown IS the product -- and the thing worth controlling remotely is
+	# WHEN an offer runs, which is this table, not how long the pressure lasts.
+	var oev := Schedule.live("offer")
+	if not oev.is_empty():
+		var owant := String((oev.get("payload", {}) as Dictionary).get("id", ""))
+		var opick := {}
+		for o in CV.TIMED_OFFERS:
+			if String(o["id"]) == owant:
+				opick = o
+				break
+		# EVERY PRICE THE GAME CAN CHARGE HAS TO BE A PRODUCT THE STORES ALREADY
+		# KNOW ABOUT. A scheduled offer naming an id that is not in
+		# TIMED_OFFERS would render a button that cannot be pressed on a real
+		# phone -- so an unknown id falls back to the rotation, which can only
+		# ever pick a real one.
+		if not opick.is_empty():
+			var oleft := minf(Schedule.seconds_left(oev), OFFER_MAX_SPAN)
+			if oleft > 0.0:
+				offer_id = owant
+				offer_until = now + oleft
+				_save_game()
+				_notify("spins", "%s — %d%% extra value, %d hours only!"
+					% [opick["name"], CV.bonus_pct(opick), maxi(1, int(oleft / 3600.0))],
+					opick["emoji"])
+				_update_badges()
+				if _current_page == pages.get("shop"):
+					_fill_page("shop")
+				return
 	if now < offer_next:
 		return
 	var pick: Dictionary = CV.TIMED_OFFERS[randi() % CV.TIMED_OFFERS.size()]
 	offer_id = String(pick["id"])
 	offer_until = now + CV.OFFER_DURATION
 	_save_game()
-	_notify("spins", "%s — %d%% extra value, 2 hours only!" % [pick["name"], CV.bonus_pct(pick)], pick["emoji"])
+	_notify("spins", "%s — %d%% extra value, %d hours only!"
+		% [pick["name"], CV.bonus_pct(pick), maxi(1, int(CV.OFFER_DURATION / 3600.0))],
+		pick["emoji"])
 	_update_badges()
 	if _current_page == pages.get("shop"):
 		_fill_page("shop")
@@ -12025,6 +12074,17 @@ func _deal_step() -> Dictionary:
 # days vanish off a countdown with no error anywhere.
 const CHAIN_MAX_SPAN := 168.0 * 3600.0
 
+# The fair's equivalent, and the same job: _sanitize_clock needs a ceiling a
+# scheduled window can legitimately reach, not the rotation's own span.
+const FAIR_MAX_SPAN := 168.0 * 3600.0
+
+# And the offer's. CV.OFFER_DURATION is two hours and the sanitiser used to
+# clamp to exactly that -- correct while two hours was the only span an offer
+# could have, and wrong the moment one can be scheduled: a Black Friday offer
+# set to run a day would come back from the next load with twenty-two hours
+# missing and no error anywhere.
+const OFFER_MAX_SPAN := 168.0 * 3600.0
+
 func _chain_duration() -> float:
 	return clampf(Flags.num("chain_hours", Deals.CHAIN_HOURS),
 		2.0, CHAIN_MAX_SPAN / 3600.0) * 3600.0
@@ -12044,9 +12104,32 @@ func _deal_countdown_text() -> String:
 
 # Rolls a chain in, and rolls a dead one out. Called once a second off the same
 # tick that drives the timed offer.
+# The deadline a live scheduled event says this thing should have, or -1.0 when
+# the calendar has nothing live for it.
+#
+# This is what lets _sanitize_clock stay tight. The save is clamped to a
+# rotation span on the way in, and then the first tick that finds a matching
+# live entry puts the real window back -- off the server's seconds-remaining,
+# which no edited save and no moved clock can influence. It also means an ops
+# change to a window reaches phones that are already in it.
+func _scheduled_until(kind: String, id: String, ceiling: float) -> float:
+	if id == "":
+		return -1.0
+	var ev := Schedule.live(kind)
+	if ev.is_empty():
+		return -1.0
+	if String((ev.get("payload", {}) as Dictionary).get("id", "")) != id:
+		return -1.0
+	var left := minf(Schedule.seconds_left(ev), ceiling)
+	return (_now() + left) if left > 0.0 else -1.0
+
+
 func _deal_tick() -> void:
 	var now := _now()
 	if deal_id != "":
+		var sched_until := _scheduled_until("deal_chain", deal_id, CHAIN_MAX_SPAN)
+		if sched_until > deal_until:
+			deal_until = sched_until
 		# A chain that ran out of time, WITH ITS GRAND PRIZE STILL OWED, pays it
 		# on the way out. The finale is earned by clearing six rungs and the
 		# clock has nothing to do with it -- a player who finished the ladder in
@@ -12099,6 +12182,19 @@ func _deal_tick() -> void:
 	# one up afterwards if the window is still open. The same no-rug-pull rule
 	# the switch follows, and it does mean a player deep in a rolling chain can
 	# miss a short scheduled one. That is the right trade in that order.
+	# NEVER TWO EVENTS AT ONCE, and the scheduled path is the one that can break
+	# it. _fair_tick refuses to open a fair while a chain is live, and the
+	# rotation's own gaps keep the two apart the rest of the time -- but a
+	# scheduled chain deliberately ignores `deal_next`, which is the bookkeeping
+	# that used to guarantee the separation. Without this a row aimed at
+	# Saturday opens a ladder on top of a running fair, and the spark disc has
+	# two screens and no way to choose.
+	#
+	# It RETURNS rather than falling through to the rotation, which would have
+	# the same problem. The chain is tried again on the next tick, so a window
+	# that outlives the fair still gets its chain.
+	if fair_id != "":
+		return
 	var ev := Schedule.live("deal_chain")
 	if not ev.is_empty():
 		var want := String((ev.get("payload", {}) as Dictionary).get("id", ""))
@@ -12860,6 +12956,9 @@ func _fair_stall_open() -> bool:
 func _fair_tick() -> void:
 	var now := _now()
 	if fair_id != "":
+		var fsched_until := _scheduled_until("fair", fair_id, FAIR_MAX_SPAN)
+		if fsched_until > fair_until:
+			fair_until = fsched_until
 		if now >= fair_until:
 			fair_id = ""
 			fair_until = 0.0
@@ -12870,6 +12969,35 @@ func _fair_tick() -> void:
 			_save_game()
 			_update_badges()
 		return
+	# The same switch the chain has, in the same place: after the roll-out and
+	# before every way of opening one.
+	if not Flags.on("fair"):
+		return
+	# --- a fair somebody put on a date --------------------------------------
+	#
+	# Mirror of the chain's path. The "two events at once" guard is checked
+	# first here because the fair has always had it, and a scheduled fair is no
+	# more entitled to open over a live ladder than a rolled one is.
+	if _active_deal().is_empty():
+		var fev := Schedule.live("fair")
+		if not fev.is_empty():
+			var fwant := String((fev.get("payload", {}) as Dictionary).get("id", ""))
+			var fsched := Deals.fair_by_id(fwant)
+			if not fsched.is_empty():
+				var fleft := minf(Schedule.seconds_left(fev), FAIR_MAX_SPAN)
+				if fleft > 0.0:
+					fair_id = fwant
+					_fair_last_id = fair_id
+					fair_until = now + fleft
+					fair_taken = {}
+					fair_miles = {}
+					fair_pts = 0
+					fair_restock = 0.0
+					_save_game()
+					_notify("spins", "%s is open \u2014 nine stalls, %d hours!"
+						% [fsched["name"], int(fleft / 3600.0)], "\U0001F3AA")
+					_update_badges()
+					return
 	if now < fair_next:
 		return
 	# NEVER TWO EVENTS AT ONCE. The gap either side of the fair is three hours
@@ -26261,8 +26389,27 @@ func _sanitize_clock() -> void:
 	shop_free_last = minf(shop_free_last, now)
 	offer_until = minf(offer_until, now + CV.OFFER_DURATION)
 	offer_next = minf(offer_next, now + CV.OFFER_COOLDOWN)
-	deal_until = minf(deal_until, now + CHAIN_MAX_SPAN)
+	# TIGHT AGAIN, AND THE SCHEDULED PATH RE-ASSERTS INSTEAD. The first version
+	# of the calendar raised these ceilings to _MAX_SPAN so a seven-day window
+	# would survive a load -- which worked, and quietly widened the HOSTILE SAVE
+	# defence this function exists for from one rotation span to a week. A save
+	# claiming `deal_until: 1e18` would have been handed a seven-day ladder, and
+	# a ladder pays coins, spins and cards.
+	#
+	# So the clamp is back to what a rotation can legitimately produce, and the
+	# three ticks re-assert a longer deadline from the live calendar entry once
+	# they have one. That is strictly better than either half alone: an edited
+	# save gets no window the rotation could not have given it, and a scheduled
+	# window is restored from the SERVER's answer rather than from the save.
+	deal_until = minf(deal_until, now + _chain_duration())
 	deal_next = minf(deal_next, now + _chain_cooldown())
+	# THE FAIR WAS NEVER IN HERE, which predates the calendar: a clock wound
+	# forward and back left both of these sitting in the future with nothing to
+	# pull them in, and the fair then never opened again. Added now because the
+	# scheduled path is the first thing that can put a legitimately long value
+	# in fair_until, so the ceiling has to exist before anything leans on it.
+	fair_until = minf(fair_until, now + Deals.FAIR_DURATION)
+	fair_next = minf(fair_next, now + FAIR_GAP)
 	powerup_until = minf(powerup_until, now + Deals.POWERUP_DURATION)
 	powerup_next = minf(powerup_next, now + Deals.POWERUP_COOLDOWN)
 	beach_gift_next = minf(beach_gift_next, now + BEACH_GIFT_COOLDOWN)

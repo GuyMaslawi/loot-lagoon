@@ -44,6 +44,8 @@ func _ready() -> void:
 	_t_the_calendar()
 	_t_a_scheduled_chain()
 	_t_raids_and_the_tournament()
+	_t_never_two_events_at_once()
+	_t_a_scheduled_offer()
 	print("QA-FLAGS: %s" % ("ALL PASS" if fails == 0 else "%d FAILURES" % fails))
 	get_tree().quit(1 if fails > 0 else 0)
 
@@ -335,17 +337,49 @@ func _t_a_scheduled_chain() -> void:
 		m.deal_id == "", m.deal_id)
 	_wipe()
 
-	# A long scheduled window must survive the wound-clock sanitiser, which used
-	# to clamp to the rotation's span and would have cut five days off a week.
+	# --- the save on the way in, and the calendar after it -------------------
+	#
+	# TWO HALVES THAT HAVE TO BOTH HOLD. _sanitize_clock is the hostile-save
+	# defence -- qa_full feeds it `offer_until: 1e18` -- so it must stay tight,
+	# clamping to what the ROTATION could legitimately have produced. But a
+	# scheduled week is also legitimate, and it cannot be told apart from an
+	# edited save by looking at the save.
+	#
+	# So it is not told apart there. The clamp is tight on the way in, and the
+	# tick puts the real deadline back from the SERVER's seconds-remaining,
+	# which no edited save and no moved clock can reach.
+	_wipe()
 	m.deal_id = want
 	m.deal_until = m._now() + 100.0 * 3600.0
 	m._sanitize_clock()
-	_chk("a seven-day window is not cut back to the rotation's 24 hours",
+	_chk("a long deadline with nothing on the calendar behind it is cut",
+		m.deal_until <= m._now() + m._chain_duration() + 5.0,
+		"%.0fh left" % ((m.deal_until - m._now()) / 3600.0))
+
+	Schedule._events = [_sched("deal_chain", {"id": want}, -3600.0, 100.0 * 3600.0)]
+	m._deal_tick()
+	_chk("and the calendar puts the week back on the next tick",
 		m.deal_until > m._now() + 99.0 * 3600.0,
 		"%.0fh left" % ((m.deal_until - m._now()) / 3600.0))
-	m.deal_until = m._now() + 400.0 * 3600.0
-	m._sanitize_clock()
-	_chk("but a deadline past every ceiling is still pulled back",
+
+	# A scheduled entry for a DIFFERENT chain must not extend this one.
+	_wipe()
+	m.deal_id = want
+	m.deal_until = m._now() + 600.0
+	Schedule._events = [_sched("deal_chain", {"id": other}, -60.0, 100.0 * 3600.0)]
+	m._deal_tick()
+	_chk("an entry for another chain does not extend the one that is running",
+		m.deal_until <= m._now() + 605.0,
+		"%.0fs left" % (m.deal_until - m._now()))
+
+	# And the ceiling still bites, so a server answering nonsense cannot hand
+	# out a year.
+	_wipe()
+	m.deal_id = want
+	m.deal_until = m._now() + 600.0
+	Schedule._events = [_sched("deal_chain", {"id": want}, -60.0, 9000.0 * 3600.0)]
+	m._deal_tick()
+	_chk("but no calendar entry can push past the ceiling",
 		m.deal_until <= m._now() + m.CHAIN_MAX_SPAN + 5.0,
 		"%.0fh left" % ((m.deal_until - m._now()) / 3600.0))
 
@@ -396,3 +430,155 @@ func _t_raids_and_the_tournament() -> void:
 	_chk("and with the switch on it scores again", m.tourney_points > 0,
 		str(m.tourney_points))
 	_wipe()
+
+
+# -----------------------------------------------------------------------------
+#  Two events at once -- the invariant the calendar nearly broke
+# -----------------------------------------------------------------------------
+#
+# The fair has refused to open over a live chain since it existed, because the
+# spark disc is ONE door and two live events give it two screens and no way to
+# choose. The rotation kept the other direction safe for free: a chain could
+# only start after its own cooldown, and the gaps were arranged so the two
+# alternated.
+#
+# A SCHEDULED CHAIN IGNORES THAT COOLDOWN ON PURPOSE -- that is the whole point
+# of a calendar -- which quietly removed the only thing holding the other
+# direction. These are the checks for both directions.
+func _t_never_two_events_at_once() -> void:
+	print("-- never two events at once --")
+	var chain := String((Deals.CHAINS[0] as Dictionary)["id"])
+	var fair := String((Deals.FAIRS[0] as Dictionary)["id"])
+	_wipe()
+
+	# A fair is running. A chain was scheduled for right now anyway.
+	m.deal_id = ""
+	m.deal_until = 0.0
+	m.deal_next = 0.0
+	m.fair_id = fair
+	m.fair_until = m._now() + 3600.0
+	Schedule._events = [_sched("deal_chain", {"id": chain}, -60.0, 7200.0)]
+	m._deal_tick()
+	_chk("a scheduled chain does NOT open over a live fair",
+		m.deal_id == "", m.deal_id)
+
+	# ...and it is held, not lost: the fair ends, the window is still open.
+	m.fair_id = ""
+	m.fair_until = 0.0
+	m._deal_tick()
+	_chk("and it opens the moment the fair is gone", m.deal_id == chain, m.deal_id)
+
+	# The other direction, which the fair has always guarded itself.
+	_wipe()
+	m.fair_id = ""
+	m.fair_next = 0.0
+	m.deal_id = chain
+	m.deal_until = m._now() + 7200.0
+	Schedule._events = [_sched("fair", {"id": fair}, -60.0, 7200.0)]
+	m._fair_tick()
+	_chk("a scheduled fair does NOT open over a live chain",
+		m.fair_id == "", m.fair_id)
+
+	# The fair's own scheduled path, with the coast clear.
+	m.deal_id = ""
+	m.deal_until = 0.0
+	m.fair_next = m._now() + 100000.0
+	m._fair_tick()
+	_chk("a scheduled fair opens through its own gap", m.fair_id == fair, m.fair_id)
+	_chk("and it runs to the end of the window, not the rotation's span",
+		absf(m.fair_until - (m._now() + 7200.0)) < 5.0,
+		"%.0f left" % (m.fair_until - m._now()))
+
+	# The fair's switch.
+	_wipe()
+	m.fair_id = ""
+	m.fair_next = 0.0
+	m.deal_id = ""
+	Flags._values = {"fair": false}
+	Schedule._events = [_sched("fair", {"id": fair}, -60.0, 7200.0)]
+	m._fair_tick()
+	_chk("and a switch closes the fair, scheduled or rolled", m.fair_id == "", m.fair_id)
+
+	# The sanitiser gap the fair never had.
+	_wipe()
+	m.fair_id = fair
+	m.fair_until = m._now() + 400.0 * 3600.0
+	m.fair_next = m._now() + 400.0 * 3600.0
+	m._sanitize_clock()
+	_chk("a wound clock no longer strands the fair in the future",
+		m.fair_until <= m._now() + Deals.FAIR_DURATION + 5.0
+		and m.fair_next <= m._now() + m.FAIR_GAP + 5.0,
+		"until=%.1fh next=%.0fh" % [(m.fair_until - m._now()) / 3600.0,
+			(m.fair_next - m._now()) / 3600.0])
+	Schedule._events = [_sched("fair", {"id": fair}, -60.0, 100.0 * 3600.0)]
+	m._fair_tick()
+	_chk("and its scheduled window comes back off the calendar too",
+		m.fair_until > m._now() + 99.0 * 3600.0,
+		"%.0fh" % ((m.fair_until - m._now()) / 3600.0))
+
+	Schedule._events = []
+	m.fair_id = ""
+	m.fair_until = 0.0
+	m.deal_id = ""
+	m.deal_until = 0.0
+
+
+# -----------------------------------------------------------------------------
+#  The offer -- the one on the money surface
+# -----------------------------------------------------------------------------
+func _t_a_scheduled_offer() -> void:
+	print("-- an offer somebody put on a date --")
+	var want := String((CV.TIMED_OFFERS[0] as Dictionary)["id"])
+	_wipe()
+
+	m.offer_id = ""
+	m.offer_until = 0.0
+	m.offer_next = m._now() + 100000.0
+	Schedule._events = [_sched("offer", {"id": want}, -60.0, 86400.0)]
+	m._offer_tick()
+	_chk("a scheduled offer opens through a cooldown with hours to run",
+		m.offer_id == want, m.offer_id)
+	_chk("and it runs the WINDOW, not the two-hour rotation span",
+		absf(m.offer_until - (m._now() + 86400.0)) < 5.0,
+		"%.1fh" % ((m.offer_until - m._now()) / 3600.0))
+
+	# The same two halves as the chain's. qa_full's hostile save puts 1e18 in
+	# this exact field, so the clamp stays at two hours...
+	m._sanitize_clock()
+	_chk("a load clamps the offer back to the rotation's two hours",
+		m.offer_until <= m._now() + CV.OFFER_DURATION + 5.0,
+		"%.1fh" % ((m.offer_until - m._now()) / 3600.0))
+	# ...and the calendar restores the real window on the next tick.
+	m._offer_tick()
+	_chk("and the calendar puts the full day back",
+		m.offer_until > m._now() + 23.0 * 3600.0,
+		"%.1fh" % ((m.offer_until - m._now()) / 3600.0))
+
+	# Every price the game can charge must be a product the stores know about.
+	_wipe()
+	m.offer_id = ""
+	m.offer_next = 0.0
+	Schedule._events = [_sched("offer", {"id": "no_such_offer"}, -60.0, 86400.0)]
+	m._offer_tick()
+	var real := false
+	for o in CV.TIMED_OFFERS:
+		if String(o["id"]) == m.offer_id:
+			real = true
+	_chk("an offer id the stores do not know falls back to a real product",
+		m.offer_id != "" and real, m.offer_id)
+
+	# Its own switch, separate from the shop's.
+	_wipe()
+	m.offer_id = ""
+	m.offer_next = 0.0
+	Flags._values = {"offers": false}
+	Schedule._events = [_sched("offer", {"id": want}, -60.0, 86400.0)]
+	m._offer_tick()
+	_chk("the offers switch stops it advertising", m.offer_id == "", m.offer_id)
+	_chk("and that switch is NOT the shop's -- the shop is still open",
+		m._purchases_open())
+
+	_wipe()
+	Schedule._events = []
+	m.offer_id = ""
+	m.offer_until = 0.0
