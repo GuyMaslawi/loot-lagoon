@@ -27,6 +27,8 @@ enabled=PackedStringArray("res://addons/GodotGooglePlayBilling/plugin.cfg", "res
 [autoload]
 
 Sfx="*res://scripts/sfx.gd"
+Flags="*res://scripts/flags.gd"
+Schedule="*res://scripts/schedule.gd"
 IAP="*res://scripts/iap.gd"
 Alerts="*res://scripts/alerts.gd"
 Cloud="*res://scripts/cloud.gd"

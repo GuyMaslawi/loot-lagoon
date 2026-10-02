@@ -1,9 +1,20 @@
 # Supabase CLI project config.
 #
 # At the repo root, and named `supabase/`, because that is where both the CLI
-# and the GitHub integration look. The migrations under here are the schema:
-# nothing is applied by hand in the dashboard, so what is deployed is always
-# what is in git.
+# and the GitHub integration look. The migrations under here are the schema.
+#
+# HOW THEY ACTUALLY REACH PRODUCTION, as of 2026-10-02: by hand, pasted into the
+# dashboard's SQL Editor. Neither the CLI nor the GitHub integration is set up.
+# This comment used to claim the opposite -- that nothing is applied by hand --
+# which was the intent and never the practice, and it is worth correcting rather
+# than aspiring to, because two real things follow from the truth:
+#
+#   * `git log` is not evidence that a migration is live. The only evidence is
+#     asking the server. tools/validate_migrations.sh proves a migration is
+#     CORRECT; it cannot prove it has been RUN.
+#   * Every migration here is written to be idempotent and is tested twice over
+#     by validate_migrations.sh for exactly this reason: a human pasting files
+#     in order will eventually paste one of them twice.
 project_id = "loot-lagoon"
 
 [db]

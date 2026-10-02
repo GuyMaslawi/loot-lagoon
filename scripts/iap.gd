@@ -190,6 +190,16 @@ func purchase(pack: Dictionary) -> void:
 	if busy:
 		return
 	var pid := product_id(pack)
+	# THE BACKSTOP, AND DELIBERATELY NOT THE MAIN CHECK. main.gd gates all three
+	# of its buy buttons before they touch their own UI, because a refusal that
+	# arrives through _emit("fail") below leaves a button that already disabled
+	# itself stuck on an ellipsis. This catches a caller that has not been
+	# written yet: a stuck button is a bad afternoon, taking money during an
+	# outage is a refund thread, and only one of those is worth being certain
+	# about. Absent row means the shop is open.
+	if not Flags.on("shop"):
+		_emit("fail", pid, "The shop is closed for maintenance.")
+		return
 	if not sellable():
 		if not _has_store():
 			# A platform that is supposed to have a store, with nothing behind

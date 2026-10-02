@@ -38,6 +38,21 @@ func _ready() -> void:
 			# Both gates are local flags and the body draws from local state, so
 			# faking them is honest here: it renders the real layout, not a
 			# mock-up of it.
+			# FLAGS='{"clan_chat":false}' seeds the remote config before the
+			# page is built, which is the only way to LOOK at a kill switch.
+			# qa_flags proves the numeric knobs by calling the game's own
+			# helpers, but "the chat is gone and the page above it still reads
+			# correctly" is a claim about pixels, and no assertion covers it.
+			#
+			# Seeded directly rather than fetched: the harness has no server,
+			# and Flags treats an empty answer as "keep what you have" -- so a
+			# value put here survives the refresh that boot fires.
+			if OS.has_environment("FLAGS"):
+				var fj = JSON.parse_string(OS.get_environment("FLAGS"))
+				if typeof(fj) == TYPE_DICTIONARY:
+					Flags._values = fj
+				else:
+					push_error("FLAGS is not a JSON object")
 			if OS.has_environment("CLAN"):
 				_clan.call_deferred(game, OS.get_environment("CLAN"))
 			if OS.has_environment("PAGE"):

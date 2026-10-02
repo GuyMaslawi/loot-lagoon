@@ -1149,6 +1149,44 @@ func client_gate(build: int, then: Callable) -> void:
 	)
 
 
+# The knobs this build is allowed to be told about. See flags.gd for what is
+# done with them and the migration for the table behind it.
+#
+# Every failure comes back as an empty dictionary, exactly as client_gate's does
+# and for a stronger reason: this one is read by Flags, which treats empty as
+# "keep believing what you already believe". So a bad afternoon on the server
+# cannot undo a live kill switch, and cannot turn a working feature off either.
+#
+# Anon, like client_gate, because every feature this can close is reachable by a
+# player who has never signed in.
+func app_config(app: String, build: int, platform: String, then: Callable) -> void:
+	if not configured():
+		then.call({})
+		return
+	_rpc("app_config", {"p_app": app, "p_build": build, "p_platform": platform},
+		func(code: int, body) -> void:
+			then.call(body if code == 200 and typeof(body) == TYPE_DICTIONARY else {})
+	)
+
+
+# What is scheduled. See schedule.gd for what is done with it.
+#
+# An empty ARRAY on every failure, and unlike app_config's empty dictionary this
+# one is not treated as "keep what you had" -- schedule.gd stores it, because a
+# calendar that failed to load and a calendar with nothing on it both mean "run
+# the rotation", and keeping a stale one would run an event that was cancelled.
+func app_events(app: String, build: int, platform: String, horizon_hours: int,
+		then: Callable) -> void:
+	if not configured():
+		then.call([])
+		return
+	_rpc("app_events", {"p_app": app, "p_build": build, "p_platform": platform,
+			"p_horizon_hours": horizon_hours},
+		func(code: int, body) -> void:
+			then.call(body if code == 200 and typeof(body) == TYPE_ARRAY else [])
+	)
+
+
 # Crash reports, faults and feature counters, batched. See diag.gd for what is
 # in them and why none of it identifies anybody.
 #

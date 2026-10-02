@@ -1136,6 +1136,16 @@ func _after_boot() -> void:
 	for cb in mail:
 		cb.call()
 	_check_client_gate()
+	# The knobs this build is allowed to be told about, asked for beside the
+	# version gate because the two are the same kind of question -- "is anything
+	# about this binary known to be wrong" -- and because both must be answered
+	# without anybody waiting. Nothing on screen depends on the reply: every gate
+	# that reads Flags is read at render time, so an answer that lands late is
+	# picked up by the next page that is built. See flags.gd.
+	Flags.refresh()
+	# And what is scheduled. Separate from the config fetch because it is a
+	# separate question with a separate failure meaning -- see schedule.gd.
+	Schedule.refresh()
 	# A tournament that ended while the game was shut. The session is already
 	# restored by now -- Cloud reads it in its own _ready -- so this asks the
 	# league where the player finished rather than guessing from the phone.
@@ -1617,7 +1627,7 @@ func _shot_deal() -> void:
 				var want := OS.get_environment("DEMO_DEAL_ID")
 				deal_id = want if not Deals.by_id(want).is_empty() \
 					else String((Deals.CHAINS[0] as Dictionary)["id"])
-				deal_until = _now() + Deals.CHAIN_DURATION
+				deal_until = _now() + _chain_duration()
 				deal_finale = false
 			deal_taken = clampi(int(OS.get_environment("DEMO_DEAL_TAKEN")),
 				0, Deals.STEPS)
@@ -3199,6 +3209,16 @@ func _resume_from_away() -> void:
 	# deliver has been read by the act of opening the game.
 	Alerts.cancel_all()
 	Alerts.clear_delivered()
+	# A resume is the other moment worth re-asking. A phone that sat in a pocket
+	# for two days is the most likely one to be running under a switch that was
+	# thrown while it was asleep, and this is the cheapest point to find out.
+	Flags.refresh()
+	# The calendar is re-anchored here for a second reason beyond freshness: its
+	# spans are measured against get_ticks_msec, and whether that clock counts
+	# time spent suspended is a platform's business rather than something this
+	# game can rely on. A resume is exactly when it may have stopped counting,
+	# and asking again is cheaper than reasoning about it.
+	Schedule.refresh()
 	# Coming back from the background is exactly when the device clock may have
 	# changed while nobody was looking, so this is where the anchor is renewed.
 	# It answers a request later, not now: the cooldowns below read whichever
@@ -8590,6 +8610,12 @@ func _clan_chat_ui(vb: VBoxContainer) -> void:
 	# the page works exactly as it did -- same reasoning as `clan_extras_ready`.
 	if not _clan_fake and not Cloud.clan_chat_ready():
 		return
+	# THE ONE KILL SWITCH THIS GAME MOST NEEDED. The chat is the only surface
+	# here that publishes one player's words to another, so it is the only one
+	# whose worst day is a moderation problem rather than a bug -- and the fix
+	# for that has to be faster than a binary. Absent row means on, as always.
+	if not Flags.on("clan_chat"):
+		return
 	# NO "CLAN CHAT" BANNER. The page is the chat -- a heading over the only
 	# thing on the screen is 72px of ribbon spent naming what the player is
 	# already looking at, and those 72px are the conversation's.
@@ -9409,7 +9435,10 @@ func _clan_chat_poll(on: bool) -> void:
 		if _clan_chat_timer != null and is_instance_valid(_clan_chat_timer):
 			_clan_chat_timer.stop()
 		return
-	if _clan_fake or not Cloud.linked():
+	# Stopped as well as hidden. A timer left running against a chat nobody can
+	# see is a request every few seconds per install, which is the half of the
+	# switch that matters to the server rather than to the player.
+	if _clan_fake or not Cloud.linked() or not Flags.on("clan_chat"):
 		return
 	if _clan_chat_timer == null or not is_instance_valid(_clan_chat_timer):
 		_clan_chat_timer = Timer.new()
@@ -11133,7 +11162,7 @@ func _open_piggy() -> void:
 	# being killed with the transaction arriving on a later launch -- the bank
 	# it owes is on disk. See _break_piggy.
 	buy.pressed.connect(func() -> void:
-		if IAP.busy:
+		if IAP.busy or not _purchases_open():
 			return
 		piggy_promised = piggy_coins
 		_flush_save()
@@ -11975,6 +12004,35 @@ func _deal_step() -> Dictionary:
 	return chain["steps"][deal_taken]
 
 # The live chain, or an empty dictionary. Same shape of answer as _active_offer.
+# How long a chain runs, and how long the game stays quiet after it. Seconds.
+#
+# The first two knobs here that exist for tuning rather than for firefighting.
+# Event cadence is the one number in this game somebody wants to change on a
+# Thursday and read on a Monday, and the reason it was never changed is that it
+# cost a binary each time -- so the 24/30 split in deals.gd has never actually
+# been measured against anything.
+#
+# CLAMPED, because a typo in an ops table must not be able to break the mechanic
+# it is tuning. Both floors are the reasoning deals.gd already wrote down: a
+# chain is six rungs deep, so a window a player who opens the game once a day
+# cannot finish teaches them that starting one is a waste -- and a cooldown of
+# nothing makes "an event is running" wallpaper rather than information.
+# The longest a chain may run under ANY arrangement -- a retuned rotation or a
+# scheduled window. Separate from _chain_duration() because _sanitize_clock
+# needs a ceiling rather than the current setting: a seven-day scheduled event
+# is a legitimate deadline that a sanitiser clamping to the 24-hour rotation
+# would silently cut to a day on the next load, and the player would watch five
+# days vanish off a countdown with no error anywhere.
+const CHAIN_MAX_SPAN := 168.0 * 3600.0
+
+func _chain_duration() -> float:
+	return clampf(Flags.num("chain_hours", Deals.CHAIN_HOURS),
+		2.0, CHAIN_MAX_SPAN / 3600.0) * 3600.0
+
+func _chain_cooldown() -> float:
+	return clampf(Flags.num("chain_cooldown_hours", Deals.CHAIN_COOLDOWN / 3600.0),
+		2.0, 336.0) * 3600.0
+
 func _active_deal() -> Dictionary:
 	if deal_id == "" or _now() >= deal_until:
 		return {}
@@ -12006,7 +12064,7 @@ func _deal_tick() -> void:
 			deal_until = 0.0
 			deal_taken = 0
 			deal_finale = false
-			deal_next = now + Deals.CHAIN_COOLDOWN
+			deal_next = now + _chain_cooldown()
 			# THE CALENDAR IS ONE CALENDAR. The fair runs inside the chain's
 			# own dark window rather than on a clock of its own, three hours
 			# after the ladder goes out and finishing three hours before the
@@ -12018,6 +12076,55 @@ func _deal_tick() -> void:
 			_save_game()
 			_update_badges()
 		return
+	# AFTER THE ROLL-OUT ABOVE AND BEFORE EVERY WAY OF STARTING ONE BELOW, which
+	# is the whole of the placement. A live chain keeps running, still pays its
+	# finale and still ends on its own clock; what stops is the next one
+	# starting. A switch that cut a ladder off mid-climb would take a prize a
+	# player had already earned six rungs of, and that is worse than whatever it
+	# was thrown for. It gates the scheduled path as well as the rotation --
+	# "off" has to mean off, however the chain would have arrived.
+	if not Flags.on("deal_chain"):
+		return
+	# --- a chain somebody put on a date -------------------------------------
+	#
+	# BEFORE THE COOLDOWN CHECK, AND THAT IS THE POINT OF THE CALENDAR. The dark
+	# window between chains is a property of the rotation -- it is what keeps
+	# "an event is running" information rather than wallpaper -- and a scheduled
+	# event is not the rotation. A Halloween chain that refused to start because
+	# a random one happened to end yesterday would be a calendar that only works
+	# when nothing else is going on.
+	#
+	# It does NOT pre-empt a chain already running: the roll-out above returns
+	# before this, so a player mid-ladder finishes it and picks the scheduled
+	# one up afterwards if the window is still open. The same no-rug-pull rule
+	# the switch follows, and it does mean a player deep in a rolling chain can
+	# miss a short scheduled one. That is the right trade in that order.
+	var ev := Schedule.live("deal_chain")
+	if not ev.is_empty():
+		var want := String((ev.get("payload", {}) as Dictionary).get("id", ""))
+		var sched := Deals.by_id(want)
+		# A row naming a chain this build does not have is NOT an error and not
+		# a reason to run nothing -- it is a row written for a later build, or a
+		# typo. Either way the rotation below is a working game, so this falls
+		# through to it rather than returning.
+		if not sched.is_empty():
+			# The window is the server's, clamped to the span the rest of the
+			# file is willing to believe. _sanitize_clock applies the same
+			# ceiling on the way in, and the two have to agree or a long event
+			# would be cut back on the next load.
+			var left := minf(Schedule.seconds_left(ev), CHAIN_MAX_SPAN)
+			if left > 0.0:
+				deal_id = want
+				_deal_last_id = deal_id
+				deal_until = now + left
+				deal_taken = 0
+				deal_finale = false
+				deal_done = false
+				_save_game()
+				_notify("spins", "%s has begun — six rewards, %d hours!"
+					% [sched["name"], int(left / 3600.0)], "🎁")
+				_update_badges()
+				return
 	if now < deal_next:
 		return
 	# Never the same chain twice running. With four of them the odds of a repeat
@@ -12032,12 +12139,12 @@ func _deal_tick() -> void:
 	var pick: Dictionary = pool[randi() % pool.size()]
 	deal_id = String(pick["id"])
 	_deal_last_id = deal_id
-	deal_until = now + Deals.CHAIN_DURATION
+	deal_until = now + _chain_duration()
 	deal_taken = 0
 	deal_finale = false
 	deal_done = false
 	_save_game()
-	_notify("spins", "%s has begun — six rewards, %d hours!" % [pick["name"], int(Deals.CHAIN_HOURS)], "🎁")
+	_notify("spins", "%s has begun — six rewards, %d hours!" % [pick["name"], int(_chain_duration() / 3600.0)], "🎁")
 	_update_badges()
 
 # --- the screen --------------------------------------------------------------
@@ -16347,7 +16454,7 @@ func _offer_need_coins(shortfall: int) -> void:
 	_candy_button(pay, Color(0.28, 0.68, 0.34))
 	FX.press_feedback(pay)
 	pay.pressed.connect(func() -> void:
-		if IAP.busy:
+		if IAP.busy or not _purchases_open():
 			return
 		pay.disabled = true
 		pay.text = "…"
@@ -16500,8 +16607,30 @@ func _ctx_offer_footer(vbox: VBoxContainer) -> void:
 # the chest shelf, and the simulated-build note at the top of the shop.
 # Cancels and failures come back through _on_purchase_cancel and
 # _on_purchase_fail, which banner over whatever screen the player is still on.
+# Is the game taking money at all right now?
+#
+# For one scenario, and it is not hypothetical on this project: a purchase path
+# that charges and does not deliver. The main-thread receipt bug shipped, and
+# the only instrument available for it was a new binary three days away. A
+# player who taps a pack and reads that the shop is shut can be made whole with
+# an apology; one who was charged needs a refund and a support thread.
+#
+# READ HERE RATHER THAN INSIDE IAP.purchase, and that is a real constraint
+# rather than a preference. Two of the three callers disable their own button
+# and set it to an ellipsis BEFORE they call, and _on_purchase_fail deliberately
+# leaves the screen standing -- so a refusal delivered through the fail signal
+# would leave that button stuck mid-spin. Every caller checks this first, at the
+# point where it has not touched its own UI yet. iap.gd carries the same test as
+# a backstop for the fourth caller nobody has written.
+func _purchases_open() -> bool:
+	if Flags.on("shop"):
+		return true
+	_banner("The shop is closed for maintenance. Nothing has been charged.",
+		Lagoon.CORAL_LO)
+	return false
+
 func _start_purchase(pack: Dictionary) -> void:
-	if IAP.busy:
+	if IAP.busy or not _purchases_open():
 		return
 	IAP.purchase(pack)
 
@@ -18018,6 +18147,14 @@ func _send_card(to_id: String, to_name: String, set_id: String, idx: int) -> voi
 	var why := []
 	if _needs_network(why):
 		_banner(str(why[0]), Lagoon.CORAL_LO)
+		return
+	# The collection is client-authoritative -- the server takes what the phone
+	# reports it holds -- so giving is the one feature here that can never be
+	# made cheat-proof, only closed. This is the switch that closes it, and it
+	# is why it sits beside the other refusals rather than hiding the button:
+	# a player mid-gift gets a sentence instead of a control that does nothing.
+	if not Flags.on("card_gifts"):
+		_banner("Card giving is paused for now.", Lagoon.CORAL_LO)
 		return
 	var stars := int((c["items"] as Array)[idx][2])
 	# Checked here as well as on the server, not INSTEAD of it: this one is so
@@ -20124,7 +20261,15 @@ func _tourney_sync() -> void:
 	tourney_build_pts = 0
 
 func _tourney_add(kind: String, bet := 1, from_global := Vector2.ZERO) -> void:
+	# _tourney_sync FIRST, AND THE SWITCH AFTER IT. The sync is what notices a
+	# rollover and parks the finished cycle in `tourney_owed_*` for settling --
+	# so a switch thrown in front of it would strand a placing prize somebody
+	# had already won, which is the one outcome worth more than whatever the
+	# switch was thrown for. Same rule the deal chain follows: stop the next,
+	# honour the earned. _tourney_settle is deliberately NOT gated.
 	_tourney_sync()
+	if not Flags.on("tournament"):
+		return
 	var gained := 0
 	match kind:
 		"steal":  gained = TP_STEAL * maxi(1, bet)
@@ -23801,6 +23946,26 @@ func _owes_me(npc: Dictionary) -> bool:
 # person, may be one of the seeded bots, and never says which. That silence is
 # deliberate on both sides; see the note on find_target in migration 0002.
 func _prefetch_rival() -> void:
+	# BEFORE THE GUARD BELOW, NOT AFTER IT, and the first draft had it the wrong
+	# way round. That guard returns early when a rival has already been fetched,
+	# so a check sitting underneath it would never run on exactly the phone that
+	# needs it -- the one holding a rival it pulled down a second before the
+	# switch was thrown. Clearing it here is what makes "no real island is
+	# touched" true rather than nearly true.
+	#
+	# THE SWITCH IS NARROWER THAN "RAIDS OFF", AND DELIBERATELY SO. Raiding is a
+	# core loop -- the reel lands on it -- and a game that stops paying out a
+	# symbol it still shows is broken rather than paused. What this closes is
+	# raids against REAL PEOPLE, which is the half with an abuse surface on it.
+	#
+	# Turning it off simply stops asking the matchmaker. The game falls back to
+	# the locally drawn rivals it already uses when there is no network, so the
+	# player loses nothing and notices nothing, and _report_raid below is silent
+	# about a local rival because there is nobody on the other end.
+	#
+	if not Flags.on("pvp_raids"):
+		_server_rival = {}
+		return
 	if not Cloud.linked() or not _server_rival.is_empty():
 		return
 	Cloud.find_target("steal", func(row: Dictionary) -> void:
@@ -23995,6 +24160,13 @@ func _rival_stars(npc: Dictionary) -> int:
 func _report_raid(npc: Dictionary, mode: String, result: Dictionary) -> void:
 	var id := str(npc.get("cloud_id", ""))
 	if id == "" or not Cloud.linked():
+		return
+	# Checked here too, and not because _prefetch_rival might have missed one.
+	# A grudge target is drawn from raids that already happened TO this player
+	# and carries a cloud_id that was stored days ago, so the fetch gate alone
+	# leaves one door open. Together the two mean "no real island is touched",
+	# which is the claim the switch has to be able to make.
+	if not Flags.on("pvp_raids"):
 		return
 	if mode == "steal":
 		Cloud.record_raid(id, "steal", int(result.get("stolen", 0)))
@@ -26089,8 +26261,8 @@ func _sanitize_clock() -> void:
 	shop_free_last = minf(shop_free_last, now)
 	offer_until = minf(offer_until, now + CV.OFFER_DURATION)
 	offer_next = minf(offer_next, now + CV.OFFER_COOLDOWN)
-	deal_until = minf(deal_until, now + Deals.CHAIN_DURATION)
-	deal_next = minf(deal_next, now + Deals.CHAIN_COOLDOWN)
+	deal_until = minf(deal_until, now + CHAIN_MAX_SPAN)
+	deal_next = minf(deal_next, now + _chain_cooldown())
 	powerup_until = minf(powerup_until, now + Deals.POWERUP_DURATION)
 	powerup_next = minf(powerup_next, now + Deals.POWERUP_COOLDOWN)
 	beach_gift_next = minf(beach_gift_next, now + BEACH_GIFT_COOLDOWN)

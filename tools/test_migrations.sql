@@ -1629,3 +1629,314 @@ begin
     raise notice 'CLAN CHAT TESTS PASSED';
 end;
 $$;
+
+
+-- =============================================================================
+--  Remote config, and the empty answer that is today's behaviour
+-- =============================================================================
+--
+-- Every claim here is one an ops decision rests on. The resolution rules are
+-- the dangerous part: a kill switch that resolves to the wrong row is a feature
+-- that stays live through the outage it was meant to end, and a build-range
+-- rule that leaks is a row written for build 150 breaking build 140 in
+-- somebody's pocket. The first test is the most important one in the block --
+-- an empty table must answer, and answer empty.
+do $$
+declare
+    r jsonb;
+begin
+    -- --- the empty answer ----------------------------------------------------
+    delete from public.app_config where app in ('loot-lagoon', 'game-two');
+    r := public.app_config('loot-lagoon', 140, 'ios');
+    perform pg_temp.ck('an empty table answers at all', r is not null, coalesce(r::text, 'NULL'));
+    perform pg_temp.ck('and it answers with nothing to apply', r = '{}'::jsonb, r::text);
+    r := public.app_config('no-such-game', 140, 'ios');
+    perform pg_temp.ck('a game with no rows gets the same empty answer',
+        r = '{}'::jsonb, r::text);
+
+    -- --- the ordinary kill switch -------------------------------------------
+    insert into public.app_config (app, key, value, note)
+    values ('loot-lagoon', 'clan_chat', 'false'::jsonb, 'abuse report, 2026-10-01');
+    perform pg_temp.ck('a switch with no targeting reaches a real build',
+        public.app_config('loot-lagoon', 140, 'ios') = '{"clan_chat": false}'::jsonb,
+        public.app_config('loot-lagoon', 140, 'ios')::text);
+    perform pg_temp.ck('and it reaches android too',
+        (public.app_config('loot-lagoon', 140, 'android')->>'clan_chat') = 'false');
+    perform pg_temp.ck('and a guest-era build with no stamp still sees it',
+        (public.app_config('loot-lagoon', 0, '')->>'clan_chat') = 'false');
+
+    -- --- the app boundary ---------------------------------------------------
+    insert into public.app_config (app, key, value)
+    values ('game-two', 'clan_chat', 'true'::jsonb);
+    perform pg_temp.ck('game two does not read game one''s rows',
+        (public.app_config('game-two', 140, 'ios')->>'clan_chat') = 'true');
+    perform pg_temp.ck('and game one does not read game two''s',
+        (public.app_config('loot-lagoon', 140, 'ios')->>'clan_chat') = 'false');
+
+    -- --- the build range, which is the one that protects TestFlight ----------
+    delete from public.app_config where app = 'loot-lagoon';
+    insert into public.app_config (app, key, value, min_build, note)
+    values ('loot-lagoon', 'chain_hours', '18'::jsonb, 150, 'only 150 reads this');
+    perform pg_temp.ck('a build under the floor never sees the row',
+        public.app_config('loot-lagoon', 149, 'ios') = '{}'::jsonb,
+        public.app_config('loot-lagoon', 149, 'ios')::text);
+    perform pg_temp.ck('the build at the floor sees it',
+        (public.app_config('loot-lagoon', 150, 'ios')->>'chain_hours') = '18');
+    perform pg_temp.ck('and so does one above it',
+        (public.app_config('loot-lagoon', 999, 'ios')->>'chain_hours') = '18');
+    perform pg_temp.ck('a dev build is exempt and sees a row aimed at the future',
+        (public.app_config('loot-lagoon', 0, '')->>'chain_hours') = '18');
+
+    update public.app_config set max_build = 160 where app = 'loot-lagoon';
+    perform pg_temp.ck('a ceiling shuts the row off above itself',
+        public.app_config('loot-lagoon', 161, 'ios') = '{}'::jsonb,
+        public.app_config('loot-lagoon', 161, 'ios')::text);
+    perform pg_temp.ck('and the build at the ceiling is still inside it',
+        (public.app_config('loot-lagoon', 160, 'ios')->>'chain_hours') = '18');
+
+    -- --- most specific wins -------------------------------------------------
+    delete from public.app_config where app = 'loot-lagoon';
+    insert into public.app_config (app, key, value, platform) values
+        ('loot-lagoon', 'shop', 'true'::jsonb,  ''),
+        ('loot-lagoon', 'shop', 'false'::jsonb, 'ios');
+    perform pg_temp.ck('a platform row beats the generic one on that platform',
+        (public.app_config('loot-lagoon', 140, 'ios')->>'shop') = 'false',
+        public.app_config('loot-lagoon', 140, 'ios')::text);
+    perform pg_temp.ck('and the other platform still reads the generic row',
+        (public.app_config('loot-lagoon', 140, 'android')->>'shop') = 'true');
+    perform pg_temp.ck('a client that names no platform reads the generic row',
+        (public.app_config('loot-lagoon', 140, '')->>'shop') = 'true');
+    perform pg_temp.ck('and the answer carries exactly one entry per key',
+        (select count(*) from jsonb_object_keys(public.app_config('loot-lagoon', 140, 'ios'))) = 1,
+        public.app_config('loot-lagoon', 140, 'ios')::text);
+
+    delete from public.app_config where app = 'loot-lagoon';
+    insert into public.app_config (app, key, value, min_build) values
+        ('loot-lagoon', 'chain_hours', '24'::jsonb, 0),
+        ('loot-lagoon', 'chain_hours', '12'::jsonb, 150);
+    perform pg_temp.ck('a higher floor beats a lower one for a build above both',
+        (public.app_config('loot-lagoon', 150, 'ios')->>'chain_hours') = '12',
+        public.app_config('loot-lagoon', 150, 'ios')::text);
+    perform pg_temp.ck('and the build below the higher floor falls back to the lower row',
+        (public.app_config('loot-lagoon', 149, 'ios')->>'chain_hours') = '24');
+
+    -- --- shape ---------------------------------------------------------------
+    delete from public.app_config where app = 'loot-lagoon';
+    insert into public.app_config (app, key, value) values
+        ('loot-lagoon', 'clan_chat',   'false'::jsonb),
+        ('loot-lagoon', 'chain_hours', '18'::jsonb),
+        ('loot-lagoon', 'banner',      '{"text": "back soon"}'::jsonb);
+    r := public.app_config('loot-lagoon', 140, 'ios');
+    perform pg_temp.ck('every kind of value survives the round trip',
+        (r->>'clan_chat') = 'false' and (r->>'chain_hours') = '18'
+        and (r->'banner'->>'text') = 'back soon', r::text);
+    perform pg_temp.ck('and three rows come back as three keys',
+        (select count(*) from jsonb_object_keys(r)) = 3, r::text);
+
+    -- --- privileges, and the table nobody reaches ----------------------------
+    perform pg_temp.ck('a guest can read the config',
+        has_function_privilege('anon',
+            'public.app_config(text,integer,text)', 'execute'));
+    perform pg_temp.ck('and so can a signed-in player',
+        has_function_privilege('authenticated',
+            'public.app_config(text,integer,text)', 'execute'));
+    perform pg_temp.ck('the table itself is not readable by a client',
+        not has_table_privilege('anon', 'public.app_config', 'select')
+        and not has_table_privilege('authenticated', 'public.app_config', 'select'));
+    perform pg_temp.ck('and row level security is on it',
+        (select relrowsecurity from pg_class
+          where oid = 'public.app_config'::regclass));
+
+    delete from public.app_config where app in ('loot-lagoon', 'game-two');
+    raise notice 'APP CONFIG TESTS PASSED';
+end;
+$$;
+
+
+-- =============================================================================
+--  ...and the ops role can actually reach it
+-- =============================================================================
+--
+-- Split from the block above because it is the half that was missing. Asserting
+-- that anon is refused passes perfectly on a table NOBODY can reach, which is
+-- what shipped on 2026-10-01 and what broke liveops.py against the live project.
+-- Every check here is an admit-side one.
+do $$
+begin
+    perform pg_temp.ck('the ops role can read the table',
+        has_table_privilege('service_role', 'public.app_config', 'select'));
+    perform pg_temp.ck('and write a new knob',
+        has_table_privilege('service_role', 'public.app_config', 'insert'));
+    perform pg_temp.ck('and change one that is already there',
+        has_table_privilege('service_role', 'public.app_config', 'update'));
+    perform pg_temp.ck('and drop one back to its compiled default',
+        has_table_privilege('service_role', 'public.app_config', 'delete'));
+    -- An INSERT that does not name the bigserial reads the sequence. Without
+    -- this the role is admitted to the table and fails on its first write.
+    perform pg_temp.ck('and reach the sequence its inserts depend on',
+        has_sequence_privilege('service_role', 'public.app_config_id_seq', 'usage'));
+    -- The deny side, restated here so the two live together: widening the ops
+    -- grant must never widen the client's.
+    perform pg_temp.ck('while a client still cannot read the rows',
+        not has_table_privilege('anon', 'public.app_config', 'select')
+        and not has_table_privilege('authenticated', 'public.app_config', 'select'));
+    perform pg_temp.ck('nor write them',
+        not has_table_privilege('anon', 'public.app_config', 'insert')
+        and not has_table_privilege('authenticated', 'public.app_config', 'update'));
+    -- And the function is still the way in, which the revoke above could have
+    -- taken out if it had been written against the function by mistake.
+    perform pg_temp.ck('and the reader function is still theirs to call',
+        has_function_privilege('anon', 'public.app_config(text,integer,text)', 'execute')
+        and has_function_privilege('authenticated',
+            'public.app_config(text,integer,text)', 'execute'));
+    raise notice 'APP CONFIG GRANT TESTS PASSED';
+end;
+$$;
+
+
+-- =============================================================================
+--  The calendar
+-- =============================================================================
+--
+-- The claims here are about a WINDOW, which is the part that cannot be eyeballed
+-- off the client: an event that is live, one that has not started, one that is
+-- over, and one too far out to be worth sending. A mistake in any of them is an
+-- event that runs on the wrong day for everybody at once, and unlike a kill
+-- switch there is no "off" to fall back to -- the row has already fired.
+do $$
+declare
+    r jsonb; e jsonb;
+begin
+    delete from public.app_events where app in ('loot-lagoon', 'game-two');
+    perform pg_temp.ck('an empty calendar answers with an empty list',
+        public.app_events('loot-lagoon', 140, 'ios') = '[]'::jsonb,
+        public.app_events('loot-lagoon', 140, 'ios')::text);
+
+    -- --- live right now ------------------------------------------------------
+    insert into public.app_events (app, kind, payload, starts_at, ends_at, note)
+    values ('loot-lagoon', 'deal_chain', '{"id": "tide_hunt"}'::jsonb,
+            now() - interval '30 minutes', now() + interval '23 hours', 'halloween');
+    r := public.app_events('loot-lagoon', 140, 'ios');
+    perform pg_temp.ck('a running event is sent', jsonb_array_length(r) = 1, r::text);
+    e := r->0;
+    perform pg_temp.ck('and it is marked as already started',
+        (e->>'starts_in')::bigint <= 0, e::text);
+    perform pg_temp.ck('with the time it has left, not the time it has run',
+        (e->>'ends_in')::bigint between 82000 and 82900, e::text);
+    perform pg_temp.ck('and the payload the client acts on',
+        e->'payload'->>'id' = 'tide_hunt', e::text);
+    -- The doctrine claim from the migration's own header.
+    perform pg_temp.ck('and NO timestamp anywhere on the wire',
+        not (e ? 'starts_at') and not (e ? 'ends_at'), e::text);
+
+    -- --- not yet, and never ---------------------------------------------------
+    delete from public.app_events where app = 'loot-lagoon';
+    insert into public.app_events (app, kind, payload, starts_at, ends_at) values
+        ('loot-lagoon', 'deal_chain', '{"id": "soon"}'::jsonb,
+         now() + interval '4 hours',  now() + interval '28 hours'),
+        ('loot-lagoon', 'deal_chain', '{"id": "far"}'::jsonb,
+         now() + interval '30 days',  now() + interval '31 days'),
+        ('loot-lagoon', 'deal_chain', '{"id": "over"}'::jsonb,
+         now() - interval '3 days',   now() - interval '2 days');
+    r := public.app_events('loot-lagoon', 140, 'ios');
+    perform pg_temp.ck('only the one inside the horizon is sent',
+        jsonb_array_length(r) = 1 and r->0->'payload'->>'id' = 'soon', r::text);
+    perform pg_temp.ck('and it is marked as NOT started yet',
+        (r->0->>'starts_in')::bigint > 0, r::text);
+    perform pg_temp.ck('a horizon wide enough reaches the far one too',
+        jsonb_array_length(public.app_events('loot-lagoon', 140, 'ios', 24 * 40)) = 2,
+        public.app_events('loot-lagoon', 140, 'ios', 24 * 40)::text);
+    perform pg_temp.ck('and an event that is over is never sent, at any horizon',
+        not exists (select 1
+                      from jsonb_array_elements(
+                               public.app_events('loot-lagoon', 140, 'ios', 24 * 400)) x
+                     where x->'payload'->>'id' = 'over'));
+
+    -- --- order ----------------------------------------------------------------
+    delete from public.app_events where app = 'loot-lagoon';
+    insert into public.app_events (app, kind, payload, starts_at, ends_at) values
+        ('loot-lagoon', 'deal_chain', '{"id": "third"}'::jsonb,
+         now() + interval '10 hours', now() + interval '11 hours'),
+        ('loot-lagoon', 'deal_chain', '{"id": "first"}'::jsonb,
+         now() - interval '1 hour',   now() + interval '1 hour'),
+        ('loot-lagoon', 'deal_chain', '{"id": "second"}'::jsonb,
+         now() + interval '2 hours',  now() + interval '3 hours');
+    r := public.app_events('loot-lagoon', 140, 'ios');
+    perform pg_temp.ck('the list is in the order they happen',
+        r->0->'payload'->>'id' = 'first'
+        and r->1->'payload'->>'id' = 'second'
+        and r->2->'payload'->>'id' = 'third', r::text);
+
+    -- --- targeting, and the app boundary --------------------------------------
+    delete from public.app_events where app = 'loot-lagoon';
+    insert into public.app_events (app, kind, payload, starts_at, ends_at,
+                                   min_build, platform) values
+        ('loot-lagoon', 'deal_chain', '{"id": "new_builds"}'::jsonb,
+         now() - interval '1 hour', now() + interval '1 hour', 150, ''),
+        ('loot-lagoon', 'deal_chain', '{"id": "ios_only"}'::jsonb,
+         now() - interval '1 hour', now() + interval '1 hour', 0, 'ios');
+    perform pg_temp.ck('a build under the floor does not get that event',
+        not exists (select 1 from jsonb_array_elements(
+                        public.app_events('loot-lagoon', 149, 'ios')) x
+                     where x->'payload'->>'id' = 'new_builds'));
+    perform pg_temp.ck('and a build at it does',
+        exists (select 1 from jsonb_array_elements(
+                    public.app_events('loot-lagoon', 150, 'ios')) x
+                 where x->'payload'->>'id' = 'new_builds'));
+    perform pg_temp.ck('an ios event does not reach android',
+        not exists (select 1 from jsonb_array_elements(
+                        public.app_events('loot-lagoon', 150, 'android')) x
+                     where x->'payload'->>'id' = 'ios_only'));
+    -- THE DEV EXEMPTION IS ABOUT BUILDS, NOT PLATFORMS, and this pair is here
+    -- because the first draft of this test assumed otherwise and failed. A
+    -- desktop run is neither iOS nor Android, so a platform-targeted row must
+    -- not reach it -- the same rule app_config follows. The consequence is that
+    -- naming the platform is the ONLY way to preview a platform-targeted event,
+    -- which is what LL_FAKE_PLATFORM exists for on the client.
+    perform pg_temp.ck('a dev build is exempt from the build floor',
+        jsonb_array_length(public.app_events('loot-lagoon', 0, '')) = 1
+        and public.app_events('loot-lagoon', 0, '')->0->'payload'->>'id'
+            = 'new_builds',
+        public.app_events('loot-lagoon', 0, '')::text);
+    perform pg_temp.ck('but not from the platform, which it does not have',
+        not exists (select 1 from jsonb_array_elements(
+                        public.app_events('loot-lagoon', 0, '')) x
+                     where x->'payload'->>'id' = 'ios_only'));
+    perform pg_temp.ck('and naming a platform is how a dev build previews one',
+        jsonb_array_length(public.app_events('loot-lagoon', 0, 'ios')) = 2,
+        public.app_events('loot-lagoon', 0, 'ios')::text);
+    insert into public.app_events (app, kind, payload, starts_at, ends_at)
+    values ('game-two', 'deal_chain', '{"id": "theirs"}'::jsonb,
+            now() - interval '1 hour', now() + interval '1 hour');
+    perform pg_temp.ck('and game two keeps its calendar to itself',
+        jsonb_array_length(public.app_events('game-two', 140, 'ios')) = 1
+        and not exists (select 1 from jsonb_array_elements(
+                            public.app_events('loot-lagoon', 0, '')) x
+                         where x->'payload'->>'id' = 'theirs'));
+
+    -- --- the typo the table refuses -------------------------------------------
+    begin
+        insert into public.app_events (app, kind, starts_at, ends_at)
+        values ('loot-lagoon', 'deal_chain', now() + interval '2 hours', now());
+        perform pg_temp.ck('a window that ends before it starts is refused', false,
+            'the insert was accepted');
+    exception when check_violation then
+        perform pg_temp.ck('a window that ends before it starts is refused', true);
+    end;
+
+    -- --- privileges ------------------------------------------------------------
+    perform pg_temp.ck('a guest can read the calendar',
+        has_function_privilege('anon',
+            'public.app_events(text,integer,text,integer)', 'execute'));
+    perform pg_temp.ck('the ops role can write it',
+        has_table_privilege('service_role', 'public.app_events', 'insert')
+        and has_sequence_privilege('service_role',
+            'public.app_events_id_seq', 'usage'));
+    perform pg_temp.ck('and no client can reach the rows',
+        not has_table_privilege('anon', 'public.app_events', 'select')
+        and not has_table_privilege('authenticated', 'public.app_events', 'select'));
+
+    delete from public.app_events where app in ('loot-lagoon', 'game-two');
+    raise notice 'CALENDAR TESTS PASSED';
+end;
+$$;

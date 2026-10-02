@@ -59,6 +59,9 @@ my_identities:
 redeem_link_token:p_token
 delete_account:
 server_time:
+client_gate:p_build
+app_config:p_app,p_build,p_platform
+app_events:p_app,p_build,p_platform,p_horizon_hours
 my_clan:
 clan_list:p_limit
 create_clan:p_name,p_emoji
