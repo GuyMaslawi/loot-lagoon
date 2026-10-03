@@ -99,6 +99,7 @@ func _ready() -> void:
 	_t_clan_gate()
 	_section("28. the build floor")
 	_t_client_gate()
+	_t_support_card()
 
 	print("")
 	print("QA-FULL: %d checks, %s" % [checks, "ALL PASS" if fails == 0 else "%d FAILURES" % fails])
@@ -2893,3 +2894,38 @@ func _t_client_gate() -> void:
 		var other: String = m._store_url({str(spec[1]): "x://a"},
 			"Android" if spec[0] == "iOS" else "iOS")
 		_chk("...and it does not leak onto the other store", other != "x://a", other)
+
+
+# =============================================================================
+#  The support card
+# =============================================================================
+#
+# The one surface in the game whose whole job is to be READ BY A STRANGER and
+# pasted into an email. If the id it shows cannot be looked up, every support
+# mail starts with a round trip asking for a better one -- so what is asserted
+# here is not that a label exists, it is that the string on screen is the same
+# string tools/support.py searches on.
+func _t_support_card() -> void:
+	print("support card")
+	var id: String = m._support_id()
+	_chk("there is always a support id, signed in or not", id != "", id)
+	# A guest: the install id diagnostics already made. support_find_player
+	# reaches it through the receipts, which is the only record a guest who
+	# paid leaves behind.
+	_chk("a guest shows the install id, which is what the receipts carry",
+		not Cloud.linked() and id == Diag.install_id(), id)
+
+	var link: String = m._support_mailto()
+	_chk("the mail goes to the address the published pages name",
+		link.begins_with("mailto:" + m.SUPPORT_EMAIL), link.substr(0, 40))
+	# EVERY FIELD A REPLY NEEDS, OR THE FIRST ANSWER IS A QUESTION.
+	for part in [id, BuildID.label()]:
+		_chk("the body carries %s" % part, link.contains(part.uri_encode()), part)
+	_chk("and it says whether they are signed in",
+		link.contains("Signed%20in".uri_encode()) or link.contains("Signed"),
+		link.substr(link.length() - 60, 60))
+	# A body with a raw newline or space in it is a mailto some clients cut off
+	# at the first one, which would drop exactly the diagnostic lines the card
+	# exists to send.
+	_chk("the whole link is encoded, so no client truncates the body",
+		not link.contains(" ") and not link.contains("\n"), link.substr(0, 60))

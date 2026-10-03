@@ -3958,6 +3958,13 @@ const LEGAL_BASE := "https://guymaslawi.github.io/loot-lagoon"
 const LEGAL_PRIVACY := LEGAL_BASE + "/privacy.html"
 const LEGAL_TERMS := LEGAL_BASE + "/terms.html"
 
+# THE SAME ADDRESS THE PUBLISHED PAGES CARRY, and it has to stay that way.
+# index.html, privacy.html, terms.html and delete-account.html all name this
+# one, Apple compares the listing against those pages, and a game that offers a
+# different support address than its own privacy policy is a question nobody
+# wants to be asked during review.
+const SUPPORT_EMAIL := "guymuslave@gmail.com"
+
 # Latched: the "there is an update" line is worth saying once per launch, not
 # once per resume. The blocking modal has no latch, because a build under the
 # floor is under it every time it is looked at.
@@ -5999,6 +6006,134 @@ func _popup_row_label(text: String, size := UI.F_LABEL) -> Label:
 # would mean shipping a browser, and on iOS a SFSafariViewController the game
 # has no plugin for. The pages are plain static HTML and they come back on the
 # back gesture.
+# WHO THIS INSTALL IS, in one string a stranger can paste into an email.
+#
+# Two different identities, and the player is never asked to care which. Signed
+# in, it is the server's own player id -- the uuid support.py looks up, the one
+# that reaches the island and the purchases. Not signed in, it is the install id
+# diagnostics already made, which reaches nothing but the receipts... and the
+# receipts are exactly what a guest who paid is writing in about, which is the
+# whole reason the guest half is worth showing at all.
+#
+# The server-side lookup takes either, so the game does not have to explain the
+# difference and the label below does not try.
+func _support_id() -> String:
+	if Cloud.linked():
+		var id := str(Cloud.player().get("id", ""))
+		if id != "":
+			return id
+	return Diag.install_id()
+
+
+# Everything a reply needs, in the body of the mail, so the first answer can be
+# the real one instead of "what is your player id?".
+#
+# PREFILLED RATHER THAN ASKED FOR. A player who has just lost an island is not
+# going to go and find a build number, and an email without one costs a round
+# trip that takes a day. The line telling them not to delete it is there because
+# some will anyway, and it costs nothing to ask.
+func _support_mailto() -> String:
+	var body := "\n\n\n--- please leave the lines below, they are how your island is found ---\n"
+	body += "Support ID: %s\n" % _support_id()
+	body += "Signed in: %s\n" % ("yes" if Cloud.linked() else "no, playing as a guest")
+	body += "Build: %s\n" % BuildID.label()
+	body += "Device: %s %s\n" % [OS.get_name(), OS.get_version()]
+	body += "Island: %d\n" % island_level
+	return "mailto:%s?subject=%s&body=%s" % [SUPPORT_EMAIL,
+		"Loot Lagoon — help".uri_encode(), body.uri_encode()]
+
+
+# A read-only string the player can select, on cream card stock.
+#
+# LineEdit DOES NOT INHERIT THE CARD'S INK, and the first cut of this card shipped
+# both of its fields in the theme's default grey on cream -- the support id and
+# the email address, the two things the card exists to communicate, were the two
+# least readable things on the page. The render showed it immediately and
+# nothing else would have: every other control here is built by a Lagoon helper
+# that already knows what stock it is sitting on.
+#
+# `font_uneditable_color` is the one that bites. A LineEdit with editable=false
+# uses that, not `font_color`, so setting only the latter looks correct in a
+# theme editor and changes nothing on screen. Both are set.
+func _support_field(text: String, size: int) -> LineEdit:
+	var f := LineEdit.new()
+	f.text = text
+	f.editable = false
+	f.flat = true
+	f.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	f.custom_minimum_size = Vector2(0, UI.TAP)
+	f.add_theme_font_size_override("font_size", size)
+	for c in ["font_color", "font_uneditable_color", "font_selected_color"]:
+		f.add_theme_color_override(c, Lagoon.INK)
+	# The selection has to be visible against cream too, or selecting the id --
+	# the thing this control exists for -- hides it.
+	f.add_theme_color_override("selection_color", Lagoon.LAGOON.lerp(Color.WHITE, 0.55))
+	return f
+
+
+# The support card. Last thing on the Options page, directly above the legal row.
+func _support_card(vb: BoxContainer) -> void:
+	var card := _page_card(vb, "NEED A HAND?")
+	# INK ON CREAM, NOT _page_note. That helper is white with an ABYSS outline
+	# and its own comment says what it is for: "copy that sits on the page
+	# itself rather than inside a card". This is inside a card, and the first
+	# cut used it anyway -- the line came out in the deep board's treatment on
+	# cream stock, which the render showed and no assertion would have.
+	var blurb := Lagoon.label(
+		"Something wrong with your island or a purchase? Send us this ID and"
+		+ " we can find it.", UI.F_CAPTION, Lagoon.INK)
+	blurb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	blurb.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	card.add_child(blurb)
+
+	# SELECTABLE AS WELL AS COPYABLE. The button is the way almost everybody
+	# will take it, but a LineEdit that can be selected is the one that still
+	# works when the clipboard is being odd, when they are reading it to
+	# somebody on the phone, or when they want to check that what they pasted is
+	# what is on screen. Read-only, so there is nothing to type into by mistake.
+	var field := _support_field(_support_id(), UI.F_BODY)
+	card.add_child(field)
+
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 10)
+	card.add_child(row)
+
+	var copy := Button.new()
+	copy.text = "Copy ID"
+	copy.custom_minimum_size = Vector2(0, UI.TAP)
+	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	Lagoon.button(copy, "glass", 22)
+	FX.press_feedback(copy)
+	copy.pressed.connect(func() -> void:
+		DisplayServer.clipboard_set(_support_id())
+		Sfx.play("pop", -8.0)
+		_banner("ID copied.", Lagoon.KELP_HI, "\U0001F4CB"))
+	row.add_child(copy)
+
+	var mail := Button.new()
+	mail.text = "Email us"
+	mail.custom_minimum_size = Vector2(0, UI.TAP)
+	mail.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	Lagoon.button(mail, "gold", 22)
+	FX.press_feedback(mail)
+	mail.pressed.connect(func() -> void:
+		# A PHONE WITH NO MAIL APP OPENS NOTHING AT ALL, silently -- and on iOS
+		# that is a stock configuration, not an edge case, because Mail can be
+		# deleted. There is no way to ask shell_open whether it worked, so the
+		# address is printed under this button in plain selectable text and is
+		# never only behind it. The banner names it too, so a player who taps
+		# and sees nothing happen has still been told where to write.
+		OS.shell_open(_support_mailto())
+		_banner("Opening your mail app — or write to " + SUPPORT_EMAIL,
+			Lagoon.KELP_HI, "\u2709"))
+	row.add_child(mail)
+
+	# The address itself, always visible. See the note above: this is the path
+	# that works when the button's does not.
+	card.add_child(_support_field(SUPPORT_EMAIL, UI.F_CAPTION))
+
+
 func _legal_row(vb: BoxContainer) -> void:
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -17918,6 +18053,7 @@ func _fill_options(vb: VBoxContainer) -> void:
 	wipe.pressed.connect(_confirm_delete_account)
 	acc.add_child(wipe)
 
+	_support_card(vb)
 	_legal_row(vb)
 	vb.add_child(_page_note("Loot Lagoon  •  %s" % BuildID.label(), UI.F_CAPTION))
 

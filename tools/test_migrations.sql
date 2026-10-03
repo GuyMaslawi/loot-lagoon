@@ -1940,3 +1940,208 @@ begin
     raise notice 'CALENDAR TESTS PASSED';
 end;
 $$;
+
+
+-- =============================================================================
+--  The support desk, and the four functions no phone may call
+-- =============================================================================
+--
+-- The privilege checks are the point of this block. Every other function this
+-- project exposes is callable by a guest on purpose; these read people's names,
+-- balances and purchases, and one accidental grant would turn the support desk
+-- into a player directory. They are asserted first and again at the end.
+do $$
+declare
+    u1 uuid := gen_random_uuid(); u2 uuid := gen_random_uuid();
+    u3 uuid := gen_random_uuid();
+    a uuid; b uuid; c uuid;
+    r jsonb; row_ jsonb; rep uuid; before_open integer;
+begin
+    -- --- who may call these at all -------------------------------------------
+    perform pg_temp.ck('a guest cannot look a player up',
+        not has_function_privilege('anon',
+            'public.support_find_player(text,integer)', 'execute'));
+    perform pg_temp.ck('and neither can a signed-in player',
+        not has_function_privilege('authenticated',
+            'public.support_find_player(text,integer)', 'execute'));
+    perform pg_temp.ck('a guest cannot read the report queue',
+        not has_function_privilege('anon',
+            'public.support_reports(boolean,integer)', 'execute'));
+    perform pg_temp.ck('and neither can a signed-in player',
+        not has_function_privilege('authenticated',
+            'public.support_reports(boolean,integer)', 'execute'));
+    perform pg_temp.ck('nobody but ops can close a report',
+        not has_function_privilege('anon',
+            'public.support_review_report(uuid)', 'execute')
+        and not has_function_privilege('authenticated',
+            'public.support_review_report(uuid)', 'execute'));
+    perform pg_temp.ck('nor read receipts',
+        not has_function_privilege('anon',
+            'public.support_find_receipts(text,integer)', 'execute')
+        and not has_function_privilege('authenticated',
+            'public.support_find_receipts(text,integer)', 'execute'));
+    perform pg_temp.ck('the ops role can call all four',
+        has_function_privilege('service_role',
+            'public.support_find_player(text,integer)', 'execute')
+        and has_function_privilege('service_role',
+            'public.support_find_receipts(text,integer)', 'execute')
+        and has_function_privilege('service_role',
+            'public.support_reports(boolean,integer)', 'execute')
+        and has_function_privilege('service_role',
+            'public.support_review_report(uuid)', 'execute'));
+    -- WHAT ACTUALLY FENCES `players` IS RLS, NOT THE GRANT, and the first draft
+    -- of this test asserted the wrong model. `authenticated` really does hold
+    -- SELECT -- it has to, the save sync reads the row back -- and what stops a
+    -- player reading anybody else is the policy restricting it to
+    -- my_player_ids(). Asserting the absence of the grant would have been a
+    -- test that failed on correct code, and worse, one that invited somebody to
+    -- "fix" it by revoking the grant the game runs on.
+    perform pg_temp.ck('a guest cannot read the players table at all',
+        not has_table_privilege('anon', 'public.players', 'select'));
+    perform pg_temp.ck('a signed-in player can, but ONLY through a policy',
+        has_table_privilege('authenticated', 'public.players', 'select')
+        and (select relrowsecurity from pg_class
+              where oid = 'public.players'::regclass));
+    perform pg_temp.ck('and that policy fences them to their own rows',
+        exists (select 1 from pg_policies
+                 where tablename = 'players' and cmd = 'SELECT'
+                   and qual like '%my_player_ids%'),
+        (select string_agg(policyname || ': ' || coalesce(qual, '-'), '; ')
+           from pg_policies where tablename = 'players'));
+    -- reports and blocks have no policy at all, which is the stronger statement:
+    -- RLS on with nothing permitted means nobody reads them but a definer.
+    perform pg_temp.ck('reports and blocks are reachable by no client whatsoever',
+        not has_table_privilege('anon', 'public.reports', 'select')
+        and not has_table_privilege('authenticated', 'public.reports', 'select')
+        and not has_table_privilege('authenticated', 'public.blocks', 'select'));
+
+    -- --- finding somebody ----------------------------------------------------
+    insert into auth.users (id) values (u1), (u2), (u3);
+    perform pg_temp.be(u1);
+    a := (public.claim_player('{"coins": 5}'::jsonb, 'Crabby Pete', '🦀',
+            800, 12, 44000, 2, '{1,0,0,0,0}')->'player'->>'id')::uuid;
+    perform pg_temp.be(u2);
+    b := (public.claim_player('{}'::jsonb, 'Reef Rita', '🐠',
+            300, 7, 100, 0, '{0,0,0,0,0}')->'player'->>'id')::uuid;
+    perform pg_temp.be(u3);
+    c := (public.claim_player('{}'::jsonb, 'Crabby Imposter', '🦞',
+            50, 2, 0, 0, '{0,0,0,0,0}')->'player'->>'id')::uuid;
+
+    r := public.support_find_player(a::text);
+    perform pg_temp.ck('a support id finds exactly one player',
+        jsonb_array_length(r) = 1, r::text);
+    row_ := r->0;
+    perform pg_temp.ck('and it is the right one, with what a mail needs',
+        row_->>'display_name' = 'Crabby Pete'
+        and (row_->>'island_level')::int = 12
+        and (row_->>'vault_coins')::bigint = 44000, row_::text);
+    perform pg_temp.ck('THE SAVE BLOB IS NOT IN IT',
+        not (row_ ? 'save_blob') and not (row_ ? 'save'), row_::text);
+    perform pg_temp.ck('and the sign-ins behind it are, because "restore my account" needs them',
+        row_ ? 'sign_ins', row_::text);
+
+    r := public.support_find_player('Crabby');
+    perform pg_temp.ck('a name fragment finds everyone who matches',
+        jsonb_array_length(r) = 2, r::text);
+    perform pg_temp.ck('a name nobody has finds nothing, rather than everything',
+        public.support_find_player('Nobody At All') = '[]'::jsonb);
+    perform pg_temp.ck('an empty query finds nothing, rather than the whole table',
+        public.support_find_player('') = '[]'::jsonb
+        and public.support_find_player(null) = '[]'::jsonb);
+    perform pg_temp.ck('a malformed uuid is a name search, not an error',
+        public.support_find_player('not-a-uuid-at-all') = '[]'::jsonb);
+
+    -- The nine seeded crews must not bury the person who wrote in.
+    update public.players set is_bot = true, display_name = 'Crabby Bot'
+     where id = c;
+    perform pg_temp.ck('bots are kept out of a name search',
+        jsonb_array_length(public.support_find_player('Crabby')) = 1,
+        public.support_find_player('Crabby')::text);
+    perform pg_temp.ck('but a bot still answers to its own id, for diagnosing one',
+        jsonb_array_length(public.support_find_player(c::text)) = 1);
+
+    -- --- the money, which is most of the mail --------------------------------
+    insert into public.iap_receipts (platform, receipt_id, product_id,
+                                     install_id, player, verdict)
+    values ('ios', 'rcpt-paid-1', 'coins_l', 'install-aaa', a, 'valid'),
+           ('ios', 'rcpt-paid-2', 'spins_m', 'install-aaa', a, 'refunded'),
+           -- A GUEST WHO PAID. No player row, which is the case most likely to
+           -- arrive as an angry email and the one a player lookup cannot answer.
+           ('android', 'rcpt-guest', 'coins_s', 'install-zzz', null, 'valid');
+
+    row_ := public.support_find_player(a::text)->0;
+    perform pg_temp.ck('what they paid is rolled up by verdict',
+        (row_->'receipts_by_verdict'->>'valid')::int = 1
+        and (row_->'receipts_by_verdict'->>'refunded')::int = 1,
+        row_->>'receipts_by_verdict');
+    perform pg_temp.ck('and the recent rows are there for the detail',
+        jsonb_array_length(row_->'recent_receipts') = 2, row_::text);
+
+    perform pg_temp.ck('an install id reaches the player who used it',
+        (public.support_find_player('install-aaa')->0->>'id') = a::text,
+        public.support_find_player('install-aaa')::text);
+    perform pg_temp.ck('a GUEST receipt is findable even with no player behind it',
+        jsonb_array_length(public.support_find_receipts('install-zzz')) = 1,
+        public.support_find_receipts('install-zzz')::text);
+    perform pg_temp.ck('and that row names the product they are owed',
+        public.support_find_receipts('install-zzz')->0->>'product_id' = 'coins_s');
+    perform pg_temp.ck('a receipt id finds its own row',
+        jsonb_array_length(public.support_find_receipts('rcpt-paid-1')) = 1);
+
+    -- --- somebody who deleted by accident ------------------------------------
+    update public.players set deleted_at = now() where id = b;
+    perform pg_temp.ck('a deleted account still answers, and says it is deleted',
+        jsonb_array_length(public.support_find_player(b::text)) = 1
+        and (public.support_find_player(b::text)->0->>'deleted_at') is not null,
+        public.support_find_player(b::text)::text);
+    update public.players set deleted_at = null where id = b;
+
+    -- --- the report queue ----------------------------------------------------
+    --
+    -- MEASURED AS A DELTA, because earlier blocks in this file have already
+    -- filed reports and the queue is shared. The first draft asserted an empty
+    -- list and failed on correct code -- a test that only passes when it runs
+    -- first is a test that will fail on somebody else's afternoon.
+    before_open := jsonb_array_length(public.support_reports());
+    perform pg_temp.ck('the queue is a list, whatever is already in it',
+        jsonb_typeof(public.support_reports()) = 'array',
+        public.support_reports()::text);
+    perform pg_temp.be(u2);
+    perform public.report_player(a, 'chat');
+    perform pg_temp.be(u3);
+    perform public.report_player(a, 'name');
+    perform pg_temp.be(u1);
+    perform public.report_player(b, 'name');
+
+    r := public.support_reports();
+    perform pg_temp.ck('every open report is in the queue',
+        jsonb_array_length(r) = before_open + 3,
+        format('%s before, %s now', before_open, jsonb_array_length(r)));
+    -- "one report is an argument, twenty is a pattern" -- the original
+    -- migration's own words, and the reason the order is by reporters.
+    perform pg_temp.ck('the person two different people reported is at the top',
+        (r->0->>'reported_id') = a::text
+        and (r->0->>'reporters')::int = 2, r::text);
+    perform pg_temp.ck('and the queue carries names, not just ids',
+        (r->0->>'reported_name') = 'Crabby Pete'
+        and (r->0->>'reporter_name') is not null, (r->0)::text);
+
+    rep := (r->0->>'id')::uuid;
+    perform pg_temp.ck('a report can be marked seen',
+        (public.support_review_report(rep)->>'ok')::boolean);
+    perform pg_temp.ck('and it leaves the open queue',
+        not exists (select 1 from jsonb_array_elements(public.support_reports()) x
+                     where x->>'id' = rep::text));
+    perform pg_temp.ck('but is still ON RECORD, which is what a store asks about',
+        exists (select 1 from jsonb_array_elements(
+                    public.support_reports(false, 50)) x
+                 where x->>'id' = rep::text
+                   and x->>'reviewed_at' is not null));
+    perform pg_temp.ck('closing it twice is not an error',
+        (public.support_review_report(rep)->>'ok')::boolean);
+    perform pg_temp.ck('and closing one that never existed is refused honestly',
+        not (public.support_review_report(gen_random_uuid())->>'ok')::boolean);
+
+    raise notice 'SUPPORT DESK TESTS PASSED';
+end;
+$$;
